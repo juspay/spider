@@ -1,0 +1,6 @@
+[submodule "fdep"]
+	path = fdep
+	url = https://github.com/eswar2001/fdep.git
+[submodule "coresyn2chart"]
+	path = coresyn2chart
+	url = https://github.com/eswar2001/coresyn2chart.git
