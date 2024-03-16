@@ -1,0 +1,82 @@
+cabal-version:      3.0
+name:               coresyn2chart
+version:            0.1.0.0
+-- synopsis:
+-- description:
+license:            MIT
+license-file:       LICENSE
+author:             eswar2001
+maintainer:         teswar2001@gmail.com
+-- copyright:
+category:           plugin
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+-- extra-source-files:
+
+common common-options
+    ghc-options:
+        -Wall
+        -Wincomplete-uni-patterns
+        -Wincomplete-record-updates
+        -Wcompat
+        -Widentities
+        -Wredundant-constraints
+        -fhide-source-paths -O2
+
+    default-language:    Haskell2010
+    default-extensions:
+        DeriveGeneric
+        GeneralizedNewtypeDeriving
+        InstanceSigs
+        LambdaCase
+        OverloadedStrings
+        RecordWildCards
+        ScopedTypeVariables
+        StandaloneDeriving
+        TypeApplications
+    build-depends:
+        bytestring
+        , containers
+        , filepath
+        , ghc ^>= 8.10.7
+        , ghc-exactprint
+        , unordered-containers
+        , uniplate >= 1.6  && < 1.7
+        , aeson
+        , directory
+        , extra
+        , aeson-pretty
+        , base ^>=4.14.3.0
+        , text
+        , base64-bytestring
+
+library
+    import:           common-options
+    exposed-modules:  Syn2Chart.Plugin, Syn2Chart.Types, Syn2Chart.Traversal
+    -- other-modules:
+    -- other-extensions:
+    hs-source-dirs:   src
+    default-language: Haskell2010
+
+executable coresyn2chart
+    import:           common-options
+    main-is:          Main.hs
+    -- other-modules:
+    -- other-extensions:
+    build-depends:
+        coresyn2chart
+
+    hs-source-dirs:   app
+    default-language: Haskell2010
+
+test-suite coresyn2chart-test
+    import:           common-options
+    default-language: Haskell2010
+    ghc-options: -fplugin=Syn2Chart.Plugin -fplugin-opt Syn2Chart.Plugin:./tmp/coresyn2chart/
+    -- other-modules:
+    -- other-extensions:
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    build-depends:
+        coresyn2chart
