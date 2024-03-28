@@ -1,4 +1,5 @@
-module Logerr.Types where
+module Sheriff.Types where
+  
 import Data.Aeson
 import SrcLoc 
 import Var

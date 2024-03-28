@@ -6,7 +6,7 @@
 
 module Main (main) where
 
-import qualified Logerr.Plugin ()
+import qualified Sheriff.Plugin ()
 import Data.Text as T
 import qualified Data.Text.Lazy as DTL
 import qualified Data.Text.Encoding as DTE

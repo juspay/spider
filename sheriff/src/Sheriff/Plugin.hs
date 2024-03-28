@@ -1,6 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 
-module Logerr.Plugin (plugin) where
+module Sheriff.Plugin (plugin) where
 
 import Bag (bagToList,listToBag)
 import Control.Monad.IO.Class (MonadIO (..))
@@ -53,7 +53,7 @@ import Control.Monad (foldM,when)
 import Data.List
 import Data.List.Extra (replace,splitOn)
 import Data.Maybe (fromJust,isJust,mapMaybe)
-import Logerr.Types
+import Sheriff.Types
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Control.Concurrent
 import System.Directory
