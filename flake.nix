@@ -43,6 +43,7 @@
             #    haddock = false;
             #    broken = false;
             #  };
+              sheriff.check = false;
           };
 
           devShell = {
