@@ -16,5 +16,5 @@ This tool is useful for developers to enforce better coding practices and preven
 Add this to your ghc-options in cabal and mention `logerr` in build-depends
 
 ```
--fplugin=Logerr.Plugin
+-fplugin=Sheriff.Plugin
 ```
