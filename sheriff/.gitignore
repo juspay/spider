@@ -1,0 +1,7 @@
+dist-*
+result
+test/dumps
+test/out*
+cabal.project.local
+.juspay*
+.tmp*
