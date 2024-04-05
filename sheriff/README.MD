@@ -1,5 +1,5 @@
 
-# Haskell Code Checker Plugin
+# Haskell Code Checker Plugin - Sheriff
 
 ## Overview
 
@@ -13,8 +13,16 @@ This tool is useful for developers to enforce better coding practices and preven
 
 ## Usage
 
-Add this to your ghc-options in cabal and mention `logerr` in build-depends
+Add this to your ghc-options in cabal and mention `sheriff` in build-depends
 
 ```
 -fplugin=Sheriff.Plugin
 ```
+Also, we can provide flags to the plugin in following order:
+throwCompilationErrors, saveErrorsToFile, errorsFilesPath
+```
+-fplugin-opt=Sheriff.Plugin:true
+-fplugin-opt=Sheriff.Plugin:false
+-fplugin-opt=Sheriff.Plugin:.juspay/tmp/sheriff/
+```
+By default, it throwsCompilationErrors and doesn't log to file.

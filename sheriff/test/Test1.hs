@@ -132,6 +132,7 @@ main = do
     let obAT1 = "Dummy"
     let b = logInfoT "tester" logger
     logError "tag" $ obAT1 <> show Test1.obAT1
+    fn $ logError "tag2" $ show obA
   where
     logErrorT = Test1.logErrorT
 
@@ -140,6 +141,11 @@ logInfoT x _ = x
 
 logger :: forall a b. (IsString b, Show a) => String -> a -> b
 logger _ = fromString . show
+
+fn :: IO () -> IO ()
+fn x = do
+    _ <- x
+    pure ()
 
 -- myFun :: A -> IO Text
 -- myFun ob = do
