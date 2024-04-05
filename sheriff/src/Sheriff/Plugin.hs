@@ -54,6 +54,7 @@ import Data.List
 import Data.List.Extra (replace,splitOn)
 import Data.Maybe (fromJust,isJust,mapMaybe)
 import Sheriff.Types
+import Sheriff.Rules
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Control.Concurrent
 import System.Directory
@@ -94,7 +95,7 @@ purePlugin _ = return NoForceRecompile
 logerr :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 logerr opts modSummary tcEnv = do
   let
-    defaultSavePath =  ".juspay/tmp/logerr/"
+    defaultSavePath =  ".juspay/tmp/sheriff/"
     defaultThrowCompilationError = True
     defaultSaveToFile = False
     (throwCompilationError, saveToFile, savePath) = 
@@ -115,56 +116,6 @@ logerr opts modSummary tcEnv = do
     else pure ()
 
   return tcEnv
-
---------------------------- Core Logic Hardcoded Data ---------------------------
--- TODO: Take these from the configuration file
-badPracticeRules :: Rules
-badPracticeRules = [
-    defaultRule
-  , logRule1 
-  , logRule2 
-  , logRule3 
-  , logRule4 
-  , logRule5 
-  , logRule6
-  , showRule
-  ]
-
-logArgNo :: ArgNo
-logArgNo = 2
-
-logRule1 :: Rule
-logRule1 = Rule "LogRule" "logErrorT" logArgNo stringifierFns [] textTypesToCheck
-
-logRule2 :: Rule
-logRule2 = Rule "LogRule" "logErrorV" logArgNo stringifierFns [] textTypesToCheck
-
-logRule3 :: Rule
-logRule3 = Rule "LogRule" "logInfoT" logArgNo stringifierFns [] textTypesToCheck
-
-logRule4 :: Rule
-logRule4 = Rule "LogRule" "logInfoV" logArgNo stringifierFns [] textTypesToCheck
-
-logRule5 :: Rule
-logRule5 = Rule "LogRule" "logInfo" logArgNo stringifierFns [] textTypesToCheck
-
-logRule6 :: Rule
-logRule6 = Rule "LogRule" "logError" logArgNo stringifierFns [] textTypesToCheck
-
-showRule :: Rule
-showRule = Rule "ShowRule" "show" 1 stringifierFns textTypesBlocked textTypesToCheck
-
-noUseRule :: Rule
-noUseRule = Rule "NoDecodeUtf8Rule" "$text-1.2.4.1$Data.Text.Encoding$decodeUtf8" 0 [] [] []
-
-stringifierFns :: FnsBlockedInArg
-stringifierFns = ["show", "encode", "encodeJSON"]
-
-textTypesBlocked :: TypesBlockedInArg
-textTypesBlocked = ["Text", "String", "Char", "[Char]"]
-
-textTypesToCheck :: TypesToCheckInArg
-textTypesToCheck = ["Text", "String", "Char", "[Char]"]
 
 --------------------------- Core Logic ---------------------------
 
@@ -211,14 +162,14 @@ getBadFnCalls (FunBind _ id matches _ _) = do
           argBinds = m_pats match
           exprs = match ^? biplateRef :: [LHsExpr GhcTc]
       catMaybes <$> mapM isBadFunApp exprs
-getLoggerFnCall _ = pure []
+getBadFnCalls _ = pure []
 
 isBadFunApp :: LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
 isBadFunApp ap@(L _ (HsVar _ v)) = isBadFunAppHelper ap
 isBadFunApp ap@(L _ (HsApp _ funl funr)) = isBadFunAppHelper ap
+isBadFunApp ap@(L loc (HsWrap _ _ expr)) = isBadFunApp (L loc expr)
 -- **** Not adding these because of biplateRef ****
--- isBadFunApp ap@(L loc (HsWrap _ expr)) = isBadFunApp (L loc expr)
--- isBadFunApp ap@(L _ (Hspar _ expr)) = isBadFunApp expr
+-- isBadFunApp ap@(L _ (HsPar _ expr)) = isBadFunApp expr
 isBadFunApp (L _ (OpApp _ lfun op rfun)) = do
   case showS op of
     "($)" -> isBadFunAppHelper $ mkHsApp lfun rfun

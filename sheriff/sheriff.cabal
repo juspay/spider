@@ -42,6 +42,7 @@ library
         Sheriff.Plugin
     other-modules: 
         Sheriff.Types
+        Sheriff.Rules
     build-depends:
                 bytestring
                 , containers
@@ -86,11 +87,11 @@ test-suite sheriff-test
             -fplugin=Sheriff.Plugin 
             -fplugin-opt=Sheriff.Plugin:false
             -fplugin-opt=Sheriff.Plugin:true
-            -fplugin-opt=Sheriff.Plugin:.juspay/tmp/logerr/
-            -dumpdir=.juspay/tmp/logerr/ -ddump-to-file -ddump-parsed-ast -ddump-tc-ast
+            -fplugin-opt=Sheriff.Plugin:.juspay/tmp/sheriff/
+            -dumpdir=.juspay/tmp/sheriff/ -ddump-to-file -ddump-parsed-ast -ddump-tc-ast
     else
         ghc-options: 
             -fplugin=Sheriff.Plugin
             -fplugin-opt=Sheriff.Plugin:true
             -fplugin-opt=Sheriff.Plugin:false
-            -fplugin-opt=Sheriff.Plugin:.juspay/tmp/logerr/
+            -fplugin-opt=Sheriff.Plugin:.juspay/tmp/sheriff/
