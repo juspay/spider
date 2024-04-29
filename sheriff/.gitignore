@@ -3,5 +3,5 @@ result
 test/dumps
 test/out*
 cabal.project.local
-.juspay*
+.juspay/tmp*
 .tmp*

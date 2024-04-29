@@ -26,6 +26,12 @@ data B = B {f1 :: Int, f2 :: A, f3 :: Text}
 data CC = C1 | C2 Text | C3 Int | C4 Bool
     deriving (Generic, Show, ToJSON, FromJSON)
 
+data SeqIs = SeqIs Text Text
+    deriving (Generic, Show, ToJSON, FromJSON)
+
+ob :: SeqIs
+ob = SeqIs "fldName" "fldValue"
+
 -- Data objects
 obA :: A
 obA = A 25 "Hello ObjectA"
