@@ -98,10 +98,11 @@ instance Show LocalVar where
   show (FnLocal x) = "FnLocal " Prelude.<> showS x
 
 data DBFieldSpecType = 
-    Selector  -- $sel:fiedl1:TableName
-  | Lens      -- (\\ x -> x ^. _fieldNameLens)
-  | RecordDot -- (\\ x -> (getField @\"fieldName\" x))
+    Selector  -- DB.fieldName ==> $sel:fieldName:TableName
+  | Lens      -- (\x -> x ^. _fieldNameLens), (^. _fieldNameLens)
+  | RecordDot -- (\x -> x.fieldName), (.fieldName) ==> (\\ x -> (getField @\"fieldName\" x)) 
   | None
+  deriving (Show, Eq)
 
 data Violation = 
     ArgTypeBlocked String Rule

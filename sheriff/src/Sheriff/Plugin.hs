@@ -88,6 +88,7 @@ import TcType
 import ConLike
 import TysWiredIn
 import GHC.Hs.Lit (HsLit(..))
+import TcEvidence
 
 plugin :: Plugin
 plugin = defaultPlugin {
@@ -220,6 +221,7 @@ validateRule rule fnName args expr = case rule of
       RecordDot -> do
         let tyApps = filter (\x -> case x of 
                                     (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> True
+                                    (HsWrap _ (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> True
                                     _ -> False
                             ) $ (fieldArg ^? biplateRef :: [HsExpr GhcTc])
         if length tyApps > 0 
@@ -235,8 +237,29 @@ validateRule rule fnName args expr = case rule of
                                     ty             -> showS ty
                     in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
                   else pure Nothing
+              (HsWrap _ (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) ->
+                let tblName' = case tableType of
+                                    AppTy ty1 _    -> showS ty1
+                                    TyConApp ty1 _ -> showS ty1
+                                    ty             -> showS ty
+                in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
               _ -> when logDebugInfo (liftIO $ putStrLn "HsAppType not present. Should never be the case as we already filtered.") >> pure Nothing
-          else pure Nothing
+          else do
+            case (unLoc fieldArg) of
+              (HsWrap _ _ (HsPar _ (L _ (HsWrap _ wp (HsAppType _ _ fldName))))) -> liftIO $ do
+                showOutputable fldName
+                showOutputable wp
+                case wp of
+                  (WpCompose (WpEvApp (EvExpr fst)) snd) -> do
+                    showOutputable fst
+                    case snd of
+                      (WpCompose (WpTyApp fst1) (WpTyApp snd1)) -> do
+                        showOutputable fst1
+                        showOutputable snd1
+                      _ -> pure ()
+                  _ -> pure ()
+                pure Nothing
+              _ -> pure Nothing
       Lens -> do
         let opApps = filter isLensOpApp (fieldArg ^? biplateRef :: [HsExpr GhcTc])
         case opApps of
@@ -254,6 +277,18 @@ validateRule rule fnName args expr = case rule of
                                     ty             -> showS ty
                     in pure $ Just (fldName, take (length tblName' - 1) tblName')
                   else pure Nothing
+              (SectionR _ _ (L _ lens)) -> do
+                let tys = lens ^? biplateRef :: [Type]
+                    typeForTableName = filter (\typ -> case typ of 
+                                                        (TyConApp typ1 [typ2]) -> ("T" `isSuffixOf` showS typ1) && (showS typ2 == "Columnar' f")
+                                                        (AppTy typ1 typ2) -> ("T" `isSuffixOf` showS typ1) && (showS typ2 == "Columnar' f")
+                                                        _ -> False
+                                                ) tys
+                let tblName' = case head typeForTableName of
+                                    AppTy ty1 _    -> showS ty1
+                                    TyConApp ty1 _ -> showS ty1
+                                    ty             -> showS ty
+                pure $ Just (tail $ showS lens, take (length tblName' - 1) tblName')
               _ -> when logDebugInfo (liftIO $ putStrLn "OpApp not present. Should never be the case as we already filtered.") >> pure Nothing
     
     when logDebugInfo $ liftIO $ putStrLn $ "DBRule - " <> show mbColNameAndTableName
@@ -277,7 +312,7 @@ validateRule rule fnName args expr = case rule of
             argTypes = (map showS $ getArgTypeWrapper arg)
             argTypeBlocked = fromMaybe "NA" $ (`elem` types_blocked_in_arg rule) `find` argTypes
             isArgTypeToCheck = (`elem` types_to_check_in_arg rule) `any` argTypes 
-        
+
         when (logDebugInfo && fnName /= "NA") $
           liftIO $ do
             print $ (fnName, map showS args)
@@ -314,7 +349,7 @@ getDBFieldSpecType :: LHsExpr GhcTc -> DBFieldSpecType
 getDBFieldSpecType (L _ expr)
   | isPrefixOf "$sel" (showS expr) = Selector
   | isInfixOf "^." (showS expr) = Lens
-  | (\x -> isInfixOf "->" x && isInfixOf "@" x) (showS expr) = RecordDot
+  | (\x -> isInfixOf "@" x) (showS expr) = RecordDot
   | otherwise = None
 
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
@@ -345,6 +380,7 @@ isFunApp _ = False
 -- Check if HsExpr is Lens operator application
 isLensOpApp :: HsExpr GhcTc -> Bool
 isLensOpApp (OpApp _ _ op _) = showS op == "(^.)"
+isLensOpApp (SectionR _ op _) = showS op == "(^.)"
 isLensOpApp _ = False
 
 -- If the type is literal type, get the string name of the literal, else return the showS verison of the type
@@ -358,7 +394,7 @@ isFunVar = isFunTy . dropForAlls . idType
 
 -- Pretty print the Internal Representations
 showOutputable :: (MonadIO m, Outputable a) => a -> m ()
-showOutputable = liftIO . putStr . showSDocUnsafe . ppr
+showOutputable = liftIO . putStrLn . showSDocUnsafe . ppr
 
 -- Create GHC compilation error from CompileError
 mkGhcCompileError :: CompileError -> (SrcSpan, OP.SDoc)
