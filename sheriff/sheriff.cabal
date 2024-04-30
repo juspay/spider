@@ -56,6 +56,7 @@ library
                 , aeson
                 , directory
                 , extra
+                , yaml
                 , aeson-pretty
     hs-source-dirs:   src
     default-language: Haskell2010
@@ -83,15 +84,10 @@ test-suite sheriff-test
 
     if flag(Dev)
         ghc-options: 
-            -- Plugin options order: throwCompilationError (Bool == true/false), saveToFile (Bool == true/false), filePath (string)
+            -- Plugin options order: {"throwCompilationError":true,"saveToFile":true,"savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/tmp"}
             -fplugin=Sheriff.Plugin 
-            -fplugin-opt=Sheriff.Plugin:false
-            -fplugin-opt=Sheriff.Plugin:true
-            -fplugin-opt=Sheriff.Plugin:.juspay/tmp/sheriff/
+            -fplugin-opt=Sheriff.Plugin:{"throwCompilationError":true,"saveToFile":true,"savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/indexedKeys.yaml","failOnFileNotFound":true}
             -dumpdir=.juspay/tmp/sheriff/ -ddump-to-file -ddump-parsed-ast -ddump-tc-ast
     else
         ghc-options: 
             -fplugin=Sheriff.Plugin
-            -fplugin-opt=Sheriff.Plugin:true
-            -fplugin-opt=Sheriff.Plugin:false
-            -fplugin-opt=Sheriff.Plugin:.juspay/tmp/sheriff/
