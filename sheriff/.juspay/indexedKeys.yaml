@@ -1,10 +1,10 @@
 tables:
   - name: MerchantKey
     indexedKeys:
-      - status
-      - partitionKey
+      - [status]
+      - [partitionKey]
       
   - name: TxnRiskCheck
     indexedKeys:
-      - status
-      - partitionKey
+      - [status]
+      - [partitionKey]

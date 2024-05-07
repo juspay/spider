@@ -4,8 +4,9 @@ module Sheriff.Plugin (plugin) where
 
 import Bag (bagToList,listToBag)
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Reference (biplateRef, (^?))
-import Data.Generics.Uniplate.Data ()
+import Data.Data
+import Control.Reference (biplateRef, (^?), Simple, Traversal)
+import Data.Generics.Uniplate.Data (universeBi, childrenBi, contextsBi, holesBi, children)
 import Data.List (nub)
 import Debug.Trace (traceShowId)
 import Data.Yaml
@@ -99,6 +100,9 @@ plugin = defaultPlugin {
 logDebugInfo :: Bool
 logDebugInfo = False
 
+logWarnInfo :: Bool
+logWarnInfo = True
+
 purePlugin :: [CommandLineOption] -> IO PluginRecompile
 purePlugin _ = return NoForceRecompile
 
@@ -117,6 +121,7 @@ logerr opts modSummary tcEnv = do
       savePathV = savePath pluginOpts
       indexedKeysPathV = indexedKeysPath pluginOpts
       failOnFileNotFoundV = failOnFileNotFound pluginOpts 
+      matchAllInsideAndV = matchAllInsideAnd pluginOpts
 
   -- parse the yaml file from the path given
   parsedYaml <- liftIO $ parseYAMLFile indexedKeysPathV
@@ -183,16 +188,38 @@ getBadFnCalls rules (FunBind _ id matches _ _) = do
       let whereBinds = (grhssLocalBinds $ m_grhss match) ^? biplateRef :: [LHsBinds GhcTc]
           normalBinds = (grhssGRHSs $ m_grhss match) ^? biplateRef :: [LHsBinds GhcTc]
           argBinds = m_pats match
-          exprs = match ^? biplateRef :: [LHsExpr GhcTc]
+          -- exprs = match ^? biplateRef :: [LHsExpr GhcTc]
+          -- use childrenBi and then repeated children usage as per use case
+          exprs = traverseConditionalUni (noWhereClauseExpansion) (childrenBi match :: [LHsExpr GhcTc])
       concat <$> mapM (isBadFunApp rules) exprs
 getBadFnCalls _ _ = pure []
+
+-- Takes a predicate which return true if further expansion is not required, false otherwise
+traverseConditionalUni :: (Data a) => (a -> Bool) -> [a] -> [a]
+traverseConditionalUni _ [] = []
+traverseConditionalUni p (x : xs) = 
+  if p x 
+    then x : traverseConditionalUni p xs
+    else (x : traverseConditionalUni p (children x)) <> traverseConditionalUni p xs
+
+noGivenFunctionCallExpansion :: String -> LHsExpr GhcTc -> Bool
+noGivenFunctionCallExpansion fnName expr = case expr of
+  (L loc (HsWrap _ _ expr)) -> noWhereClauseExpansion (L loc expr)
+  _ -> case getFnNameWithAllArgs expr of
+        Just (lVar, _) -> (getOccString . varName . unLoc $ lVar) == fnName
+        Nothing -> False
+
+noWhereClauseExpansion :: LHsExpr GhcTc -> Bool
+noWhereClauseExpansion expr = case expr of
+  (L loc (HsWrap _ _ expr)) -> noWhereClauseExpansion (L loc expr)
+  (L _ (ExplicitList (TyConApp ty _) _ _)) -> showS ty == "Clause"
+  _ -> False
 
 isBadFunApp :: Rules -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
 isBadFunApp rules ap@(L _ (HsVar _ v)) = isBadFunAppHelper rules ap
 isBadFunApp rules ap@(L _ (HsApp _ funl funr)) = isBadFunAppHelper rules ap
 isBadFunApp rules ap@(L loc (HsWrap _ _ expr)) = isBadFunApp rules (L loc expr)
--- **** Not adding these because of biplateRef ****
--- isBadFunApp ap@(L _ (HsPar _ expr)) = isBadFunApp expr
+isBadFunApp rules ap@(L _ (ExplicitList _ _ _)) = isBadFunAppHelper rules ap
 isBadFunApp rules (L _ (OpApp _ lfun op rfun)) = do
   case showS op of
     "($)" -> isBadFunAppHelper rules $ mkHsApp lfun rfun
@@ -200,150 +227,179 @@ isBadFunApp rules (L _ (OpApp _ lfun op rfun)) = do
 isBadFunApp _ _ = pure []
 
 isBadFunAppHelper :: Rules -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
-isBadFunAppHelper rules ap = do
-  let res = getFnNameWithAllArgs ap
-  -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
-  let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
-      applicableRules = filter (\x -> doesRuleApply x fnName args) rules
-  catMaybes <$> mapM (\rule -> validateRule rule fnName args ap) applicableRules
+isBadFunAppHelper rules ap = catMaybes <$> mapM (\rule -> checkAndApplyRule rule ap) rules
 
-validateRule :: Rule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
-validateRule rule fnName args expr = case rule of
-  DBRule ruleName ruleTableName ruleColNames -> if length args < 0 then pure Nothing else do
-    let fieldArg = head args
-        fieldSpecType = getDBFieldSpecType fieldArg
-    mbColNameAndTableName <- case fieldSpecType of
-      None     -> when logDebugInfo (liftIO $ print "Can't identify the way in which DB field is specified") >> pure Nothing
-      Selector -> do
-        case (splitOn ":" . showS $ head args) of
-          ("$sel" : colName : tableName : []) -> pure $ Just (colName, tableName)
-          _ -> when logDebugInfo (liftIO $ print "Invalid pattern for Selector way") >> pure Nothing
-      RecordDot -> do
-        let tyApps = filter (\x -> case x of 
-                                    (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> True
-                                    (HsWrap _ (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> True
-                                    _ -> False
-                            ) $ (fieldArg ^? biplateRef :: [HsExpr GhcTc])
-        if length tyApps > 0 
-          then 
-            case head tyApps of
-              (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> do
-                let tys = getArgTypeWrapper tableVar
-                if length tys >= 1
-                  then 
-                    let tblName' = case head tys of
-                                    AppTy ty1 _    -> showS ty1
-                                    TyConApp ty1 _ -> showS ty1
-                                    ty             -> showS ty
-                    in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
-                  else pure Nothing
-              (HsWrap _ (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) ->
-                let tblName' = case tableType of
-                                    AppTy ty1 _    -> showS ty1
-                                    TyConApp ty1 _ -> showS ty1
-                                    ty             -> showS ty
-                in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
-              _ -> when logDebugInfo (liftIO $ putStrLn "HsAppType not present. Should never be the case as we already filtered.") >> pure Nothing
-          else do
-            case (unLoc fieldArg) of
-              (HsWrap _ _ (HsPar _ (L _ (HsWrap _ wp (HsAppType _ _ fldName))))) -> liftIO $ do
-                showOutputable fldName
-                showOutputable wp
-                case wp of
-                  (WpCompose (WpEvApp (EvExpr fst)) snd) -> do
-                    showOutputable fst
-                    case snd of
-                      (WpCompose (WpTyApp fst1) (WpTyApp snd1)) -> do
-                        showOutputable fst1
-                        showOutputable snd1
-                      _ -> pure ()
-                  _ -> pure ()
-                pure Nothing
-              _ -> pure Nothing
-      Lens -> do
-        let opApps = filter isLensOpApp (fieldArg ^? biplateRef :: [HsExpr GhcTc])
-        case opApps of
-          [] -> when logDebugInfo (liftIO $ putStrLn "No lens operator application present in lens case.") >> pure Nothing
-          (opExpr : _) -> do
-            case opExpr of
-              (OpApp _ tableVar _ fldVar) -> do
-                let fldName = tail $ showS fldVar
-                    tys = getArgTypeWrapper tableVar
-                if length tys >= 1
-                  then 
-                    let tblName' = case head tys of
-                                    AppTy ty1 _    -> showS ty1
-                                    TyConApp ty1 _ -> showS ty1
-                                    ty             -> showS ty
-                    in pure $ Just (fldName, take (length tblName' - 1) tblName')
-                  else pure Nothing
-              (SectionR _ _ (L _ lens)) -> do
-                let tys = lens ^? biplateRef :: [Type]
-                    typeForTableName = filter (\typ -> case typ of 
-                                                        (TyConApp typ1 [typ2]) -> ("T" `isSuffixOf` showS typ1) && (showS typ2 == "Columnar' f")
-                                                        (AppTy typ1 typ2) -> ("T" `isSuffixOf` showS typ1) && (showS typ2 == "Columnar' f")
-                                                        _ -> False
-                                                ) tys
-                let tblName' = case head typeForTableName of
-                                    AppTy ty1 _    -> showS ty1
-                                    TyConApp ty1 _ -> showS ty1
-                                    ty             -> showS ty
-                pure $ Just (tail $ showS lens, take (length tblName' - 1) tblName')
-              _ -> when logDebugInfo (liftIO $ putStrLn "OpApp not present. Should never be the case as we already filtered.") >> pure Nothing
-    
-    when logDebugInfo $ liftIO $ putStrLn $ "DBRule - " <> show mbColNameAndTableName
-
-    case mbColNameAndTableName of
-      Nothing -> pure Nothing
-      Just (colName, tableName) -> 
-        if tableName == ruleTableName && colName `notElem` ruleColNames
-          then pure $ Just (expr, NonIndexedDBColumn colName tableName rule)
-          else pure Nothing
-
-  FunctionRule {} -> do
-    if (arg_no rule) == 0 -- considering arg 0 as the case for blocking the whole function occurence
-      then pure $ Just (expr, FnUseBlocked rule)
+validateFunctionRule :: FunctionRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
+validateFunctionRule rule fnName args expr = do
+  if (arg_no rule) == 0 -- considering arg 0 as the case for blocking the whole function occurence
+    then pure $ Just (expr, FnUseBlocked rule)
+  else do
+    let matches = drop ((arg_no rule) - 1) args
+    if length matches == 0
+      then pure Nothing
     else do
-      let matches = drop ((arg_no rule) - 1) args
-      if length matches == 0
+      let arg = head matches
+          argTypes = (map showS $ getArgTypeWrapper arg)
+          argTypeBlocked = fromMaybe "NA" $ (`elem` types_blocked_in_arg rule) `find` argTypes
+          isArgTypeToCheck = (`elem` types_to_check_in_arg rule) `any` argTypes 
+
+      when (logDebugInfo && fnName /= "NA") $
+        liftIO $ do
+          print $ (fnName, map showS args)
+          print $ (fnName, showS arg)
+          print $ rule
+          putStr "Arg Types = "
+          let vars = filter (not . isSystemName . varName) $ arg ^? biplateRef
+              tys = map (showS . idType) vars
+          print $ map showS vars
+          print $ tys
+          print $ argTypes
+
+      if argTypeBlocked /= "NA"
+        then pure $ Just (expr, ArgTypeBlocked argTypeBlocked rule)
+      else if not isArgTypeToCheck
         then pure Nothing
       else do
-        let arg = head matches
-            argTypes = (map showS $ getArgTypeWrapper arg)
-            argTypeBlocked = fromMaybe "NA" $ (`elem` types_blocked_in_arg rule) `find` argTypes
-            isArgTypeToCheck = (`elem` types_to_check_in_arg rule) `any` argTypes 
+        -- It's a rule function with to_be_checked type argument
+        -- stringificationFns1 <- getStringificationFns arg -- check if the expression has any stringification function
+        let blockedFnsList = getBlockedFnsList arg rule -- check if the expression has any stringification function
+            vars = filter (not . isSystemName . varName) $ arg ^? biplateRef
+            tys = map (map showS . (getReturnType . dropForAlls . idType)) vars
+        if length blockedFnsList > 0
+          then do
+            pure $ Just (expr, FnBlockedInArg (head blockedFnsList) rule)
+          else pure Nothing
 
-        when (logDebugInfo && fnName /= "NA") $
-          liftIO $ do
-            print $ (fnName, map showS args)
-            print $ (fnName, showS arg)
-            print $ rule
-            putStr "Arg Types = "
-            let vars = filter (not . isSystemName . varName) $ arg ^? biplateRef
-                tys = map (showS . idType) vars
-            print $ map showS vars
-            print $ tys
-            print $ argTypes
+validateDBRule :: DBRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
+validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames) tableName clauses expr = do
+  -- let checkerFn = if True then all else any -- TODO: Make it user input based decision
+  processClauses clauses rule
 
-        if argTypeBlocked /= "NA"
-          then pure $ Just (expr, ArgTypeBlocked argTypeBlocked rule)
-        else if not isArgTypeToCheck
-          then pure Nothing
-        else do
-          -- It's a rule function with to_be_checked type argument
-          -- stringificationFns1 <- getStringificationFns arg -- check if the expression has any stringification function
-          let blockedFnsList = getBlockedFnsList arg rule -- check if the expression has any stringification function
-              vars = filter (not . isSystemName . varName) $ arg ^? biplateRef
-              tys = map (map showS . (getReturnType . dropForAlls . idType)) vars
-          if length blockedFnsList > 0
-            then do
-              pure $ Just (expr, FnBlockedInArg (head blockedFnsList) rule)
-            else pure Nothing
+processClauses :: [LHsExpr GhcTc] -> DBRule -> TcM (Maybe (LHsExpr GhcTc, Violation))
+processClauses [] _               = pure Nothing
+processClauses (clause : ls) rule = do
+  let res = getFnNameWithAllArgs clause
+      (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
+  case (fnName, args) of
+    ("And", [(L _ (ExplicitList _ _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("Or", [(L _ (ExplicitList _ _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("$WIs", [arg1, arg2])                  -> processIsClause arg1 arg2 clause rule >>= (maybe (processClauses ls rule) (pure . Just))
+    _      -> when logWarnInfo (liftIO $ print "Invalid clause in `where` clause") >> processClauses ls rule
 
-doesRuleApply :: Rule -> String -> [LHsExpr GhcTc] -> Bool
-doesRuleApply rule fnName args = case rule of
-  DBRule _ _ _                           -> fnName == "$WIs" && length args == 2
-  FunctionRule _ ruleFnName arg_no _ _ _ -> fnName == ruleFnName && length args >= arg_no
+processAndClause :: [LHsExpr GhcTc] -> DBRule -> TcM (Maybe (LHsExpr GhcTc, Violation))
+processAndClause [] _               = pure Nothing
+processAndClause (clause : ls) rule = do
+  let res = getFnNameWithAllArgs clause
+      (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
+  case (fnName, args) of
+    ("And", [(L _ (ExplicitList _ _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("Or", [(L _ (ExplicitList _ _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("$WIs", [arg1, arg2])                  -> processIsClause arg1 arg2 clause rule >>= (maybe (processClauses ls rule) (pure . Just))
+    _      -> when logWarnInfo (liftIO $ print "Invalid clause in `And` clause") >> processClauses ls rule
+
+processOrClause :: [LHsExpr GhcTc] -> DBRule -> TcM (Maybe (LHsExpr GhcTc, Violation))
+processOrClause [] _               = pure Nothing
+processOrClause (clause : ls) rule = do
+  let res = getFnNameWithAllArgs clause
+      (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
+  case (fnName, args) of
+    ("And", [(L _ (ExplicitList _ _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("Or", [(L _ (ExplicitList _ _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("$WIs", [arg1, arg2])                  -> processIsClause arg1 arg2 clause rule >>= (maybe (processClauses ls rule) (pure . Just))
+    _      -> when logWarnInfo (liftIO $ print "Invalid clause in `Or` clause") >> processClauses ls rule
+
+processIsClause :: LHsExpr GhcTc -> LHsExpr GhcTc -> LHsExpr GhcTc -> DBRule -> TcM (Maybe (LHsExpr GhcTc, Violation))
+processIsClause fieldArg _ clause rule@(DBRule ruleName ruleTableName ruleColNamesComposite) = do
+  let fieldSpecType = getDBFieldSpecType fieldArg
+      ruleColNames = map head ruleColNamesComposite -- Unsafe, keeping it so that we need to change the yaml file
+  mbColNameAndTableName <- case fieldSpecType of
+    None     -> when logWarnInfo (liftIO $ print "Can't identify the way in which DB field is specified") >> pure Nothing
+    Selector -> do
+      case (splitOn ":" $ showS fieldArg) of
+        ("$sel" : colName : tableName : []) -> pure $ Just (colName, tableName)
+        _ -> when logWarnInfo (liftIO $ print "Invalid pattern for Selector way") >> pure Nothing
+    RecordDot -> do
+      let tyApps = filter (\x -> case x of 
+                                  (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> True
+                                  (HsWrap _ (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> True
+                                  _ -> False
+                          ) $ (fieldArg ^? biplateRef :: [HsExpr GhcTc])
+      if length tyApps > 0 
+        then 
+          case head tyApps of
+            (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> do
+              let tys = getArgTypeWrapper tableVar
+              if length tys >= 1
+                then 
+                  let tblName' = case head tys of
+                                  AppTy ty1 _    -> showS ty1
+                                  TyConApp ty1 _ -> showS ty1
+                                  ty             -> showS ty
+                  in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
+                else pure Nothing
+            (HsWrap _ (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) ->
+              let tblName' = case tableType of
+                                  AppTy ty1 _    -> showS ty1
+                                  TyConApp ty1 _ -> showS ty1
+                                  ty             -> showS ty
+              in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
+            _ -> when logWarnInfo (liftIO $ putStrLn "HsAppType not present. Should never be the case as we already filtered.") >> pure Nothing
+        else when logWarnInfo (liftIO $ putStrLn "HsAppType not present after filtering. Should never reach as already deduced RecordDot.") >> pure Nothing
+    Lens -> do
+      let opApps = filter isLensOpApp (fieldArg ^? biplateRef :: [HsExpr GhcTc])
+      case opApps of
+        [] -> when logWarnInfo (liftIO $ putStrLn "No lens operator application present in lens case.") >> pure Nothing
+        (opExpr : _) -> do
+          case opExpr of
+            (OpApp _ tableVar _ fldVar) -> do
+              let fldName = tail $ showS fldVar
+                  tys = getArgTypeWrapper tableVar
+              if length tys >= 1
+                then 
+                  let tblName' = case head tys of
+                                  AppTy ty1 _    -> showS ty1
+                                  TyConApp ty1 _ -> showS ty1
+                                  ty             -> showS ty
+                  in pure $ Just (fldName, take (length tblName' - 1) tblName')
+                else pure Nothing
+            (SectionR _ _ (L _ lens)) -> do
+              let tys = lens ^? biplateRef :: [Type]
+                  typeForTableName = filter (\typ -> case typ of 
+                                                      (TyConApp typ1 [typ2]) -> ("T" `isSuffixOf` showS typ1) && (showS typ2 == "Columnar' f")
+                                                      (AppTy typ1 typ2) -> ("T" `isSuffixOf` showS typ1) && (showS typ2 == "Columnar' f")
+                                                      _ -> False
+                                              ) tys
+              let tblName' = case head typeForTableName of
+                                  AppTy ty1 _    -> showS ty1
+                                  TyConApp ty1 _ -> showS ty1
+                                  ty             -> showS ty
+              pure $ Just (tail $ showS lens, take (length tblName' - 1) tblName')
+            _ -> when logWarnInfo (liftIO $ putStrLn "OpApp not present. Should never be the case as we already filtered.") >> pure Nothing
+  
+  when logDebugInfo $ liftIO $ putStrLn $ "DBRule - " <> show mbColNameAndTableName
+
+  case mbColNameAndTableName of
+    Nothing -> pure Nothing
+    Just (colName, tableName) -> 
+      if tableName == ruleTableName && colName `notElem` ruleColNames
+        then pure $ Just (clause, NonIndexedDBColumn colName tableName rule)
+        else pure Nothing
+
+checkAndApplyRule :: Rule -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
+checkAndApplyRule ruleT ap = case ruleT of
+  DBRuleT rule@(DBRule _ ruleTableName _) -> 
+    case ap of
+      (L _ (ExplicitList (TyConApp ty [_, tblName]) _ exprs)) -> case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
+        True  -> validateDBRule rule (showS tblName) exprs ap 
+        False -> pure Nothing
+      _ -> pure Nothing
+  FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _) -> do
+    let res = getFnNameWithAllArgs ap
+    -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
+        (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
+    case (fnName == ruleFnName && length args >= arg_no) of
+      True  -> validateFunctionRule rule fnName args ap 
+      False -> pure Nothing 
 
 getDBFieldSpecType :: LHsExpr GhcTc -> DBFieldSpecType
 getDBFieldSpecType (L _ expr)
@@ -507,14 +563,14 @@ getStringificationFns _ = do
   pure []
 
 -- Get List of stringification functions used inside a HsExpr; Uses `stringifierFns` 
-getStringificationFns2 :: LHsExpr GhcTc -> Rule -> [String] 
+getStringificationFns2 :: LHsExpr GhcTc -> FunctionRule -> [String] 
 getStringificationFns2 arg rule =
   let vars = arg ^? biplateRef :: [Var]
       blockedFns = fns_blocked_in_arg rule
   in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns)) $ takeWhile isFunVar $ filter (not . isSystemName . varName) vars
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
-getBlockedFnsList :: LHsExpr GhcTc -> Rule -> [String] 
+getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> [String] 
 getBlockedFnsList arg rule =
   let vars = arg ^? biplateRef :: [Var]
       blockedFns = fns_blocked_in_arg rule
