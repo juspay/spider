@@ -10,11 +10,20 @@ data PluginOpts = PluginOpts {
     throwCompilationError :: Bool,
     failOnFileNotFound :: Bool,
     savePath :: String,
-    indexedKeysPath :: String
+    indexedKeysPath :: String,
+    matchAllInsideAnd :: Bool
   } deriving (Show, Eq)
 
 defaultPluginOpts :: PluginOpts
-defaultPluginOpts = PluginOpts { saveToFile = False, throwCompilationError = True, failOnFileNotFound = True, savePath = ".juspay/tmp/sheriff/", indexedKeysPath = ".juspay/indexedKeys.yaml" }
+defaultPluginOpts = 
+  PluginOpts { 
+    saveToFile = False, 
+    throwCompilationError = True, 
+    failOnFileNotFound = True, 
+    matchAllInsideAnd = False,
+    savePath = ".juspay/tmp/sheriff/", 
+    indexedKeysPath = ".juspay/indexedKeys.yaml" 
+  }
 
 instance FromJSON PluginOpts where
   parseJSON = withObject "PluginOpts" $ \o -> do
@@ -23,7 +32,8 @@ instance FromJSON PluginOpts where
     throwCompilationError <- o .:? "throwCompilationError" .!= (throwCompilationError defaultPluginOpts)
     savePath <- o .:? "savePath" .!= (savePath defaultPluginOpts)
     indexedKeysPath <- o .:? "indexedKeysPath" .!= (indexedKeysPath defaultPluginOpts)
-    return PluginOpts { saveToFile = saveToFile, throwCompilationError = throwCompilationError, savePath = savePath, indexedKeysPath = indexedKeysPath, failOnFileNotFound = failOnFileNotFound }
+    matchAllInsideAnd <- o .:? "matchAllInsideAnd" .!= (matchAllInsideAnd defaultPluginOpts)
+    return PluginOpts { saveToFile = saveToFile, throwCompilationError = throwCompilationError, matchAllInsideAnd = matchAllInsideAnd, savePath = savePath, indexedKeysPath = indexedKeysPath, failOnFileNotFound = failOnFileNotFound }
 
 
 data YamlTables = YamlTables
@@ -37,7 +47,7 @@ instance FromJSON YamlTables where
 
 data YamlTable = YamlTable
   { tableName :: String
-  , indexedKeys :: [String]
+  , indexedKeys :: [[String]]
   } deriving (Show, Eq)
 
 instance FromJSON YamlTable where
@@ -62,7 +72,7 @@ instance ToJSON CompileError where
            , "error_message"  .= errMsg
            , "src_span"       .= show srcLoc
            , "violation_type" .= getViolationType _vlt
-           , "violated_rule"  .= rule_name (getRule _vlt)
+           , "violated_rule"  .= getRuleName _vlt
            ]
 
 type Rules = [Rule]
@@ -71,22 +81,30 @@ type FnsBlockedInArg = [String]
 type TypesBlockedInArg = [String]
 type TypesToCheckInArg = [String]
 
-data Rule = 
-    FunctionRule
+data FunctionRule = 
+  FunctionRule
     {
-      rule_name             :: String,
+      fn_rule_name          :: String,
       fn_name               :: String,
       arg_no                :: ArgNo,
       fns_blocked_in_arg    :: FnsBlockedInArg,
       types_blocked_in_arg  :: TypesBlockedInArg,
       types_to_check_in_arg :: TypesToCheckInArg
     }
-  | DBRule 
+  deriving (Show, Eq)  
+
+data DBRule =
+  DBRule 
     {
-      rule_name          :: String,
+      db_rule_name       :: String,
       table_name         :: String,
-      indexed_cols_names :: [String]
-    } 
+      indexed_cols_names :: [[String]]
+    }
+  deriving (Show, Eq)  
+
+data Rule = 
+    DBRuleT DBRule
+  | FunctionRuleT FunctionRule
   deriving (Show, Eq)  
 
 data LocalVar = FnArg Var | FnWhere Var | FnLocal Var
@@ -105,10 +123,10 @@ data DBFieldSpecType =
   deriving (Show, Eq)
 
 data Violation = 
-    ArgTypeBlocked String Rule
-  | FnBlockedInArg String Rule
-  | NonIndexedDBColumn String String Rule
-  | FnUseBlocked Rule
+    ArgTypeBlocked String FunctionRule
+  | FnBlockedInArg String FunctionRule
+  | NonIndexedDBColumn String String DBRule
+  | FnUseBlocked FunctionRule
   | NoViolation
   deriving (Eq)
 
@@ -127,22 +145,22 @@ getViolationType v = case v of
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
   NoViolation -> "NoViolation"
 
-getRule :: Violation -> Rule
-getRule v = case v of
-  ArgTypeBlocked _ r -> r
-  FnBlockedInArg _ r -> r
-  FnUseBlocked r -> r
-  NonIndexedDBColumn _ _ r -> r
-  NoViolation -> defaultRule
+getRuleName :: Violation -> String
+getRuleName v = case v of
+  ArgTypeBlocked _ r -> fn_rule_name r
+  FnBlockedInArg _ r -> fn_rule_name r
+  FnUseBlocked r -> fn_rule_name r
+  NonIndexedDBColumn _ _ r -> db_rule_name r
+  NoViolation -> "NA"
 
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
 
 defaultRule :: Rule
-defaultRule = FunctionRule "NA" "NA" (-1) [] [] []
+defaultRule = FunctionRuleT $ FunctionRule "NA" "NA" (-1) [] [] []
 
 emptyLoggingError :: CompileError
 emptyLoggingError = CompileError "" "" "$NA$" noSrcSpan NoViolation
 
 yamlToDbRule :: YamlTable -> Rule
-yamlToDbRule table = DBRule "NonIndexedDBRule" (tableName table) (indexedKeys table)
+yamlToDbRule table = DBRuleT $ DBRule "NonIndexedDBRule" (tableName table) (indexedKeys table)
