@@ -309,9 +309,8 @@ processOrClause (clause : ls) rule = do
     _      -> when logWarnInfo (liftIO $ print "Invalid clause in `Or` clause") >> processClauses ls rule
 
 processIsClause :: LHsExpr GhcTc -> LHsExpr GhcTc -> LHsExpr GhcTc -> DBRule -> TcM (Maybe (LHsExpr GhcTc, Violation))
-processIsClause fieldArg _ clause rule@(DBRule ruleName ruleTableName ruleColNamesComposite) = do
+processIsClause fieldArg _ clause rule@(DBRule ruleName ruleTableName ruleKeysNames) = do
   let fieldSpecType = getDBFieldSpecType fieldArg
-      ruleColNames = map head ruleColNamesComposite -- Unsafe, keeping it so that we need to change the yaml file
   mbColNameAndTableName <- case fieldSpecType of
     None     -> when logWarnInfo (liftIO $ print "Can't identify the way in which DB field is specified") >> pure Nothing
     Selector -> do
@@ -381,9 +380,16 @@ processIsClause fieldArg _ clause rule@(DBRule ruleName ruleTableName ruleColNam
   case mbColNameAndTableName of
     Nothing -> pure Nothing
     Just (colName, tableName) -> 
-      if tableName == ruleTableName && colName `notElem` ruleColNames
+      if tableName == ruleTableName && not (doesMatchColNameInDbRule colName ruleKeysNames)
         then pure $ Just (clause, NonIndexedDBColumn colName tableName rule)
         else pure Nothing
+
+doesMatchColNameInDbRule :: String -> [YamlTableKeys] -> Bool
+doesMatchColNameInDbRule _ [] = False
+doesMatchColNameInDbRule colName (key : keys) = 
+  case key of
+    (CompositeKey (col:_))  -> (colName == col) || (doesMatchColNameInDbRule colName keys)
+    (NonCompositeKey col) -> (colName == col) || (doesMatchColNameInDbRule colName keys)
 
 checkAndApplyRule :: Rule -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
 checkAndApplyRule ruleT ap = case ruleT of

@@ -55,10 +55,10 @@ noUseRule :: Rule
 noUseRule = FunctionRuleT $ FunctionRule "NoDecodeUtf8Rule" "$text-1.2.4.1$Data.Text.Encoding$decodeUtf8" 0 [] [] []
 
 dbRule :: Rule
-dbRule = DBRuleT $ DBRule "NonIndexedDBRule" "TxnRiskCheck" [["partitionKey"]]
+dbRule = DBRuleT $ DBRule "NonIndexedDBRule" "TxnRiskCheck" [NonCompositeKey "partitionKey"]
 
 dbRuleCustomer :: Rule
-dbRuleCustomer = DBRuleT $ DBRule "NonIndexedDBRule" "MerchantKey" [["status"]]
+dbRuleCustomer = DBRuleT $ DBRule "NonIndexedDBRule" "MerchantKey" [NonCompositeKey "status"]
 
 stringifierFns :: FnsBlockedInArg
 stringifierFns = ["show", "encode", "encodeJSON"]

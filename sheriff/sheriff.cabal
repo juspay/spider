@@ -57,6 +57,7 @@ library
                 , directory
                 , extra
                 , yaml
+                , text
                 , aeson-pretty
     hs-source-dirs:   src
     default-language: Haskell2010
