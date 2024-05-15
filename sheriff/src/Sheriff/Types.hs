@@ -4,6 +4,8 @@ import Data.Aeson
 import SrcLoc 
 import Var
 import Outputable as OP hiding ((<>))
+import Control.Applicative ((<|>))
+import Data.Text (unpack)
 
 data PluginOpts = PluginOpts {
     saveToFile :: Bool,
@@ -47,7 +49,7 @@ instance FromJSON YamlTables where
 
 data YamlTable = YamlTable
   { tableName :: String
-  , indexedKeys :: [[String]]
+  , indexedKeys :: [YamlTableKeys]
   } deriving (Show, Eq)
 
 instance FromJSON YamlTable where
@@ -55,6 +57,18 @@ instance FromJSON YamlTable where
     name <- o .: "name"
     keys <- o .: "indexedKeys"
     return YamlTable { tableName = name, indexedKeys = keys }
+
+data YamlTableKeys = NonCompositeKey String | CompositeKey { cols :: [String] }
+  deriving (Show, Eq)
+
+instance FromJSON YamlTableKeys where
+  parseJSON str = composite str <|> nonComposite str
+    where 
+      composite = withObject "YamlTableKeys" $ \o -> do
+                    keys <- o .: "and"
+                    return (CompositeKey { cols = keys })
+      
+      nonComposite = withText "YamlTableKeys" $ \s -> return (NonCompositeKey (unpack s))
 
 data CompileError = CompileError
   {
@@ -98,7 +112,7 @@ data DBRule =
     {
       db_rule_name       :: String,
       table_name         :: String,
-      indexed_cols_names :: [[String]]
+      indexed_cols_names :: [YamlTableKeys]
     }
   deriving (Show, Eq)  
 

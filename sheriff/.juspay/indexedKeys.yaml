@@ -1,10 +1,23 @@
 tables:
   - name: MerchantKey
     indexedKeys:
-      - [status]
-      - [partitionKey]
+      - status
+      - partitionKey
       
   - name: TxnRiskCheck
     indexedKeys:
-      - [status]
-      - [partitionKey]
+      - status
+      - partitionKey
+      
+  - name: Token
+    indexedKeys: 
+      - provisionedTokenId
+      - tokenReferenceId
+      - and:
+        - tokenReferenceId
+        - lockerTokenRequestorId
+      - and:
+        - tokenReferenceId
+        - lockerTokenRequestorId
+        - lockerCustomerId
+      - id
