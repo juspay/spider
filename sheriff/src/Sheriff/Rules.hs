@@ -15,6 +15,12 @@ badPracticeRules = [
   , logRule7
   , logRule8
   , logRule9
+  , logRule10
+  , logRule11
+  , logRule12
+  , logRule13
+  , logRule14
+  , logRule15
   , showRule
   ]
 
@@ -47,6 +53,24 @@ logRule8 = FunctionRuleT $ FunctionRule "LogRule" "logDebugV" logArgNo stringifi
 
 logRule9 :: Rule
 logRule9 = FunctionRuleT $ FunctionRule "LogRule" "logDebug" logArgNo stringifierFns [] textTypesToCheck
+
+logRule10 :: Rule
+logRule10 = FunctionRuleT $ FunctionRule "LogRule" "logErrorWithCategory" logArgNo stringifierFns [] textTypesToCheck
+
+logRule11 :: Rule
+logRule11 = FunctionRuleT $ FunctionRule "LogRule" "logErrorWithCategoryV" logArgNo stringifierFns [] textTypesToCheck
+
+logRule12 :: Rule
+logRule12 = FunctionRuleT $ FunctionRule "LogRule" "forkErrorLog" logArgNo stringifierFns [] textTypesToCheck
+
+logRule13 :: Rule
+logRule13 = FunctionRuleT $ FunctionRule "LogRule" "forkInfoLog" logArgNo stringifierFns [] textTypesToCheck
+
+logRule14 :: Rule
+logRule14 = FunctionRuleT $ FunctionRule "LogRule" "debugLog" logArgNo stringifierFns [] textTypesToCheck
+
+logRule15 :: Rule
+logRule15 = FunctionRuleT $ FunctionRule "LogRule" "warnLog" logArgNo stringifierFns [] textTypesToCheck
 
 showRule :: Rule
 showRule = FunctionRuleT $ FunctionRule "ShowRule" "show" 1 stringifierFns textTypesBlocked textTypesToCheck

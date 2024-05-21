@@ -21,6 +21,6 @@ Add this to your ghc-options in cabal and mention `sheriff` in build-depends
 ```
 Also, we can provide flags to the plugin in as follows:
 ```
--fplugin-opt=Sheriff.Plugin:{"throwCompilationError":true,"saveToFile":true,"savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/indexedKeys.yaml","failOnFileNotFound":true}
+-fplugin-opt=Sheriff.Plugin:{"throwCompilationError":true,"saveToFile":true,"savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/indexedKeys.yaml","failOnFileNotFound":true,"matchAllInsideAnd":false}
 ```
 By default, it throwsCompilationErrors and doesn't log to file. Also, it fails, if indexedKeys file is not found or is invalid
