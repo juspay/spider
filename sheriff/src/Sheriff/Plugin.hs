@@ -262,8 +262,8 @@ validateFunctionRule rule _opts fnName args expr = do
       else do
         -- It's a rule function with to_be_checked type argument
         -- stringificationFns1 <- getStringificationFns arg -- check if the expression has any stringification function
-        let blockedFnsList = getBlockedFnsList arg rule -- check if the expression has any stringification function
-            vars = filter (not . isSystemName . varName) $ arg ^? biplateRef
+        blockedFnsList <- getBlockedFnsList arg rule -- check if the expression has any stringification function
+        let vars = filter (not . isSystemName . varName) $ arg ^? biplateRef
             tys = map (map showS . (getReturnType . dropForAlls . idType)) vars
         if length blockedFnsList > 0
           then do
@@ -638,25 +638,36 @@ getStringificationFns2 arg rule =
   in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns)) $ takeWhile isFunVar $ filter (not . isSystemName . varName) vars
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
-getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> [(String, String)] 
-getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) =
+getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> TcM [(String, String)] 
+getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
   let argHsExprs = arg ^? biplateRef :: [LHsExpr GhcTc]
       fnApps = filter isFunApp argHsExprs
-  in catMaybes $ fmap checkFnBlockedInArg fnApps 
+  when logDebugInfo $ liftIO $ do
+    print "getBlockedFnsList"
+    showOutputable arg
+    showOutputable fnApps
+  catMaybes <$> mapM checkFnBlockedInArg fnApps 
   --     vars = arg ^? biplateRef :: [Var]
   --     blockedFns = fmap (\(fname, _, _) -> fname) $ fns_blocked_in_arg rule
   -- in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns) && (not . isSystemName . varName) x) vars
   where 
-    checkFnBlockedInArg :: LHsExpr GhcTc -> Maybe (String, String)
-    checkFnBlockedInArg expr = 
-      let res = getFnNameWithAllArgs arg
-      in case res of
-        Nothing -> Nothing
+    checkFnBlockedInArg :: LHsExpr GhcTc -> TcM (Maybe (String, String))
+    checkFnBlockedInArg expr = do
+      let res = getFnNameWithAllArgs expr
+      when logDebugInfo $ liftIO $ do
+        print "checkFnBlockedInArg"
+        showOutputable res
+      case res of
+        Nothing -> pure Nothing
         Just (fnName, args) -> isPresentInBlockedFnList fnsBlocked ((getOccString . varName . unLoc) fnName) args
     
-    isPresentInBlockedFnList :: FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> Maybe (String, String)
-    isPresentInBlockedFnList [] _ _ = Nothing
-    isPresentInBlockedFnList ((ruleFnName, ruleArgNo, ruleAllowedTypes) : ls) fnName fnArgs = 
+    isPresentInBlockedFnList :: FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> TcM (Maybe (String, String))
+    isPresentInBlockedFnList [] _ _ = pure Nothing
+    isPresentInBlockedFnList ((ruleFnName, ruleArgNo, ruleAllowedTypes) : ls) fnName fnArgs = do
+      when logDebugInfo $ liftIO $ do
+        print "isPresentInBlockedFnList"
+        print (ruleFnName, ruleArgNo, ruleAllowedTypes)
+        print (ruleFnName == fnName && length fnArgs >= ruleArgNo)
       case ruleFnName == fnName && length fnArgs >= ruleArgNo of
         False -> isPresentInBlockedFnList ls fnName fnArgs
         True  -> 
@@ -667,7 +678,7 @@ getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) =
             (typ : _) -> 
               if (isEnumType typ && "EnumTypes" `elem` ruleAllowedTypes) || (showS typ) `elem` ruleAllowedTypes
                 then isPresentInBlockedFnList ls fnName fnArgs
-                else Just (fnName, showS typ)
+                else pure $ Just (fnName, showS typ)
     
 addErrToFile :: ModSummary -> String -> [CompileError] -> TcM ()
 addErrToFile modSummary path errs = do
