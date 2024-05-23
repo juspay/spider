@@ -29,6 +29,24 @@ data CC = C1 | C2 Text | C3 Int | C4 Bool
 data SeqIs = SeqIs Text Text
     deriving (Generic, Show, ToJSON, FromJSON)
 
+data EnumT = X | Y | Z
+    deriving (Generic, Show, ToJSON, FromJSON)
+
+data EnumT2 = U EnumT | V
+    deriving (Generic, Show, ToJSON, FromJSON)
+
+data EnumT3 x = M | N
+    deriving (Generic, Show, ToJSON, FromJSON)
+
+en :: EnumT
+en = Y
+
+en2 :: EnumT2
+en2 = V
+
+en3 :: EnumT3 ()
+en3 = M
+
 ob :: SeqIs
 ob = SeqIs "fldName" "fldValue"
 
@@ -70,8 +88,8 @@ encodeJSON = DTE.decodeUtf8 . BSL.toStrict . A.encode
 logErrorV :: (ToJSON a) => a -> IO ()
 logErrorV = print . toJSON
 
-logErrorT :: Text -> IO ()
-logErrorT = print
+logErrorT :: Text -> Text -> IO ()
+logErrorT _ = print
 
 logError :: String -> String -> IO ()
 logError _ = print
@@ -137,6 +155,13 @@ main = do
     print ("HI there" :: String)
     let obAT1 = "Dummy"
     let b = logInfoT "tester" logger
+    logError "tag" $ show obC1
+    logError "tag" $ show en
+    logErrorT "tag" $ encodeJSON en
+    logError "tag" $ show en2
+    logErrorT "tag" $ encodeJSON en2
+    logError "tag" $ show en3
+    logErrorT "tag" $ encodeJSON en3
     logError "tag" $ obAT1 <> show Test1.obAT1
     fn $ logError "tag2" $ show obA
   where

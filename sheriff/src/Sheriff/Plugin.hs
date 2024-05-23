@@ -41,8 +41,8 @@ import GHC
     noLoc, Module (moduleName), moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass
   )
 import GHC.Hs.Binds
-import GhcPlugins (idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType)
-import HscTypes (ModSummary (..))
+import GhcPlugins (idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, isEnumerationTyCon)
+import HscTypes (ModSummary (..), hscEPS, eps_PTE)
 import Name (nameStableString)
 import Plugins (CommandLineOption, Plugin (typeCheckResultAction), defaultPlugin)
 import TcRnTypes (TcGblEnv (..), TcM)
@@ -238,7 +238,8 @@ validateFunctionRule rule _opts fnName args expr = do
       then pure Nothing
     else do
       let arg = head matches
-          argTypes = (map showS $ getArgTypeWrapper arg)
+          argTypesGhc = getArgTypeWrapper arg
+          argTypes = map showS argTypesGhc
           argTypeBlocked = fromMaybe "NA" $ (`elem` types_blocked_in_arg rule) `find` argTypes
           isArgTypeToCheck = (`elem` types_to_check_in_arg rule) `any` argTypes 
 
@@ -270,7 +271,7 @@ validateFunctionRule rule _opts fnName args expr = do
           else pure Nothing
 
 validateDBRule :: DBRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
-validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames) opts tableName clauses expr = do
+validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames _) opts tableName clauses expr = do
   simplifiedExprs <- trfWhereToSOP clauses
   let checkDBViolation = case (matchAllInsideAnd opts) of
                           True  -> checkDBViolationMatchAll
@@ -416,13 +417,13 @@ getIsClauseData fieldArg _comp _clause = do
 
 checkAndApplyRule :: Rule -> PluginOpts -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
 checkAndApplyRule ruleT opts ap = case ruleT of
-  DBRuleT rule@(DBRule _ ruleTableName _) -> 
+  DBRuleT rule@(DBRule _ ruleTableName _ _) -> 
     case ap of
       (L _ (ExplicitList (TyConApp ty [_, tblName]) _ exprs)) -> case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
         True  -> validateDBRule rule opts (showS tblName) exprs ap 
         False -> pure Nothing
       _ -> pure Nothing
-  FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _) -> do
+  FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _ _) -> do
     let res = getFnNameWithAllArgs ap
     -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
         (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
@@ -468,11 +469,10 @@ getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   case res of
     Nothing -> Nothing
     Just (fnName, ls) -> Just (fnName, ls ++ [funr])
--- getFnNameWithAllArgs (L _ (OpApp _ funl op funr)) = do
---   let res = getFnNameWithAllArgs funl
---   case res of
---     Nothing -> Nothing
---     Just (fnName, ls) -> Just (fnName, ls ++ [funr])
+getFnNameWithAllArgs (L _ (OpApp _ funl op funr)) = do
+  case showS op of
+    "($)" -> getFnNameWithAllArgs $ mkHsApp funl funr
+    _ -> Nothing
 getFnNameWithAllArgs (L loc ap@(HsWrap _ _ expr)) = do
   getFnNameWithAllArgs (L loc expr)
 getFnNameWithAllArgs _ = Nothing
@@ -499,13 +499,29 @@ getStrFromHsWildCardBndrs typ = showS typ
 isFunVar :: Var -> Bool
 isFunVar = isFunTy . dropForAlls . idType 
 
+-- Check if a Type is Enum type
+isEnumType :: Type -> Bool
+isEnumType (TyConApp tyCon _) = isEnumerationTyCon tyCon
+isEnumType _ = False
+
 -- Pretty print the Internal Representations
 showOutputable :: (MonadIO m, Outputable a) => a -> m ()
 showOutputable = liftIO . putStrLn . showSDocUnsafe . ppr
 
 -- Create GHC compilation error from CompileError
 mkGhcCompileError :: CompileError -> (SrcSpan, OP.SDoc)
-mkGhcCompileError err = (src_span err, OP.text $ err_msg err)
+mkGhcCompileError err = (src_span err, OP.text $ getErrMsgWithSuggestions (err_msg err) (suggested_fixes err))
+
+-- Make error message with suggestion
+getErrMsgWithSuggestions :: String -> Suggestions -> String
+getErrMsgWithSuggestions errMsg suggestions = errMsg
+  <> newLine <> fourSpaces <> "Suggested fixes: "
+  <> foldr (\(suggestionNo, suggestion) r -> newLine <> sixSpaces <> show suggestionNo <> ". " <> suggestion <> r) "" (zip [1..] suggestions)
+  where 
+    newLine = "\n"
+    twoSpaces = "  "
+    fourSpaces = twoSpaces <> twoSpaces
+    sixSpaces = twoSpaces <> fourSpaces
 
 -- Create invalid indexedKeys file compilation error
 mkInvalidIndexedKeysFile :: String -> OP.SDoc
@@ -513,7 +529,7 @@ mkInvalidIndexedKeysFile err = OP.text err
 
 -- Create Internal Representation of Logging Error
 mkCompileError :: (LHsExpr GhcTc, Violation) -> TcM CompileError
-mkCompileError (expr, violation) = pure $ CompileError "" "" (show violation) (getLoc expr) violation
+mkCompileError (expr, violation) = pure $ CompileError "" "" (show violation) (getLoc expr) violation (getViolationSuggestions violation)
 
 -- Get Return type of the function application arg
 getArgTypeWrapper :: LHsExpr GhcTc -> [Type]
@@ -617,16 +633,41 @@ getStringificationFns _ = do
 getStringificationFns2 :: LHsExpr GhcTc -> FunctionRule -> [String] 
 getStringificationFns2 arg rule =
   let vars = arg ^? biplateRef :: [Var]
-      blockedFns = fns_blocked_in_arg rule
+      blockedFns = fmap (\(fname, _, _) -> fname) $ fns_blocked_in_arg rule
   in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns)) $ takeWhile isFunVar $ filter (not . isSystemName . varName) vars
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
-getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> [String] 
-getBlockedFnsList arg rule =
-  let vars = arg ^? biplateRef :: [Var]
-      blockedFns = fns_blocked_in_arg rule
-  in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns) && (not . isSystemName . varName) x) vars
-
+getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> [(String, String)] 
+getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) =
+  let argHsExprs = arg ^? biplateRef :: [LHsExpr GhcTc]
+      fnApps = filter isFunApp argHsExprs
+  in catMaybes $ fmap checkFnBlockedInArg fnApps 
+  --     vars = arg ^? biplateRef :: [Var]
+  --     blockedFns = fmap (\(fname, _, _) -> fname) $ fns_blocked_in_arg rule
+  -- in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns) && (not . isSystemName . varName) x) vars
+  where 
+    checkFnBlockedInArg :: LHsExpr GhcTc -> Maybe (String, String)
+    checkFnBlockedInArg expr = 
+      let res = getFnNameWithAllArgs arg
+      in case res of
+        Nothing -> Nothing
+        Just (fnName, args) -> isPresentInBlockedFnList fnsBlocked ((getOccString . varName . unLoc) fnName) args
+    
+    isPresentInBlockedFnList :: FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> Maybe (String, String)
+    isPresentInBlockedFnList [] _ _ = Nothing
+    isPresentInBlockedFnList ((ruleFnName, ruleArgNo, ruleAllowedTypes) : ls) fnName fnArgs = 
+      case ruleFnName == fnName && length fnArgs >= ruleArgNo of
+        False -> isPresentInBlockedFnList ls fnName fnArgs
+        True  -> 
+          let reqArg = head $ drop (ruleArgNo - 1) fnArgs
+              argTypesGhc = getArgTypeWrapper reqArg
+          in case argTypesGhc of
+            []        -> isPresentInBlockedFnList ls fnName fnArgs
+            (typ : _) -> 
+              if (isEnumType typ && "EnumTypes" `elem` ruleAllowedTypes) || (showS typ) `elem` ruleAllowedTypes
+                then isPresentInBlockedFnList ls fnName fnArgs
+                else Just (fnName, showS typ)
+    
 addErrToFile :: ModSummary -> String -> [CompileError] -> TcM ()
 addErrToFile modSummary path errs = do
   let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary

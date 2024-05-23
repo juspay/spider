@@ -76,24 +76,28 @@ data CompileError = CompileError
     mod_name :: String,
     err_msg :: String,
     src_span :: SrcSpan,
-    violation :: Violation
+    violation :: Violation,
+    suggested_fixes  :: Suggestions
   } deriving (Eq, Show)
 
 instance ToJSON CompileError where
-  toJSON (CompileError pkg modName errMsg srcLoc _vlt) =
-    object [ "package_name"   .= pkg
-           , "module_name"    .= modName
-           , "error_message"  .= errMsg
-           , "src_span"       .= show srcLoc
-           , "violation_type" .= getViolationType _vlt
-           , "violated_rule"  .= getRuleName _vlt
+  toJSON (CompileError pkg modName errMsg srcLoc _vlt suggestions) =
+    object [ "package_name"    .= pkg
+           , "module_name"     .= modName
+           , "error_message"   .= errMsg
+           , "src_span"        .= show srcLoc
+           , "violation_type"  .= getViolationType _vlt
+           , "violated_rule"   .= getRuleName _vlt
+           , "suggested_fixes" .= suggestions
            ]
 
 type Rules = [Rule]
 type ArgNo = Int
-type FnsBlockedInArg = [String]
+type FnsBlockedInArg = [(String, ArgNo, TypesAllowedInArg)]
+type TypesAllowedInArg = [String]
 type TypesBlockedInArg = [String]
 type TypesToCheckInArg = [String]
+type Suggestions = [String]
 
 data FunctionRule = 
   FunctionRule
@@ -103,7 +107,8 @@ data FunctionRule =
       arg_no                :: ArgNo,
       fns_blocked_in_arg    :: FnsBlockedInArg,
       types_blocked_in_arg  :: TypesBlockedInArg,
-      types_to_check_in_arg :: TypesToCheckInArg
+      types_to_check_in_arg :: TypesToCheckInArg,
+      fnRuleFixes           :: Suggestions
     }
   deriving (Show, Eq)  
 
@@ -112,7 +117,8 @@ data DBRule =
     {
       db_rule_name       :: String,
       table_name         :: String,
-      indexed_cols_names :: [YamlTableKeys]
+      indexed_cols_names :: [YamlTableKeys],
+      dbRuleFixes        :: Suggestions
     }
   deriving (Show, Eq)  
 
@@ -138,7 +144,7 @@ data DBFieldSpecType =
 
 data Violation = 
     ArgTypeBlocked String FunctionRule
-  | FnBlockedInArg String FunctionRule
+  | FnBlockedInArg (String, String) FunctionRule
   | NonIndexedDBColumn String String DBRule
   | FnUseBlocked FunctionRule
   | NoViolation
@@ -146,10 +152,18 @@ data Violation =
 
 instance Show Violation where
   show (ArgTypeBlocked typ rule) = "Use of '" <> (fn_name rule) <> "' on '" <> typ <> "' is not allowed."
-  show (FnBlockedInArg fnName rule) = "Use of '" <> fnName <> "' inside argument of '" <> (fn_name rule) <> "' is not allowed."
+  show (FnBlockedInArg (fnName, typ) rule) = "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> (fn_name rule) <> "' is not allowed."
   show (FnUseBlocked rule) = "Use of '" <> (fn_name rule) <> "' in the code is not allowed."
   show (NonIndexedDBColumn colName tableName rule) = "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
   show NoViolation = "NoViolation"
+
+getViolationSuggestions :: Violation -> Suggestions
+getViolationSuggestions v = case v of
+  ArgTypeBlocked _ r -> fnRuleFixes r
+  FnBlockedInArg _ r -> fnRuleFixes r
+  FnUseBlocked r -> fnRuleFixes r
+  NonIndexedDBColumn _ _ r -> dbRuleFixes r
+  NoViolation -> []
 
 getViolationType :: Violation -> String
 getViolationType v = case v of
@@ -170,11 +184,14 @@ getRuleName v = case v of
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
 
+noSuggestion :: Suggestions
+noSuggestion = []
+
 defaultRule :: Rule
-defaultRule = FunctionRuleT $ FunctionRule "NA" "NA" (-1) [] [] []
+defaultRule = FunctionRuleT $ FunctionRule "NA" "NA" (-1) [] [] [] noSuggestion
 
 emptyLoggingError :: CompileError
-emptyLoggingError = CompileError "" "" "$NA$" noSrcSpan NoViolation
+emptyLoggingError = CompileError "" "" "$NA$" noSrcSpan NoViolation noSuggestion
 
 yamlToDbRule :: YamlTable -> Rule
-yamlToDbRule table = DBRuleT $ DBRule "NonIndexedDBRule" (tableName table) (indexedKeys table)
+yamlToDbRule table = DBRuleT $ DBRule "NonIndexedDBRule" (tableName table) (indexedKeys table) ["You might want to include an indexed column in the `where` clause of the query."]

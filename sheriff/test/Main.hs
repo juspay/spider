@@ -103,6 +103,9 @@ import qualified Test1 as T1
 -- Overall, when passing things inside log functions, we should never had `show` or `encode` applied to them
 -- If we are passing some object, then we should use logErrorV and ideally it should have instance of `ToJSON`
 
+ob :: T1.SeqIs
+ob = T1.SeqIs "fldName" "fldValue"
+
 loger ::  Text -> IO ()
 loger x = T1.logErrorT (T1.encodeJSON x <> (T.pack $ show "Hello"))
 
