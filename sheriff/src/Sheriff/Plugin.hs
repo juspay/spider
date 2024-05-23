@@ -455,6 +455,7 @@ getWhereClauseFnNameWithAllArgs (L loc ap@(HsPar _ expr)) = getWhereClauseFnName
 -- If condition inside the list, add dummy type
 getWhereClauseFnNameWithAllArgs (L loc ap@(HsIf _ _ _pred thenCl elseCl)) = Just ("Or", [L loc (ExplicitList (LitTy (StrTyLit "Dummy")) Nothing [thenCl, elseCl])])
 getWhereClauseFnNameWithAllArgs (L loc ap@(HsWrap _ _ expr)) = getWhereClauseFnNameWithAllArgs (L loc expr)
+getWhereClauseFnNameWithAllArgs (L loc ap@(ExprWithTySig _ expr _)) = getWhereClauseFnNameWithAllArgs expr
 getWhereClauseFnNameWithAllArgs _ = Nothing
 
 getVarName :: Located Var -> String
