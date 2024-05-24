@@ -76,9 +76,12 @@ import qualified Data.Map as Map
 import qualified Outputable as OP
 import FastString
 import Data.Maybe (catMaybes)
-import TcRnMonad (failWith, addErr, addErrAt, addErrs)
+import DsMonad (initDsTc)
+import DsExpr (dsLExpr)
+import TcRnMonad (failWith, addErr, addErrAt, addErrs, getEnv, env_top)
 import Name (isSystemName)
 import GHC (OverLitTc(..), HsOverLit(..))
+import CoreUtils (exprType)
 import Control.Applicative ((<|>))
 import Type (isFunTy, funResultTy, splitAppTys, dropForAlls)
 import TyCoRep (Type(..), TyLit (..))
@@ -238,22 +241,17 @@ validateFunctionRule rule _opts fnName args expr = do
       then pure Nothing
     else do
       let arg = head matches
-          argTypesGhc = getArgTypeWrapper arg
-          argTypes = map showS argTypesGhc
-          argTypeBlocked = fromMaybe "NA" $ (`elem` types_blocked_in_arg rule) `find` argTypes
-          isArgTypeToCheck = (`elem` types_to_check_in_arg rule) `any` argTypes 
+      argTypeGhc <- getHsExprType arg
+      let argType = showS argTypeGhc
+          argTypeBlocked = fromMaybe "NA" $ (== argType) `find` types_blocked_in_arg rule
+          isArgTypeToCheck = (== argType ) `any` types_to_check_in_arg rule 
 
       when (logDebugInfo && fnName /= "NA") $
         liftIO $ do
           print $ (fnName, map showS args)
           print $ (fnName, showS arg)
           print $ rule
-          putStr "Arg Types = "
-          let vars = filter (not . isSystemName . varName) $ arg ^? biplateRef
-              tys = map (showS . idType) vars
-          print $ map showS vars
-          print $ tys
-          print $ argTypes
+          print $ "Arg Type = " <> argType
 
       if argTypeBlocked /= "NA"
         then pure $ Just (expr, ArgTypeBlocked argTypeBlocked rule)
@@ -261,10 +259,7 @@ validateFunctionRule rule _opts fnName args expr = do
         then pure Nothing
       else do
         -- It's a rule function with to_be_checked type argument
-        -- stringificationFns1 <- getStringificationFns arg -- check if the expression has any stringification function
         blockedFnsList <- getBlockedFnsList arg rule -- check if the expression has any stringification function
-        let vars = filter (not . isSystemName . varName) $ arg ^? biplateRef
-            tys = map (map showS . (getReturnType . dropForAlls . idType)) vars
         if length blockedFnsList > 0
           then do
             pure $ Just (expr, FnBlockedInArg (head blockedFnsList) rule)
@@ -365,15 +360,12 @@ getIsClauseData fieldArg _comp _clause = do
         then 
           case head tyApps of
             (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> do
-              let tys = getArgTypeWrapper tableVar
-              if length tys >= 1
-                then 
-                  let tblName' = case head tys of
-                                  AppTy ty1 _    -> showS ty1
-                                  TyConApp ty1 _ -> showS ty1
-                                  ty             -> showS ty
-                  in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
-                else pure Nothing
+              typ <- getHsExprType tableVar
+              let tblName' = case typ of
+                              AppTy ty1 _    -> showS ty1
+                              TyConApp ty1 _ -> showS ty1
+                              ty             -> showS ty
+              pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
             (HsWrap _ (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) ->
               let tblName' = case tableType of
                                   AppTy ty1 _    -> showS ty1
@@ -390,15 +382,12 @@ getIsClauseData fieldArg _comp _clause = do
           case opExpr of
             (OpApp _ tableVar _ fldVar) -> do
               let fldName = tail $ showS fldVar
-                  tys = getArgTypeWrapper tableVar
-              if length tys >= 1
-                then 
-                  let tblName' = case head tys of
-                                  AppTy ty1 _    -> showS ty1
-                                  TyConApp ty1 _ -> showS ty1
-                                  ty             -> showS ty
-                  in pure $ Just (fldName, take (length tblName' - 1) tblName')
-                else pure Nothing
+              typ <- getHsExprType tableVar
+              let tblName' = case typ of
+                              AppTy ty1 _    -> showS ty1
+                              TyConApp ty1 _ -> showS ty1
+                              ty             -> showS ty
+              pure $ Just (fldName, take (length tblName' - 1) tblName')
             (SectionR _ _ (L _ lens)) -> do
               let tys = lens ^? biplateRef :: [Type]
                   typeForTableName = filter (\typ -> case typ of 
@@ -532,7 +521,7 @@ mkInvalidIndexedKeysFile err = OP.text err
 mkCompileError :: (LHsExpr GhcTc, Violation) -> TcM CompileError
 mkCompileError (expr, violation) = pure $ CompileError "" "" (show violation) (getLoc expr) violation (getViolationSuggestions violation)
 
--- Get Return type of the function application arg
+-- [DEPRECATED] Get Return type of the function application arg
 getArgTypeWrapper :: LHsExpr GhcTc -> [Type]
 getArgTypeWrapper expr@(L _ (HsApp _ lfun rfun)) = getArgType expr True
 getArgTypeWrapper expr@(L _ (OpApp _ lfun op rfun)) = 
@@ -545,6 +534,7 @@ getArgTypeWrapper (L loc (HsWrap _ _ expr)) = getArgTypeWrapper (L loc expr)
 getArgTypeWrapper (L loc (HsPar _ expr)) = getArgTypeWrapper expr
 getArgTypeWrapper expr = getArgType expr False
 
+-- [DEPRECATED] Get LHsExpr type
 getArgType :: LHsExpr GhcTc -> Bool -> [Type]
 getArgType (L _ (HsLit _ v)) _ = getLitType v
 getArgType (L _ (HsOverLit _ (OverLit (OverLitTc _ typ) v _))) _ = [typ]
@@ -561,6 +551,7 @@ getArgType arg shouldReturnFinalType =
         actualReturnTyp = (trfUsingConstraints constraints $ typeReturnFn actualTyp)
     in actualReturnTyp
 
+-- [DEPRECATED] Get HsLit literal type
 getLitType :: HsLit GhcTc -> [Type]
 getLitType (HsChar _ _	) = [charTy]
 getLitType (HsCharPrim _ _) = [charTy]
@@ -577,12 +568,13 @@ getLitType (HsFloatPrim _ _) = [floatTy]
 getLitType (HsDoublePrim _ _) = [doubleTy]
 getLitType _ = []
 
--- Get final return type of any type/function signature
+-- [DEPRECATED] Get final return type of any type/function signature
 getReturnType :: Type -> [Type]
 getReturnType typ 
   | isFunTy typ = getReturnType $ tcFunResultTy typ
   | otherwise = let (x, y) = tcSplitAppTys typ in x : y
 
+-- [DECRECATED] Transform the type from the constraints
 trfUsingConstraints :: [PredType] -> [Type] -> [Type]
 trfUsingConstraints constraints typs =
   let replacements = catMaybes $ map constraintsToReplacements constraints
@@ -605,6 +597,7 @@ trfUsingConstraints constraints typs =
     replacer replacements typ@(FunTy flag ty1 ty2) = FunTy flag (replacer replacements ty1) (replacer replacements ty2) 
     replacer replacements typ = maybe typ snd $ (\x -> eqType (fst x) typ) `find` replacements 
 
+-- [DEPRECATED] Get List of stringification functions used inside a HsExpr; Uses `stringifierFns` 
 getStringificationFns :: LHsExpr GhcTc -> TcM [String] 
 getStringificationFns (L _ ap@(HsVar _ v)) = do
   liftIO $ putStrLn "Inside HsVar" >> putStrLn (showS ap) 
@@ -633,7 +626,7 @@ getStringificationFns _ = do
   liftIO $ putStrLn $ "Inside _"
   pure []
 
--- Get List of stringification functions used inside a HsExpr; Uses `stringifierFns` 
+-- [DEPRECATED] Get List of stringification functions used inside a HsExpr; Uses `stringifierFns` 
 getStringificationFns2 :: LHsExpr GhcTc -> FunctionRule -> [String] 
 getStringificationFns2 arg rule =
   let vars = arg ^? biplateRef :: [Var]
@@ -674,17 +667,15 @@ getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
         False -> isPresentInBlockedFnList ls fnName fnArgs
         True  -> do
           let reqArg = head $ drop (ruleArgNo - 1) fnArgs
-              argTypesGhc = getArgTypeWrapper reqArg
+          argType <- getHsExprType reqArg
           when logDebugInfo $ liftIO $ do
             showOutputable reqArg
-            showOutputable argTypesGhc
-          case argTypesGhc of
-            []        -> isPresentInBlockedFnList ls fnName fnArgs
-            (typ : _) -> 
-              if (isEnumType typ && "EnumTypes" `elem` ruleAllowedTypes) || (showS typ) `elem` ruleAllowedTypes
-                then isPresentInBlockedFnList ls fnName fnArgs
-                else pure $ Just (fnName, showS typ)
+            showOutputable argType
+          if (isEnumType argType && "EnumTypes" `elem` ruleAllowedTypes) || (showS argType) `elem` ruleAllowedTypes
+            then isPresentInBlockedFnList ls fnName fnArgs
+            else pure $ Just (fnName, showS argType)
     
+-- Add GHC error to a file    
 addErrToFile :: ModSummary -> String -> [CompileError] -> TcM ()
 addErrToFile modSummary path errs = do
   let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
@@ -692,3 +683,9 @@ addErrToFile modSummary path errs = do
       res = encodePretty errs
   liftIO $ createDirectoryIfMissing True path
   liftIO $ writeFile (path <> moduleName' <> "_compilationErrors.json") res
+
+-- Get type for a LHsExpr GhcTc
+getHsExprType :: LHsExpr GhcTc -> TcM Type
+getHsExprType expr = do
+  coreExpr <- initDsTc $ dsLExpr expr
+  pure $ exprType coreExpr
