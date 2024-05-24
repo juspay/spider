@@ -8,7 +8,7 @@ import Data.Data
 import Control.Reference (biplateRef, (^?), Simple, Traversal)
 import Data.Generics.Uniplate.Data (universeBi, childrenBi, contextsBi, holesBi, children)
 import Data.List (nub)
-import Debug.Trace (traceShowId)
+import Debug.Trace (traceShowId, trace)
 import Data.Yaml
 import GHC
   ( GRHS (..),
@@ -549,6 +549,7 @@ getArgType :: LHsExpr GhcTc -> Bool -> [Type]
 getArgType (L _ (HsLit _ v)) _ = getLitType v
 getArgType (L _ (HsOverLit _ (OverLit (OverLitTc _ typ) v _))) _ = [typ]
 getArgType (L loc (HsWrap _ _ expr)) shouldReturnFinalType = getArgType (L loc expr) shouldReturnFinalType
+getArgType (L loc (HsApp _ lfun rfun)) shouldReturnFinalType = getArgType lfun shouldReturnFinalType
 getArgType arg shouldReturnFinalType = 
   let vars = filter (not . isSystemName . varName) $ arg ^? biplateRef in 
   if length vars == 0
@@ -592,7 +593,9 @@ trfUsingConstraints constraints typs =
     constraintsToReplacements predTyp = case tcSplitTyConApp_maybe predTyp of
       Just (tycon, [typ]) -> if showS tycon == "IsString"
                               then Just (typ, stringTy)
-                              else Nothing
+                             else if showS tycon == "Num" || showS tycon == "GHC.Num.Num"
+                              then Just (typ, intTy)
+                             else Nothing
       _ -> Nothing
 
     replacer :: [(Type, Type)] -> Type -> Type
@@ -667,13 +670,15 @@ getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
       when logDebugInfo $ liftIO $ do
         print "isPresentInBlockedFnList"
         print (ruleFnName, ruleArgNo, ruleAllowedTypes)
-        print (ruleFnName == fnName && length fnArgs >= ruleArgNo)
       case ruleFnName == fnName && length fnArgs >= ruleArgNo of
         False -> isPresentInBlockedFnList ls fnName fnArgs
-        True  -> 
+        True  -> do
           let reqArg = head $ drop (ruleArgNo - 1) fnArgs
               argTypesGhc = getArgTypeWrapper reqArg
-          in case argTypesGhc of
+          when logDebugInfo $ liftIO $ do
+            showOutputable reqArg
+            showOutputable argTypesGhc
+          case argTypesGhc of
             []        -> isPresentInBlockedFnList ls fnName fnArgs
             (typ : _) -> 
               if (isEnumType typ && "EnumTypes" `elem` ruleAllowedTypes) || (showS typ) `elem` ruleAllowedTypes
