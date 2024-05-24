@@ -28,67 +28,90 @@ logArgNo :: ArgNo
 logArgNo = 2
 
 logRule1 :: Rule
-logRule1 = FunctionRuleT $ FunctionRule "LogRule" "logErrorT" logArgNo stringifierFns [] textTypesToCheck
+logRule1 = FunctionRuleT $ FunctionRule "LogRule" "logErrorT" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule2 :: Rule
-logRule2 = FunctionRuleT $ FunctionRule "LogRule" "logErrorV" logArgNo stringifierFns [] textTypesToCheck
+logRule2 = FunctionRuleT $ FunctionRule "LogRule" "logErrorV" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule3 :: Rule
-logRule3 = FunctionRuleT $ FunctionRule "LogRule" "logError" logArgNo stringifierFns [] textTypesToCheck
+logRule3 = FunctionRuleT $ FunctionRule "LogRule" "logError" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule4 :: Rule
-logRule4 = FunctionRuleT $ FunctionRule "LogRule" "logInfoT" logArgNo stringifierFns [] textTypesToCheck
+logRule4 = FunctionRuleT $ FunctionRule "LogRule" "logInfoT" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule5 :: Rule
-logRule5 = FunctionRuleT $ FunctionRule "LogRule" "logInfoV" logArgNo stringifierFns [] textTypesToCheck
+logRule5 = FunctionRuleT $ FunctionRule "LogRule" "logInfoV" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule6 :: Rule
-logRule6 = FunctionRuleT $ FunctionRule "LogRule" "logInfo" logArgNo stringifierFns [] textTypesToCheck
+logRule6 = FunctionRuleT $ FunctionRule "LogRule" "logInfo" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule7 :: Rule
-logRule7 = FunctionRuleT $ FunctionRule "LogRule" "logDebugT" logArgNo stringifierFns [] textTypesToCheck
+logRule7 = FunctionRuleT $ FunctionRule "LogRule" "logDebugT" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule8 :: Rule
-logRule8 = FunctionRuleT $ FunctionRule "LogRule" "logDebugV" logArgNo stringifierFns [] textTypesToCheck
+logRule8 = FunctionRuleT $ FunctionRule "LogRule" "logDebugV" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule9 :: Rule
-logRule9 = FunctionRuleT $ FunctionRule "LogRule" "logDebug" logArgNo stringifierFns [] textTypesToCheck
+logRule9 = FunctionRuleT $ FunctionRule "LogRule" "logDebug" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule10 :: Rule
-logRule10 = FunctionRuleT $ FunctionRule "LogRule" "logErrorWithCategory" logArgNo stringifierFns [] textTypesToCheck
+logRule10 = FunctionRuleT $ FunctionRule "LogRule" "logErrorWithCategory" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule11 :: Rule
-logRule11 = FunctionRuleT $ FunctionRule "LogRule" "logErrorWithCategoryV" logArgNo stringifierFns [] textTypesToCheck
+logRule11 = FunctionRuleT $ FunctionRule "LogRule" "logErrorWithCategoryV" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule12 :: Rule
-logRule12 = FunctionRuleT $ FunctionRule "LogRule" "forkErrorLog" logArgNo stringifierFns [] textTypesToCheck
+logRule12 = FunctionRuleT $ FunctionRule "LogRule" "forkErrorLog" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule13 :: Rule
-logRule13 = FunctionRuleT $ FunctionRule "LogRule" "forkInfoLog" logArgNo stringifierFns [] textTypesToCheck
+logRule13 = FunctionRuleT $ FunctionRule "LogRule" "forkInfoLog" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule14 :: Rule
-logRule14 = FunctionRuleT $ FunctionRule "LogRule" "debugLog" logArgNo stringifierFns [] textTypesToCheck
+logRule14 = FunctionRuleT $ FunctionRule "LogRule" "debugLog" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 logRule15 :: Rule
-logRule15 = FunctionRuleT $ FunctionRule "LogRule" "warnLog" logArgNo stringifierFns [] textTypesToCheck
+logRule15 = FunctionRuleT $ FunctionRule "LogRule" "warnLog" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions
 
 showRule :: Rule
-showRule = FunctionRuleT $ FunctionRule "ShowRule" "show" 1 stringifierFns textTypesBlocked textTypesToCheck
+showRule = FunctionRuleT $ FunctionRule "ShowRule" "show" 1 stringifierFns textTypesBlocked textTypesToCheck showRuleSuggestions
 
 noUseRule :: Rule
-noUseRule = FunctionRuleT $ FunctionRule "NoDecodeUtf8Rule" "$text-1.2.4.1$Data.Text.Encoding$decodeUtf8" 0 [] [] []
+noUseRule = FunctionRuleT $ FunctionRule "NoDecodeUtf8Rule" "$text-1.2.4.1$Data.Text.Encoding$decodeUtf8" 0 [] [] [] ["You might want to use some other wrapper function."]
 
 dbRule :: Rule
-dbRule = DBRuleT $ DBRule "NonIndexedDBRule" "TxnRiskCheck" [NonCompositeKey "partitionKey"]
+dbRule = DBRuleT $ DBRule "NonIndexedDBRule" "TxnRiskCheck" [NonCompositeKey "partitionKey"] dbRuleSuggestions
 
 dbRuleCustomer :: Rule
-dbRuleCustomer = DBRuleT $ DBRule "NonIndexedDBRule" "MerchantKey" [NonCompositeKey "status"]
+dbRuleCustomer = DBRuleT $ DBRule "NonIndexedDBRule" "MerchantKey" [NonCompositeKey "status"] dbRuleSuggestions
+
+fnsAllowedInStringifierFns :: TypesAllowedInArg
+fnsAllowedInStringifierFns = ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool"]
 
 stringifierFns :: FnsBlockedInArg
-stringifierFns = ["show", "encode", "encodeJSON"]
+stringifierFns = [("show", 1, fnsAllowedInStringifierFns), ("encode", 1, []), ("encodeJSON", 1, [])]
 
 textTypesBlocked :: TypesBlockedInArg
 textTypesBlocked = ["Text", "String", "Char", "[Char]"]
 
 textTypesToCheck :: TypesToCheckInArg
 textTypesToCheck = ["Text", "String", "Char", "[Char]"]
+
+-- Suggestions
+
+dbRuleSuggestions :: Suggestions
+dbRuleSuggestions = ["You might want to include an indexed column in the `where` clause of the query."]
+
+logRuleSuggestions :: Suggestions
+logRuleSuggestions = 
+  [
+    "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.",
+    "Make sure that there is `ToJSON` instance on the value we are logging.",
+    "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
+  ]
+
+showRuleSuggestions :: Suggestions
+showRuleSuggestions = 
+  [
+    "Remove `show` function call from the error location. If quotes are required, manually add them to the text.",
+    "You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."
+  ]
