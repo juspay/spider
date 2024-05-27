@@ -85,7 +85,7 @@ dbRuleCustomer :: Rule
 dbRuleCustomer = DBRuleT $ DBRule "NonIndexedDBRule" "MerchantKey" [NonCompositeKey "status"] dbRuleSuggestions
 
 fnsAllowedInStringifierFns :: TypesAllowedInArg
-fnsAllowedInStringifierFns = ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool"]
+fnsAllowedInStringifierFns = ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number"]
 
 stringifierFns :: FnsBlockedInArg
 stringifierFns = [("show", 1, fnsAllowedInStringifierFns), ("encode", 1, []), ("encodeJSON", 1, [])]
