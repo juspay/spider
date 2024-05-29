@@ -103,6 +103,9 @@ plugin = defaultPlugin {
 logDebugInfo :: Bool
 logDebugInfo = False
 
+logTypeDebugging :: Bool
+logTypeDebugging = False
+
 logWarnInfo :: Bool
 logWarnInfo = True
 
@@ -243,8 +246,8 @@ validateFunctionRule rule _opts fnName args expr = do
       let arg = head matches
       argTypeGhc <- getHsExprType arg
       let argType = showS argTypeGhc
-          argTypeBlocked = fromMaybe "NA" $ (== argType) `find` types_blocked_in_arg rule
-          isArgTypeToCheck = (== argType ) `any` types_to_check_in_arg rule 
+          argTypeBlocked = validateType argTypeGhc $ types_blocked_in_arg rule
+          isArgTypeToCheck = validateType argTypeGhc $ types_to_check_in_arg rule
 
       when (logDebugInfo && fnName /= "NA") $
         liftIO $ do
@@ -253,8 +256,8 @@ validateFunctionRule rule _opts fnName args expr = do
           print $ rule
           print $ "Arg Type = " <> argType
 
-      if argTypeBlocked /= "NA"
-        then pure $ Just (expr, ArgTypeBlocked argTypeBlocked rule)
+      if argTypeBlocked
+        then pure $ Just (expr, ArgTypeBlocked argType rule)
       else if not isArgTypeToCheck
         then pure Nothing
       else do
@@ -264,6 +267,17 @@ validateFunctionRule rule _opts fnName args expr = do
           then do
             pure $ Just (expr, FnBlockedInArg (head blockedFnsList) rule)
           else pure Nothing
+
+validateType :: Type -> TypesToCheckInArg -> Bool
+validateType argTyp@(TyConApp tyCon ls) typs = 
+  if showS tyCon == "(,)" && "(,)" `elem` typs 
+    then (\t -> validateType t typs) `any` ls 
+  else if showS tyCon == "[]" && "[]" `elem` typs 
+    then (\t -> validateType t typs) `any` ls 
+  else if showS tyCon == "Maybe" && "Maybe" `elem` typs 
+    then (\t -> validateType t typs) `any` ls 
+  else showS argTyp `elem` typs
+validateType argTyp typs = showS argTyp `elem` typs
 
 validateDBRule :: DBRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
 validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames _) opts tableName clauses expr = do
@@ -453,6 +467,7 @@ getVarName var = (getOccString . varName . unLoc) var
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
 getFnNameWithAllArgs (L _ (HsVar _ v)) = Just (v, [])
 getFnNameWithAllArgs (L _ (HsConLikeOut _ cl)) = (\clId -> (noLoc clId, [])) <$> conLikeWrapId_maybe cl
+getFnNameWithAllArgs (L _ (HsAppType _ expr _)) = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ (L _ (HsVar _ v)) funr)) = Just (v, [funr])
 getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   let res = getFnNameWithAllArgs funl
@@ -671,9 +686,20 @@ getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
           when logDebugInfo $ liftIO $ do
             showOutputable reqArg
             showOutputable argType
-          if (isEnumType argType && "EnumTypes" `elem` ruleAllowedTypes) || (showS argType) `elem` ruleAllowedTypes
+          if validateAllowedTypes argType ruleAllowedTypes
             then isPresentInBlockedFnList ls fnName fnArgs
             else pure $ Just (fnName, showS argType)
+
+    validateAllowedTypes :: Type -> TypesAllowedInArg -> Bool
+    validateAllowedTypes argType@(TyConApp tyCon ls) ruleAllowedTypes = 
+      if showS tyCon == "(,)" && "(,)" `elem` ruleAllowedTypes
+        then (\t -> validateAllowedTypes t ruleAllowedTypes) `all` ls 
+      else if showS tyCon == "[]" && "[]" `elem` ruleAllowedTypes
+        then (\t -> validateAllowedTypes t ruleAllowedTypes) `all` ls
+      else if showS tyCon == "Maybe" && "Maybe" `elem` ruleAllowedTypes
+        then (\t -> validateAllowedTypes t ruleAllowedTypes) `all` ls
+      else (isEnumType argType && "EnumTypes" `elem` ruleAllowedTypes) || (showS argType) `elem` ruleAllowedTypes
+    validateAllowedTypes argType ruleAllowedTypes = (isEnumType argType && "EnumTypes" `elem` ruleAllowedTypes) || (showS argType) `elem` ruleAllowedTypes
     
 -- Add GHC error to a file    
 addErrToFile :: ModSummary -> String -> [CompileError] -> TcM ()
@@ -688,4 +714,14 @@ addErrToFile modSummary path errs = do
 getHsExprType :: LHsExpr GhcTc -> TcM Type
 getHsExprType expr = do
   coreExpr <- initDsTc $ dsLExpr expr
+  when logTypeDebugging $ liftIO $ print $ "DebugType = " <> (debugPrintType $ exprType coreExpr)
   pure $ exprType coreExpr
+
+debugPrintType :: Type -> String
+debugPrintType (TyVarTy v) = "(TyVar " <> showS v <> ")"
+debugPrintType (AppTy ty1 ty2) = "(AppTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
+debugPrintType (TyConApp tycon tys) = "(TyCon (" <> showS tycon <> ") [" <> foldr (\x r -> debugPrintType x <> ", " <> r) "" tys <> "]"
+debugPrintType (ForAllTy _ ty) = "(ForAllTy " <> debugPrintType ty <> ")"
+debugPrintType (FunTy _ ty1 ty2) = "(FunTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
+debugPrintType (LitTy litTy) = "(LitTy " <> showS litTy <> ")"
+debugPrintType _ = ""
