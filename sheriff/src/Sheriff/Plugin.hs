@@ -232,16 +232,16 @@ isBadFunApp rules opts (L _ (OpApp _ lfun op rfun)) = do
 isBadFunApp _ _ _ = pure []
 
 isBadFunAppHelper :: Rules -> PluginOpts -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
-isBadFunAppHelper rules opts ap = catMaybes <$> mapM (\rule -> checkAndApplyRule rule opts ap) rules
+isBadFunAppHelper rules opts ap = concat <$> mapM (\rule -> checkAndApplyRule rule opts ap) rules
 
-validateFunctionRule :: FunctionRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
+validateFunctionRule :: FunctionRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 validateFunctionRule rule _opts fnName args expr = do
   if (arg_no rule) == 0 -- considering arg 0 as the case for blocking the whole function occurence
-    then pure $ Just (expr, FnUseBlocked rule)
+    then pure [(expr, FnUseBlocked rule)]
   else do
     let matches = drop ((arg_no rule) - 1) args
     if length matches == 0
-      then pure Nothing
+      then pure []
     else do
       let arg = head matches
       argTypeGhc <- getHsExprType arg
@@ -257,16 +257,13 @@ validateFunctionRule rule _opts fnName args expr = do
           print $ "Arg Type = " <> argType
 
       if argTypeBlocked
-        then pure $ Just (expr, ArgTypeBlocked argType rule)
+        then pure [(expr, ArgTypeBlocked argType rule)]
       else if not isArgTypeToCheck
-        then pure Nothing
+        then pure []
       else do
         -- It's a rule function with to_be_checked type argument
         blockedFnsList <- getBlockedFnsList arg rule -- check if the expression has any stringification function
-        if length blockedFnsList > 0
-          then do
-            pure $ Just (expr, FnBlockedInArg (head blockedFnsList) rule)
-          else pure Nothing
+        pure $ fmap (\(lExpr, blockedFnName, blockedFnArgTyp) -> (lExpr, FnBlockedInArg (blockedFnName, blockedFnArgTyp) rule)) blockedFnsList
 
 validateType :: Type -> TypesToCheckInArg -> Bool
 validateType argTyp@(TyConApp tyCon ls) typs = 
@@ -279,16 +276,14 @@ validateType argTyp@(TyConApp tyCon ls) typs =
   else showS argTyp `elem` typs
 validateType argTyp typs = showS argTyp `elem` typs
 
-validateDBRule :: DBRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
+validateDBRule :: DBRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames _) opts tableName clauses expr = do
   simplifiedExprs <- trfWhereToSOP clauses
   let checkDBViolation = case (matchAllInsideAnd opts) of
                           True  -> checkDBViolationMatchAll
                           False -> checkDBViolationWithoutMatchAll
-  mbViolations <- catMaybes <$> mapM checkDBViolation simplifiedExprs
-  case mbViolations of
-    [] -> pure Nothing
-    (violation : _) -> pure (Just violation)
+  violations <- catMaybes <$> mapM checkDBViolation simplifiedExprs
+  pure violations
   where
     -- Since we need all columns to be indexed, we need to check for the columns in the order of composite key
     checkDBViolationMatchAll :: [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
@@ -418,21 +413,21 @@ getIsClauseData fieldArg _comp _clause = do
   
   pure mbColNameAndTableName
 
-checkAndApplyRule :: Rule -> PluginOpts -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
+checkAndApplyRule :: Rule -> PluginOpts -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 checkAndApplyRule ruleT opts ap = case ruleT of
   DBRuleT rule@(DBRule _ ruleTableName _ _) -> 
     case ap of
       (L _ (ExplicitList (TyConApp ty [_, tblName]) _ exprs)) -> case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
         True  -> validateDBRule rule opts (showS tblName) exprs ap 
-        False -> pure Nothing
-      _ -> pure Nothing
+        False -> pure []
+      _ -> pure []
   FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _ _) -> do
     let res = getFnNameWithAllArgs ap
     -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
         (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
     case (fnName == ruleFnName && length args >= arg_no) of
       True  -> validateFunctionRule rule opts fnName args ap 
-      False -> pure Nothing 
+      False -> pure [] 
 
 getDBFieldSpecType :: LHsExpr GhcTc -> DBFieldSpecType
 getDBFieldSpecType (L _ expr)
@@ -649,7 +644,7 @@ getStringificationFns2 arg rule =
   in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns)) $ takeWhile isFunVar $ filter (not . isSystemName . varName) vars
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
-getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> TcM [(String, String)] 
+getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> TcM [(LHsExpr GhcTc, String, String)] 
 getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
   let argHsExprs = arg ^? biplateRef :: [LHsExpr GhcTc]
       fnApps = filter isFunApp argHsExprs
@@ -662,7 +657,7 @@ getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
   --     blockedFns = fmap (\(fname, _, _) -> fname) $ fns_blocked_in_arg rule
   -- in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns) && (not . isSystemName . varName) x) vars
   where 
-    checkFnBlockedInArg :: LHsExpr GhcTc -> TcM (Maybe (String, String))
+    checkFnBlockedInArg :: LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, String, String))
     checkFnBlockedInArg expr = do
       let res = getFnNameWithAllArgs expr
       when logDebugInfo $ liftIO $ do
@@ -670,16 +665,16 @@ getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
         showOutputable res
       case res of
         Nothing -> pure Nothing
-        Just (fnName, args) -> isPresentInBlockedFnList fnsBlocked ((getOccString . varName . unLoc) fnName) args
+        Just (fnName, args) -> isPresentInBlockedFnList expr fnsBlocked ((getOccString . varName . unLoc) fnName) args
     
-    isPresentInBlockedFnList :: FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> TcM (Maybe (String, String))
-    isPresentInBlockedFnList [] _ _ = pure Nothing
-    isPresentInBlockedFnList ((ruleFnName, ruleArgNo, ruleAllowedTypes) : ls) fnName fnArgs = do
+    isPresentInBlockedFnList :: LHsExpr GhcTc -> FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> TcM (Maybe (LHsExpr GhcTc, String, String))
+    isPresentInBlockedFnList expr [] _ _ = pure Nothing
+    isPresentInBlockedFnList expr ((ruleFnName, ruleArgNo, ruleAllowedTypes) : ls) fnName fnArgs = do
       when logDebugInfo $ liftIO $ do
         print "isPresentInBlockedFnList"
         print (ruleFnName, ruleArgNo, ruleAllowedTypes)
       case ruleFnName == fnName && length fnArgs >= ruleArgNo of
-        False -> isPresentInBlockedFnList ls fnName fnArgs
+        False -> isPresentInBlockedFnList expr ls fnName fnArgs
         True  -> do
           let reqArg = head $ drop (ruleArgNo - 1) fnArgs
           argType <- getHsExprType reqArg
@@ -687,8 +682,8 @@ getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
             showOutputable reqArg
             showOutputable argType
           if validateAllowedTypes argType ruleAllowedTypes
-            then isPresentInBlockedFnList ls fnName fnArgs
-            else pure $ Just (fnName, showS argType)
+            then isPresentInBlockedFnList expr ls fnName fnArgs
+            else pure $ Just (expr, fnName, showS argType)
 
     validateAllowedTypes :: Type -> TypesAllowedInArg -> Bool
     validateAllowedTypes argType@(TyConApp tyCon ls) ruleAllowedTypes = 
