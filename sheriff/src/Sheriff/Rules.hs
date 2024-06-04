@@ -6,21 +6,21 @@ import Sheriff.Types
 badPracticeRules :: Rules
 badPracticeRules = [
     defaultRule
-  , logRule1 
-  , logRule2 
-  , logRule3 
-  , logRule4 
-  , logRule5 
-  , logRule6
-  , logRule7
-  , logRule8
-  , logRule9
-  , logRule10
-  , logRule11
-  , logRule12
-  , logRule13
-  , logRule14
-  , logRule15
+  -- , logRule1 
+  -- , logRule2 
+  -- , logRule3 
+  -- , logRule4 
+  -- , logRule5 
+  -- , logRule6
+  -- , logRule7
+  -- , logRule8
+  -- , logRule9
+  -- , logRule10
+  -- , logRule11
+  -- , logRule12
+  -- , logRule13
+  -- , logRule14
+  -- , logRule15
   , showRule
   ]
 
