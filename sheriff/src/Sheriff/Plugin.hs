@@ -38,7 +38,7 @@ import GHC
     Name,
     Pat (..),
     PatSynBind (..),
-    noLoc, Module (moduleName), moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass
+    noLoc, noExtField, Module (moduleName), moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass
   )
 import GHC.Hs.Binds
 import GhcPlugins (idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, isEnumerationTyCon)
@@ -232,9 +232,9 @@ isBadFunApp rules opts ap@(L _ (HsVar _ v)) = isBadFunAppHelper rules opts ap
 isBadFunApp rules opts ap@(L _ (HsApp _ funl funr)) = isBadFunAppHelper rules opts ap
 isBadFunApp rules opts ap@(L loc (HsWrap _ _ expr)) = isBadFunApp rules opts (L loc expr)
 isBadFunApp rules opts ap@(L _ (ExplicitList _ _ _)) = isBadFunAppHelper rules opts ap
-isBadFunApp rules opts (L _ (OpApp _ lfun op rfun)) = do
+isBadFunApp rules opts (L loc (OpApp _ lfun op rfun)) = do
   case showS op of
-    "($)" -> isBadFunAppHelper rules opts $ mkHsApp lfun rfun
+    "($)" -> isBadFunAppHelper rules opts $ (L loc (HsApp noExtField lfun rfun))
     _ -> pure []
 isBadFunApp _ _ _ = pure []
 
