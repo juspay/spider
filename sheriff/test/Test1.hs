@@ -174,6 +174,8 @@ main = do
     print $ show temp2
     print $ show temp3
     print $ show temp4
+    logError "tag" $ show en2 <> show obA
+    logError "tag" $ show en <> show obB
     logError "tag" $ show temp5
     logError "tag" $ show temp6
   where
