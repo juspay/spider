@@ -59,7 +59,7 @@ import GhcPlugins ()
 import DynFlags ()
 import Control.Monad (foldM,when)
 import Data.List
-import Data.List.Extra (replace,splitOn)
+import Data.List.Extra (replace, splitOn, sortOn)
 import Data.Maybe (fromJust,isJust,mapMaybe)
 import Sheriff.Types
 import Sheriff.Rules
@@ -93,6 +93,7 @@ import ConLike
 import TysWiredIn
 import GHC.Hs.Lit (HsLit(..))
 import TcEvidence
+import qualified Data.HashMap.Strict as HM
 
 plugin :: Plugin
 plugin = defaultPlugin {
@@ -138,14 +139,20 @@ sheriff opts modSummary tcEnv = do
                     pure badPracticeRules
                   Right (YamlTables tables) -> pure $ badPracticeRules <> (map yamlToDbRule tables)
 
-  errors <- concat <$> (mapM (loopOverModBinds rulesList pluginOpts) $ bagToList $ tcg_binds tcEnv)
+  let finalRules = rulesList <> exceptionRules
+
+  errors <- concat <$> (mapM (loopOverModBinds finalRules pluginOpts) $ bagToList $ tcg_binds tcEnv)
+
+  let sortedErrors = sortOn src_span errors
+      groupedErrors = groupBy (\a b -> src_span a == src_span b) sortedErrors
+      filteredErrors = concat $ filter (\x -> not $ (\err -> (getViolationRule $ violation err) `elem` exceptionRules) `any` x) groupedErrors
 
   if throwCompilationErrorV
-    then addErrs $ map mkGhcCompileError errors
+    then addErrs $ map mkGhcCompileError filteredErrors
     else pure ()
 
   if saveToFileV
-    then addErrToFile modSummary savePathV errors  
+    then addErrToFile modSummary savePathV filteredErrors  
     else pure ()
 
   return tcEnv

@@ -154,7 +154,7 @@ instance Show Violation where
   show (ArgTypeBlocked typ rule) = "Use of '" <> (fn_name rule) <> "' on '" <> typ <> "' is not allowed."
   show (FnBlockedInArg (fnName, typ) rule) = "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> (fn_name rule) <> "' is not allowed."
   show (FnUseBlocked rule) = "Use of '" <> (fn_name rule) <> "' in the code is not allowed."
-  show (NonIndexedDBColumn colName tableName rule) = "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
+  show (NonIndexedDBColumn colName tableName _) = "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
   show NoViolation = "NoViolation"
 
 getViolationSuggestions :: Violation -> Suggestions
@@ -172,6 +172,14 @@ getViolationType v = case v of
   FnUseBlocked _ -> "FnUseBlocked"
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
   NoViolation -> "NoViolation"
+
+getViolationRule :: Violation -> Rule
+getViolationRule v = case v of
+  ArgTypeBlocked _ r -> FunctionRuleT r
+  FnBlockedInArg _ r -> FunctionRuleT r
+  FnUseBlocked r -> FunctionRuleT r
+  NonIndexedDBColumn _ _ r -> DBRuleT r
+  NoViolation -> defaultRule
 
 getRuleName :: Violation -> String
 getRuleName v = case v of
