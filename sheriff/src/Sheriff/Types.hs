@@ -14,6 +14,7 @@ data PluginOpts = PluginOpts {
     savePath :: String,
     indexedKeysPath :: String,
     rulesConfigPath :: String,
+    exceptionsConfigPath :: String,
     matchAllInsideAnd :: Bool
   } deriving (Show, Eq)
 
@@ -26,7 +27,8 @@ defaultPluginOpts =
     matchAllInsideAnd = False,
     savePath = ".juspay/tmp/sheriff/", 
     indexedKeysPath = ".juspay/indexedKeys.yaml" ,
-    rulesConfigPath = ".juspay/sheriffRules.yaml" 
+    rulesConfigPath = ".juspay/sheriffRules.yaml",
+    exceptionsConfigPath = ".juspay/sheriffExceptionRules.yaml" 
   }
 
 instance FromJSON PluginOpts where
@@ -37,8 +39,9 @@ instance FromJSON PluginOpts where
     savePath <- o .:? "savePath" .!= (savePath defaultPluginOpts)
     indexedKeysPath <- o .:? "indexedKeysPath" .!= (indexedKeysPath defaultPluginOpts)
     rulesConfigPath <- o .:? "rulesConfigPath" .!= (rulesConfigPath defaultPluginOpts)
+    exceptionsConfigPath <- o .:? "exceptionsConfigPath" .!= (exceptionsConfigPath defaultPluginOpts)
     matchAllInsideAnd <- o .:? "matchAllInsideAnd" .!= (matchAllInsideAnd defaultPluginOpts)
-    return PluginOpts { saveToFile = saveToFile, throwCompilationError = throwCompilationError, matchAllInsideAnd = matchAllInsideAnd, savePath = savePath, indexedKeysPath = indexedKeysPath, rulesConfigPath = rulesConfigPath, failOnFileNotFound = failOnFileNotFound }
+    return PluginOpts { saveToFile = saveToFile, throwCompilationError = throwCompilationError, matchAllInsideAnd = matchAllInsideAnd, savePath = savePath, indexedKeysPath = indexedKeysPath, rulesConfigPath = rulesConfigPath, exceptionsConfigPath = exceptionsConfigPath, failOnFileNotFound = failOnFileNotFound }
 
 data SheriffRules = SheriffRules
   { rules :: Rules

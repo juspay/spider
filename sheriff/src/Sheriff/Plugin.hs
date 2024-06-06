@@ -135,6 +135,7 @@ sheriff opts modSummary tcEnv = do
       savePathV = savePath pluginOpts
       indexedKeysPathV = indexedKeysPath pluginOpts
       sheriffRulesPath = rulesConfigPath pluginOpts
+      sheriffExceptionsPath = exceptionsConfigPath pluginOpts
       failOnFileNotFoundV = failOnFileNotFound pluginOpts 
 
   -- parse the yaml file from the path given
@@ -142,6 +143,9 @@ sheriff opts modSummary tcEnv = do
 
   -- parse the yaml file from the path given for sheriff general rules
   parsedRulesYaml <- liftIO $ parseYAMLFile sheriffRulesPath
+
+  -- parse the yaml file from the path given for sheriff general exception rules
+  parsedExceptionsYaml <- liftIO $ parseYAMLFile sheriffExceptionsPath
 
   -- Check the parsed yaml file for indexedDbKeys and throw compilation error if configured
   rulesListWithDbRules <- case parsedYaml of
@@ -156,15 +160,22 @@ sheriff opts modSummary tcEnv = do
                   pure rulesListWithDbRules
                 Right (SheriffRules rules) -> pure $ rulesListWithDbRules <> rules
 
-  when logDebugInfo $ liftIO $ print rulesList
+  exceptionList <- case parsedExceptionsYaml of
+                Left err -> do
+                  when logWarnInfo $ addWarn NoReason (mkInvalidYamlFileErr (show err))
+                  pure exceptionRules
+                Right (SheriffRules rules) -> pure $ exceptionRules <> rules
 
-  let finalRules = rulesList <> exceptionRules
+  when logDebugInfo $ liftIO $ print rulesList
+  when logDebugInfo $ liftIO $ print exceptionList
+
+  let finalRules = rulesList <> exceptionList
 
   errors <- concat <$> (mapM (loopOverModBinds finalRules pluginOpts) $ bagToList $ tcg_binds tcEnv)
 
   let sortedErrors = sortOn src_span errors
       groupedErrors = groupBy (\a b -> src_span a == src_span b) sortedErrors
-      filteredErrors = concat $ filter (\x -> not $ (\err -> (getViolationRule $ violation err) `elem` exceptionRules) `any` x) groupedErrors
+      filteredErrors = concat $ filter (\x -> not $ (\err -> (getViolationRule $ violation err) `elem` exceptionList) `any` x) groupedErrors
 
   if throwCompilationErrorV
     then addErrs $ map mkGhcCompileError filteredErrors
