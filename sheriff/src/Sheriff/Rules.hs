@@ -6,28 +6,6 @@ import Sheriff.Types
 badPracticeRules :: Rules
 badPracticeRules = [
     defaultRule
-  -- , logRule1 
-  -- , logRule2 
-  -- , logRule3 
-  -- , logRule4 
-  -- , logRule5 
-  -- , logRule6
-  -- , logRule7
-  -- , logRule8
-  -- , logRule9
-  -- , logRule10
-  -- , logRule11
-  -- , logRule12
-  -- , logRule13
-  -- , logRule14
-  -- , logRule15
-  , showRule
-  ]
-
--- Exceptions to rule out if these rules are also applied to same LHsExpr
-exceptionRules :: Rules
-exceptionRules = [
-    defaultRule
   , logRule1 
   , logRule2 
   , logRule3 
@@ -43,6 +21,13 @@ exceptionRules = [
   , logRule13
   , logRule14
   , logRule15
+  , showRule
+  ]
+
+-- Exceptions to rule out if these rules are also applied to same LHsExpr
+exceptionRules :: Rules
+exceptionRules = [
+    defaultRule
   , updateFunctionRuleArgNo logRule1  1
   , updateFunctionRuleArgNo logRule2  1
   , updateFunctionRuleArgNo logRule3  1
