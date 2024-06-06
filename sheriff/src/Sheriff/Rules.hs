@@ -28,21 +28,21 @@ badPracticeRules = [
 exceptionRules :: Rules
 exceptionRules = [
     defaultRule
-  , updateFunctionRuleArgNo logRule1  1
-  , updateFunctionRuleArgNo logRule2  1
-  , updateFunctionRuleArgNo logRule3  1
-  , updateFunctionRuleArgNo logRule4  1
-  , updateFunctionRuleArgNo logRule5  1
-  , updateFunctionRuleArgNo logRule6 1
-  , updateFunctionRuleArgNo logRule7 1
-  , updateFunctionRuleArgNo logRule8 1
-  , updateFunctionRuleArgNo logRule9 1
-  , updateFunctionRuleArgNo logRule10 1
-  , updateFunctionRuleArgNo logRule11 1
-  , updateFunctionRuleArgNo logRule12 1
-  , updateFunctionRuleArgNo logRule13 1
-  , updateFunctionRuleArgNo logRule14 1
-  , updateFunctionRuleArgNo logRule15 1
+  -- , updateFunctionRuleArgNo logRule1  1
+  -- , updateFunctionRuleArgNo logRule2  1
+  -- , updateFunctionRuleArgNo logRule3  1
+  -- , updateFunctionRuleArgNo logRule4  1
+  -- , updateFunctionRuleArgNo logRule5  1
+  -- , updateFunctionRuleArgNo logRule6 1
+  -- , updateFunctionRuleArgNo logRule7 1
+  -- , updateFunctionRuleArgNo logRule8 1
+  -- , updateFunctionRuleArgNo logRule9 1
+  -- , updateFunctionRuleArgNo logRule10 1
+  -- , updateFunctionRuleArgNo logRule11 1
+  -- , updateFunctionRuleArgNo logRule12 1
+  -- , updateFunctionRuleArgNo logRule13 1
+  -- , updateFunctionRuleArgNo logRule14 1
+  -- , updateFunctionRuleArgNo logRule15 1
   ]
 
 logArgNo :: ArgNo
