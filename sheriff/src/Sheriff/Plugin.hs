@@ -452,9 +452,9 @@ getWhereClauseFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   case res of
     Nothing -> Nothing
     Just (fnName, ls) -> Just (fnName, ls ++ [funr])
-getWhereClauseFnNameWithAllArgs (L _ (OpApp _ lfun op rfun)) = do
+getWhereClauseFnNameWithAllArgs (L loc (OpApp _ lfun op rfun)) = do
   case showS op of
-    "($)" -> getWhereClauseFnNameWithAllArgs $ mkHsApp lfun rfun
+    "($)" -> getWhereClauseFnNameWithAllArgs $ (L loc (HsApp noExtField lfun rfun))
     _ -> Nothing
 getWhereClauseFnNameWithAllArgs (L loc ap@(HsPar _ expr)) = getWhereClauseFnNameWithAllArgs expr
 -- If condition inside the list, add dummy type
@@ -476,9 +476,9 @@ getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   case res of
     Nothing -> Nothing
     Just (fnName, ls) -> Just (fnName, ls ++ [funr])
-getFnNameWithAllArgs (L _ (OpApp _ funl op funr)) = do
+getFnNameWithAllArgs (L loc (OpApp _ funl op funr)) = do
   case showS op of
-    "($)" -> getFnNameWithAllArgs $ mkHsApp funl funr
+    "($)" -> getFnNameWithAllArgs $ (L loc (HsApp noExtField funl funr))
     _ -> Nothing
 getFnNameWithAllArgs (L loc ap@(HsWrap _ _ expr)) = do
   getFnNameWithAllArgs (L loc expr)
