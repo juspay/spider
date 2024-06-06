@@ -1,8 +1,11 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# OPTIONS_GHC -Werror=incomplete-patterns #-}
 
 module Sheriff.Plugin (plugin) where
 
-import Bag (bagToList,listToBag)
+import Bag (bagToList,listToBag, emptyBag)
 import Control.Monad.IO.Class (MonadIO (..))
 import Data.Data
 import Control.Reference (biplateRef, (^?), Simple, Traversal)
@@ -41,8 +44,12 @@ import GHC
     noLoc, noExtField, Module (moduleName), moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass
   )
 import GHC.Hs.Binds
-import GhcPlugins (idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, isEnumerationTyCon)
-import HscTypes (ModSummary (..), hscEPS, eps_PTE)
+import GhcPlugins (idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, isEnumerationTyCon, WarnReason(..))
+import HscTypes (ModSummary (..))
+import GhcPlugins (moduleEnvToList, ModIface, lookupModuleEnv)
+import HscTypes (hscEPS, eps_PTE, hsc_targets, mgModSummaries, hsc_mod_graph, hsc_HPT, eps_PIT, pprHPT, mi_decls, mi_exports, mi_complete_sigs, mi_insts, eps_complete_matches, eps_stats, eps_rule_base, mi_usages)
+import GHC.IORef (readIORef)
+import LoadIface (pprModIface, pprModIfaceSimple)
 import Name (nameStableString)
 import Plugins (CommandLineOption, Plugin (typeCheckResultAction), defaultPlugin)
 import TcRnTypes (TcGblEnv (..), TcM)
@@ -78,7 +85,7 @@ import FastString
 import Data.Maybe (catMaybes)
 import DsMonad (initDsTc)
 import DsExpr (dsLExpr)
-import TcRnMonad (failWith, addErr, addErrAt, addErrs, getEnv, env_top)
+import TcRnMonad (failWith, addErr, addWarn, addErrAt, addErrs, getEnv, env_top)
 import Name (isSystemName)
 import GHC (OverLitTc(..), HsOverLit(..))
 import CoreUtils (exprType)
@@ -114,7 +121,7 @@ purePlugin :: [CommandLineOption] -> IO PluginRecompile
 purePlugin _ = return NoForceRecompile
 
 -- Parse the YAML file
-parseYAMLFile :: FilePath -> IO (Either ParseException YamlTables)
+parseYAMLFile :: (FromJSON a) => FilePath -> IO (Either ParseException a)
 parseYAMLFile file = decodeFileEither file
 
 sheriff :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
@@ -127,17 +134,29 @@ sheriff opts modSummary tcEnv = do
       saveToFileV = saveToFile pluginOpts
       savePathV = savePath pluginOpts
       indexedKeysPathV = indexedKeysPath pluginOpts
+      sheriffRulesPath = rulesConfigPath pluginOpts
       failOnFileNotFoundV = failOnFileNotFound pluginOpts 
 
   -- parse the yaml file from the path given
   parsedYaml <- liftIO $ parseYAMLFile indexedKeysPathV
 
+  -- parse the yaml file from the path given for sheriff general rules
+  parsedRulesYaml <- liftIO $ parseYAMLFile sheriffRulesPath
+
   -- Check the parsed yaml file for indexedDbKeys and throw compilation error if configured
-  rulesList <- case parsedYaml of
-                  Left err -> do
-                    when failOnFileNotFoundV $ addErr (mkInvalidIndexedKeysFile (show err))
-                    pure badPracticeRules
-                  Right (YamlTables tables) -> pure $ badPracticeRules <> (map yamlToDbRule tables)
+  rulesListWithDbRules <- case parsedYaml of
+                            Left err -> do
+                              when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
+                              pure badPracticeRules
+                            Right (YamlTables tables) -> pure $ badPracticeRules <> (map yamlToDbRule tables)
+  
+  rulesList <- case parsedRulesYaml of
+                Left err -> do
+                  when logWarnInfo $ addWarn NoReason (mkInvalidYamlFileErr (show err))
+                  pure rulesListWithDbRules
+                Right (SheriffRules rules) -> pure $ rulesListWithDbRules <> rules
+
+  when logDebugInfo $ liftIO $ print rulesList
 
   let finalRules = rulesList <> exceptionRules
 
@@ -332,6 +351,7 @@ doesMatchColNameInDbRule colName (key : keys) =
   case key of
     (CompositeKey (col:_))  -> (colName == col) || (doesMatchColNameInDbRule colName keys)
     (NonCompositeKey col)   -> (colName == col) || (doesMatchColNameInDbRule colName keys)
+    _                       -> doesMatchColNameInDbRule colName keys
 
 type SimplifiedIsClause = (LHsExpr GhcTc, String, String)
 
@@ -435,6 +455,7 @@ checkAndApplyRule ruleT opts ap = case ruleT of
     case (fnName == ruleFnName && length args >= arg_no) of
       True  -> validateFunctionRule rule opts fnName args ap 
       False -> pure [] 
+  GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
 
 getDBFieldSpecType :: LHsExpr GhcTc -> DBFieldSpecType
 getDBFieldSpecType (L _ expr)
@@ -530,9 +551,9 @@ getErrMsgWithSuggestions errMsg suggestions = errMsg
     fourSpaces = twoSpaces <> twoSpaces
     sixSpaces = twoSpaces <> fourSpaces
 
--- Create invalid indexedKeys file compilation error
-mkInvalidIndexedKeysFile :: String -> OP.SDoc
-mkInvalidIndexedKeysFile err = OP.text err
+-- Create invalid yaml file compilation error
+mkInvalidYamlFileErr :: String -> OP.SDoc
+mkInvalidYamlFileErr err = OP.text err
 
 -- Create Internal Representation of Logging Error
 mkCompileError :: (LHsExpr GhcTc, Violation) -> TcM CompileError
