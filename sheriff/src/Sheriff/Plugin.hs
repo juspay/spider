@@ -1,8 +1,11 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# OPTIONS_GHC -Werror=incomplete-patterns #-}
 
 module Sheriff.Plugin (plugin) where
 
-import Bag (bagToList,listToBag)
+import Bag (bagToList,listToBag, emptyBag)
 import Control.Monad.IO.Class (MonadIO (..))
 import Data.Data
 import Control.Reference (biplateRef, (^?), Simple, Traversal)
@@ -38,11 +41,15 @@ import GHC
     Name,
     Pat (..),
     PatSynBind (..),
-    noLoc, Module (moduleName), moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass
+    noLoc, noExtField, Module (moduleName), moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass
   )
 import GHC.Hs.Binds
-import GhcPlugins (idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, isEnumerationTyCon)
-import HscTypes (ModSummary (..), hscEPS, eps_PTE)
+import GhcPlugins (idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, isEnumerationTyCon, WarnReason(..))
+import HscTypes (ModSummary (..))
+import GhcPlugins (moduleEnvToList, ModIface, lookupModuleEnv)
+import HscTypes (hscEPS, eps_PTE, hsc_targets, mgModSummaries, hsc_mod_graph, hsc_HPT, eps_PIT, pprHPT, mi_decls, mi_exports, mi_complete_sigs, mi_insts, eps_complete_matches, eps_stats, eps_rule_base, mi_usages)
+import GHC.IORef (readIORef)
+import LoadIface (pprModIface, pprModIfaceSimple)
 import Name (nameStableString)
 import Plugins (CommandLineOption, Plugin (typeCheckResultAction), defaultPlugin)
 import TcRnTypes (TcGblEnv (..), TcM)
@@ -59,7 +66,7 @@ import GhcPlugins ()
 import DynFlags ()
 import Control.Monad (foldM,when)
 import Data.List
-import Data.List.Extra (replace,splitOn)
+import Data.List.Extra (replace, splitOn, sortOn)
 import Data.Maybe (fromJust,isJust,mapMaybe)
 import Sheriff.Types
 import Sheriff.Rules
@@ -78,7 +85,7 @@ import FastString
 import Data.Maybe (catMaybes)
 import DsMonad (initDsTc)
 import DsExpr (dsLExpr)
-import TcRnMonad (failWith, addErr, addErrAt, addErrs, getEnv, env_top)
+import TcRnMonad (failWith, addErr, addWarn, addErrAt, addErrs, getEnv, env_top)
 import Name (isSystemName)
 import GHC (OverLitTc(..), HsOverLit(..))
 import CoreUtils (exprType)
@@ -93,6 +100,7 @@ import ConLike
 import TysWiredIn
 import GHC.Hs.Lit (HsLit(..))
 import TcEvidence
+import qualified Data.HashMap.Strict as HM
 
 plugin :: Plugin
 plugin = defaultPlugin {
@@ -113,7 +121,7 @@ purePlugin :: [CommandLineOption] -> IO PluginRecompile
 purePlugin _ = return NoForceRecompile
 
 -- Parse the YAML file
-parseYAMLFile :: FilePath -> IO (Either ParseException YamlTables)
+parseYAMLFile :: (FromJSON a) => FilePath -> IO (Either ParseException a)
 parseYAMLFile file = decodeFileEither file
 
 sheriff :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
@@ -126,26 +134,55 @@ sheriff opts modSummary tcEnv = do
       saveToFileV = saveToFile pluginOpts
       savePathV = savePath pluginOpts
       indexedKeysPathV = indexedKeysPath pluginOpts
+      sheriffRulesPath = rulesConfigPath pluginOpts
+      sheriffExceptionsPath = exceptionsConfigPath pluginOpts
       failOnFileNotFoundV = failOnFileNotFound pluginOpts 
 
   -- parse the yaml file from the path given
   parsedYaml <- liftIO $ parseYAMLFile indexedKeysPathV
 
-  -- Check the parsed yaml file for indexedDbKeys and throw compilation error if configured
-  rulesList <- case parsedYaml of
-                  Left err -> do
-                    when failOnFileNotFoundV $ addErr (mkInvalidIndexedKeysFile (show err))
-                    pure badPracticeRules
-                  Right (YamlTables tables) -> pure $ badPracticeRules <> (map yamlToDbRule tables)
+  -- parse the yaml file from the path given for sheriff general rules
+  parsedRulesYaml <- liftIO $ parseYAMLFile sheriffRulesPath
 
-  errors <- concat <$> (mapM (loopOverModBinds rulesList pluginOpts) $ bagToList $ tcg_binds tcEnv)
+  -- parse the yaml file from the path given for sheriff general exception rules
+  parsedExceptionsYaml <- liftIO $ parseYAMLFile sheriffExceptionsPath
+
+  -- Check the parsed yaml file for indexedDbKeys and throw compilation error if configured
+  rulesListWithDbRules <- case parsedYaml of
+                            Left err -> do
+                              when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
+                              pure badPracticeRules
+                            Right (YamlTables tables) -> pure $ badPracticeRules <> (map yamlToDbRule tables)
+  
+  rulesList <- case parsedRulesYaml of
+                Left err -> do
+                  when logWarnInfo $ addWarn NoReason (mkInvalidYamlFileErr (show err))
+                  pure rulesListWithDbRules
+                Right (SheriffRules rules) -> pure $ rulesListWithDbRules <> rules
+
+  exceptionList <- case parsedExceptionsYaml of
+                Left err -> do
+                  when logWarnInfo $ addWarn NoReason (mkInvalidYamlFileErr (show err))
+                  pure exceptionRules
+                Right (SheriffRules rules) -> pure $ exceptionRules <> rules
+
+  when logDebugInfo $ liftIO $ print rulesList
+  when logDebugInfo $ liftIO $ print exceptionList
+
+  let finalRules = rulesList <> exceptionList
+
+  errors <- concat <$> (mapM (loopOverModBinds finalRules pluginOpts) $ bagToList $ tcg_binds tcEnv)
+
+  let sortedErrors = sortOn src_span errors
+      groupedErrors = groupBy (\a b -> src_span a == src_span b) sortedErrors
+      filteredErrors = concat $ filter (\x -> not $ (\err -> (getViolationRule $ violation err) `elem` exceptionList) `any` x) groupedErrors
 
   if throwCompilationErrorV
-    then addErrs $ map mkGhcCompileError errors
+    then addErrs $ map mkGhcCompileError filteredErrors
     else pure ()
 
   if saveToFileV
-    then addErrToFile modSummary savePathV errors  
+    then addErrToFile modSummary savePathV filteredErrors  
     else pure ()
 
   return tcEnv
@@ -225,23 +262,23 @@ isBadFunApp rules opts ap@(L _ (HsVar _ v)) = isBadFunAppHelper rules opts ap
 isBadFunApp rules opts ap@(L _ (HsApp _ funl funr)) = isBadFunAppHelper rules opts ap
 isBadFunApp rules opts ap@(L loc (HsWrap _ _ expr)) = isBadFunApp rules opts (L loc expr)
 isBadFunApp rules opts ap@(L _ (ExplicitList _ _ _)) = isBadFunAppHelper rules opts ap
-isBadFunApp rules opts (L _ (OpApp _ lfun op rfun)) = do
+isBadFunApp rules opts (L loc (OpApp _ lfun op rfun)) = do
   case showS op of
-    "($)" -> isBadFunAppHelper rules opts $ mkHsApp lfun rfun
+    "($)" -> isBadFunAppHelper rules opts $ (L loc (HsApp noExtField lfun rfun))
     _ -> pure []
 isBadFunApp _ _ _ = pure []
 
 isBadFunAppHelper :: Rules -> PluginOpts -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
-isBadFunAppHelper rules opts ap = catMaybes <$> mapM (\rule -> checkAndApplyRule rule opts ap) rules
+isBadFunAppHelper rules opts ap = concat <$> mapM (\rule -> checkAndApplyRule rule opts ap) rules
 
-validateFunctionRule :: FunctionRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
+validateFunctionRule :: FunctionRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 validateFunctionRule rule _opts fnName args expr = do
   if (arg_no rule) == 0 -- considering arg 0 as the case for blocking the whole function occurence
-    then pure $ Just (expr, FnUseBlocked rule)
+    then pure [(expr, FnUseBlocked rule)]
   else do
     let matches = drop ((arg_no rule) - 1) args
     if length matches == 0
-      then pure Nothing
+      then pure []
     else do
       let arg = head matches
       argTypeGhc <- getHsExprType arg
@@ -257,16 +294,13 @@ validateFunctionRule rule _opts fnName args expr = do
           print $ "Arg Type = " <> argType
 
       if argTypeBlocked
-        then pure $ Just (expr, ArgTypeBlocked argType rule)
+        then pure [(expr, ArgTypeBlocked argType rule)]
       else if not isArgTypeToCheck
-        then pure Nothing
+        then pure []
       else do
         -- It's a rule function with to_be_checked type argument
         blockedFnsList <- getBlockedFnsList arg rule -- check if the expression has any stringification function
-        if length blockedFnsList > 0
-          then do
-            pure $ Just (expr, FnBlockedInArg (head blockedFnsList) rule)
-          else pure Nothing
+        pure $ fmap (\(lExpr, blockedFnName, blockedFnArgTyp) -> (lExpr, FnBlockedInArg (blockedFnName, blockedFnArgTyp) rule)) blockedFnsList
 
 validateType :: Type -> TypesToCheckInArg -> Bool
 validateType argTyp@(TyConApp tyCon ls) typs = 
@@ -279,16 +313,14 @@ validateType argTyp@(TyConApp tyCon ls) typs =
   else showS argTyp `elem` typs
 validateType argTyp typs = showS argTyp `elem` typs
 
-validateDBRule :: DBRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
+validateDBRule :: DBRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames _) opts tableName clauses expr = do
   simplifiedExprs <- trfWhereToSOP clauses
   let checkDBViolation = case (matchAllInsideAnd opts) of
                           True  -> checkDBViolationMatchAll
                           False -> checkDBViolationWithoutMatchAll
-  mbViolations <- catMaybes <$> mapM checkDBViolation simplifiedExprs
-  case mbViolations of
-    [] -> pure Nothing
-    (violation : _) -> pure (Just violation)
+  violations <- catMaybes <$> mapM checkDBViolation simplifiedExprs
+  pure violations
   where
     -- Since we need all columns to be indexed, we need to check for the columns in the order of composite key
     checkDBViolationMatchAll :: [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
@@ -330,6 +362,7 @@ doesMatchColNameInDbRule colName (key : keys) =
   case key of
     (CompositeKey (col:_))  -> (colName == col) || (doesMatchColNameInDbRule colName keys)
     (NonCompositeKey col)   -> (colName == col) || (doesMatchColNameInDbRule colName keys)
+    _                       -> doesMatchColNameInDbRule colName keys
 
 type SimplifiedIsClause = (LHsExpr GhcTc, String, String)
 
@@ -418,21 +451,22 @@ getIsClauseData fieldArg _comp _clause = do
   
   pure mbColNameAndTableName
 
-checkAndApplyRule :: Rule -> PluginOpts -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
+checkAndApplyRule :: Rule -> PluginOpts -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 checkAndApplyRule ruleT opts ap = case ruleT of
   DBRuleT rule@(DBRule _ ruleTableName _ _) -> 
     case ap of
       (L _ (ExplicitList (TyConApp ty [_, tblName]) _ exprs)) -> case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
         True  -> validateDBRule rule opts (showS tblName) exprs ap 
-        False -> pure Nothing
-      _ -> pure Nothing
+        False -> pure []
+      _ -> pure []
   FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _ _) -> do
     let res = getFnNameWithAllArgs ap
     -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
         (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
     case (fnName == ruleFnName && length args >= arg_no) of
       True  -> validateFunctionRule rule opts fnName args ap 
-      False -> pure Nothing 
+      False -> pure [] 
+  GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
 
 getDBFieldSpecType :: LHsExpr GhcTc -> DBFieldSpecType
 getDBFieldSpecType (L _ expr)
@@ -450,9 +484,9 @@ getWhereClauseFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   case res of
     Nothing -> Nothing
     Just (fnName, ls) -> Just (fnName, ls ++ [funr])
-getWhereClauseFnNameWithAllArgs (L _ (OpApp _ lfun op rfun)) = do
+getWhereClauseFnNameWithAllArgs (L loc (OpApp _ lfun op rfun)) = do
   case showS op of
-    "($)" -> getWhereClauseFnNameWithAllArgs $ mkHsApp lfun rfun
+    "($)" -> getWhereClauseFnNameWithAllArgs $ (L loc (HsApp noExtField lfun rfun))
     _ -> Nothing
 getWhereClauseFnNameWithAllArgs (L loc ap@(HsPar _ expr)) = getWhereClauseFnNameWithAllArgs expr
 -- If condition inside the list, add dummy type
@@ -474,9 +508,9 @@ getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   case res of
     Nothing -> Nothing
     Just (fnName, ls) -> Just (fnName, ls ++ [funr])
-getFnNameWithAllArgs (L _ (OpApp _ funl op funr)) = do
+getFnNameWithAllArgs (L loc (OpApp _ funl op funr)) = do
   case showS op of
-    "($)" -> getFnNameWithAllArgs $ mkHsApp funl funr
+    "($)" -> getFnNameWithAllArgs $ (L loc (HsApp noExtField funl funr))
     _ -> Nothing
 getFnNameWithAllArgs (L loc ap@(HsWrap _ _ expr)) = do
   getFnNameWithAllArgs (L loc expr)
@@ -528,9 +562,9 @@ getErrMsgWithSuggestions errMsg suggestions = errMsg
     fourSpaces = twoSpaces <> twoSpaces
     sixSpaces = twoSpaces <> fourSpaces
 
--- Create invalid indexedKeys file compilation error
-mkInvalidIndexedKeysFile :: String -> OP.SDoc
-mkInvalidIndexedKeysFile err = OP.text err
+-- Create invalid yaml file compilation error
+mkInvalidYamlFileErr :: String -> OP.SDoc
+mkInvalidYamlFileErr err = OP.text err
 
 -- Create Internal Representation of Logging Error
 mkCompileError :: (LHsExpr GhcTc, Violation) -> TcM CompileError
@@ -649,7 +683,7 @@ getStringificationFns2 arg rule =
   in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns)) $ takeWhile isFunVar $ filter (not . isSystemName . varName) vars
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
-getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> TcM [(String, String)] 
+getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> TcM [(LHsExpr GhcTc, String, String)] 
 getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
   let argHsExprs = arg ^? biplateRef :: [LHsExpr GhcTc]
       fnApps = filter isFunApp argHsExprs
@@ -662,7 +696,7 @@ getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
   --     blockedFns = fmap (\(fname, _, _) -> fname) $ fns_blocked_in_arg rule
   -- in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns) && (not . isSystemName . varName) x) vars
   where 
-    checkFnBlockedInArg :: LHsExpr GhcTc -> TcM (Maybe (String, String))
+    checkFnBlockedInArg :: LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, String, String))
     checkFnBlockedInArg expr = do
       let res = getFnNameWithAllArgs expr
       when logDebugInfo $ liftIO $ do
@@ -670,16 +704,16 @@ getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
         showOutputable res
       case res of
         Nothing -> pure Nothing
-        Just (fnName, args) -> isPresentInBlockedFnList fnsBlocked ((getOccString . varName . unLoc) fnName) args
+        Just (fnName, args) -> isPresentInBlockedFnList expr fnsBlocked ((getOccString . varName . unLoc) fnName) args
     
-    isPresentInBlockedFnList :: FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> TcM (Maybe (String, String))
-    isPresentInBlockedFnList [] _ _ = pure Nothing
-    isPresentInBlockedFnList ((ruleFnName, ruleArgNo, ruleAllowedTypes) : ls) fnName fnArgs = do
+    isPresentInBlockedFnList :: LHsExpr GhcTc -> FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> TcM (Maybe (LHsExpr GhcTc, String, String))
+    isPresentInBlockedFnList expr [] _ _ = pure Nothing
+    isPresentInBlockedFnList expr ((ruleFnName, ruleArgNo, ruleAllowedTypes) : ls) fnName fnArgs = do
       when logDebugInfo $ liftIO $ do
         print "isPresentInBlockedFnList"
         print (ruleFnName, ruleArgNo, ruleAllowedTypes)
       case ruleFnName == fnName && length fnArgs >= ruleArgNo of
-        False -> isPresentInBlockedFnList ls fnName fnArgs
+        False -> isPresentInBlockedFnList expr ls fnName fnArgs
         True  -> do
           let reqArg = head $ drop (ruleArgNo - 1) fnArgs
           argType <- getHsExprType reqArg
@@ -687,8 +721,8 @@ getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
             showOutputable reqArg
             showOutputable argType
           if validateAllowedTypes argType ruleAllowedTypes
-            then isPresentInBlockedFnList ls fnName fnArgs
-            else pure $ Just (fnName, showS argType)
+            then isPresentInBlockedFnList expr ls fnName fnArgs
+            else pure $ Just (expr, fnName, showS argType)
 
     validateAllowedTypes :: Type -> TypesAllowedInArg -> Bool
     validateAllowedTypes argType@(TyConApp tyCon ls) ruleAllowedTypes = 

@@ -159,7 +159,7 @@ main = do
     logError "tag" $ show en
     logErrorT "tag" $ encodeJSON en
     logError "tag" $ show en2
-    logErrorT "tag" $ encodeJSON en2
+    logErrorT (T.pack $ show "tag") $ encodeJSON en2
     logError "tag" $ show en3
     logErrorT "tag" $ encodeJSON en3
     logError "tag" $ show (en, "This is Text" :: String)
@@ -174,6 +174,8 @@ main = do
     print $ show temp2
     print $ show temp3
     print $ show temp4
+    logError "tag" $ show en2 <> show obA
+    logError "tag" $ show en <> show obB
     logError "tag" $ show temp5
     logError "tag" $ show temp6
   where
