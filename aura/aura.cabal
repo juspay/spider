@@ -1,0 +1,39 @@
+cabal-version:      2.4
+name:               aura
+version:            0.1.0.0
+
+-- A short (one-line) description of the package.
+-- synopsis:
+
+-- A longer description of the package.
+-- description:
+
+-- A URL where users can report bugs.
+-- bug-reports:
+
+-- The license under which the package is released.
+-- license:
+author:             Chaitanya Nair
+maintainer:         chaitanya.nair@juspay.in
+
+-- A copyright notice.
+-- copyright:
+-- category:
+extra-source-files: CHANGELOG.md
+
+library
+    exposed-modules: Aura.EnvPlugin, Aura.ConfigPlugin 
+    default-extensions: OverloadedStrings
+    build-depends:    base ^>=4.14.3.0, ghc, references, uniplate, aeson, unordered-containers, extra, aeson-pretty, bytestring, directory
+    hs-source-dirs:   src
+    default-language: Haskell2010
+
+test-suite aura-test
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    other-modules: Extra
+    main-is:          Main.hs
+    build-depends:
+        aura, base
+    ghc-options: -fplugin=Aura.EnvPlugin -fplugin-opt Aura.EnvPlugin:./tmp/env/
