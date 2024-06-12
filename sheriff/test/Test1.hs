@@ -38,11 +38,19 @@ data EnumT2 = U EnumT | V
 data EnumT3 x = M | N
     deriving (Generic, Show, ToJSON, FromJSON)
 
+type P = Text
+
 en :: EnumT
 en = Y
 
 en2 :: EnumT2
 en2 = V
+
+en21 :: P
+en21 = "Hello"
+
+en22 :: Text
+en22 = "Hello"
 
 en3 :: EnumT3 ()
 en3 = M
@@ -172,6 +180,9 @@ main = do
     print $ show temp
     print $ show temp1
     print $ show temp2
+    print $ show en2
+    print $ show en21
+    print $ show en22
     print $ show temp3
     print $ show temp4
     logError "tag" $ show en2 <> show obA

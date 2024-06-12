@@ -251,7 +251,7 @@ validateFunctionRule rule _opts fnName args expr = do
       then pure []
     else do
       let arg = head matches
-      argTypeGhc <- getHsExprType arg
+      argTypeGhc <- deNoteType <$> getHsExprType arg
       let argType = showS argTypeGhc
           argTypeBlocked = validateType argTypeGhc $ types_blocked_in_arg rule
           isArgTypeToCheck = validateType argTypeGhc $ types_to_check_in_arg rule
@@ -264,7 +264,9 @@ validateFunctionRule rule _opts fnName args expr = do
           print $ "Arg Type = " <> argType
 
       if argTypeBlocked
-        then pure [(expr, ArgTypeBlocked argType rule)]
+        then do
+          exprType <- deNoteType <$> getHsExprType expr
+          pure [(expr, ArgTypeBlocked argType (showS exprType) rule)]
       else if not isArgTypeToCheck
         then pure []
       else do

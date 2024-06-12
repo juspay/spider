@@ -143,7 +143,7 @@ data DBFieldSpecType =
   deriving (Show, Eq)
 
 data Violation = 
-    ArgTypeBlocked String FunctionRule
+    ArgTypeBlocked String String FunctionRule
   | FnBlockedInArg (String, String) FunctionRule
   | NonIndexedDBColumn String String DBRule
   | FnUseBlocked FunctionRule
@@ -151,7 +151,7 @@ data Violation =
   deriving (Eq)
 
 instance Show Violation where
-  show (ArgTypeBlocked typ rule) = "Use of '" <> (fn_name rule) <> "' on '" <> typ <> "' is not allowed."
+  show (ArgTypeBlocked typ exprType rule) = "Use of '" <> (fn_name rule) <> "' on '" <> typ <> "' is not allowed in the overall expression type '" <> exprType <> "'."
   show (FnBlockedInArg (fnName, typ) rule) = "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> (fn_name rule) <> "' is not allowed."
   show (FnUseBlocked rule) = "Use of '" <> (fn_name rule) <> "' in the code is not allowed."
   show (NonIndexedDBColumn colName tableName _) = "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
@@ -159,7 +159,7 @@ instance Show Violation where
 
 getViolationSuggestions :: Violation -> Suggestions
 getViolationSuggestions v = case v of
-  ArgTypeBlocked _ r -> fnRuleFixes r
+  ArgTypeBlocked _ _ r -> fnRuleFixes r
   FnBlockedInArg _ r -> fnRuleFixes r
   FnUseBlocked r -> fnRuleFixes r
   NonIndexedDBColumn _ _ r -> dbRuleFixes r
@@ -167,7 +167,7 @@ getViolationSuggestions v = case v of
 
 getViolationType :: Violation -> String
 getViolationType v = case v of
-  ArgTypeBlocked _ _ -> "ArgTypeBlocked"
+  ArgTypeBlocked _ _ _ -> "ArgTypeBlocked"
   FnBlockedInArg _ _ -> "FnBlockedInArg"
   FnUseBlocked _ -> "FnUseBlocked"
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
@@ -175,7 +175,7 @@ getViolationType v = case v of
 
 getViolationRule :: Violation -> Rule
 getViolationRule v = case v of
-  ArgTypeBlocked _ r -> FunctionRuleT r
+  ArgTypeBlocked _ _ r -> FunctionRuleT r
   FnBlockedInArg _ r -> FunctionRuleT r
   FnUseBlocked r -> FunctionRuleT r
   NonIndexedDBColumn _ _ r -> DBRuleT r
@@ -183,7 +183,7 @@ getViolationRule v = case v of
 
 getRuleName :: Violation -> String
 getRuleName v = case v of
-  ArgTypeBlocked _ r -> fn_rule_name r
+  ArgTypeBlocked _ _ r -> fn_rule_name r
   FnBlockedInArg _ r -> fn_rule_name r
   FnUseBlocked r -> fn_rule_name r
   NonIndexedDBColumn _ _ r -> db_rule_name r
