@@ -313,24 +313,23 @@ loopOverLHsBindLR (L _ x@(FunBind fun_ext id matches _ _)) = do
                     ([], [])
                     (unLoc matchList)
             listTransformed <- filterFunctionInfos $ map transformFromNameStableString list
-            pure [(Function funName listTransformed (nub funcs) (showSDocUnsafe $ ppr $ getLoc id))]
+            pure [(Function funName listTransformed (nub funcs) (showSDocUnsafe $ ppr $ getLoc id) (showSDocUnsafe $ ppr x))]
 loopOverLHsBindLR x@(L _ VarBind{var_rhs = rhs}) = do
-    pure [(Function "" (map transformFromNameStableString $ processExpr [] rhs) [] "")]
+    pure [(Function "" (map transformFromNameStableString $ processExpr [] rhs) [] "" (showSDocUnsafe $ ppr x))]
 loopOverLHsBindLR x@(L _ AbsBinds{abs_binds = binds}) = do
-    -- print $ showSDocUnsafe $ ppr binds
     list <- toList $ parallely $ mapM loopOverLHsBindLR $ fromList $ bagToList binds
     pure (concat list)
-loopOverLHsBindLR (L _ (PatSynBind _ PSB{psb_def = def})) = do
+loopOverLHsBindLR x@(L _ (PatSynBind _ PSB{psb_def = def})) = do
     let list = map transformFromNameStableString $ map (\(n, srcLoc) -> (Just $ nameStableString n, srcLoc,Nothing, [])) $ processPat def
-    pure [(Function "" list [] "")]
+    pure [(Function "" list [] "" (showSDocUnsafe $ ppr x))]
 loopOverLHsBindLR (L _ (PatSynBind _ (XPatSynBind _))) = do
     pure []
 loopOverLHsBindLR (L _ (XHsBindsLR _)) = do
     pure []
-loopOverLHsBindLR (L _ (PatBind _ _ pat_rhs _)) = do
+loopOverLHsBindLR x@(L _ (PatBind _ _ pat_rhs _)) = do
     r <- toList $ parallely $ mapM processGRHS $ fromList $ grhssGRHSs pat_rhs
     let l = map transformFromNameStableString $ concat r
-    pure [(Function "" l [] "")]
+    pure [(Function "" l [] "" (showSDocUnsafe $ ppr x))]
 
 -- checkIfCreateOrUpdtingDataTypes binds = mapM_ (go) (fromList $ bagToList binds)
 --     where
@@ -449,7 +448,6 @@ processExpr arguments (L _ (SectionR _ funl funr)) = processExpr arguments funl 
 processExpr arguments (L _ (ExplicitTuple _ exprLStmt _)) =
     let stmts = (exprLStmt ^? biplateRef :: [LHsExpr GhcTc])
      in nub (concatMap (processExpr arguments) stmts)
-processExpr arguments (L _ (RecordUpd _ rupd_expr rupd_flds)) = (processExpr arguments rupd_expr) <> concatMap extractLHsRecUpdField rupd_flds
 processExpr arguments (L _ (HsPar _ fun)) =
     let processedArgs = processArgs (unLoc fun)
      in processExpr (processedArgs) fun
@@ -517,6 +515,7 @@ processExpr arguments (L _ (RecordCon _ (L _ (iD)) rcon_flds)) =
     let stmts = (rcon_flds ^? biplateRef :: [LHsExpr GhcTc])
     in nub (concatMap (processExpr arguments) stmts)
     -- extractRecordBinds (rcon_flds)
+-- processExpr arguments (L _ (RecordUpd _ rupd_expr rupd_flds)) = (processExpr arguments rupd_expr) <> concatMap extractLHsRecUpdField rupd_flds
 processExpr arguments (L _ (RecordUpd _ rupd_expr rupd_flds)) =
     let stmts = (rupd_flds ^? biplateRef :: [LHsExpr GhcTc])
     in nub (concatMap (processExpr arguments) stmts)
