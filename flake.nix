@@ -1,13 +1,13 @@
 {
   inputs = {
-    nixpkgs.url = "github:nixos/nixpkgs/43e3b6af08f29c4447a6073e3d5b86a4f45dd420";
+    nixpkgs.url = "github:nixos/nixpkgs/75a52265bda7fd25e06e3a67dee3f0354e73243c";
     systems.url = "github:nix-systems/default";
     flake-parts.url = "github:hercules-ci/flake-parts";
     haskell-flake.url = "github:srid/haskell-flake";
     classyplate.flake = false;
-    classyplate.url = "github:Chaitanya-nair/classyplate/46f5e0e7073e1d047f70473bf3c75366a613bfeb";
+    classyplate.url = "github:iamanandsingh/classyplate/2c869097df8fdbeb1da23842bf5f52366daf3893";
     references.flake = true;
-    references.url = "github:eswar2001/references/35912f3cc72b67fa63a8d59d634401b79796469e";
+    references.url = "github:iamanandsingh/references/8366257fbeb4f63e1ec0347c9fe5f203ba6fdebc";
   };
   outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
@@ -30,7 +30,7 @@
           # (defined by `defaults.packages` option).
           #
           projectFlakeName = "spider";
-          basePackages = pkgs.haskell.packages.ghc8107;
+          basePackages = pkgs.haskell.packages.ghc92;
           packages = {
             references.source = inputs.references;
             classyplate.source = inputs.classyplate;
@@ -44,8 +44,9 @@
             #    broken = false;
             #  };
               sheriff.check = false;
-          };
 
+          };
+ 
           devShell = {
             # Enabled by default
             # enable = true;

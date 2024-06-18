@@ -1,9 +1,10 @@
 module Sheriff.Types where
   
 import Data.Aeson
-import SrcLoc 
-import Var
-import Outputable as OP hiding ((<>))
+import GHC.Types.SrcLoc (SrcSpan, noSrcSpan)
+import GHC.Types.Var (Var)
+import GHC.Utils.Outputable (Outputable, showSDocUnsafe, ppr)
+
 
 data PluginOpts = PluginOpts {
     saveToFile :: Bool,

@@ -1,10 +1,16 @@
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE OverloadedRecordDot #-}
 module Main (main,demo) where
 
-import qualified Fdep.Plugin ()
+-- import qualified Fdep.Plugin ()
+
+data A = A{x :: Int}
+
 
 -- main :: IO ()
 main = do
+    let a = A 20
+    print a.x
     putStrLn "Test suite not yet implemented."
     print ("HI there" :: String)
     where

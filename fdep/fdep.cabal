@@ -12,7 +12,7 @@ build-type:         Simple
 extra-doc-files:    CHANGELOG.md
 
 common common-options
-  build-depends:       base ^>=4.14.3.0
+  build-depends:       base
   ghc-options:         -Wall
                        -Wincomplete-uni-patterns
                        -Wincomplete-record-updates
@@ -39,7 +39,7 @@ library
                 bytestring
                 , containers
                 , filepath
-                , ghc ^>= 8.10.7
+                , ghc ^>= 9.2.8
                 , ghc-exactprint
                 , unordered-containers
                 , uniplate >= 1.6  && < 1.7
@@ -65,6 +65,8 @@ test-suite fdep-test
     type:             exitcode-stdio-1.0
     hs-source-dirs:   test
     main-is:          Main.hs
-    build-depends:
-        fdep
-    ghc-options: -fplugin=Fdep.Plugin -fplugin-opt Fdep.Plugin:./tmp/fdep/
+    -- build-depends:
+        -- fdep
+    ghc-options: 
+        -- -fplugin=Fdep.Plugin -fplugin-opt Fdep.Plugin:./tmp/fdep/
+        -dumpdir=.juspay/tmp/sheriff/ -ddump-to-file -ddump-parsed-ast -ddump-tc-ast

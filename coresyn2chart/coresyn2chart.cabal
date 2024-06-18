@@ -38,7 +38,7 @@ common common-options
         bytestring
         , containers
         , filepath
-        , ghc ^>= 8.10.7
+        , ghc
         , ghc-exactprint
         , unordered-containers
         , uniplate >= 1.6  && < 1.7
@@ -46,7 +46,7 @@ common common-options
         , directory
         , extra
         , aeson-pretty
-        , base ^>=4.14.3.0
+        , base
         , text
         , base64-bytestring
 

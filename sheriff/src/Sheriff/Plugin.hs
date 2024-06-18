@@ -2,7 +2,7 @@
 
 module Sheriff.Plugin (plugin) where
 
-import Bag (bagToList,listToBag)
+import GHC.Data.Bag (bagToList,listToBag)
 import Control.Monad.IO.Class (MonadIO (..))
 import Data.Data
 import Control.Reference (biplateRef, (^?), Simple, Traversal)
@@ -38,25 +38,25 @@ import GHC
     Name,
     Pat (..),
     PatSynBind (..),
-    noLoc, Module (moduleName), moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass
+    noLoc, moduleName, moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass, SrcSpan, Located,
+    la2r,
+    HsExpr (..),
+    XXExprGhcTc(..),
+    getLocA
   )
 import GHC.Hs.Binds
-import GhcPlugins (idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType)
-import HscTypes (ModSummary (..))
-import Name (nameStableString)
-import Plugins (CommandLineOption, Plugin (typeCheckResultAction), defaultPlugin)
-import TcRnTypes (TcGblEnv (..), TcM)
+import GHC.Plugins (isFunTy, funResultTy, splitAppTys, dropForAlls, idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, tcSplitTyConApp_maybe, eqType)
+import GHC.Types.Name (nameStableString, isSystemName)
+import GHC.Driver.Plugins (CommandLineOption, Plugin (typeCheckResultAction), defaultPlugin)
+import GHC.Tc.Types (TcGblEnv (..), TcM)
 import Prelude hiding (id,writeFile, appendFile)
 import Data.Aeson as A
 import Data.ByteString.Lazy (writeFile, appendFile)
 import System.Directory (createDirectoryIfMissing,getHomeDirectory)
 import Data.Maybe (fromMaybe)
 import Control.Exception (try,SomeException)
-import SrcLoc
-import Annotations
-import Outputable (showSDocUnsafe, ppr, Outputable(..))
-import GhcPlugins ()
-import DynFlags ()
+import GHC.Types.Annotations
+import GHC.Utils.Outputable (showSDocUnsafe, ppr, Outputable(..))
 import Control.Monad (foldM,when)
 import Data.List
 import Data.List.Extra (replace,splitOn)
@@ -66,30 +66,27 @@ import Sheriff.Rules
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Control.Concurrent
 import System.Directory
-import PatSyn
-import Avail
-import TcEnv
 import GHC.Hs.Utils as GHCHs
-import TyCoPpr ( pprUserForAll, pprTypeApp, pprSigmaType )
 import Data.Bool (bool)
 import qualified Data.Map as Map
-import qualified Outputable as OP
-import FastString
+import qualified GHC.Utils.Outputable as OP
 import Data.Maybe (catMaybes)
-import TcRnMonad (failWith, addErr, addErrAt, addErrs)
-import Name (isSystemName)
+import GHC.Tc.Utils.Monad (failWith, addErr, addErrAt, addErrs)
 import GHC (OverLitTc(..), HsOverLit(..))
 import Control.Applicative ((<|>))
-import Type (isFunTy, funResultTy, splitAppTys, dropForAlls)
-import TyCoRep (Type(..))
 import Data.ByteString.Lazy as BSL ()
 import Data.String (fromString)
 import qualified Data.ByteString.Lazy.Char8 as Char8
-import TcType
-import ConLike
-import TysWiredIn
 import GHC.Hs.Lit (HsLit(..))
-import TcEvidence
+import GHC.Unit.Module.ModSummary (ModSummary (..))
+import GHC.Core.TyCo.Rep (Type(..), PredType)
+import GHC.Tc.Types.Evidence (HsWrapper(..), EvTerm(..))
+import GHC.Hs.Expr (HsWrap (..))
+import GHC.Builtin.Types (stringTy, doubleTy, floatTy, intTy, wordTy, charTy)
+import GHC.Tc.Utils.TcType (tcSplitAppTys, tcFunResultTy, tcSplitNestedSigmaTys)
+import GHC.Data.FastString (unpackFS)
+import GHC.Core.DataCon (dataConWrapId)
+import GHC.Core.ConLike (ConLike(..))
 
 plugin :: Plugin
 plugin = defaultPlugin {
@@ -160,7 +157,7 @@ logerr opts modSummary tcEnv = do
 
 -- Loop over top level function binds
 loopOverModBinds :: Rules -> LHsBindLR GhcTc GhcTc -> TcM [CompileError]
-loopOverModBinds rules (L _ ap@(FunBind _ id matches _ _)) = do
+loopOverModBinds rules (L _ ap@(FunBind _ id matches _)) = do
   -- liftIO $ print "FunBinds" >> showOutputable ap
   calls <- getBadFnCalls rules ap
   mapM mkCompileError calls
@@ -179,7 +176,7 @@ loopOverModBinds _ _ = pure []
 -- Get all the FunApps inside the top level function bind
 -- This call can be anywhere in `where` clause or `regular` RHS
 getBadFnCalls :: Rules -> HsBindLR GhcTc GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
-getBadFnCalls rules (FunBind _ id matches _ _) = do
+getBadFnCalls rules (FunBind _ id matches _) = do
   let funMatches = map unLoc $ unLoc $ mg_alts matches
   concat <$> mapM getBadFnCallsHelper funMatches
   where
@@ -204,22 +201,22 @@ traverseConditionalUni p (x : xs) =
 
 noGivenFunctionCallExpansion :: String -> LHsExpr GhcTc -> Bool
 noGivenFunctionCallExpansion fnName expr = case expr of
-  (L loc (HsWrap _ _ expr)) -> noWhereClauseExpansion (L loc expr)
+  (L loc (XExpr (WrapExpr (HsWrap _ expr)))) -> noWhereClauseExpansion (L loc expr)
   _ -> case getFnNameWithAllArgs expr of
         Just (lVar, _) -> (getOccString . varName . unLoc $ lVar) == fnName
         Nothing -> False
 
 noWhereClauseExpansion :: LHsExpr GhcTc -> Bool
 noWhereClauseExpansion expr = case expr of
-  (L loc (HsWrap _ _ expr)) -> noWhereClauseExpansion (L loc expr)
-  (L _ (ExplicitList (TyConApp ty _) _ _)) -> showS ty == "Clause"
+  (L loc (XExpr (WrapExpr (HsWrap _ expr)))) -> noWhereClauseExpansion (L loc expr)
+  (L _ (ExplicitList (TyConApp ty _) _)) -> showS ty == "Clause"
   _ -> False
 
 isBadFunApp :: Rules -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
 isBadFunApp rules ap@(L _ (HsVar _ v)) = isBadFunAppHelper rules ap
 isBadFunApp rules ap@(L _ (HsApp _ funl funr)) = isBadFunAppHelper rules ap
-isBadFunApp rules ap@(L loc (HsWrap _ _ expr)) = isBadFunApp rules (L loc expr)
-isBadFunApp rules ap@(L _ (ExplicitList _ _ _)) = isBadFunAppHelper rules ap
+isBadFunApp rules ap@(L loc (XExpr (WrapExpr (HsWrap _ expr)))) = isBadFunApp rules (L loc expr)
+isBadFunApp rules ap@(L _ (ExplicitList _ _)) = isBadFunAppHelper rules ap
 isBadFunApp rules (L _ (OpApp _ lfun op rfun)) = do
   case showS op of
     "($)" -> isBadFunAppHelper rules $ mkHsApp lfun rfun
@@ -281,8 +278,8 @@ processClauses (clause : ls) rule = do
   let res = getFnNameWithAllArgs clause
       (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
   case (fnName, args) of
-    ("And", [(L _ (ExplicitList _ _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
-    ("Or", [(L _ (ExplicitList _ _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("And", [(L _ (ExplicitList _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("Or", [(L _ (ExplicitList _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
     ("$WIs", [arg1, arg2])                  -> processIsClause arg1 arg2 clause rule >>= (maybe (processClauses ls rule) (pure . Just))
     _      -> when logWarnInfo (liftIO $ print "Invalid clause in `where` clause") >> processClauses ls rule
 
@@ -292,8 +289,8 @@ processAndClause (clause : ls) rule = do
   let res = getFnNameWithAllArgs clause
       (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
   case (fnName, args) of
-    ("And", [(L _ (ExplicitList _ _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
-    ("Or", [(L _ (ExplicitList _ _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("And", [(L _ (ExplicitList _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("Or", [(L _ (ExplicitList _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
     ("$WIs", [arg1, arg2])                  -> processIsClause arg1 arg2 clause rule >>= (maybe (processClauses ls rule) (pure . Just))
     _      -> when logWarnInfo (liftIO $ print "Invalid clause in `And` clause") >> processClauses ls rule
 
@@ -303,8 +300,8 @@ processOrClause (clause : ls) rule = do
   let res = getFnNameWithAllArgs clause
       (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
   case (fnName, args) of
-    ("And", [(L _ (ExplicitList _ _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
-    ("Or", [(L _ (ExplicitList _ _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("And", [(L _ (ExplicitList _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
+    ("Or", [(L _ (ExplicitList _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
     ("$WIs", [arg1, arg2])                  -> processIsClause arg1 arg2 clause rule >>= (maybe (processClauses ls rule) (pure . Just))
     _      -> when logWarnInfo (liftIO $ print "Invalid clause in `Or` clause") >> processClauses ls rule
 
@@ -321,7 +318,7 @@ processIsClause fieldArg _ clause rule@(DBRule ruleName ruleTableName ruleColNam
     RecordDot -> do
       let tyApps = filter (\x -> case x of 
                                   (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> True
-                                  (HsWrap _ (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> True
+                                  (XExpr (WrapExpr (HsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)))) -> True
                                   _ -> False
                           ) $ (fieldArg ^? biplateRef :: [HsExpr GhcTc])
       if length tyApps > 0 
@@ -337,7 +334,7 @@ processIsClause fieldArg _ clause rule@(DBRule ruleName ruleTableName ruleColNam
                                   ty             -> showS ty
                   in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
                 else pure Nothing
-            (HsWrap _ (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) ->
+            (XExpr (WrapExpr (HsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)))) ->
               let tblName' = case tableType of
                                   AppTy ty1 _    -> showS ty1
                                   TyConApp ty1 _ -> showS ty1
@@ -389,7 +386,7 @@ checkAndApplyRule :: Rule -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violati
 checkAndApplyRule ruleT ap = case ruleT of
   DBRuleT rule@(DBRule _ ruleTableName _) -> 
     case ap of
-      (L _ (ExplicitList (TyConApp ty [_, tblName]) _ exprs)) -> case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
+      (L _ (ExplicitList (TyConApp ty [_, tblName]) exprs)) -> case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
         True  -> validateDBRule rule (showS tblName) exprs ap 
         False -> pure Nothing
       _ -> pure Nothing
@@ -409,9 +406,9 @@ getDBFieldSpecType (L _ expr)
   | otherwise = None
 
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
-getFnNameWithAllArgs (L _ (HsVar _ v)) = Just (v, [])
-getFnNameWithAllArgs (L _ (HsConLikeOut _ cl)) = (\clId -> (noLoc clId, [])) <$> conLikeWrapId_maybe cl
-getFnNameWithAllArgs (L _ (HsApp _ (L _ (HsVar _ v)) funr)) = Just (v, [funr])
+getFnNameWithAllArgs (L _ (HsVar _ v)) = Just (L (getLocA v) (unLoc v), [])
+getFnNameWithAllArgs (L _ (HsConLikeOut _ cl)) = (\clId -> (noLoc clId, [])) <$> conLikeWrapId cl
+getFnNameWithAllArgs (L _ (HsApp _ (L _ (HsVar _ v)) funr)) = Just (L (getLocA v) (unLoc v), [funr])
 getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   let res = getFnNameWithAllArgs funl
   case res of
@@ -422,10 +419,13 @@ getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
 --   case res of
 --     Nothing -> Nothing
 --     Just (fnName, ls) -> Just (fnName, ls ++ [funr])
-getFnNameWithAllArgs (L loc ap@(HsWrap _ _ expr)) = do
+getFnNameWithAllArgs (L loc ap@(XExpr (WrapExpr (HsWrap _ expr)))) = do
   getFnNameWithAllArgs (L loc expr)
 getFnNameWithAllArgs _ = Nothing
 
+conLikeWrapId :: ConLike -> Maybe Var
+conLikeWrapId (RealDataCon dc) = Just (dataConWrapId dc)
+conLikeWrapId _ = Nothing
 --------------------------- Utils ---------------------------
 -- Check if HsExpr is Function Application
 isFunApp :: LHsExpr GhcTc -> Bool
@@ -462,7 +462,7 @@ mkInvalidIndexedKeysFile err = OP.text err
 
 -- Create Internal Representation of Logging Error
 mkCompileError :: (LHsExpr GhcTc, Violation) -> TcM CompileError
-mkCompileError (expr, violation) = pure $ CompileError "" "" (show violation) (getLoc expr) violation
+mkCompileError (expr, violation) = pure $ CompileError "" "" (show violation) ( (getLocA (expr))) violation
 
 -- Get Return type of the function application arg
 getArgTypeWrapper :: LHsExpr GhcTc -> [Type]
@@ -473,14 +473,14 @@ getArgTypeWrapper expr@(L _ (OpApp _ lfun op rfun)) =
     "(.)" -> getArgTypeWrapper lfun
     "(<>)" -> getArgTypeWrapper lfun
     _ -> getArgType op True
-getArgTypeWrapper (L loc (HsWrap _ _ expr)) = getArgTypeWrapper (L loc expr)
+getArgTypeWrapper (L loc (XExpr (WrapExpr (HsWrap _ expr)))) = getArgTypeWrapper (L loc expr)
 getArgTypeWrapper (L loc (HsPar _ expr)) = getArgTypeWrapper expr
 getArgTypeWrapper expr = getArgType expr False
 
 getArgType :: LHsExpr GhcTc -> Bool -> [Type]
 getArgType (L _ (HsLit _ v)) _ = getLitType v
 getArgType (L _ (HsOverLit _ (OverLit (OverLitTc _ typ) v _))) _ = [typ]
-getArgType (L loc (HsWrap _ _ expr)) shouldReturnFinalType = getArgType (L loc expr) shouldReturnFinalType
+getArgType (L loc (XExpr (WrapExpr (HsWrap _ expr)))) shouldReturnFinalType = getArgType (L loc expr) shouldReturnFinalType
 getArgType arg shouldReturnFinalType = 
   let vars = filter (not . isSystemName . varName) $ arg ^? biplateRef in 
   if length vars == 0
@@ -531,7 +531,7 @@ trfUsingConstraints constraints typs =
     replacer replacements typ@(AppTy ty1 ty2) = AppTy (replacer replacements ty1) (replacer replacements ty2) 
     replacer replacements typ@(TyConApp tyCon typOrKinds) = TyConApp tyCon $ map (replacer replacements) typOrKinds
     replacer replacements typ@(ForAllTy bndrs typ') = ForAllTy bndrs (replacer replacements typ')
-    replacer replacements typ@(FunTy flag ty1 ty2) = FunTy flag (replacer replacements ty1) (replacer replacements ty2) 
+    replacer replacements typ@(FunTy flag mult ty1 ty2) = FunTy flag mult (replacer replacements ty1) (replacer replacements ty2) 
     replacer replacements typ = maybe typ snd $ (\x -> eqType (fst x) typ) `find` replacements 
 
 getStringificationFns :: LHsExpr GhcTc -> TcM [String] 
@@ -555,7 +555,7 @@ getStringificationFns (L _ ap@(OpApp _ lfun op rfun)) = do
 getStringificationFns (L _ ap@(HsPar _ expr)) = do
   liftIO $ putStrLn "Inside HsPar" >> putStrLn (showS ap) 
   getStringificationFns expr
-getStringificationFns (L loc ap@(HsWrap _ _ expr)) = do
+getStringificationFns (L loc ap@(XExpr (WrapExpr (HsWrap _ expr)))) = do
   liftIO $ putStrLn "Inside HsWrap" >> putStrLn (showS ap) 
   getStringificationFns (L loc expr)
 getStringificationFns _ = do
