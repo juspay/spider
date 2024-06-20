@@ -21,7 +21,7 @@ common common-options
         -Wcompat
         -Widentities
         -Wredundant-constraints
-        -fhide-source-paths -O2
+        -O2
 
     default-language:    Haskell2010
     default-extensions:
@@ -41,7 +41,6 @@ common common-options
         , ghc
         , ghc-exactprint
         , unordered-containers
-        , uniplate >= 1.6  && < 1.7
         , aeson
         , directory
         , extra
@@ -49,20 +48,26 @@ common common-options
         , base
         , text
         , base64-bytestring
+        , optparse-applicative
+        , deepseq
+        , time
+        , async
+        , cryptonite
+        , hasbolt
+        , universum
+        , data-default
+        , streamly
 
 library
     import:           common-options
-    exposed-modules:  Syn2Chart.Plugin, Syn2Chart.Types, Syn2Chart.Traversal
-    -- other-modules:
-    -- other-extensions:
+    exposed-modules:  Syn2Chart.Plugin, Syn2Chart.Types, Syn2Chart.Traversal,Neo4j.Helpers,Syn2Chart.Helpers
     hs-source-dirs:   src
     default-language: Haskell2010
 
 executable coresyn2chart
     import:           common-options
     main-is:          Main.hs
-    -- other-modules:
-    -- other-extensions:
+    ghc-options: -threaded -rtsopts
     build-depends:
         coresyn2chart
 
@@ -73,10 +78,7 @@ test-suite coresyn2chart-test
     import:           common-options
     default-language: Haskell2010
     ghc-options: -fplugin=Syn2Chart.Plugin -fplugin-opt Syn2Chart.Plugin:./tmp/coresyn2chart/
-    -- other-modules:
-    -- other-extensions:
     type:             exitcode-stdio-1.0
     hs-source-dirs:   test
     main-is:          Main.hs
-    build-depends:
-        coresyn2chart
+    build-depends: coresyn2chart

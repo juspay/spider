@@ -29,6 +29,24 @@ data CC = C1 | C2 Text | C3 Int | C4 Bool
 data SeqIs = SeqIs Text Text
     deriving (Generic, Show, ToJSON, FromJSON)
 
+data EnumT = X | Y | Z
+    deriving (Generic, Show, ToJSON, FromJSON)
+
+data EnumT2 = U EnumT | V
+    deriving (Generic, Show, ToJSON, FromJSON)
+
+data EnumT3 x = M | N
+    deriving (Generic, Show, ToJSON, FromJSON)
+
+en :: EnumT
+en = Y
+
+en2 :: EnumT2
+en2 = V
+
+en3 :: EnumT3 ()
+en3 = M
+
 ob :: SeqIs
 ob = SeqIs "fldName" "fldValue"
 
@@ -57,11 +75,11 @@ str1 = encodeJSON ("Hello Str1" :: Text)
 str2 :: Text
 str2 = "Hello Str2"
 
-str3 :: Text
+str3 :: Text 
 str3 = T.pack $ show "Hello Str3"
 
 str4 :: Text
-str4 = T.pack $ show (T.pack "Hello Str3")
+str4 = T.pack $ show (T.pack "Hello Str4")
 
 -- Helper function
 encodeJSON :: (ToJSON a) => a -> Text
@@ -70,8 +88,8 @@ encodeJSON = DTE.decodeUtf8 . BSL.toStrict . A.encode
 logErrorV :: (ToJSON a) => a -> IO ()
 logErrorV = print . toJSON
 
-logErrorT :: Text -> IO ()
-logErrorT = print
+logErrorT :: Text -> Text -> IO ()
+logErrorT _ = print
 
 logError :: String -> String -> IO ()
 logError _ = print
@@ -137,8 +155,29 @@ main = do
     print ("HI there" :: String)
     let obAT1 = "Dummy"
     let b = logInfoT "tester" logger
+    logError "tag" $ show obC1
+    logError "tag" $ show en
+    logErrorT "tag" $ encodeJSON en
+    logError "tag" $ show en2
+    logErrorT (T.pack $ show "tag") $ encodeJSON en2
+    logError "tag" $ show en3
+    logErrorT "tag" $ encodeJSON en3
+    logError "tag" $ show (en, "This is Text" :: String)
+    logErrorT "tag" $ encodeJSON (en, "This is Text" :: String)
+    logError "tag" $ show (en, 20 :: Int) -- Should not throw error because of show is allowed on both enums and int
+    logErrorT "tag" $ encodeJSON (en, 20 :: Int) -- Should throw error because of encodeJSON
     logError "tag" $ obAT1 <> show Test1.obAT1
     fn $ logError "tag2" $ show obA
+
+    print $ show temp
+    print $ show temp1
+    print $ show temp2
+    print $ show temp3
+    print $ show temp4
+    logError "tag" $ show en2 <> show obA
+    logError "tag" $ show en <> show obB
+    logError "tag" $ show temp5
+    logError "tag" $ show temp6
   where
     logErrorT = Test1.logErrorT
 
@@ -147,6 +186,27 @@ logInfoT x _ = x
 
 logger :: forall a b. (IsString b, Show a) => String -> a -> b
 logger _ = fromString . show
+
+temp :: [Text]
+temp = []
+
+temp1 :: Maybe Text
+temp1 = Nothing
+
+temp2 :: (Text, Text)
+temp2 = ("A", "B")
+
+temp3 :: (Text, Int)
+temp3 = ("A", 10)
+
+temp4 :: (Int, Int)
+temp4 = (20, 10)
+
+temp5 :: [EnumT]
+temp5 = []
+
+temp6 :: [EnumT2]
+temp6 = []
 
 fn :: IO () -> IO ()
 fn x = do

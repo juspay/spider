@@ -1,14 +1,17 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# OPTIONS_GHC -Werror=incomplete-patterns #-}
 
 module Sheriff.Plugin (plugin) where
 
-import GHC.Data.Bag (bagToList,listToBag)
+import GHC.Data.Bag (bagToList,listToBag, emptyBag)
 import Control.Monad.IO.Class (MonadIO (..))
 import Data.Data
 import Control.Reference (biplateRef, (^?), Simple, Traversal)
 import Data.Generics.Uniplate.Data (universeBi, childrenBi, contextsBi, holesBi, children)
 import Data.List (nub)
-import Debug.Trace (traceShowId)
+import Debug.Trace (traceShowId, trace)
 import Data.Yaml
 import GHC
   ( GRHS (..),
@@ -38,14 +41,28 @@ import GHC
     Name,
     Pat (..),
     PatSynBind (..),
-    noLoc, moduleName, moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass, SrcSpan, Located,
+    noLoc, noExtField, moduleName, moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass, SrcSpan, Located,
     la2r,
     HsExpr (..),
     XXExprGhcTc(..),
-    getLocA
+    getLocA,
+    mgModSummaries,
+    mi_decls,
+    mi_exports,
+    mi_insts,
+    mi_usages,
+    noAnn,
+    noLocA,
+    Anno(..),
+    leftmost_smallest
   )
 import GHC.Hs.Binds
-import GHC.Plugins (isFunTy, funResultTy, splitAppTys, dropForAlls, idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, tcSplitTyConApp_maybe, eqType)
+import GHC.Plugins (isFunTy, funResultTy, splitAppTys, dropForAlls, idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, isEnumerationTyCon, WarnReason(..), tcSplitTyConApp_maybe, eqType, moduleEnvToList, ModIface, lookupModuleEnv)
+import GHC.Driver.Env (hscEPS, hsc_targets , hsc_HPT, hsc_mod_graph)
+import GHC.Unit.External (eps_PTE, eps_complete_matches, eps_stats, eps_rule_base, eps_PIT)
+import GHC.Unit.Home.ModInfo (pprHPT)
+import GHC.IORef (readIORef)
+import GHC.Iface.Load (pprModIface, pprModIfaceSimple)
 import GHC.Types.Name (nameStableString, isSystemName)
 import GHC.Driver.Plugins (CommandLineOption, Plugin (typeCheckResultAction), defaultPlugin)
 import GHC.Tc.Types (TcGblEnv (..), TcM)
@@ -59,7 +76,8 @@ import GHC.Types.Annotations
 import GHC.Utils.Outputable (showSDocUnsafe, ppr, Outputable(..))
 import Control.Monad (foldM,when)
 import Data.List
-import Data.List.Extra (replace,splitOn)
+import Data.Function (on)
+import Data.List.Extra (replace, splitOn, sortOn)
 import Data.Maybe (fromJust,isJust,mapMaybe)
 import Sheriff.Types
 import Sheriff.Rules
@@ -71,15 +89,18 @@ import Data.Bool (bool)
 import qualified Data.Map as Map
 import qualified GHC.Utils.Outputable as OP
 import Data.Maybe (catMaybes)
-import GHC.Tc.Utils.Monad (failWith, addErr, addErrAt, addErrs)
+import GHC.HsToCore.Monad (initDsTc)
+import GHC.HsToCore.Expr (dsLExpr)
+import GHC.Tc.Utils.Monad (failWith, addErr, addWarn, addErrAt, addErrs, getEnv, env_top)
 import GHC (OverLitTc(..), HsOverLit(..))
+import GHC.Core.Utils (exprType)
 import Control.Applicative ((<|>))
 import Data.ByteString.Lazy as BSL ()
 import Data.String (fromString)
 import qualified Data.ByteString.Lazy.Char8 as Char8
 import GHC.Hs.Lit (HsLit(..))
 import GHC.Unit.Module.ModSummary (ModSummary (..))
-import GHC.Core.TyCo.Rep (Type(..), PredType)
+import GHC.Core.TyCo.Rep (Type(..), PredType, TyLit (..))
 import GHC.Tc.Types.Evidence (HsWrapper(..), EvTerm(..))
 import GHC.Hs.Expr (HsWrap (..))
 import GHC.Builtin.Types (stringTy, doubleTy, floatTy, intTy, wordTy, charTy)
@@ -87,16 +108,20 @@ import GHC.Tc.Utils.TcType (tcSplitAppTys, tcFunResultTy, tcSplitNestedSigmaTys)
 import GHC.Data.FastString (unpackFS)
 import GHC.Core.DataCon (dataConWrapId)
 import GHC.Core.ConLike (ConLike(..))
+import qualified Data.HashMap.Strict as HM
 
 plugin :: Plugin
 plugin = defaultPlugin {
-      typeCheckResultAction = logerr
+      typeCheckResultAction = sheriff
     , pluginRecompile = purePlugin
     }
 
 logDebugInfo :: Bool
 logDebugInfo = False
 
+logTypeDebugging :: Bool
+logTypeDebugging = False
+ 
 logWarnInfo :: Bool
 logWarnInfo = True
 
@@ -104,11 +129,11 @@ purePlugin :: [CommandLineOption] -> IO PluginRecompile
 purePlugin _ = return NoForceRecompile
 
 -- Parse the YAML file
-parseYAMLFile :: FilePath -> IO (Either ParseException YamlTables)
+parseYAMLFile :: (FromJSON a) => FilePath -> IO (Either ParseException a)
 parseYAMLFile file = decodeFileEither file
 
-logerr :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
-logerr opts modSummary tcEnv = do
+sheriff :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
+sheriff opts modSummary tcEnv = do
   let pluginOpts = case opts of
                     []      -> defaultPluginOpts
                     (x : _) -> fromMaybe defaultPluginOpts $ A.decode (Char8.pack x)
@@ -117,27 +142,55 @@ logerr opts modSummary tcEnv = do
       saveToFileV = saveToFile pluginOpts
       savePathV = savePath pluginOpts
       indexedKeysPathV = indexedKeysPath pluginOpts
+      sheriffRulesPath = rulesConfigPath pluginOpts
+      sheriffExceptionsPath = exceptionsConfigPath pluginOpts
       failOnFileNotFoundV = failOnFileNotFound pluginOpts 
-      matchAllInsideAndV = matchAllInsideAnd pluginOpts
 
   -- parse the yaml file from the path given
   parsedYaml <- liftIO $ parseYAMLFile indexedKeysPathV
 
-  -- Check the parsed yaml file for indexedDbKeys and throw compilation error if configured
-  rulesList <- case parsedYaml of
-                  Left err -> do
-                    when failOnFileNotFoundV $ addErr (mkInvalidIndexedKeysFile (show err))
-                    pure badPracticeRules
-                  Right (YamlTables tables) -> pure $ badPracticeRules <> (map yamlToDbRule tables)
+  -- parse the yaml file from the path given for sheriff general rules
+  parsedRulesYaml <- liftIO $ parseYAMLFile sheriffRulesPath
 
-  errors <- concat <$> (mapM (loopOverModBinds rulesList) $ bagToList $ tcg_binds tcEnv)
+  -- parse the yaml file from the path given for sheriff general exception rules
+  parsedExceptionsYaml <- liftIO $ parseYAMLFile sheriffExceptionsPath
+
+  -- Check the parsed yaml file for indexedDbKeys and throw compilation error if configured
+  rulesListWithDbRules <- case parsedYaml of
+                            Left err -> do
+                              when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
+                              pure badPracticeRules
+                            Right (YamlTables tables) -> pure $ badPracticeRules <> (map yamlToDbRule tables)
+  
+  rulesList <- case parsedRulesYaml of
+                Left err -> do
+                  when logWarnInfo $ addWarn NoReason (mkInvalidYamlFileErr (show err))
+                  pure rulesListWithDbRules
+                Right (SheriffRules rules) -> pure $ rulesListWithDbRules <> rules
+
+  exceptionList <- case parsedExceptionsYaml of
+                Left err -> do
+                  when logWarnInfo $ addWarn NoReason (mkInvalidYamlFileErr (show err))
+                  pure exceptionRules
+                Right (SheriffRules rules) -> pure $ exceptionRules <> rules
+
+  when logDebugInfo $ liftIO $ print rulesList
+  when logDebugInfo $ liftIO $ print exceptionList
+
+  let finalRules = rulesList <> exceptionList
+
+  errors <- concat <$> (mapM (loopOverModBinds finalRules pluginOpts) $ bagToList $ tcg_binds tcEnv)
+
+  let sortedErrors = sortBy (leftmost_smallest `on` src_span) errors
+      groupedErrors = groupBy (\a b -> src_span a == src_span b) sortedErrors
+      filteredErrors = concat $ filter (\x -> not $ (\err -> (getViolationRule $ violation err) `elem` exceptionList) `any` x) groupedErrors
 
   if throwCompilationErrorV
-    then addErrs $ map mkGhcCompileError errors
+    then addErrs $ map mkGhcCompileError filteredErrors
     else pure ()
 
   if saveToFileV
-    then addErrToFile modSummary savePathV errors  
+    then addErrToFile modSummary savePathV filteredErrors  
     else pure ()
 
   return tcEnv
@@ -156,27 +209,27 @@ logerr opts modSummary tcEnv = do
 -- 8. Check if arg uses top level binding from any module. If yes, then check if that binding has any stringification output
 
 -- Loop over top level function binds
-loopOverModBinds :: Rules -> LHsBindLR GhcTc GhcTc -> TcM [CompileError]
-loopOverModBinds rules (L _ ap@(FunBind _ id matches _)) = do
+loopOverModBinds :: Rules -> PluginOpts -> LHsBindLR GhcTc GhcTc -> TcM [CompileError]
+loopOverModBinds rules opts (L _ ap@(FunBind _ id matches _)) = do
   -- liftIO $ print "FunBinds" >> showOutputable ap
-  calls <- getBadFnCalls rules ap
+  calls <- getBadFnCalls rules opts ap
   mapM mkCompileError calls
-loopOverModBinds _ (L _ ap@(PatBind _ _ pat_rhs _)) = do
+loopOverModBinds _ _ (L _ ap@(PatBind _ _ pat_rhs _)) = do
   -- liftIO $ print "PatBinds" >> showOutputable ap
   pure []
-loopOverModBinds _ (L _ ap@(VarBind {var_rhs = rhs})) = do 
+loopOverModBinds _ _ (L _ ap@(VarBind {var_rhs = rhs})) = do 
   -- liftIO $ print "VarBinds" >> showOutputable ap
   pure []
-loopOverModBinds rules (L _ ap@(AbsBinds {abs_binds = binds})) = do
+loopOverModBinds rules opts (L _ ap@(AbsBinds {abs_binds = binds})) = do
   -- liftIO $ print "AbsBinds" >> showOutputable ap
-  list <- mapM (loopOverModBinds rules) $ bagToList binds
+  list <- mapM (loopOverModBinds rules opts) $ bagToList binds
   pure (concat list)
-loopOverModBinds _ _ = pure []
+loopOverModBinds _ _ _ = pure []
 
 -- Get all the FunApps inside the top level function bind
 -- This call can be anywhere in `where` clause or `regular` RHS
-getBadFnCalls :: Rules -> HsBindLR GhcTc GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
-getBadFnCalls rules (FunBind _ id matches _) = do
+getBadFnCalls :: Rules -> PluginOpts -> HsBindLR GhcTc GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
+getBadFnCalls rules opts (FunBind _ id matches _) = do
   let funMatches = map unLoc $ unLoc $ mg_alts matches
   concat <$> mapM getBadFnCallsHelper funMatches
   where
@@ -188,8 +241,8 @@ getBadFnCalls rules (FunBind _ id matches _) = do
           -- exprs = match ^? biplateRef :: [LHsExpr GhcTc]
           -- use childrenBi and then repeated children usage as per use case
           exprs = traverseConditionalUni (noWhereClauseExpansion) (childrenBi match :: [LHsExpr GhcTc])
-      concat <$> mapM (isBadFunApp rules) exprs
-getBadFnCalls _ _ = pure []
+      concat <$> mapM (isBadFunApp rules opts) exprs
+getBadFnCalls _ _ _ = pure []
 
 -- Takes a predicate which return true if further expansion is not required, false otherwise
 traverseConditionalUni :: (Data a) => (a -> Bool) -> [a] -> [a]
@@ -212,103 +265,140 @@ noWhereClauseExpansion expr = case expr of
   (L _ (ExplicitList (TyConApp ty _) _)) -> showS ty == "Clause"
   _ -> False
 
-isBadFunApp :: Rules -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
-isBadFunApp rules ap@(L _ (HsVar _ v)) = isBadFunAppHelper rules ap
-isBadFunApp rules ap@(L _ (HsApp _ funl funr)) = isBadFunAppHelper rules ap
-isBadFunApp rules ap@(L loc (XExpr (WrapExpr (HsWrap _ expr)))) = isBadFunApp rules (L loc expr)
-isBadFunApp rules ap@(L _ (ExplicitList _ _)) = isBadFunAppHelper rules ap
-isBadFunApp rules (L _ (OpApp _ lfun op rfun)) = do
+isBadFunApp :: Rules -> PluginOpts -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
+isBadFunApp rules opts ap@(L _ (HsVar _ v)) = isBadFunAppHelper rules opts ap
+isBadFunApp rules opts ap@(L _ (HsApp _ funl funr)) = isBadFunAppHelper rules opts ap
+isBadFunApp rules opts ap@(L loc (XExpr (WrapExpr (HsWrap _ expr)))) = isBadFunApp rules opts (L loc expr)
+isBadFunApp rules opts ap@(L _ (ExplicitList _ _)) = isBadFunAppHelper rules opts ap
+isBadFunApp rules opts (L loc (OpApp _ lfun op rfun)) = do
   case showS op of
-    "($)" -> isBadFunAppHelper rules $ mkHsApp lfun rfun
+    "($)" -> isBadFunAppHelper rules opts $ (L loc (HsApp noAnn lfun rfun))
     _ -> pure []
-isBadFunApp _ _ = pure []
+isBadFunApp _ _ _ = pure []
 
-isBadFunAppHelper :: Rules -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
-isBadFunAppHelper rules ap = catMaybes <$> mapM (\rule -> checkAndApplyRule rule ap) rules
+isBadFunAppHelper :: Rules -> PluginOpts -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
+isBadFunAppHelper rules opts ap = concat <$> mapM (\rule -> checkAndApplyRule rule opts ap) rules
 
-validateFunctionRule :: FunctionRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
-validateFunctionRule rule fnName args expr = do
+validateFunctionRule :: FunctionRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
+validateFunctionRule rule _opts fnName args expr = do
   if (arg_no rule) == 0 -- considering arg 0 as the case for blocking the whole function occurence
-    then pure $ Just (expr, FnUseBlocked rule)
+    then pure [(expr, FnUseBlocked rule)]
   else do
     let matches = drop ((arg_no rule) - 1) args
     if length matches == 0
-      then pure Nothing
+      then pure []
     else do
       let arg = head matches
-          argTypes = (map showS $ getArgTypeWrapper arg)
-          argTypeBlocked = fromMaybe "NA" $ (`elem` types_blocked_in_arg rule) `find` argTypes
-          isArgTypeToCheck = (`elem` types_to_check_in_arg rule) `any` argTypes 
+      argTypeGhc <- getHsExprType arg
+      let argType = showS argTypeGhc
+          argTypeBlocked = validateType argTypeGhc $ types_blocked_in_arg rule
+          isArgTypeToCheck = validateType argTypeGhc $ types_to_check_in_arg rule
 
       when (logDebugInfo && fnName /= "NA") $
         liftIO $ do
           print $ (fnName, map showS args)
           print $ (fnName, showS arg)
           print $ rule
-          putStr "Arg Types = "
-          let vars = filter (not . isSystemName . varName) $ arg ^? biplateRef
-              tys = map (showS . idType) vars
-          print $ map showS vars
-          print $ tys
-          print $ argTypes
+          print $ "Arg Type = " <> argType
 
-      if argTypeBlocked /= "NA"
-        then pure $ Just (expr, ArgTypeBlocked argTypeBlocked rule)
+      if argTypeBlocked
+        then pure [(expr, ArgTypeBlocked argType rule)]
       else if not isArgTypeToCheck
-        then pure Nothing
+        then pure []
       else do
         -- It's a rule function with to_be_checked type argument
-        -- stringificationFns1 <- getStringificationFns arg -- check if the expression has any stringification function
-        let blockedFnsList = getBlockedFnsList arg rule -- check if the expression has any stringification function
-            vars = filter (not . isSystemName . varName) $ arg ^? biplateRef
-            tys = map (map showS . (getReturnType . dropForAlls . idType)) vars
-        if length blockedFnsList > 0
-          then do
-            pure $ Just (expr, FnBlockedInArg (head blockedFnsList) rule)
-          else pure Nothing
+        blockedFnsList <- getBlockedFnsList arg rule -- check if the expression has any stringification function
+        pure $ fmap (\(lExpr, blockedFnName, blockedFnArgTyp) -> (lExpr, FnBlockedInArg (blockedFnName, blockedFnArgTyp) rule)) blockedFnsList
 
-validateDBRule :: DBRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
-validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames) tableName clauses expr = do
-  -- let checkerFn = if True then all else any -- TODO: Make it user input based decision
-  processClauses clauses rule
+validateType :: Type -> TypesToCheckInArg -> Bool
+validateType argTyp@(TyConApp tyCon ls) typs = 
+  if showS tyCon == "(,)" && "(,)" `elem` typs 
+    then (\t -> validateType t typs) `any` ls 
+  else if showS tyCon == "[]" && "[]" `elem` typs 
+    then (\t -> validateType t typs) `any` ls 
+  else if showS tyCon == "Maybe" && "Maybe" `elem` typs 
+    then (\t -> validateType t typs) `any` ls 
+  else showS argTyp `elem` typs
+validateType argTyp typs = showS argTyp `elem` typs
 
-processClauses :: [LHsExpr GhcTc] -> DBRule -> TcM (Maybe (LHsExpr GhcTc, Violation))
-processClauses [] _               = pure Nothing
-processClauses (clause : ls) rule = do
-  let res = getFnNameWithAllArgs clause
-      (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
+validateDBRule :: DBRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
+validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames _) opts tableName clauses expr = do
+  simplifiedExprs <- trfWhereToSOP clauses
+  let checkDBViolation = case (matchAllInsideAnd opts) of
+                          True  -> checkDBViolationMatchAll
+                          False -> checkDBViolationWithoutMatchAll
+  violations <- catMaybes <$> mapM checkDBViolation simplifiedExprs
+  pure violations
+  where
+    -- Since we need all columns to be indexed, we need to check for the columns in the order of composite key
+    checkDBViolationMatchAll :: [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
+    checkDBViolationMatchAll sop = do
+      let isDbViolation (cls, colName, tableName) = (ruleTableName == tableName) && not (doesMatchColNameInDbRuleWithComposite colName ruleColNames (map (\(_, col, _) -> col) sop))
+      case find isDbViolation sop of
+        Nothing  -> pure Nothing
+        Just (clause, colName, tableName) -> pure $ Just (clause, NonIndexedDBColumn colName tableName rule)
+
+    -- Since any one indexed column is sufficient, we can check only for the first column of the composite key
+    checkDBViolationWithoutMatchAll :: [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
+    checkDBViolationWithoutMatchAll sop = do
+      let isDbViolation (cls, colName, tableName) = (ruleTableName == tableName) && not (doesMatchColNameInDbRule colName ruleColNames)
+      case any (not . isDbViolation) sop of
+        True  -> pure Nothing
+        False -> case sop of
+                  [] -> pure Nothing
+                  ((clause, colName, tableName) : _) -> pure $ Just (clause, NonIndexedDBColumn colName tableName rule)
+
+-- Check only for the ordering of the columns of the composite key
+doesMatchColNameInDbRuleWithComposite :: String -> [YamlTableKeys] -> [String] -> Bool
+doesMatchColNameInDbRuleWithComposite _ [] _ = False
+doesMatchColNameInDbRuleWithComposite colName (key : keys) allColsInAnd = 
+  case key of
+    (CompositeKey compCols)  -> checkCompositeCols compCols || (doesMatchColNameInDbRuleWithComposite colName keys allColsInAnd)
+    (NonCompositeKey col)   -> (colName == col) || (doesMatchColNameInDbRuleWithComposite colName keys allColsInAnd)
+  where
+    checkCompositeCols :: [String] -> Bool
+    checkCompositeCols [] = False
+    checkCompositeCols (compCol : compCols) = 
+      if compCol == colName
+        then True
+        else (compCol `elem` allColsInAnd) && checkCompositeCols compCols
+
+-- Check only for the first column of the composite key
+doesMatchColNameInDbRule :: String -> [YamlTableKeys] -> Bool
+doesMatchColNameInDbRule _ [] = False
+doesMatchColNameInDbRule colName (key : keys) = 
+  case key of
+    (CompositeKey (col:_))  -> (colName == col) || (doesMatchColNameInDbRule colName keys)
+    (NonCompositeKey col)   -> (colName == col) || (doesMatchColNameInDbRule colName keys)
+    _                       -> doesMatchColNameInDbRule colName keys
+
+type SimplifiedIsClause = (LHsExpr GhcTc, String, String)
+
+trfWhereToSOP :: [LHsExpr GhcTc] -> TcM [[SimplifiedIsClause]]
+trfWhereToSOP [] = pure [[]]
+trfWhereToSOP (clause : ls) = do
+  let res = getWhereClauseFnNameWithAllArgs clause
+      (fnName, args) = fromMaybe ("NA", []) res
   case (fnName, args) of
-    ("And", [(L _ (ExplicitList _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
-    ("Or", [(L _ (ExplicitList _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
-    ("$WIs", [arg1, arg2])                  -> processIsClause arg1 arg2 clause rule >>= (maybe (processClauses ls rule) (pure . Just))
-    _      -> when logWarnInfo (liftIO $ print "Invalid clause in `where` clause") >> processClauses ls rule
+    ("And", [(L _ (ExplicitList _ arg))]) -> do
+      curr <- trfWhereToSOP arg
+      rem  <- trfWhereToSOP ls
+      pure [x <> y | x <- curr, y <- rem]
+    ("Or", [(L _ (ExplicitList _ arg))]) -> do
+      curr <- foldM (\r cls -> fmap (<> r) $ trfWhereToSOP [cls]) [] arg
+      rem  <- trfWhereToSOP ls
+      pure [x <> y | x <- curr, y <- rem]
+    ("$WIs", [arg1, arg2]) -> do
+      curr <- getIsClauseData arg1 arg2 clause
+      rem  <- trfWhereToSOP ls
+      case curr of
+        Nothing -> pure rem
+        Just (tblName, colName) -> pure $ fmap (\lst -> (clause, tblName, colName) : lst) rem
+    (fn, _) -> when logWarnInfo (liftIO $ print $ "Invalid/unknown clause in `where` clause : " <> fn <> " at " <> (showS . getLocA $ clause)) >> trfWhereToSOP ls
 
-processAndClause :: [LHsExpr GhcTc] -> DBRule -> TcM (Maybe (LHsExpr GhcTc, Violation))
-processAndClause [] _               = pure Nothing
-processAndClause (clause : ls) rule = do
-  let res = getFnNameWithAllArgs clause
-      (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
-  case (fnName, args) of
-    ("And", [(L _ (ExplicitList _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
-    ("Or", [(L _ (ExplicitList _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
-    ("$WIs", [arg1, arg2])                  -> processIsClause arg1 arg2 clause rule >>= (maybe (processClauses ls rule) (pure . Just))
-    _      -> when logWarnInfo (liftIO $ print "Invalid clause in `And` clause") >> processClauses ls rule
-
-processOrClause :: [LHsExpr GhcTc] -> DBRule -> TcM (Maybe (LHsExpr GhcTc, Violation))
-processOrClause [] _               = pure Nothing
-processOrClause (clause : ls) rule = do
-  let res = getFnNameWithAllArgs clause
-      (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
-  case (fnName, args) of
-    ("And", [(L _ (ExplicitList _ arg))]) -> processAndClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
-    ("Or", [(L _ (ExplicitList _ arg))])  -> processOrClause arg rule >>= (maybe (processClauses ls rule) (pure . Just))
-    ("$WIs", [arg1, arg2])                  -> processIsClause arg1 arg2 clause rule >>= (maybe (processClauses ls rule) (pure . Just))
-    _      -> when logWarnInfo (liftIO $ print "Invalid clause in `Or` clause") >> processClauses ls rule
-
-processIsClause :: LHsExpr GhcTc -> LHsExpr GhcTc -> LHsExpr GhcTc -> DBRule -> TcM (Maybe (LHsExpr GhcTc, Violation))
-processIsClause fieldArg _ clause rule@(DBRule ruleName ruleTableName ruleColNamesComposite) = do
+getIsClauseData :: LHsExpr GhcTc -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM (Maybe (String, String))
+getIsClauseData fieldArg _comp _clause = do
   let fieldSpecType = getDBFieldSpecType fieldArg
-      ruleColNames = map head ruleColNamesComposite -- Unsafe, keeping it so that we need to change the yaml file
   mbColNameAndTableName <- case fieldSpecType of
     None     -> when logWarnInfo (liftIO $ print "Can't identify the way in which DB field is specified") >> pure Nothing
     Selector -> do
@@ -325,15 +415,12 @@ processIsClause fieldArg _ clause rule@(DBRule ruleName ruleTableName ruleColNam
         then 
           case head tyApps of
             (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> do
-              let tys = getArgTypeWrapper tableVar
-              if length tys >= 1
-                then 
-                  let tblName' = case head tys of
-                                  AppTy ty1 _    -> showS ty1
-                                  TyConApp ty1 _ -> showS ty1
-                                  ty             -> showS ty
-                  in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
-                else pure Nothing
+              typ <- getHsExprType tableVar
+              let tblName' = case typ of
+                              AppTy ty1 _    -> showS ty1
+                              TyConApp ty1 _ -> showS ty1
+                              ty             -> showS ty
+              pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
             (XExpr (WrapExpr (HsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)))) ->
               let tblName' = case tableType of
                                   AppTy ty1 _    -> showS ty1
@@ -350,15 +437,12 @@ processIsClause fieldArg _ clause rule@(DBRule ruleName ruleTableName ruleColNam
           case opExpr of
             (OpApp _ tableVar _ fldVar) -> do
               let fldName = tail $ showS fldVar
-                  tys = getArgTypeWrapper tableVar
-              if length tys >= 1
-                then 
-                  let tblName' = case head tys of
-                                  AppTy ty1 _    -> showS ty1
-                                  TyConApp ty1 _ -> showS ty1
-                                  ty             -> showS ty
-                  in pure $ Just (fldName, take (length tblName' - 1) tblName')
-                else pure Nothing
+              typ <- getHsExprType tableVar
+              let tblName' = case typ of
+                              AppTy ty1 _    -> showS ty1
+                              TyConApp ty1 _ -> showS ty1
+                              ty             -> showS ty
+              pure $ Just (fldName, take (length tblName' - 1) tblName')
             (SectionR _ _ (L _ lens)) -> do
               let tys = lens ^? biplateRef :: [Type]
                   typeForTableName = filter (\typ -> case typ of 
@@ -373,30 +457,24 @@ processIsClause fieldArg _ clause rule@(DBRule ruleName ruleTableName ruleColNam
               pure $ Just (tail $ showS lens, take (length tblName' - 1) tblName')
             _ -> when logWarnInfo (liftIO $ putStrLn "OpApp not present. Should never be the case as we already filtered.") >> pure Nothing
   
-  when logDebugInfo $ liftIO $ putStrLn $ "DBRule - " <> show mbColNameAndTableName
+  pure mbColNameAndTableName
 
-  case mbColNameAndTableName of
-    Nothing -> pure Nothing
-    Just (colName, tableName) -> 
-      if tableName == ruleTableName && colName `notElem` ruleColNames
-        then pure $ Just (clause, NonIndexedDBColumn colName tableName rule)
-        else pure Nothing
-
-checkAndApplyRule :: Rule -> LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
-checkAndApplyRule ruleT ap = case ruleT of
-  DBRuleT rule@(DBRule _ ruleTableName _) -> 
+checkAndApplyRule :: Rule -> PluginOpts -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
+checkAndApplyRule ruleT opts ap = case ruleT of
+  DBRuleT rule@(DBRule _ ruleTableName _ _) -> 
     case ap of
       (L _ (ExplicitList (TyConApp ty [_, tblName]) exprs)) -> case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
-        True  -> validateDBRule rule (showS tblName) exprs ap 
-        False -> pure Nothing
-      _ -> pure Nothing
-  FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _) -> do
+        True  -> validateDBRule rule opts (showS tblName) exprs ap 
+        False -> pure []
+      _ -> pure []
+  FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _ _) -> do
     let res = getFnNameWithAllArgs ap
     -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
         (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
     case (fnName == ruleFnName && length args >= arg_no) of
-      True  -> validateFunctionRule rule fnName args ap 
-      False -> pure Nothing 
+      True  -> validateFunctionRule rule opts fnName args ap 
+      False -> pure [] 
+  GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
 
 getDBFieldSpecType :: LHsExpr GhcTc -> DBFieldSpecType
 getDBFieldSpecType (L _ expr)
@@ -405,27 +483,51 @@ getDBFieldSpecType (L _ expr)
   | (\x -> isInfixOf "@" x) (showS expr) = RecordDot
   | otherwise = None
 
+getWhereClauseFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (String, [LHsExpr GhcTc])
+getWhereClauseFnNameWithAllArgs (L _ (HsVar _ v)) = Just (getVarName v, [])
+getWhereClauseFnNameWithAllArgs (L _ (HsConLikeOut _ cl)) = (\clId -> (getVarName $ noLocA clId, [])) <$> conLikeWrapId cl
+getWhereClauseFnNameWithAllArgs (L _ (HsApp _ (L _ (HsVar _ v)) funr)) = Just (getVarName v, [funr])
+getWhereClauseFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
+  let res = getWhereClauseFnNameWithAllArgs funl
+  case res of
+    Nothing -> Nothing
+    Just (fnName, ls) -> Just (fnName, ls ++ [funr])
+getWhereClauseFnNameWithAllArgs (L loc (OpApp _ lfun op rfun)) = do
+  case showS op of
+    "($)" -> getWhereClauseFnNameWithAllArgs $ (L loc (HsApp noAnn lfun rfun))
+    _ -> Nothing
+getWhereClauseFnNameWithAllArgs (L loc ap@(HsPar _ expr)) = getWhereClauseFnNameWithAllArgs expr
+-- If condition inside the list, add dummy type
+getWhereClauseFnNameWithAllArgs (L loc ap@(HsIf _ _pred thenCl elseCl)) = Just ("Or", [L loc (ExplicitList (LitTy (StrTyLit "Dummy")) [thenCl, elseCl])])
+getWhereClauseFnNameWithAllArgs (L loc (XExpr (WrapExpr (HsWrap _ expr)))) = getWhereClauseFnNameWithAllArgs (L loc expr)
+getWhereClauseFnNameWithAllArgs (L loc ap@(ExprWithTySig _ expr _)) = getWhereClauseFnNameWithAllArgs expr
+getWhereClauseFnNameWithAllArgs _ = Nothing
+
+conLikeWrapId :: ConLike -> Maybe Var
+conLikeWrapId (RealDataCon dc) = Just (dataConWrapId dc)
+conLikeWrapId _ = Nothing
+
+getVarName :: GenLocated (Anno Var) Var -> String
+getVarName var = (getOccString . varName . unLoc) var
+
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
 getFnNameWithAllArgs (L _ (HsVar _ v)) = Just (L (getLocA v) (unLoc v), [])
 getFnNameWithAllArgs (L _ (HsConLikeOut _ cl)) = (\clId -> (noLoc clId, [])) <$> conLikeWrapId cl
+getFnNameWithAllArgs (L _ (HsAppType _ expr _)) = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ (L _ (HsVar _ v)) funr)) = Just (L (getLocA v) (unLoc v), [funr])
 getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   let res = getFnNameWithAllArgs funl
   case res of
     Nothing -> Nothing
     Just (fnName, ls) -> Just (fnName, ls ++ [funr])
--- getFnNameWithAllArgs (L _ (OpApp _ funl op funr)) = do
---   let res = getFnNameWithAllArgs funl
---   case res of
---     Nothing -> Nothing
---     Just (fnName, ls) -> Just (fnName, ls ++ [funr])
+getFnNameWithAllArgs (L loc (OpApp _ funl op funr)) = do
+  case showS op of
+    "($)" -> getFnNameWithAllArgs $ (L loc (HsApp noAnn funl funr))
+    _ -> Nothing
 getFnNameWithAllArgs (L loc ap@(XExpr (WrapExpr (HsWrap _ expr)))) = do
   getFnNameWithAllArgs (L loc expr)
 getFnNameWithAllArgs _ = Nothing
 
-conLikeWrapId :: ConLike -> Maybe Var
-conLikeWrapId (RealDataCon dc) = Just (dataConWrapId dc)
-conLikeWrapId _ = Nothing
 --------------------------- Utils ---------------------------
 -- Check if HsExpr is Function Application
 isFunApp :: LHsExpr GhcTc -> Bool
@@ -448,23 +550,39 @@ getStrFromHsWildCardBndrs typ = showS typ
 isFunVar :: Var -> Bool
 isFunVar = isFunTy . dropForAlls . idType 
 
+-- Check if a Type is Enum type
+isEnumType :: Type -> Bool
+isEnumType (TyConApp tyCon _) = isEnumerationTyCon tyCon
+isEnumType _ = False
+
 -- Pretty print the Internal Representations
 showOutputable :: (MonadIO m, Outputable a) => a -> m ()
 showOutputable = liftIO . putStrLn . showSDocUnsafe . ppr
 
 -- Create GHC compilation error from CompileError
 mkGhcCompileError :: CompileError -> (SrcSpan, OP.SDoc)
-mkGhcCompileError err = (src_span err, OP.text $ err_msg err)
+mkGhcCompileError err = (src_span err, OP.text $ getErrMsgWithSuggestions (err_msg err) (suggested_fixes err))
 
--- Create invalid indexedKeys file compilation error
-mkInvalidIndexedKeysFile :: String -> OP.SDoc
-mkInvalidIndexedKeysFile err = OP.text err
+-- Make error message with suggestion
+getErrMsgWithSuggestions :: String -> Suggestions -> String
+getErrMsgWithSuggestions errMsg suggestions = errMsg
+  <> newLine <> fourSpaces <> "Suggested fixes: "
+  <> foldr (\(suggestionNo, suggestion) r -> newLine <> sixSpaces <> show suggestionNo <> ". " <> suggestion <> r) "" (zip [1..] suggestions)
+  where 
+    newLine = "\n"
+    twoSpaces = "  "
+    fourSpaces = twoSpaces <> twoSpaces
+    sixSpaces = twoSpaces <> fourSpaces
+
+-- Create invalid yaml file compilation error
+mkInvalidYamlFileErr :: String -> OP.SDoc
+mkInvalidYamlFileErr err = OP.text err
 
 -- Create Internal Representation of Logging Error
 mkCompileError :: (LHsExpr GhcTc, Violation) -> TcM CompileError
-mkCompileError (expr, violation) = pure $ CompileError "" "" (show violation) ( (getLocA (expr))) violation
+mkCompileError (expr, violation) = pure $ CompileError "" "" (show violation) ( (getLocA (expr))) violation (getViolationSuggestions violation)
 
--- Get Return type of the function application arg
+-- [DEPRECATED] Get Return type of the function application arg
 getArgTypeWrapper :: LHsExpr GhcTc -> [Type]
 getArgTypeWrapper expr@(L _ (HsApp _ lfun rfun)) = getArgType expr True
 getArgTypeWrapper expr@(L _ (OpApp _ lfun op rfun)) = 
@@ -477,10 +595,12 @@ getArgTypeWrapper (L loc (XExpr (WrapExpr (HsWrap _ expr)))) = getArgTypeWrapper
 getArgTypeWrapper (L loc (HsPar _ expr)) = getArgTypeWrapper expr
 getArgTypeWrapper expr = getArgType expr False
 
+-- [DEPRECATED] Get LHsExpr type
 getArgType :: LHsExpr GhcTc -> Bool -> [Type]
 getArgType (L _ (HsLit _ v)) _ = getLitType v
 getArgType (L _ (HsOverLit _ (OverLit (OverLitTc _ typ) v _))) _ = [typ]
 getArgType (L loc (XExpr (WrapExpr (HsWrap _ expr)))) shouldReturnFinalType = getArgType (L loc expr) shouldReturnFinalType
+getArgType (L loc (HsApp _ lfun rfun)) shouldReturnFinalType = getArgType lfun shouldReturnFinalType
 getArgType arg shouldReturnFinalType = 
   let vars = filter (not . isSystemName . varName) $ arg ^? biplateRef in 
   if length vars == 0
@@ -492,6 +612,7 @@ getArgType arg shouldReturnFinalType =
         actualReturnTyp = (trfUsingConstraints constraints $ typeReturnFn actualTyp)
     in actualReturnTyp
 
+-- [DEPRECATED] Get HsLit literal type
 getLitType :: HsLit GhcTc -> [Type]
 getLitType (HsChar _ _	) = [charTy]
 getLitType (HsCharPrim _ _) = [charTy]
@@ -508,12 +629,13 @@ getLitType (HsFloatPrim _ _) = [floatTy]
 getLitType (HsDoublePrim _ _) = [doubleTy]
 getLitType _ = []
 
--- Get final return type of any type/function signature
+-- [DEPRECATED] Get final return type of any type/function signature
 getReturnType :: Type -> [Type]
 getReturnType typ 
   | isFunTy typ = getReturnType $ tcFunResultTy typ
   | otherwise = let (x, y) = tcSplitAppTys typ in x : y
 
+-- [DECRECATED] Transform the type from the constraints
 trfUsingConstraints :: [PredType] -> [Type] -> [Type]
 trfUsingConstraints constraints typs =
   let replacements = catMaybes $ map constraintsToReplacements constraints
@@ -524,7 +646,9 @@ trfUsingConstraints constraints typs =
     constraintsToReplacements predTyp = case tcSplitTyConApp_maybe predTyp of
       Just (tycon, [typ]) -> if showS tycon == "IsString"
                               then Just (typ, stringTy)
-                              else Nothing
+                             else if showS tycon == "Num" || showS tycon == "GHC.Num.Num"
+                              then Just (typ, intTy)
+                             else Nothing
       _ -> Nothing
 
     replacer :: [(Type, Type)] -> Type -> Type
@@ -534,6 +658,7 @@ trfUsingConstraints constraints typs =
     replacer replacements typ@(FunTy flag mult ty1 ty2) = FunTy flag mult (replacer replacements ty1) (replacer replacements ty2) 
     replacer replacements typ = maybe typ snd $ (\x -> eqType (fst x) typ) `find` replacements 
 
+-- [DEPRECATED] Get List of stringification functions used inside a HsExpr; Uses `stringifierFns` 
 getStringificationFns :: LHsExpr GhcTc -> TcM [String] 
 getStringificationFns (L _ ap@(HsVar _ v)) = do
   liftIO $ putStrLn "Inside HsVar" >> putStrLn (showS ap) 
@@ -562,20 +687,67 @@ getStringificationFns _ = do
   liftIO $ putStrLn $ "Inside _"
   pure []
 
--- Get List of stringification functions used inside a HsExpr; Uses `stringifierFns` 
+-- [DEPRECATED] Get List of stringification functions used inside a HsExpr; Uses `stringifierFns` 
 getStringificationFns2 :: LHsExpr GhcTc -> FunctionRule -> [String] 
 getStringificationFns2 arg rule =
   let vars = arg ^? biplateRef :: [Var]
-      blockedFns = fns_blocked_in_arg rule
+      blockedFns = fmap (\(fname, _, _) -> fname) $ fns_blocked_in_arg rule
   in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns)) $ takeWhile isFunVar $ filter (not . isSystemName . varName) vars
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
-getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> [String] 
-getBlockedFnsList arg rule =
-  let vars = arg ^? biplateRef :: [Var]
-      blockedFns = fns_blocked_in_arg rule
-  in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns) && (not . isSystemName . varName) x) vars
+getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> TcM [(LHsExpr GhcTc, String, String)] 
+getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
+  let argHsExprs = arg ^? biplateRef :: [LHsExpr GhcTc]
+      fnApps = filter isFunApp argHsExprs
+  when logDebugInfo $ liftIO $ do
+    print "getBlockedFnsList"
+    showOutputable arg
+    showOutputable fnApps
+  catMaybes <$> mapM checkFnBlockedInArg fnApps 
+  --     vars = arg ^? biplateRef :: [Var]
+  --     blockedFns = fmap (\(fname, _, _) -> fname) $ fns_blocked_in_arg rule
+  -- in map getOccString $ filter (\x -> ((getOccString x) `elem` blockedFns) && (not . isSystemName . varName) x) vars
+  where 
+    checkFnBlockedInArg :: LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, String, String))
+    checkFnBlockedInArg expr = do
+      let res = getFnNameWithAllArgs expr
+      when logDebugInfo $ liftIO $ do
+        print "checkFnBlockedInArg"
+        showOutputable res
+      case res of
+        Nothing -> pure Nothing
+        Just (fnName, args) -> isPresentInBlockedFnList expr fnsBlocked ((getOccString . varName . unLoc) fnName) args
+    
+    isPresentInBlockedFnList :: LHsExpr GhcTc -> FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> TcM (Maybe (LHsExpr GhcTc, String, String))
+    isPresentInBlockedFnList expr [] _ _ = pure Nothing
+    isPresentInBlockedFnList expr ((ruleFnName, ruleArgNo, ruleAllowedTypes) : ls) fnName fnArgs = do
+      when logDebugInfo $ liftIO $ do
+        print "isPresentInBlockedFnList"
+        print (ruleFnName, ruleArgNo, ruleAllowedTypes)
+      case ruleFnName == fnName && length fnArgs >= ruleArgNo of
+        False -> isPresentInBlockedFnList expr ls fnName fnArgs
+        True  -> do
+          let reqArg = head $ drop (ruleArgNo - 1) fnArgs
+          argType <- getHsExprType reqArg
+          when logDebugInfo $ liftIO $ do
+            showOutputable reqArg
+            showOutputable argType
+          if validateAllowedTypes argType ruleAllowedTypes
+            then isPresentInBlockedFnList expr ls fnName fnArgs
+            else pure $ Just (expr, fnName, showS argType)
 
+    validateAllowedTypes :: Type -> TypesAllowedInArg -> Bool
+    validateAllowedTypes argType@(TyConApp tyCon ls) ruleAllowedTypes = 
+      if showS tyCon == "(,)" && "(,)" `elem` ruleAllowedTypes
+        then (\t -> validateAllowedTypes t ruleAllowedTypes) `all` ls 
+      else if showS tyCon == "[]" && "[]" `elem` ruleAllowedTypes
+        then (\t -> validateAllowedTypes t ruleAllowedTypes) `all` ls
+      else if showS tyCon == "Maybe" && "Maybe" `elem` ruleAllowedTypes
+        then (\t -> validateAllowedTypes t ruleAllowedTypes) `all` ls
+      else (isEnumType argType && "EnumTypes" `elem` ruleAllowedTypes) || (showS argType) `elem` ruleAllowedTypes
+    validateAllowedTypes argType ruleAllowedTypes = (isEnumType argType && "EnumTypes" `elem` ruleAllowedTypes) || (showS argType) `elem` ruleAllowedTypes
+    
+-- Add GHC error to a file    
 addErrToFile :: ModSummary -> String -> [CompileError] -> TcM ()
 addErrToFile modSummary path errs = do
   let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
@@ -583,3 +755,19 @@ addErrToFile modSummary path errs = do
       res = encodePretty errs
   liftIO $ createDirectoryIfMissing True path
   liftIO $ writeFile (path <> moduleName' <> "_compilationErrors.json") res
+
+-- Get type for a LHsExpr GhcTc
+getHsExprType :: LHsExpr GhcTc -> TcM Type
+getHsExprType expr = do
+  coreExpr <- initDsTc $ dsLExpr expr
+  when logTypeDebugging $ liftIO $ print $ "DebugType = " <> (debugPrintType $ exprType coreExpr)
+  pure $ exprType coreExpr
+
+debugPrintType :: Type -> String
+debugPrintType (TyVarTy v) = "(TyVar " <> showS v <> ")"
+debugPrintType (AppTy ty1 ty2) = "(AppTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
+debugPrintType (TyConApp tycon tys) = "(TyCon (" <> showS tycon <> ") [" <> foldr (\x r -> debugPrintType x <> ", " <> r) "" tys <> "]"
+debugPrintType (ForAllTy _ ty) = "(ForAllTy " <> debugPrintType ty <> ")"
+debugPrintType (FunTy _ _ ty1 ty2) = "(FunTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
+debugPrintType (LitTy litTy) = "(LitTy " <> showS litTy <> ")"
+debugPrintType _ = ""

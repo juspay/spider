@@ -1,6 +1,5 @@
 {-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE OverloadedRecordDot #-}
-module Main (main,demo) where
+module Main (main,demo,ddd) where
 
 -- import qualified Fdep.Plugin ()
 
@@ -12,11 +11,15 @@ main = do
     let a = A 20
     print a.x
     putStrLn "Test suite not yet implemented."
-    print ("HI there" :: String)
+    print ("HI there" :: String) 
     where
         test :: String -> String
         test "HI" = "HI"
-        test2 "HI" = "HI"
-        test10 = demo
+        test2 v = test (v <> ddd) 
+        test10 :: String -> String
+        test10 _ = demo "1000" "!))"
 
-demo "HI" = 100
+demo :: (Show x) => x -> x -> String
+demo x y = (show y <> show x <> show 100)
+
+ddd = "HITHERE"
