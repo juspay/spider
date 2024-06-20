@@ -54,7 +54,8 @@ import GHC
     noAnn,
     noLocA,
     Anno(..),
-    leftmost_smallest
+    leftmost_smallest,
+    HsExpansion(..)
   )
 import GHC.Hs.Binds
 import GHC.Plugins (isFunTy, funResultTy, splitAppTys, dropForAlls, idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, isEnumerationTyCon, WarnReason(..), tcSplitTyConApp_maybe, eqType, moduleEnvToList, ModIface, lookupModuleEnv)
@@ -269,6 +270,12 @@ isBadFunApp :: Rules -> PluginOpts -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Viol
 isBadFunApp rules opts ap@(L _ (HsVar _ v)) = isBadFunAppHelper rules opts ap
 isBadFunApp rules opts ap@(L _ (HsApp _ funl funr)) = isBadFunAppHelper rules opts ap
 isBadFunApp rules opts ap@(L loc (XExpr (WrapExpr (HsWrap _ expr)))) = isBadFunApp rules opts (L loc expr)
+isBadFunApp rules opts ap@(L loc (XExpr (ExpansionExpr (HsExpanded orig expanded)))) = do
+  case (orig, expanded) of
+    ((OpApp _ _ op _), (HsApp _ (L _ (HsApp _ op' funl)) funr)) -> case showS op of
+      "($)" -> isBadFunApp rules opts (L loc (HsApp noAnn funl funr))
+      _ -> isBadFunApp rules opts (L loc expanded)
+    _ -> isBadFunApp rules opts (L loc expanded)
 isBadFunApp rules opts ap@(L _ (ExplicitList _ _)) = isBadFunAppHelper rules opts ap
 isBadFunApp rules opts (L loc (OpApp _ lfun op rfun)) = do
   case showS op of
