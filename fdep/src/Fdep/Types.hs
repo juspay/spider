@@ -32,6 +32,7 @@ data Function = Function
   , where_functions :: [Function]
   , src_loc    :: String
   , stringified_code :: String
+  , function_signature :: String
   } deriving (Show, Eq, Ord)
 
 data MissingTopLevelBindsSignature = MissingTopLevelBindsSignature {
@@ -56,12 +57,13 @@ instance ToJSON FunctionInfo where
            ]
 
 instance ToJSON Function where
-  toJSON (Function funcName funcsCalled whereFuncs srcLoc codeStringified) =
+  toJSON (Function funcName funcsCalled whereFuncs srcLoc codeStringified function_signature) =
     object [ "function_name"    .= funcName
            , "functions_called" .= funcsCalled
            , "where_functions"  .= whereFuncs
            , "src_loc"         .= srcLoc
            , "code_string"         .= codeStringified
+           , "function_signature" .= function_signature
            ]
 
 instance FromJSON FunctionInfo where
@@ -80,6 +82,7 @@ instance FromJSON Function where
              <*> v .: "where_functions"
              <*> v .: "src_loc"
              <*> v .: "code_string"
+             <*> v .: "function_signature"
 
 instance ToJSON DataTypeUC where
     toJSON (DataTypeUC fn fields) =

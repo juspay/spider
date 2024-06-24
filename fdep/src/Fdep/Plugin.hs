@@ -313,15 +313,15 @@ loopOverLHsBindLR (L _ x@(FunBind fun_ext id matches _ _)) = do
                     ([], [])
                     (unLoc matchList)
             listTransformed <- filterFunctionInfos $ map transformFromNameStableString list
-            pure [(Function funName listTransformed (nub funcs) (showSDocUnsafe $ ppr $ getLoc id) (showSDocUnsafe $ ppr x))]
+            pure [(Function funName listTransformed (nub funcs) (showSDocUnsafe $ ppr $ getLoc id) (showSDocUnsafe $ ppr x) (showSDocUnsafe $ ppr $ varType $ unLoc id))]
 loopOverLHsBindLR x@(L _ VarBind{var_rhs = rhs}) = do
-    pure [(Function "" (map transformFromNameStableString $ processExpr [] rhs) [] "" (showSDocUnsafe $ ppr x))]
+    pure [(Function "" (map transformFromNameStableString $ processExpr [] rhs) [] "" (showSDocUnsafe $ ppr x) "")]
 loopOverLHsBindLR x@(L _ AbsBinds{abs_binds = binds}) = do
     list <- toList $ parallely $ mapM loopOverLHsBindLR $ fromList $ bagToList binds
     pure (concat list)
 loopOverLHsBindLR x@(L _ (PatSynBind _ PSB{psb_def = def})) = do
     let list = map transformFromNameStableString $ map (\(n, srcLoc) -> (Just $ nameStableString n, srcLoc,Nothing, [])) $ processPat def
-    pure [(Function "" list [] "" (showSDocUnsafe $ ppr x))]
+    pure [(Function "" list [] "" (showSDocUnsafe $ ppr x) "")]
 loopOverLHsBindLR (L _ (PatSynBind _ (XPatSynBind _))) = do
     pure []
 loopOverLHsBindLR (L _ (XHsBindsLR _)) = do
@@ -329,7 +329,7 @@ loopOverLHsBindLR (L _ (XHsBindsLR _)) = do
 loopOverLHsBindLR x@(L _ (PatBind _ _ pat_rhs _)) = do
     r <- toList $ parallely $ mapM processGRHS $ fromList $ grhssGRHSs pat_rhs
     let l = map transformFromNameStableString $ concat r
-    pure [(Function "" l [] "" (showSDocUnsafe $ ppr x))]
+    pure [(Function "" l [] "" (showSDocUnsafe $ ppr x) "")]
 
 -- checkIfCreateOrUpdtingDataTypes binds = mapM_ (go) (fromList $ bagToList binds)
 --     where
