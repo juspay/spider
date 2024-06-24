@@ -13,6 +13,8 @@ data PluginOpts = PluginOpts {
     failOnFileNotFound :: Bool,
     savePath :: String,
     indexedKeysPath :: String,
+    rulesConfigPath :: String,
+    exceptionsConfigPath :: String,
     matchAllInsideAnd :: Bool
   } deriving (Show, Eq)
 
@@ -24,7 +26,9 @@ defaultPluginOpts =
     failOnFileNotFound = True, 
     matchAllInsideAnd = False,
     savePath = ".juspay/tmp/sheriff/", 
-    indexedKeysPath = ".juspay/indexedKeys.yaml" 
+    indexedKeysPath = ".juspay/indexedKeys.yaml" ,
+    rulesConfigPath = ".juspay/sheriffRules.yaml",
+    exceptionsConfigPath = ".juspay/sheriffExceptionRules.yaml" 
   }
 
 instance FromJSON PluginOpts where
@@ -34,9 +38,19 @@ instance FromJSON PluginOpts where
     throwCompilationError <- o .:? "throwCompilationError" .!= (throwCompilationError defaultPluginOpts)
     savePath <- o .:? "savePath" .!= (savePath defaultPluginOpts)
     indexedKeysPath <- o .:? "indexedKeysPath" .!= (indexedKeysPath defaultPluginOpts)
+    rulesConfigPath <- o .:? "rulesConfigPath" .!= (rulesConfigPath defaultPluginOpts)
+    exceptionsConfigPath <- o .:? "exceptionsConfigPath" .!= (exceptionsConfigPath defaultPluginOpts)
     matchAllInsideAnd <- o .:? "matchAllInsideAnd" .!= (matchAllInsideAnd defaultPluginOpts)
-    return PluginOpts { saveToFile = saveToFile, throwCompilationError = throwCompilationError, matchAllInsideAnd = matchAllInsideAnd, savePath = savePath, indexedKeysPath = indexedKeysPath, failOnFileNotFound = failOnFileNotFound }
+    return PluginOpts { saveToFile = saveToFile, throwCompilationError = throwCompilationError, matchAllInsideAnd = matchAllInsideAnd, savePath = savePath, indexedKeysPath = indexedKeysPath, rulesConfigPath = rulesConfigPath, exceptionsConfigPath = exceptionsConfigPath, failOnFileNotFound = failOnFileNotFound }
 
+data SheriffRules = SheriffRules
+  { rules :: Rules
+  } deriving (Show, Eq)
+
+instance FromJSON SheriffRules where
+  parseJSON = withObject "SheriffRules" $ \o -> do
+    rules <- o .: "rules"
+    return SheriffRules { rules = rules }
 
 data YamlTables = YamlTables
   { tables :: [YamlTable]
@@ -93,6 +107,7 @@ instance ToJSON CompileError where
 
 type Rules = [Rule]
 type ArgNo = Int
+type ArgTypes = [String]
 type FnsBlockedInArg = [(String, ArgNo, TypesAllowedInArg)]
 type TypesAllowedInArg = [String]
 type TypesBlockedInArg = [String]
@@ -108,9 +123,20 @@ data FunctionRule =
       fns_blocked_in_arg    :: FnsBlockedInArg,
       types_blocked_in_arg  :: TypesBlockedInArg,
       types_to_check_in_arg :: TypesToCheckInArg,
-      fnRuleFixes           :: Suggestions
+      fn_rule_fixes         :: Suggestions
     }
   deriving (Show, Eq)  
+
+instance FromJSON FunctionRule where
+  parseJSON = withObject "FunctionRule" $ \o -> do
+                fn_rule_name <- o .: "fn_rule_name"
+                fn_name <- o .: "fn_name"
+                arg_no <- o .: "arg_no"
+                fns_blocked_in_arg <- o .: "fns_blocked_in_arg"
+                types_blocked_in_arg <- o .: "types_blocked_in_arg"
+                types_to_check_in_arg <- o .: "types_to_check_in_arg"
+                fn_rule_fixes <- o .: "fn_rule_fixes"
+                return (FunctionRule {fn_rule_name = fn_rule_name, fn_name = fn_name, arg_no = arg_no, fns_blocked_in_arg = fns_blocked_in_arg, types_blocked_in_arg = types_blocked_in_arg, types_to_check_in_arg = types_to_check_in_arg, fn_rule_fixes = fn_rule_fixes})
 
 data DBRule =
   DBRule 
@@ -118,14 +144,77 @@ data DBRule =
       db_rule_name       :: String,
       table_name         :: String,
       indexed_cols_names :: [YamlTableKeys],
-      dbRuleFixes        :: Suggestions
+      db_rule_fixes        :: Suggestions
     }
   deriving (Show, Eq)  
+
+instance FromJSON DBRule where
+  parseJSON = withObject "DBRule" $ \o -> do
+                db_rule_name       <- o .: "db_rule_name"
+                table_name         <- o .: "table_name"
+                indexed_cols_names <- o .: "indexed_cols_names"
+                db_rule_fixes      <- o .: "db_rule_fixes"
+                return (DBRule {db_rule_name = db_rule_name, table_name = table_name, indexed_cols_names = indexed_cols_names, db_rule_fixes = db_rule_fixes})
+
+data Action = Allowed | Blocked
+  deriving (Show, Eq)
+
+instance FromJSON Action where
+  parseJSON = withText "Action" $ \s -> case s of
+                "Allowed" -> return Allowed
+                "Blocked" -> return Blocked
+                _         -> fail "Invalid Action in rule"
+
+-- First check for arg_types if it is allowed or not. If allowed, then further check for arg_fns
+data FunctionInfo = 
+  FunctionInfo 
+    {
+      fnName         :: String,
+      isQualified    :: Bool,
+      argNo          :: ArgNo,
+      fnAction       :: Action,
+      argTypes       :: ArgTypes,
+      argFns         :: [FunctionInfo],
+      suggestedFixes :: Suggestions
+    }
+  deriving (Show, Eq)  
+
+instance FromJSON FunctionInfo where
+  parseJSON = withObject "FunctionInfo" $ \o -> do
+                fnName         <- o .: "fnName"
+                isQualified    <- o .:? "isQualified" .!= False
+                argNo          <- o .: "argNo"
+                fnAction       <- o .: "action"
+                argTypes       <- o .: "argTypes"
+                argFns         <- o .: "argFns"
+                suggestedFixes <- o .: "suggestedFixes"
+                return (FunctionInfo { fnName = fnName, isQualified = isQualified, argNo = argNo, fnAction = fnAction, argTypes = argTypes, argFns = argFns, suggestedFixes = suggestedFixes })
+
+-- First check for all conditions to be true, and if satisfied, then
+data GeneralRule = 
+  GeneralRule 
+    {
+      ruleName   :: String,
+      conditions :: [FunctionInfo],
+      ruleInfo   :: FunctionInfo
+    }
+  deriving (Show, Eq)
+
+instance FromJSON GeneralRule where
+  parseJSON = withObject "GeneralRule" $ \o -> do
+                ruleName   <- o .: "ruleName"
+                conditions <- o .: "conditions"
+                ruleInfo   <- o .: "ruleInfo"
+                return (GeneralRule {ruleName = ruleName, conditions = conditions, ruleInfo = ruleInfo})
 
 data Rule = 
     DBRuleT DBRule
   | FunctionRuleT FunctionRule
+  | GeneralRuleT GeneralRule
   deriving (Show, Eq)  
+
+instance FromJSON Rule where
+  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (GeneralRuleT <$> parseJSON str)
 
 data LocalVar = FnArg Var | FnWhere Var | FnLocal Var
   deriving (Eq)
@@ -159,10 +248,10 @@ instance Show Violation where
 
 getViolationSuggestions :: Violation -> Suggestions
 getViolationSuggestions v = case v of
-  ArgTypeBlocked _ _ r -> fnRuleFixes r
-  FnBlockedInArg _ r -> fnRuleFixes r
-  FnUseBlocked r -> fnRuleFixes r
-  NonIndexedDBColumn _ _ r -> dbRuleFixes r
+  ArgTypeBlocked _ r -> fn_rule_fixes r
+  FnBlockedInArg _ r -> fn_rule_fixes r
+  FnUseBlocked r -> fn_rule_fixes r
+  NonIndexedDBColumn _ _ r -> db_rule_fixes r
   NoViolation -> []
 
 getViolationType :: Violation -> String
