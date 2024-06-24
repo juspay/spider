@@ -248,7 +248,7 @@ instance Show Violation where
 
 getViolationSuggestions :: Violation -> Suggestions
 getViolationSuggestions v = case v of
-  ArgTypeBlocked _ r -> fn_rule_fixes r
+  ArgTypeBlocked _ _ r -> fn_rule_fixes r
   FnBlockedInArg _ r -> fn_rule_fixes r
   FnUseBlocked r -> fn_rule_fixes r
   NonIndexedDBColumn _ _ r -> db_rule_fixes r

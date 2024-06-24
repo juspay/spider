@@ -156,13 +156,13 @@ sheriff opts modSummary tcEnv = do
   
   rulesList <- case parsedRulesYaml of
                 Left err -> do
-                  when logWarnInfo $ addWarn NoReason (mkInvalidYamlFileErr (show err))
+                  when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
                   pure rulesListWithDbRules
                 Right (SheriffRules rules) -> pure $ rulesListWithDbRules <> rules
 
   exceptionList <- case parsedExceptionsYaml of
                 Left err -> do
-                  when logWarnInfo $ addWarn NoReason (mkInvalidYamlFileErr (show err))
+                  when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
                   pure exceptionRules
                 Right (SheriffRules rules) -> pure $ exceptionRules <> rules
 
