@@ -178,7 +178,8 @@ sheriff opts modSummary tcEnv = do
   let sortedErrors = sortOn src_span errors
       groupedErrors = groupBy (\a b -> src_span a == src_span b) sortedErrors
       -- filteredErrors = concat $ filter (\x -> not $ (\err -> (getViolationRule $ violation err) `elem` exceptionList) `any` x) groupedErrors
-      filteredErrors = concat $ fmap (\x -> filter (\err -> not $ (getRuleExceptionsFromCompileError err) `hasAny` (fmap getRuleFromCompileError x)) x) groupedErrors
+      filteredErrorsForExceptions = concat $ fmap (\x -> filter (\err -> not $ (getRuleExceptionsFromCompileError err) `hasAny` (fmap getRuleFromCompileError x)) x) groupedErrors
+      filteredErrors = filter (\x -> getRuleFromCompileError x `elem` rulesList) filteredErrorsForExceptions
 
   if throwCompilationErrorV
     then addErrs $ map mkGhcCompileError filteredErrors
