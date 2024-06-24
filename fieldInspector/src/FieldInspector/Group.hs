@@ -50,6 +50,24 @@ processDumpFileTypes baseDirPath path = do
   let d = fromMaybe mempty (Aeson.decode content :: Maybe (Map.Map String TypeInfo))
   pure (module_name, d)
 
+processDumpFileTypesParser :: String -> FilePath -> IO (String,Map.Map String TypeInfo)
+processDumpFileTypesParser baseDirPath path = do
+  let module_name = replace ".hs.types.parser.json" ""
+                      $ replace "/" "."
+                        $ if (("src/")) `isInfixOf` (path)
+                            then last (splitOn ("src/") (replace baseDirPath "" path))
+                          else if (("src-generated/")) `isInfixOf` (path)
+                              then last (splitOn ("src-generated/") (replace baseDirPath "" path))
+                          else if (("src-extras/")) `isInfixOf` (path)
+                              then last (splitOn ("src-extras/") (replace baseDirPath "" path))
+                          else if (("test/")) `isInfixOf` (path)
+                              then last (splitOn ("test/") (replace baseDirPath "" path))
+                          else replace baseDirPath "" path
+  putStrLn module_name
+  content <- B.readFile path
+  let d = fromMaybe mempty (Aeson.decode content :: Maybe (Map.Map String TypeInfo))
+  pure (module_name, d)
+
 run :: Maybe String -> IO ()
 run bPath = do
   let baseDirPath =
@@ -65,6 +83,10 @@ run bPath = do
   let jsonFiles = filter (\x -> (".hs.types.json" `isSuffixOf`) $ x) files
   typeData <- mapM (processDumpFileTypes baseDirPath) jsonFiles
   B.writeFile (baseDirPath <> "/" <> "types-data.json") (encodePretty (Map.fromList typeData))
+
+  let jsonFiles = filter (\x -> (".hs.types.parser.json" `isSuffixOf`) $ x) files
+  typeData <- mapM (processDumpFileTypesParser baseDirPath) jsonFiles
+  B.writeFile (baseDirPath <> "/" <> "types-parser-data.json") (encodePretty (Map.fromList typeData))
 
 getDirectoryContentsRecursive :: FilePath -> IO [FilePath]
 getDirectoryContentsRecursive dir = do
