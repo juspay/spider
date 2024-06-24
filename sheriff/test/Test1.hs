@@ -171,7 +171,7 @@ main = do
 
     print $ show temp
     print $ show temp1
-    print $ (show) (temp1) -- Test case idea : @saransh.pasricha
+    print $ (show) (temp1)
     print $ show temp2
     print $ show temp3
     print $ show temp4

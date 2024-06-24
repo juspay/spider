@@ -513,6 +513,7 @@ getFnNameWithAllArgs (L _ (HsVar _ v)) = Just (v, [])
 getFnNameWithAllArgs (L _ (HsConLikeOut _ cl)) = (\clId -> (noLoc clId, [])) <$> conLikeWrapId_maybe cl
 getFnNameWithAllArgs (L _ (HsAppType _ expr _)) = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ (L _ (HsVar _ v)) funr)) = Just (v, [funr])
+getFnNameWithAllArgs (L _ (HsPar _ expr)) = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   let res = getFnNameWithAllArgs funl
   case res of
@@ -530,7 +531,7 @@ getFnNameWithAllArgs _ = Nothing
 isAllowedOnCurrentModule :: String -> Rule -> Bool
 isAllowedOnCurrentModule moduleName rule = 
   let ignoreModules = getRuleIgnoreModules rule
-  in moduleName `elem` ignoreModules
+  in moduleName `notElem` ignoreModules
 
 hasAny :: Eq a => [a]           -- ^ List of elements to look for
        -> [a]                   -- ^ List to search
