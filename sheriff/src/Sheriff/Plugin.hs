@@ -137,6 +137,7 @@ sheriff opts modSummary tcEnv = do
       sheriffRulesPath = rulesConfigPath pluginOpts
       sheriffExceptionsPath = exceptionsConfigPath pluginOpts
       failOnFileNotFoundV = failOnFileNotFound pluginOpts 
+      moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
 
   -- parse the yaml file from the path given
   parsedYaml <- liftIO $ parseYAMLFile indexedKeysPathV
@@ -154,18 +155,22 @@ sheriff opts modSummary tcEnv = do
                               pure badPracticeRules
                             Right (YamlTables tables) -> pure $ badPracticeRules <> (map yamlToDbRule tables)
   
-  rulesList <- case parsedRulesYaml of
+  rulesList' <- case parsedRulesYaml of
                 Left err -> do
                   when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
                   pure rulesListWithDbRules
                 Right (SheriffRules rules) -> pure $ rulesListWithDbRules <> rules
 
-  exceptionList <- case parsedExceptionsYaml of
-                Left err -> do
-                  when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
-                  pure exceptionRules
-                Right (SheriffRules rules) -> pure $ exceptionRules <> rules
+  let rulesList = filter (isAllowedOnCurrentModule moduleName') rulesList'
+
+  exceptionList' <- case parsedExceptionsYaml of
+                      Left err -> do
+                        when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
+                        pure exceptionRules
+                      Right (SheriffRules rules) -> pure $ exceptionRules <> rules
   
+  let exceptionList = filter (isAllowedOnCurrentModule moduleName') exceptionList'
+
   let rulesExceptionList = concat $ fmap getRuleExceptions rulesList
 
   when logDebugInfo $ liftIO $ print rulesList
@@ -464,7 +469,7 @@ checkAndApplyRule ruleT opts ap = case ruleT of
           True  -> validateDBRule rule opts (showS tblName) exprs ap
           False -> pure []
       _ -> pure []
-  FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _ _ _) -> do
+  FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _ _ _ _) -> do
     let res = getFnNameWithAllArgs ap
     -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
         (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
@@ -522,6 +527,11 @@ getFnNameWithAllArgs (L loc ap@(HsWrap _ _ expr)) = do
 getFnNameWithAllArgs _ = Nothing
 
 --------------------------- Utils ---------------------------
+isAllowedOnCurrentModule :: String -> Rule -> Bool
+isAllowedOnCurrentModule moduleName rule = 
+  let ignoreModules = getRuleIgnoreModules rule
+  in moduleName `elem` ignoreModules
+
 hasAny :: Eq a => [a]           -- ^ List of elements to look for
        -> [a]                   -- ^ List to search
        -> Bool                  -- ^ Result
@@ -696,7 +706,7 @@ getStringificationFns2 arg rule =
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
 getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> TcM [(LHsExpr GhcTc, String, String)] 
-getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _) = do
+getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _ _) = do
   let argHsExprs = arg ^? biplateRef :: [LHsExpr GhcTc]
       fnApps = filter isFunApp argHsExprs
   when logDebugInfo $ liftIO $ do

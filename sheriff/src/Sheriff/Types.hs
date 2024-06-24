@@ -116,18 +116,20 @@ type TypesAllowedInArg = [String]
 type TypesBlockedInArg = [String]
 type TypesToCheckInArg = [String]
 type Suggestions = [String]
+type Modules = [String]
 
 data FunctionRule = 
   FunctionRule
     {
-      fn_rule_name          :: String,
-      fn_name               :: String,
-      arg_no                :: ArgNo,
-      fns_blocked_in_arg    :: FnsBlockedInArg,
-      types_blocked_in_arg  :: TypesBlockedInArg,
-      types_to_check_in_arg :: TypesToCheckInArg,
-      fn_rule_fixes         :: Suggestions,
-      fn_rule_exceptions    :: Rules
+      fn_rule_name           :: String,
+      fn_name                :: String,
+      arg_no                 :: ArgNo,
+      fns_blocked_in_arg     :: FnsBlockedInArg,
+      types_blocked_in_arg   :: TypesBlockedInArg,
+      types_to_check_in_arg  :: TypesToCheckInArg,
+      fn_rule_fixes          :: Suggestions,
+      fn_rule_exceptions     :: Rules,
+      fn_rule_ignore_modules :: Modules
     }
   deriving (Show, Eq)  
 
@@ -141,7 +143,8 @@ instance FromJSON FunctionRule where
                 types_to_check_in_arg <- o .: "types_to_check_in_arg"
                 fn_rule_fixes <- o .: "fn_rule_fixes"
                 fn_rule_exceptions <- o .: "fn_rule_exceptions"
-                return (FunctionRule {fn_rule_name = fn_rule_name, fn_name = fn_name, arg_no = arg_no, fns_blocked_in_arg = fns_blocked_in_arg, types_blocked_in_arg = types_blocked_in_arg, types_to_check_in_arg = types_to_check_in_arg, fn_rule_fixes = fn_rule_fixes, fn_rule_exceptions = fn_rule_exceptions})
+                fn_rule_ignore_modules <- o .: "fn_rule_ignore_modules"
+                return (FunctionRule {fn_rule_name = fn_rule_name, fn_name = fn_name, arg_no = arg_no, fns_blocked_in_arg = fns_blocked_in_arg, types_blocked_in_arg = types_blocked_in_arg, types_to_check_in_arg = types_to_check_in_arg, fn_rule_fixes = fn_rule_fixes, fn_rule_exceptions = fn_rule_exceptions, fn_rule_ignore_modules = fn_rule_ignore_modules })
 
 data DBRule =
   DBRule 
@@ -221,7 +224,7 @@ data Rule =
   deriving (Show, Eq)  
 
 instance FromJSON Rule where
-  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (GeneralRuleT <$> parseJSON str)
+  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (GeneralRuleT <$> parseJSON str) <|> (fail $ "Invalid Rule: " <> show str)
 
 data LocalVar = FnArg Var | FnWhere Var | FnLocal Var
   deriving (Eq)
@@ -269,12 +272,6 @@ getViolationType v = case v of
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
   NoViolation -> "NoViolation"
 
-getRuleFromCompileError :: CompileError -> Rule
-getRuleFromCompileError = getViolationRule . violation
-
-getRuleExceptionsFromCompileError :: CompileError -> Rules
-getRuleExceptionsFromCompileError = getRuleExceptions . getRuleFromCompileError
-
 getViolationRule :: Violation -> Rule
 getViolationRule v = case v of
   ArgTypeBlocked _ r -> FunctionRuleT r
@@ -294,10 +291,21 @@ getViolationRuleName v = case v of
 getViolationRuleExceptions :: Violation -> Rules
 getViolationRuleExceptions = getRuleExceptions . getViolationRule
 
+getRuleFromCompileError :: CompileError -> Rule
+getRuleFromCompileError = getViolationRule . violation
+
+getRuleExceptionsFromCompileError :: CompileError -> Rules
+getRuleExceptionsFromCompileError = getRuleExceptions . getRuleFromCompileError
+
 getRuleExceptions :: Rule -> Rules
 getRuleExceptions rule = case rule of 
   DBRuleT dbRule -> db_rule_exceptions dbRule
   FunctionRuleT fnRule -> fn_rule_exceptions fnRule
+  _ -> []
+
+getRuleIgnoreModules :: Rule -> Modules
+getRuleIgnoreModules rule = case rule of 
+  FunctionRuleT fnRule -> fn_rule_ignore_modules fnRule
   _ -> []
 
 showS :: (Outputable a) => a -> String
@@ -307,7 +315,7 @@ noSuggestion :: Suggestions
 noSuggestion = []
 
 defaultRule :: Rule
-defaultRule = FunctionRuleT $ FunctionRule "NA" "NA" (-1) [] [] [] noSuggestion []
+defaultRule = FunctionRuleT $ FunctionRule "NA" "NA" (-1) [] [] [] noSuggestion [] []
 
 emptyLoggingError :: CompileError
 emptyLoggingError = CompileError "" "" "$NA$" noSrcSpan NoViolation noSuggestion
