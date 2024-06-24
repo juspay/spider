@@ -165,17 +165,20 @@ sheriff opts modSummary tcEnv = do
                   when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
                   pure exceptionRules
                 Right (SheriffRules rules) -> pure $ exceptionRules <> rules
+  
+  let rulesExceptionList = concat $ fmap getRuleExceptions rulesList
 
   when logDebugInfo $ liftIO $ print rulesList
   when logDebugInfo $ liftIO $ print exceptionList
 
-  let finalRules = rulesList <> exceptionList
+  let finalRules = rulesList <> exceptionList <> rulesExceptionList
 
   errors <- concat <$> (mapM (loopOverModBinds finalRules pluginOpts) $ bagToList $ tcg_binds tcEnv)
 
   let sortedErrors = sortOn src_span errors
       groupedErrors = groupBy (\a b -> src_span a == src_span b) sortedErrors
-      filteredErrors = concat $ filter (\x -> not $ (\err -> (getViolationRule $ violation err) `elem` exceptionList) `any` x) groupedErrors
+      -- filteredErrors = concat $ filter (\x -> not $ (\err -> (getViolationRule $ violation err) `elem` exceptionList) `any` x) groupedErrors
+      filteredErrors = concat $ fmap (\x -> filter (\err -> not $ (getRuleExceptionsFromCompileError err) `hasAny` (fmap getRuleFromCompileError x)) x) groupedErrors
 
   if throwCompilationErrorV
     then addErrs $ map mkGhcCompileError filteredErrors
@@ -314,7 +317,7 @@ validateType argTyp@(TyConApp tyCon ls) typs =
 validateType argTyp typs = showS argTyp `elem` typs
 
 validateDBRule :: DBRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
-validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames _) opts tableName clauses expr = do
+validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames _ _) opts tableName clauses expr = do
   simplifiedExprs <- trfWhereToSOP clauses
   let checkDBViolation = case (matchAllInsideAnd opts) of
                           True  -> checkDBViolationMatchAll
@@ -453,13 +456,14 @@ getIsClauseData fieldArg _comp _clause = do
 
 checkAndApplyRule :: Rule -> PluginOpts -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 checkAndApplyRule ruleT opts ap = case ruleT of
-  DBRuleT rule@(DBRule _ ruleTableName _ _) -> 
+  DBRuleT rule@(DBRule _ ruleTableName _ _ _) ->
     case ap of
-      (L _ (ExplicitList (TyConApp ty [_, tblName]) _ exprs)) -> case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
-        True  -> validateDBRule rule opts (showS tblName) exprs ap 
-        False -> pure []
+      (L _ (ExplicitList (TyConApp ty [_, tblName]) _ exprs)) -> do
+        case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
+          True  -> validateDBRule rule opts (showS tblName) exprs ap
+          False -> pure []
       _ -> pure []
-  FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _ _) -> do
+  FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _ _ _) -> do
     let res = getFnNameWithAllArgs ap
     -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
         (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
@@ -517,6 +521,13 @@ getFnNameWithAllArgs (L loc ap@(HsWrap _ _ expr)) = do
 getFnNameWithAllArgs _ = Nothing
 
 --------------------------- Utils ---------------------------
+hasAny :: Eq a => [a]           -- ^ List of elements to look for
+       -> [a]                   -- ^ List to search
+       -> Bool                  -- ^ Result
+hasAny [] _          = False             -- An empty search list: always false
+hasAny _ []          = False             -- An empty list to scan: always false
+hasAny search (x:xs) = if x `elem` search then True else hasAny search xs
+
 -- Check if HsExpr is Function Application
 isFunApp :: LHsExpr GhcTc -> Bool
 isFunApp (L _ (HsApp _ _ _)) = True
@@ -684,7 +695,7 @@ getStringificationFns2 arg rule =
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
 getBlockedFnsList :: LHsExpr GhcTc -> FunctionRule -> TcM [(LHsExpr GhcTc, String, String)] 
-getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _) = do
+getBlockedFnsList arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _) = do
   let argHsExprs = arg ^? biplateRef :: [LHsExpr GhcTc]
       fnApps = filter isFunApp argHsExprs
   when logDebugInfo $ liftIO $ do

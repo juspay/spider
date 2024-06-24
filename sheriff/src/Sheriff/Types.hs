@@ -15,7 +15,8 @@ data PluginOpts = PluginOpts {
     indexedKeysPath :: String,
     rulesConfigPath :: String,
     exceptionsConfigPath :: String,
-    matchAllInsideAnd :: Bool
+    matchAllInsideAnd :: Bool,
+    shouldCheckExceptions :: Bool
   } deriving (Show, Eq)
 
 defaultPluginOpts :: PluginOpts
@@ -28,7 +29,8 @@ defaultPluginOpts =
     savePath = ".juspay/tmp/sheriff/", 
     indexedKeysPath = ".juspay/indexedKeys.yaml" ,
     rulesConfigPath = ".juspay/sheriffRules.yaml",
-    exceptionsConfigPath = ".juspay/sheriffExceptionRules.yaml" 
+    exceptionsConfigPath = ".juspay/sheriffExceptionRules.yaml",
+    shouldCheckExceptions = True
   }
 
 instance FromJSON PluginOpts where
@@ -41,7 +43,8 @@ instance FromJSON PluginOpts where
     rulesConfigPath <- o .:? "rulesConfigPath" .!= (rulesConfigPath defaultPluginOpts)
     exceptionsConfigPath <- o .:? "exceptionsConfigPath" .!= (exceptionsConfigPath defaultPluginOpts)
     matchAllInsideAnd <- o .:? "matchAllInsideAnd" .!= (matchAllInsideAnd defaultPluginOpts)
-    return PluginOpts { saveToFile = saveToFile, throwCompilationError = throwCompilationError, matchAllInsideAnd = matchAllInsideAnd, savePath = savePath, indexedKeysPath = indexedKeysPath, rulesConfigPath = rulesConfigPath, exceptionsConfigPath = exceptionsConfigPath, failOnFileNotFound = failOnFileNotFound }
+    shouldCheckExceptions <- o .:? "matchAllInsideAnd" .!= (shouldCheckExceptions defaultPluginOpts)
+    return PluginOpts { saveToFile = saveToFile, throwCompilationError = throwCompilationError, matchAllInsideAnd = matchAllInsideAnd, savePath = savePath, indexedKeysPath = indexedKeysPath, rulesConfigPath = rulesConfigPath, exceptionsConfigPath = exceptionsConfigPath, failOnFileNotFound = failOnFileNotFound, shouldCheckExceptions = shouldCheckExceptions }
 
 data SheriffRules = SheriffRules
   { rules :: Rules
@@ -95,13 +98,13 @@ data CompileError = CompileError
   } deriving (Eq, Show)
 
 instance ToJSON CompileError where
-  toJSON (CompileError pkg modName errMsg srcLoc _vlt suggestions) =
+  toJSON (CompileError pkg modName errMsg srcLoc vlt suggestions) =
     object [ "package_name"    .= pkg
            , "module_name"     .= modName
            , "error_message"   .= errMsg
            , "src_span"        .= show srcLoc
-           , "violation_type"  .= getViolationType _vlt
-           , "violated_rule"   .= getRuleName _vlt
+           , "violation_type"  .= getViolationType vlt
+           , "violated_rule"   .= getViolationRuleName vlt
            , "suggested_fixes" .= suggestions
            ]
 
@@ -123,7 +126,8 @@ data FunctionRule =
       fns_blocked_in_arg    :: FnsBlockedInArg,
       types_blocked_in_arg  :: TypesBlockedInArg,
       types_to_check_in_arg :: TypesToCheckInArg,
-      fn_rule_fixes         :: Suggestions
+      fn_rule_fixes         :: Suggestions,
+      fn_rule_exceptions    :: Rules
     }
   deriving (Show, Eq)  
 
@@ -136,7 +140,8 @@ instance FromJSON FunctionRule where
                 types_blocked_in_arg <- o .: "types_blocked_in_arg"
                 types_to_check_in_arg <- o .: "types_to_check_in_arg"
                 fn_rule_fixes <- o .: "fn_rule_fixes"
-                return (FunctionRule {fn_rule_name = fn_rule_name, fn_name = fn_name, arg_no = arg_no, fns_blocked_in_arg = fns_blocked_in_arg, types_blocked_in_arg = types_blocked_in_arg, types_to_check_in_arg = types_to_check_in_arg, fn_rule_fixes = fn_rule_fixes})
+                fn_rule_exceptions <- o .: "fn_rule_exceptions"
+                return (FunctionRule {fn_rule_name = fn_rule_name, fn_name = fn_name, arg_no = arg_no, fns_blocked_in_arg = fns_blocked_in_arg, types_blocked_in_arg = types_blocked_in_arg, types_to_check_in_arg = types_to_check_in_arg, fn_rule_fixes = fn_rule_fixes, fn_rule_exceptions = fn_rule_exceptions})
 
 data DBRule =
   DBRule 
@@ -144,7 +149,8 @@ data DBRule =
       db_rule_name       :: String,
       table_name         :: String,
       indexed_cols_names :: [YamlTableKeys],
-      db_rule_fixes        :: Suggestions
+      db_rule_fixes      :: Suggestions,
+      db_rule_exceptions :: Rules
     }
   deriving (Show, Eq)  
 
@@ -154,7 +160,8 @@ instance FromJSON DBRule where
                 table_name         <- o .: "table_name"
                 indexed_cols_names <- o .: "indexed_cols_names"
                 db_rule_fixes      <- o .: "db_rule_fixes"
-                return (DBRule {db_rule_name = db_rule_name, table_name = table_name, indexed_cols_names = indexed_cols_names, db_rule_fixes = db_rule_fixes})
+                db_rule_exceptions <- o .: "db_rule_exceptions"
+                return (DBRule {db_rule_name = db_rule_name, table_name = table_name, indexed_cols_names = indexed_cols_names, db_rule_fixes = db_rule_fixes, db_rule_exceptions = db_rule_exceptions})
 
 data Action = Allowed | Blocked
   deriving (Show, Eq)
@@ -262,6 +269,12 @@ getViolationType v = case v of
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
   NoViolation -> "NoViolation"
 
+getRuleFromCompileError :: CompileError -> Rule
+getRuleFromCompileError = getViolationRule . violation
+
+getRuleExceptionsFromCompileError :: CompileError -> Rules
+getRuleExceptionsFromCompileError = getRuleExceptions . getRuleFromCompileError
+
 getViolationRule :: Violation -> Rule
 getViolationRule v = case v of
   ArgTypeBlocked _ r -> FunctionRuleT r
@@ -270,13 +283,22 @@ getViolationRule v = case v of
   NonIndexedDBColumn _ _ r -> DBRuleT r
   NoViolation -> defaultRule
 
-getRuleName :: Violation -> String
-getRuleName v = case v of
+getViolationRuleName :: Violation -> String
+getViolationRuleName v = case v of
   ArgTypeBlocked _ r -> fn_rule_name r
   FnBlockedInArg _ r -> fn_rule_name r
   FnUseBlocked r -> fn_rule_name r
   NonIndexedDBColumn _ _ r -> db_rule_name r
   NoViolation -> "NA"
+
+getViolationRuleExceptions :: Violation -> Rules
+getViolationRuleExceptions = getRuleExceptions . getViolationRule
+
+getRuleExceptions :: Rule -> Rules
+getRuleExceptions rule = case rule of 
+  DBRuleT dbRule -> db_rule_exceptions dbRule
+  FunctionRuleT fnRule -> fn_rule_exceptions fnRule
+  _ -> []
 
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
@@ -285,10 +307,10 @@ noSuggestion :: Suggestions
 noSuggestion = []
 
 defaultRule :: Rule
-defaultRule = FunctionRuleT $ FunctionRule "NA" "NA" (-1) [] [] [] noSuggestion
+defaultRule = FunctionRuleT $ FunctionRule "NA" "NA" (-1) [] [] [] noSuggestion []
 
 emptyLoggingError :: CompileError
 emptyLoggingError = CompileError "" "" "$NA$" noSrcSpan NoViolation noSuggestion
 
 yamlToDbRule :: YamlTable -> Rule
-yamlToDbRule table = DBRuleT $ DBRule "NonIndexedDBRule" (tableName table) (indexedKeys table) ["You might want to include an indexed column in the `where` clause of the query."]
+yamlToDbRule table = DBRuleT $ DBRule "NonIndexedDBRule" (tableName table) (indexedKeys table) ["You might want to include an indexed column in the `where` clause of the query."] []
