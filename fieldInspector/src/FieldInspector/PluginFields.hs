@@ -4,7 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module FieldInspector.Plugin (plugin) where
+module FieldInspector.PluginFields (plugin) where
 
 import Control.Concurrent (MVar, modifyMVar, newMVar)
 import CoreMonad (CoreM, CoreToDo (CoreDoPluginPass), liftIO)
@@ -86,10 +86,7 @@ plugin =
     defaultPlugin
         { installCoreToDos = install
         , pluginRecompile = GhcPlugins.purePlugin
-        , typeCheckResultAction = collectTypesTC
-        , parsedResultAction = collectTypeInfoParser
         }
-
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install args todos = return (CoreDoPluginPass "FieldInspector" (buildCfgPass args) : todos)
 
@@ -103,23 +100,23 @@ removeIfExists fileName = removeFile fileName `catch` handleExists
 buildCfgPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 buildCfgPass opts guts = do
     let prefixPath = case opts of
-            [] -> "/tmp/fieldInspector/"
+            [] -> "./tmp/fieldInspector/"
             [local] -> local
             _ -> error "unexpected no of arguments"
-    _ <- liftIO $ forkIO $ do
+    _ <- liftIO $ do
         let binds = mg_binds guts
             moduleN = moduleNameString $ GhcPlugins.moduleName $ mg_module guts
             moduleLoc = prefixPath Prelude.<> getFilePath (mg_loc guts)
         createDirectoryIfMissing True ((intercalate "/" . init . splitOn "/") moduleLoc)
         removeIfExists (moduleLoc Prelude.<> ".fieldUsage.json")
-        print ("start generating fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length binds)
-        t1 <- getCurrentTime
+        -- print ("start generating fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length binds)
+        -- t1 <- getCurrentTime
         l <- toList $ serially $ mapM (liftIO . toLBind) (fromList binds)
-        print ("started writing to file fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length l)
+        -- print ("started writing to file fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length l)
         DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") $ toStrict $ encodePretty $ Map.fromList $ groupByFunction $ Prelude.concat l
-        t2 <- getCurrentTime
-        print $ diffUTCTime t2 t1
-        print ("generated fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length binds)
+        -- t2 <- getCurrentTime
+        -- print $ diffUTCTime t2 t1
+        -- print ("generated fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length binds)
     return guts
 
 getFilePath :: SrcSpan -> String
@@ -144,6 +141,9 @@ processHasField functionName x (Var hasField) = do
     res <- toLexpr functionName x
     let b = pack $ showSDocUnsafe $ ppr x
         parts = words $ T.unpack $ T.replace "\t" "" $ T.replace "\n" "" $ T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField)
+    case x of
+        (Var i) -> print ("processHasField",b,parts,pack $ nameStableString $ idName i)
+        z -> print $ pack $ showSDocUnsafe $ ppr z
     case parts of
         ["HasField", fieldName, dataType, fieldType] ->
             pure $ res <> [(functionName,[
@@ -208,30 +208,32 @@ toLBind (Rec binds) = do
 
 processFieldExtraction :: Text -> Var -> Var -> Text -> IO [(Text,[FieldUsage])]
 processFieldExtraction functionName _field _type b = do
-    if "FunTy" == show (toConstr $ varType _field)
-        then do
-            let fieldType = T.strip $ Prelude.last $ T.splitOn "->" $ pack $ showSDocUnsafe $ ppr $ varType _field
-            pure [(functionName,[
-                    FieldUsage
-                        (pack $ showSDocUnsafe $ ppr $ varType _type)
-                        (pack $ showSDocUnsafe $ ppr _field)
-                        fieldType
-                        (pack $ show $ toConstr _type)
-                        b
-                    ])]
-        else pure mempty
+    res <- if "FunTy" == show (toConstr $ varType _field)
+                then do
+                    let fieldType = T.strip $ Prelude.last $ T.splitOn "->" $ pack $ showSDocUnsafe $ ppr $ varType _field
+                    pure [(functionName,[
+                            FieldUsage
+                                (pack $ showSDocUnsafe $ ppr $ varType _type)
+                                (pack $ showSDocUnsafe $ ppr _field)
+                                fieldType
+                                (pack $ show $ toConstr _type)
+                                b
+                            ])]
+                else pure mempty
+    print (pack $ showSDocUnsafe $ ppr $ varType $ _field,res)
+    pure $ res
 
 toLexpr :: Text -> Expr Var -> IO [(Text,[FieldUsage])]
 toLexpr functionName (Var x) = pure mempty
 toLexpr functionName (Lit x) = pure mempty
 toLexpr functionName (Type _id) = pure mempty
-toLexpr functionName x@(App func@(Var _field) args@(Var _type)) = do
-    processFieldExtraction functionName _field _type (pack $ showSDocUnsafe $ ppr x)
 toLexpr functionName x@(App func@(App _ _) args@(Var isHasField))
   | "$_sys$$dHasField" == pack (nameStableString $ idName isHasField) =
         processHasField functionName func args
   | otherwise = do
         processApp functionName x
+toLexpr functionName x@(App func@(Var _field) args@(Var _type)) = do
+    processFieldExtraction functionName _field _type (pack $ showSDocUnsafe $ ppr x)
 toLexpr functionName x@(App _ _)  = processApp functionName x
 toLexpr functionName (Lam func args) =
     toLexpr functionName args
@@ -264,7 +266,7 @@ collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcg = do
     dflags <- getDynFlags
     _ <- liftIO $
-            forkIO $ do
+            do
                 let prefixPath = case opts of
                         [] -> "/tmp/fieldInspector/"
                         local : _ -> local
@@ -272,14 +274,14 @@ collectTypesTC opts modSummary tcg = do
                     modulePath = prefixPath <> ms_hspp_file modSummary
                     typeEnv = tcg_type_env tcg
                     path = (intercalate "/" . init . splitOn "/") modulePath
-                print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
+                -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
                 types <- toList $ parallely $ mapM (\tyThing ->
                             case tyThing of
                                 ATyCon tyCon -> collectTyCon dflags tyCon
                                 _            -> return []) (fromList $ typeEnvElts typeEnv)
                 createDirectoryIfMissing True path
                 DBS.writeFile (modulePath <> ".types.json") (toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
-                print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
+                -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
     return tcg
 
 collectTyCon :: DynFlags -> GhcPlugins.TyCon -> IO [(String,TypeInfo)]
@@ -321,7 +323,7 @@ pprDataCon = ppr
 collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectTypeInfoParser opts modSummary hpm = do
     _ <- liftIO $
-            forkIO $ do
+            do
                 let prefixPath = case opts of
                         [] -> "/tmp/fieldInspector/"
                         local : _ -> local
@@ -329,11 +331,11 @@ collectTypeInfoParser opts modSummary hpm = do
                     modulePath = prefixPath <> ms_hspp_file modSummary
                     hm_module = unLoc $ hpm_module hpm
                     path = (intercalate "/" . init . splitOn "/") modulePath
-                print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
+                -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
                 types <- toList $ parallely $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
                 createDirectoryIfMissing True path
                 DBS.writeFile (modulePath <> ".types.parser.json") (toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
-                print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
+                -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
     return hpm
 
 getTypeInfo :: LHsDecl GhcPs -> [(String,TypeInfo)]

@@ -93,13 +93,20 @@ common common-options
         , universum
         , data-default
         , streamly
+        , large-records
+        , large-generics
+        , large-anon
+        , ghc-hasfield-plugin
+        , record-dot-preprocessor ==0.2.14
+        , ghc-tcplugin-api
+        , typelet
 
 library
     -- Import common warning flags.
     import:           common-options
 
     -- Modules exported by the library.
-    exposed-modules:  FieldInspector.Plugin,FieldInspector.Group,FieldInspector.Types
+    exposed-modules:  FieldInspector.PluginFields,FieldInspector.PluginTypes,FieldInspector.Group,FieldInspector.Types
 
     -- Modules included in this library but not exported.
     -- other-modules:
