@@ -11,9 +11,9 @@
     ghc-hasfield-plugin.flake = false;
     large-records.flake = false;
     ghc-hasfield-plugin.url = "github:juspay/ghc-hasfield-plugin/d82ac5a6c0ad643eebe2b9b32c91f6523d3f30dc";
-    large-records.url = "github:eswar2001/large-records/f4419e6b54fb1270ae0abce1994bf14a24bfe959";
+    large-records.url = "github:eswar2001/large-records/e393f4501d76a98b4482b0a5b35d120ae70e5dd3";
     record-dot-preprocessor.url = "github:ndmitchell/record-dot-preprocessor/99452d27f35ea1ff677be9af570d834e8fab4caf";
-   record-dot-preprocessor.flake = false;
+    record-dot-preprocessor.flake = false;
   };
   outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {

@@ -103,17 +103,17 @@
     "large-records": {
       "flake": false,
       "locked": {
-        "lastModified": 1719293475,
-        "narHash": "sha256-+KWKLaZ5qnWNx8LjtgyJRsRqJee69voAUiduY3AQttU=",
+        "lastModified": 1719312727,
+        "narHash": "sha256-NLs4yiUh4vNf4sqOQUUTCr0Fpld1y6ZyZJNhqSTzAI0=",
         "owner": "eswar2001",
         "repo": "large-records",
-        "rev": "f4419e6b54fb1270ae0abce1994bf14a24bfe959",
+        "rev": "e393f4501d76a98b4482b0a5b35d120ae70e5dd3",
         "type": "github"
       },
       "original": {
         "owner": "eswar2001",
         "repo": "large-records",
-        "rev": "f4419e6b54fb1270ae0abce1994bf14a24bfe959",
+        "rev": "e393f4501d76a98b4482b0a5b35d120ae70e5dd3",
         "type": "github"
       }
     },
