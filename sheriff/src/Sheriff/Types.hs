@@ -1,6 +1,6 @@
 module Sheriff.Types where
   
-import Data.Aeson
+import Data.Aeson as A
 import SrcLoc 
 import Var
 import Outputable as OP hiding ((<>))
@@ -16,7 +16,10 @@ data PluginOpts = PluginOpts {
     rulesConfigPath :: String,
     exceptionsConfigPath :: String,
     matchAllInsideAnd :: Bool,
-    shouldCheckExceptions :: Bool
+    shouldCheckExceptions :: Bool,
+    logDebugInfo :: Bool,
+    logWarnInfo :: Bool,
+    logTypeDebugging :: Bool
   } deriving (Show, Eq)
 
 defaultPluginOpts :: PluginOpts
@@ -30,6 +33,9 @@ defaultPluginOpts =
     indexedKeysPath = ".juspay/indexedKeys.yaml" ,
     rulesConfigPath = ".juspay/sheriffRules.yaml",
     exceptionsConfigPath = ".juspay/sheriffExceptionRules.yaml",
+    logDebugInfo = False,
+    logWarnInfo = True,
+    logTypeDebugging = False,
     shouldCheckExceptions = True
   }
 
@@ -44,7 +50,23 @@ instance FromJSON PluginOpts where
     exceptionsConfigPath <- o .:? "exceptionsConfigPath" .!= (exceptionsConfigPath defaultPluginOpts)
     matchAllInsideAnd <- o .:? "matchAllInsideAnd" .!= (matchAllInsideAnd defaultPluginOpts)
     shouldCheckExceptions <- o .:? "matchAllInsideAnd" .!= (shouldCheckExceptions defaultPluginOpts)
-    return PluginOpts { saveToFile = saveToFile, throwCompilationError = throwCompilationError, matchAllInsideAnd = matchAllInsideAnd, savePath = savePath, indexedKeysPath = indexedKeysPath, rulesConfigPath = rulesConfigPath, exceptionsConfigPath = exceptionsConfigPath, failOnFileNotFound = failOnFileNotFound, shouldCheckExceptions = shouldCheckExceptions }
+    logDebugInfo <- o .:? "logDebugInfo" .!= (logDebugInfo defaultPluginOpts)
+    logWarnInfo <- o .:? "logWarnInfo" .!= (logWarnInfo defaultPluginOpts)
+    logTypeDebugging <- o .:? "logTypeDebugging" .!= (logTypeDebugging defaultPluginOpts)
+    return PluginOpts { 
+      saveToFile = saveToFile, 
+      throwCompilationError = throwCompilationError, 
+      matchAllInsideAnd = matchAllInsideAnd, 
+      savePath = savePath, 
+      indexedKeysPath = indexedKeysPath, 
+      rulesConfigPath = rulesConfigPath, 
+      exceptionsConfigPath = exceptionsConfigPath, 
+      failOnFileNotFound = failOnFileNotFound, 
+      shouldCheckExceptions = shouldCheckExceptions, 
+      logWarnInfo = logWarnInfo, 
+      logDebugInfo = logDebugInfo, 
+      logTypeDebugging = logTypeDebugging 
+      }
 
 data SheriffRules = SheriffRules
   { rules :: Rules
@@ -94,11 +116,13 @@ data CompileError = CompileError
     err_msg :: String,
     src_span :: SrcSpan,
     violation :: Violation,
-    suggested_fixes  :: Suggestions
-  } deriving (Eq, Show)
+    suggested_fixes  :: Suggestions,
+    error_info       :: Value
+  } 
+  deriving (Eq, Show)
 
 instance ToJSON CompileError where
-  toJSON (CompileError pkg modName errMsg srcLoc vlt suggestions) =
+  toJSON (CompileError pkg modName errMsg srcLoc vlt suggestions errorInfo) =
     object [ "package_name"    .= pkg
            , "module_name"     .= modName
            , "error_message"   .= errMsg
@@ -106,6 +130,7 @@ instance ToJSON CompileError where
            , "violation_type"  .= getViolationType vlt
            , "violated_rule"   .= getViolationRuleName vlt
            , "suggested_fixes" .= suggestions
+           , "error_info"      .= errorInfo
            ]
 
 type Rules = [Rule]
@@ -242,54 +267,59 @@ data DBFieldSpecType =
   deriving (Show, Eq)
 
 data Violation = 
-    ArgTypeBlocked String FunctionRule
-  | FnBlockedInArg (String, String) FunctionRule
+    ArgTypeBlocked String String FunctionRule
+  | FnBlockedInArg (String, String) Value FunctionRule
   | NonIndexedDBColumn String String DBRule
   | FnUseBlocked FunctionRule
   | NoViolation
   deriving (Eq)
 
 instance Show Violation where
-  show (ArgTypeBlocked typ rule) = "Use of '" <> (fn_name rule) <> "' on '" <> typ <> "' is not allowed."
-  show (FnBlockedInArg (fnName, typ) rule) = "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> (fn_name rule) <> "' is not allowed."
+  show (ArgTypeBlocked typ exprTy rule) = "Use of '" <> (fn_name rule) <> "' on '" <> typ <> "' is not allowed in the overall expression type '" <> exprTy <> "'."
+  show (FnBlockedInArg (fnName, typ) _ rule) = "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> (fn_name rule) <> "' is not allowed."
   show (FnUseBlocked rule) = "Use of '" <> (fn_name rule) <> "' in the code is not allowed."
   show (NonIndexedDBColumn colName tableName _) = "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
   show NoViolation = "NoViolation"
 
 getViolationSuggestions :: Violation -> Suggestions
 getViolationSuggestions v = case v of
-  ArgTypeBlocked _ r -> fn_rule_fixes r
-  FnBlockedInArg _ r -> fn_rule_fixes r
+  ArgTypeBlocked _ _ r -> fn_rule_fixes r
+  FnBlockedInArg _ _ r -> fn_rule_fixes r
   FnUseBlocked r -> fn_rule_fixes r
   NonIndexedDBColumn _ _ r -> db_rule_fixes r
   NoViolation -> []
 
 getViolationType :: Violation -> String
 getViolationType v = case v of
-  ArgTypeBlocked _ _ -> "ArgTypeBlocked"
-  FnBlockedInArg _ _ -> "FnBlockedInArg"
+  ArgTypeBlocked _ _ _ -> "ArgTypeBlocked"
+  FnBlockedInArg _ _ _ -> "FnBlockedInArg"
   FnUseBlocked _ -> "FnUseBlocked"
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
   NoViolation -> "NoViolation"
 
 getViolationRule :: Violation -> Rule
 getViolationRule v = case v of
-  ArgTypeBlocked _ r -> FunctionRuleT r
-  FnBlockedInArg _ r -> FunctionRuleT r
+  ArgTypeBlocked _ _ r -> FunctionRuleT r
+  FnBlockedInArg _ _ r -> FunctionRuleT r
   FnUseBlocked r -> FunctionRuleT r
   NonIndexedDBColumn _ _ r -> DBRuleT r
   NoViolation -> defaultRule
 
 getViolationRuleName :: Violation -> String
 getViolationRuleName v = case v of
-  ArgTypeBlocked _ r -> fn_rule_name r
-  FnBlockedInArg _ r -> fn_rule_name r
+  ArgTypeBlocked _ _ r -> fn_rule_name r
+  FnBlockedInArg _ _ r -> fn_rule_name r
   FnUseBlocked r -> fn_rule_name r
   NonIndexedDBColumn _ _ r -> db_rule_name r
   NoViolation -> "NA"
 
 getViolationRuleExceptions :: Violation -> Rules
 getViolationRuleExceptions = getRuleExceptions . getViolationRule
+
+getErrorInfoFromViolation :: Violation -> Value
+getErrorInfoFromViolation violation = case violation of
+  FnBlockedInArg _ errInfo _ -> errInfo
+  _ -> A.Null
 
 getRuleFromCompileError :: CompileError -> Rule
 getRuleFromCompileError = getViolationRule . violation
@@ -318,7 +348,7 @@ defaultRule :: Rule
 defaultRule = FunctionRuleT $ FunctionRule "NA" "NA" (-1) [] [] [] noSuggestion [] []
 
 emptyLoggingError :: CompileError
-emptyLoggingError = CompileError "" "" "$NA$" noSrcSpan NoViolation noSuggestion
+emptyLoggingError = CompileError "" "" "$NA$" noSrcSpan NoViolation noSuggestion A.Null
 
 yamlToDbRule :: YamlTable -> Rule
 yamlToDbRule table = DBRuleT $ DBRule "NonIndexedDBRule" (tableName table) (indexedKeys table) ["You might want to include an indexed column in the `where` clause of the query."] []

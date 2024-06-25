@@ -27,15 +27,15 @@ rules:
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
-  - db_rule_name: "DBRuleTest"
-    table_name: "TxnRiskCheck"
-    indexed_cols_names: 
-      - partitionKey
-      - and:
-        - txnId
-        - customerId
-    db_rule_fixes: ["You might want to include an indexed column in the `where` clause of the query."]
-    db_rule_exceptions: []
+  # - db_rule_name: "DBRuleTest"
+  #   table_name: "TxnRiskCheck"
+  #   indexed_cols_names: 
+  #     - partitionKey
+  #     - and:
+  #       - txnId
+  #       - customerId
+  #   db_rule_fixes: ["You might want to include an indexed column in the `where` clause of the query."]
+  #   db_rule_exceptions: []
 
   - fn_rule_name: "LogRule"
     fn_name: "logErrorT"
