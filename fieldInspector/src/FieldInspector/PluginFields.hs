@@ -191,15 +191,15 @@ processHasField functionName x (Var hasField) = do
                                             lensString
                                     ])]
                             else if length y == 3 
-                                pure $ res <> [(functionName,[
-                                        FieldUsage
-                                            (T.strip $ y Prelude.!! 1)
-                                            (T.strip $ y Prelude.!! 0)
-                                            (T.strip $ y Prelude.!! 2)
-                                            ""
-                                            lensString
-                                    ])]
-                                pure res
+                                then
+                                    pure $ res <> [(functionName,[
+                                            FieldUsage
+                                                (T.strip $ y Prelude.!! 1)
+                                                (T.strip $ y Prelude.!! 0)
+                                                (T.strip $ y Prelude.!! 2)
+                                                ""
+                                                lensString
+                                        ])]
                             else do 
                                 print y
                                 pure res
