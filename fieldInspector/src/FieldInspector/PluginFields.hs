@@ -138,75 +138,140 @@ processHasField functionName b@(App (App (App getField (Type fieldName)) (Type h
     pure [(functionName,[FieldUsage (pack $ showSDocUnsafe $ ppr haskellType) (pack $ showSDocUnsafe $ ppr fieldName) (pack $ showSDocUnsafe $ ppr finalFieldType) (pack $ nameStableString $ GhcPlugins.tyConName haskellTypeT) (pack $ showSDocUnsafe $ ppr b)])]
 processHasField functionName b@(App (App (App getField (Type fieldName)) (Type haskellType)) (Type finalFieldType)) hasField =
     pure [(functionName,[FieldUsage (pack $ showSDocUnsafe $ ppr haskellType) (pack $ showSDocUnsafe $ ppr fieldName) (pack $ showSDocUnsafe $ ppr finalFieldType) (pack $ show $ toConstr haskellType) (pack $ showSDocUnsafe $ ppr b)])]
-processHasField functionName x (Var hasField) = do
-    res <- toLexpr functionName x
+processHasField functionName (Var x) (Var hasField) = do
+    res <- pure mempty
     let b = pack $ showSDocUnsafe $ ppr x
         lensString = T.replace "\n" "" $ pack $ showSDocUnsafe $ ppr x
         parts = 
             if ((Prelude.length (T.splitOn " @ " lensString)) >= 2)
                 then []
                 else words $ T.unpack $ T.replace "\t" "" $ T.replace "\n" "" $ T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField)
-    case parts of
-        ["HasField", fieldName, dataType, fieldType] ->
-            pure $ res <> [(functionName,[
-                    FieldUsage
-                        (pack dataType)
-                        (pack $ init (Prelude.tail fieldName))
-                        (pack fieldType)
-                        ""--(pack $ show $ toConstr $ haskellType)
-                        b
-            ])]
-        ("HasField":fieldName:dataType:fieldTypeRest) ->
-            pure $ res <> [(functionName,[
-                    FieldUsage
-                        (pack dataType)
-                        (pack fieldName)
-                        (pack $ unwords fieldTypeRest)
-                        ""--(pack $ show $ toConstr $ haskellType)
-                        b
-            ])]
-        _ -> do
-            let y = T.splitOn " @ " lensString
-            if length y == 4 
+    case tyVarKind hasField of
+        (TyConApp haskellTypeT z) -> do
+            let y = map (\(zz) -> (pack $ showSDocUnsafe $ ppr zz,pack $ extractVarFromType zz)) z
+            if length y == 4
                 then
                     pure $ res <> [(functionName,[
                             FieldUsage
-                                (T.strip $ y Prelude.!! 1)
-                                (T.strip $ y Prelude.!! 0)
-                                (T.strip $ y Prelude.!! 2)
-                                ""
+                                (T.strip $ fst $ y Prelude.!! 2)
+                                (T.strip $ fst $ y Prelude.!! 1)
+                                (T.strip $ fst $ y Prelude.!! 3)
+                                (T.strip $ snd $ y Prelude.!! 2)
                                 lensString
                         ])]
-            else do 
-                case tyVarKind hasField of
-                    (TyConApp haskellTypeT z) -> do
-                        let y = map (\(zz) -> (pack $ showSDocUnsafe $ ppr zz,pack $ extractVarFromType zz)) z
-                        if length y == 4
-                            then
-                                pure $ res <> [(functionName,[
-                                        FieldUsage
-                                            (T.strip $ fst $ y Prelude.!! 2)
-                                            (T.strip $ fst $ y Prelude.!! 1)
-                                            (T.strip $ fst $ y Prelude.!! 3)
-                                            (T.strip $ snd $ y Prelude.!! 2)
-                                            lensString
-                                    ])]
-                            else if length y == 3 
-                                then
-                                    pure $ res <> [(functionName,[
-                                            FieldUsage
-                                                (T.strip $ fst $ y Prelude.!! 1)
-                                                (T.strip $ fst $ y Prelude.!! 0)
-                                                (T.strip $ fst $ y Prelude.!! 2)
-                                                (T.strip $ snd $ y Prelude.!! 1)
-                                                lensString
-                                        ])]
-                            else do 
-                                print y
-                                pure res
-                    _ -> do 
-                        print (T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField))
-                        pure res
+                else if length y == 3 
+                    then
+                        pure $ res <> [(functionName,[
+                                FieldUsage
+                                    (T.strip $ fst $ y Prelude.!! 1)
+                                    (T.strip $ fst $ y Prelude.!! 0)
+                                    (T.strip $ fst $ y Prelude.!! 2)
+                                    (T.strip $ snd $ y Prelude.!! 1)
+                                    lensString
+                            ])]
+                else do 
+                    print y
+                    pure res
+        (FunTy _ a _) -> do
+            let fieldType = T.strip $ Prelude.last $ T.splitOn "->" $ pack $ showSDocUnsafe $ ppr $ varType hasField
+            pure $ res <> [(functionName,[
+                    FieldUsage
+                        (pack $ showSDocUnsafe $ ppr $ varType x)
+                        (pack $ showSDocUnsafe $ ppr hasField)
+                        fieldType
+                        (pack $ extractVarFromType $ varType x)
+                        b
+                    ])]
+        (TyVarTy a) -> do
+            let fieldType = T.strip $ Prelude.last $ T.splitOn "->" $ pack $ showSDocUnsafe $ ppr $ varType hasField
+            pure $ res <> [(functionName,[
+                    FieldUsage
+                        (pack $ showSDocUnsafe $ ppr $ varType x)
+                        (pack $ showSDocUnsafe $ ppr hasField)
+                        fieldType
+                        (pack $ extractVarFromType $ varType x)
+                        b
+                    ])]
+        _ -> do 
+            case parts of
+                ["HasField", fieldName, dataType, fieldType] ->
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (pack dataType)
+                                (pack $ init (Prelude.tail fieldName))
+                                (pack fieldType)
+                                ""--(pack $ show $ toConstr $ haskellType)
+                                b
+                    ])]
+                ("HasField":fieldName:dataType:fieldTypeRest) ->
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (pack dataType)
+                                (pack fieldName)
+                                (pack $ unwords fieldTypeRest)
+                                ""--(pack $ show $ toConstr $ haskellType)
+                                b
+                    ])]
+                _ -> do
+                    print (T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField))
+                    pure res
+processHasField functionName x (Var hasField) = do 
+    res <-  toLexpr functionName x
+    let b = pack $ showSDocUnsafe $ ppr x
+        lensString = T.replace "\n" "" $ pack $ showSDocUnsafe $ ppr x
+        parts = 
+            if ((Prelude.length (T.splitOn " @ " lensString)) >= 2)
+                then []
+                else words $ T.unpack $ T.replace "\t" "" $ T.replace "\n" "" $ T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField)
+    case tyVarKind hasField of
+        (TyConApp haskellTypeT z) -> do
+            let y = map (\(zz) -> (pack $ showSDocUnsafe $ ppr zz,pack $ extractVarFromType zz)) z
+            if length y == 4
+                then
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (T.strip $ fst $ y Prelude.!! 2)
+                                (T.strip $ fst $ y Prelude.!! 1)
+                                (T.strip $ fst $ y Prelude.!! 3)
+                                (T.strip $ snd $ y Prelude.!! 2)
+                                lensString
+                        ])]
+                else if length y == 3 
+                    then
+                        pure $ res <> [(functionName,[
+                                FieldUsage
+                                    (T.strip $ fst $ y Prelude.!! 1)
+                                    (T.strip $ fst $ y Prelude.!! 0)
+                                    (T.strip $ fst $ y Prelude.!! 2)
+                                    (T.strip $ snd $ y Prelude.!! 1)
+                                    lensString
+                            ])]
+                else do 
+                    print y
+                    pure res
+        _ -> do 
+            case parts of
+                ["HasField", fieldName, dataType, fieldType] ->
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (pack dataType)
+                                (pack $ init (Prelude.tail fieldName))
+                                (pack fieldType)
+                                ""--(pack $ show $ toConstr $ haskellType)
+                                b
+                    ])]
+                ("HasField":fieldName:dataType:fieldTypeRest) ->
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (pack dataType)
+                                (pack fieldName)
+                                (pack $ unwords fieldTypeRest)
+                                ""--(pack $ show $ toConstr $ haskellType)
+                                b
+                    ])]
+                _ -> do
+                    print (T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField))
+                    pure res
 
 groupByFunction :: [(Text, [FieldUsage])] -> [(Text, [FieldUsage])]
 groupByFunction = map mergeGroups . groupBy ((==) `on` fst) . sortBy (compare `on` fst)
