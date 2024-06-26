@@ -74,12 +74,13 @@ import Streamly.Prelude hiding (concatMap, init, length, map, splitOn,foldl')
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude hiding (mapM, mapM_)
 import Unique (mkUnique)
-import Var (isLocalId,varType)
+import Var (isLocalId,varType,varName)
 import Prelude hiding (id, mapM, mapM_)
 import FieldInspector.Types
 import TcRnTypes
 import TcRnMonad
 import DataCon
+import Control.Exception (evaluate)
 
 plugin :: Plugin
 plugin =
@@ -111,9 +112,9 @@ buildCfgPass opts guts = do
         removeIfExists (moduleLoc Prelude.<> ".fieldUsage.json")
         -- print ("start generating fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length binds)
         -- t1 <- getCurrentTime
-        l <- toList $ serially $ mapM (liftIO . toLBind) (fromList binds)
+        l <- toList $ parallely $ mapM (liftIO . toLBind) (fromList binds)
         -- print ("started writing to file fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length l)
-        DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") $ toStrict $ encodePretty $ Map.fromList $ groupByFunction $ Prelude.concat l
+        DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ groupByFunction $ Prelude.concat l)
         -- t2 <- getCurrentTime
         -- print $ diffUTCTime t2 t1
         -- print ("generated fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length binds)
@@ -178,26 +179,26 @@ processHasField functionName x (Var hasField) = do
                         ])]
             else do 
                 case tyVarKind hasField of
-                    (TyConApp haskellTypeT z) -> do 
-                        let y = map (pack . showSDocUnsafe . ppr) z
+                    (TyConApp haskellTypeT z) -> do
+                        let y = map (\(zz) -> (pack $ showSDocUnsafe $ ppr zz,pack $ extractVarFromType zz)) z
                         if length y == 4
                             then
                                 pure $ res <> [(functionName,[
                                         FieldUsage
-                                            (T.strip $ y Prelude.!! 2)
-                                            (T.strip $ y Prelude.!! 1)
-                                            (T.strip $ y Prelude.!! 3)
-                                            ""
+                                            (T.strip $ fst $ y Prelude.!! 2)
+                                            (T.strip $ fst $ y Prelude.!! 1)
+                                            (T.strip $ fst $ y Prelude.!! 3)
+                                            (T.strip $ snd $ y Prelude.!! 2)
                                             lensString
                                     ])]
                             else if length y == 3 
                                 then
                                     pure $ res <> [(functionName,[
                                             FieldUsage
-                                                (T.strip $ y Prelude.!! 1)
-                                                (T.strip $ y Prelude.!! 0)
-                                                (T.strip $ y Prelude.!! 2)
-                                                ""
+                                                (T.strip $ fst $ y Prelude.!! 1)
+                                                (T.strip $ fst $ y Prelude.!! 0)
+                                                (T.strip $ fst $ y Prelude.!! 2)
+                                                (T.strip $ snd $ y Prelude.!! 1)
                                                 lensString
                                         ])]
                             else do 
@@ -220,7 +221,7 @@ toLBind (NonRec binder expr) = do
 toLBind (Rec binds) = do
     r <-
         toList $
-            serially $
+            parallely $
                 mapM
                     ( \(b, e) -> do
                         toLexpr (pack $ nameStableString (idName b)) e
@@ -238,11 +239,45 @@ processFieldExtraction functionName _field _type b = do
                                 (pack $ showSDocUnsafe $ ppr $ varType _type)
                                 (pack $ showSDocUnsafe $ ppr _field)
                                 fieldType
-                                ""
+                                (pack $ extractVarFromType $ varType _type)
                                 b
                             ])]
+                (TyConApp haskellTypeT z) -> do
+                    let y = map (\(zz) -> (pack $ showSDocUnsafe $ ppr zz,pack $ extractVarFromType zz)) z
+                    if length y == 4
+                        then
+                            pure $ [(functionName,[
+                                    FieldUsage
+                                        (T.strip $ fst $ y Prelude.!! 2)
+                                        (T.strip $ fst $ y Prelude.!! 1)
+                                        (T.strip $ fst $ y Prelude.!! 3)
+                                        (T.strip $ snd $ y Prelude.!! 2)
+                                        b
+                                ])]
+                        else if length y == 3 
+                            then
+                                pure $ [(functionName,[
+                                        FieldUsage
+                                            (T.strip $ fst $ y Prelude.!! 1)
+                                            (T.strip $ fst $ y Prelude.!! 0)
+                                            (T.strip $ fst $ y Prelude.!! 2)
+                                            (T.strip $ snd $ y Prelude.!! 1)
+                                            b
+                                    ])]
+                        else do 
+                            print y
+                            pure mempty
                 _ -> pure mempty
     pure $ res
+
+extractVarFromType :: Type -> String
+extractVarFromType = go
+    where
+        go :: Type -> String
+        go (TyVarTy v) = (nameStableString $ varName v)
+        go (TyConApp haskellTypeT z) = (nameStableString $ GhcPlugins.tyConName haskellTypeT)
+        go (AppTy a b) = go a <> "," <> go b
+        go _ = mempty
 
 toLexpr :: Text -> Expr Var -> IO [(Text,[FieldUsage])]
 toLexpr functionName (Var x) = pure mempty
@@ -264,7 +299,7 @@ toLexpr functionName (Let func args) = do
     pure $ map (\(x,y) -> (functionName,y)) f <> a
 toLexpr functionName (Case condition bind _type alts) = do
     c <- toLexpr functionName condition
-    a <- toList $ serially $ mapM (toLAlt functionName) (fromList alts)
+    a <- toList $ parallely $ mapM (toLAlt functionName) (fromList alts)
     pure $ c <> Prelude.concat a
 toLexpr functionName (Tick _ expr) = toLexpr functionName expr
 toLexpr functionName (Cast expr _) = toLexpr functionName expr

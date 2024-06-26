@@ -84,6 +84,7 @@ import qualified Data.Record.Plugin as DRP
 import qualified Data.Record.Anon.Plugin as DRAP
 import qualified Data.Record.Plugin.HasFieldPattern as DRPH
 import qualified RecordDotPreprocessor as RDP
+import Control.Exception (evaluate)
 
 plugin :: Plugin
 plugin = (defaultPlugin{ 
@@ -144,7 +145,7 @@ instance Monoid Plugin where
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcg = do
     dflags <- getDynFlags
-    _ <- liftIO $
+    _ <- liftIO $ forkIO $
             do
                 let prefixPath = case opts of
                         [] -> "/tmp/fieldInspector/"
@@ -159,7 +160,7 @@ collectTypesTC opts modSummary tcg = do
                                 ATyCon tyCon -> collectTyCon dflags tyCon
                                 _            -> return []) (fromList $ typeEnvElts typeEnv)
                 createDirectoryIfMissing True path
-                DBS.writeFile (modulePath <> ".types.json") (toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
+                DBS.writeFile (modulePath <> ".types.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
                 -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
     return tcg
 
@@ -201,7 +202,7 @@ pprDataCon = ppr
 
 collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectTypeInfoParser opts modSummary hpm = do
-    _ <- liftIO $
+    _ <- liftIO $ forkIO $
             do
                 let prefixPath = case opts of
                         [] -> "/tmp/fieldInspector/"
@@ -213,7 +214,7 @@ collectTypeInfoParser opts modSummary hpm = do
                 -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
                 types <- toList $ parallely $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
                 createDirectoryIfMissing True path
-                DBS.writeFile (modulePath <> ".types.parser.json") (toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
+                DBS.writeFile (modulePath <> ".types.parser.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
                 -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
     pure hpm
 
