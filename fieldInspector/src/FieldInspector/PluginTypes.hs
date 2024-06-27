@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE CPP #-}
 
 module FieldInspector.PluginTypes (plugin) where
 
@@ -87,12 +88,18 @@ import qualified RecordDotPreprocessor as RDP
 import Control.Exception (evaluate)
 
 plugin :: Plugin
-plugin = (defaultPlugin{ 
+plugin = (defaultPlugin{
             -- installCoreToDos = install
         pluginRecompile = GhcPlugins.purePlugin
         -- , typeCheckResultAction = collectTypesTC
         , parsedResultAction = collectTypeInfoParser
-        }) <> DRP.plugin <> DRAP.plugin <> DRPH.plugin <> RDP.plugin
+        })
+#if defined(ENABLE_LR_PLUGINS)
+        <> DRP.plugin
+        <> DRAP.plugin
+        <> DRPH.plugin
+#endif
+        <> RDP.plugin
 
 instance Semigroup Plugin where
   p <> q = defaultPlugin {

@@ -11,7 +11,14 @@ category:           Development
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
 
+flag enable-lr-plugins
+  description:       set this flag to enable these plugins Data.Record.Plugin , Data.Record.Anon.Plugin , Data.Record.Plugin.HasFieldPattern
+  default:           False
+  manual:            True
+
 common common-options
+  if flag(enable-lr-plugins)
+    cpp-options:     -DENABLE_LR_PLUGINS
   build-depends:       base ^>=4.14.3.0
   ghc-options:         -Wall
                        -Wincomplete-uni-patterns
