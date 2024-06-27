@@ -10,7 +10,7 @@ import Avail
 import Bag (bagToList, listToBag)
 import BasicTypes (FractionalLit (..), IntegralLit (..))
 import Control.Concurrent
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, try,evaluate)
 import Control.Monad (foldM, when)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Reference (biplateRef, (^?))
@@ -202,14 +202,14 @@ fDep opts modSummary tcEnv = do
             depsMapList <- toList $ parallely $ mapM loopOverLHsBindLR $ fromList $ binds
             functionVsUpdates <- getAllTypeManipulations binds
             createDirectoryIfMissing True path
-            writeFile ((modulePath) <> ".typeUpdates.json") $ (encodePretty $ functionVsUpdates)
-            writeFile ((modulePath) <> ".json") (encodePretty $ concat depsMapList)
-            writeFile ((modulePath) <> ".missing.signatures.json") $
-                encodePretty $
-                    Map.fromList $
-                        map (\element -> (\(x, y) -> (x, typeSignature y)) $ filterForMaxLenTypSig element) $
-                            groupBy (\a b -> (srcSpan a) == (srcSpan b)) $
-                                dumpMissingTypeSignatures tcEnv
+            writeFile ((modulePath) <> ".typeUpdates.json") =<< (evaluate $ encodePretty $ functionVsUpdates)
+            writeFile ((modulePath) <> ".json") =<< (evaluate $ encodePretty $ concat depsMapList)
+            writeFile ((modulePath) <> ".missing.signatures.json")
+                =<< (evaluate $ encodePretty $
+                        Map.fromList $
+                            map (\element -> (\(x, y) -> (x, typeSignature y)) $ filterForMaxLenTypSig element) $
+                                groupBy (\a b -> (srcSpan a) == (srcSpan b)) $
+                                    dumpMissingTypeSignatures tcEnv)
             print ("generated dependancy for module: " <> moduleName' <> " at path: " <> path)
     return tcEnv
   where
@@ -345,7 +345,7 @@ loopOverLHsBindLR (L _ x@(FunBind fun_ext id matches _ _)) = do
                     ([], [])
                     (unLoc matchList)
             listTransformed <- filterFunctionInfos $ map transformFromNameStableString list
-            pure [(Function (funName <> "**" <> (showSDocUnsafe $ ppr $ getLoc id)) listTransformed (nub funcs) (showSDocUnsafe $ ppr $ getLoc id) (showSDocUnsafe $ ppr x) (showSDocUnsafe $ ppr $ varType $ unLoc id))]
+            evaluate [(Function (funName <> "**" <> (showSDocUnsafe $ ppr $ getLoc id)) listTransformed (nub funcs) (showSDocUnsafe $ ppr $ getLoc id) (showSDocUnsafe $ ppr x) (showSDocUnsafe $ ppr $ varType $ unLoc id))]
 loopOverLHsBindLR x@(L _ VarBind{var_rhs = rhs}) = do
     pure [(Function "" (map transformFromNameStableString $ processExpr [] rhs) [] "" (showSDocUnsafe $ ppr x) "")]
 loopOverLHsBindLR x@(L _ AbsBinds{abs_binds = binds}) = do
@@ -382,11 +382,11 @@ processMatch (L _ match) = do
     whereClause <- processHsLocalBinds $ unLoc $ grhssLocalBinds (m_grhss match)
     -- let names = map (\x -> (Just (nameStableString x), Just $ showSDocUnsafe $ ppr $ getLoc $ x, mempty)) $ (match ^? biplateRef :: [Name])
     r <- toList $ parallely $ (mapM processGRHS (fromList $ grhssGRHSs (m_grhss match)))
-    pure $ (concat r, whereClause)
+    evaluate (concat r, whereClause)
 
 processGRHS :: LGRHS GhcTc (LHsExpr GhcTc) -> IO [(Maybe String, Maybe String, Maybe String, [String])]
-processGRHS (L _ (GRHS _ _ body)) = do
-    pure $ processExpr [] body
+processGRHS (L _ (GRHS _ _ body)) =
+    evaluate $ processExpr [] body
 processGRHS _ = pure $ []
 
 processHsLocalBinds :: HsLocalBindsLR GhcTc GhcTc -> IO [Function]
