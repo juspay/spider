@@ -169,6 +169,7 @@ collectDecls opts modSummary hsParsedModule =  do
                 modulePath = prefixPath <> ms_hspp_file modSummary
                 path = (intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
                 declsList = hsmodDecls $ unLoc $ hpm_module $ hsParsedModule
+            createDirectoryIfMissing True path
             functionsVsCodeString <- toList $ parallely $ mapM (getDecls) $ fromList $ declsList
             writeFile ((modulePath) <> ".function_code.json") (encodePretty $ Map.fromList $ concat functionsVsCodeString)
     pure hsParsedModule
@@ -195,22 +196,21 @@ fDep opts modSummary tcEnv = do
                     local : _ -> local
                 moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
                 modulePath = prefixPath <> ms_hspp_file modSummary
-            when True $ do
-                let path = (intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
-                print ("generating dependancy for module: " <> moduleName' <> " at path: " <> path)
-                let binds = bagToList $ tcg_binds tcEnv
-                depsMapList <- toList $ parallely $ mapM loopOverLHsBindLR $ fromList $ binds
-                functionVsUpdates <- getAllTypeManipulations binds
-                createDirectoryIfMissing True path
-                writeFile ((modulePath) <> ".typeUpdates.json") $ (encodePretty $ functionVsUpdates)
-                writeFile ((modulePath) <> ".json") (encodePretty $ concat depsMapList)
-                writeFile ((modulePath) <> ".missing.signatures.json") $
-                    encodePretty $
-                        Map.fromList $
-                            map (\element -> (\(x, y) -> (x, typeSignature y)) $ filterForMaxLenTypSig element) $
-                                groupBy (\a b -> (srcSpan a) == (srcSpan b)) $
-                                    dumpMissingTypeSignatures tcEnv
-                print ("generated dependancy for module: " <> moduleName' <> " at path: " <> path)
+            let path = (intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
+            print ("generating dependancy for module: " <> moduleName' <> " at path: " <> path)
+            let binds = bagToList $ tcg_binds tcEnv
+            depsMapList <- toList $ parallely $ mapM loopOverLHsBindLR $ fromList $ binds
+            functionVsUpdates <- getAllTypeManipulations binds
+            createDirectoryIfMissing True path
+            writeFile ((modulePath) <> ".typeUpdates.json") $ (encodePretty $ functionVsUpdates)
+            writeFile ((modulePath) <> ".json") (encodePretty $ concat depsMapList)
+            writeFile ((modulePath) <> ".missing.signatures.json") $
+                encodePretty $
+                    Map.fromList $
+                        map (\element -> (\(x, y) -> (x, typeSignature y)) $ filterForMaxLenTypSig element) $
+                            groupBy (\a b -> (srcSpan a) == (srcSpan b)) $
+                                dumpMissingTypeSignatures tcEnv
+            print ("generated dependancy for module: " <> moduleName' <> " at path: " <> path)
     return tcEnv
   where
     filterForMaxLenTypSig :: [MissingTopLevelBindsSignature] -> (String, MissingTopLevelBindsSignature)
