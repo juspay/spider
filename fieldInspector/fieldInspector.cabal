@@ -50,8 +50,14 @@ extra-doc-files:    CHANGELOG.md
 
 -- Extra source files to be distributed with the package, such as examples, or a tutorial module.
 -- extra-source-files:
+flag enable-lr-plugins
+  description:       set this flag to enable these plugins Data.Record.Plugin , Data.Record.Anon.Plugin , Data.Record.Plugin.HasFieldPattern
+  default:           False
+  manual:            True
 
 common common-options
+  if flag(enable-lr-plugins)
+    cpp-options:     -DENABLE_LR_PLUGINS
     ghc-options:
         -Wall
         -Wincomplete-uni-patterns
