@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleContexts,NamedFieldPuns #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE ViewPatterns,DeriveAnyClass #-}
 
 module Fdep.Plugin (plugin) where
 
@@ -29,6 +29,8 @@ import DynFlags ()
 import Fdep.Types
 import GHC (
     GRHS (..),
+    hsmodDecls,
+    GhcPs(..),
     FieldOcc(..),
     rdrNameAmbiguousFieldOcc,
     GRHSs (..),
@@ -71,7 +73,7 @@ import GHC (
 import GHC.Hs.Binds
 import GHC.Hs.Expr (unboundVarOcc)
 import GHC.Hs.Utils as GHCHs
-import GhcPlugins (RdrName(..),rdrNameOcc,Plugin (pluginRecompile), PluginRecompile (..), Var (..), binderArgFlag, binderType, binderVars, elemNameSet, getOccString, idName, idType, nameSetElemsStable, ppr, pprPrefixName, pprPrefixOcc, showSDocUnsafe, tidyOpenType, tyConBinders, unLoc, unpackFS)
+import GhcPlugins (hpm_module,Hsc,HsParsedModule,RdrName(..),rdrNameOcc,Plugin (..), PluginRecompile (..), Var (..), binderArgFlag, binderType, binderVars, elemNameSet, getOccString, idName, idType, nameSetElemsStable, ppr, pprPrefixName, pprPrefixOcc, showSDocUnsafe, tidyOpenType, tyConBinders, unLoc, unpackFS)
 import HscTypes (ModSummary (..), typeEnvIds)
 import Name (nameStableString,occName,occNameString,occNameSpace,occNameFS,pprNameSpaceBrief)
 import Outputable ()
@@ -87,12 +89,14 @@ import TcRnTypes (TcGblEnv (..), TcM)
 import TyCoPpr (pprSigmaType, pprTypeApp, pprUserForAll)
 import TyCon
 import Prelude hiding (id, mapM, mapM_, writeFile)
+import GHC.Hs.Decls
 
 plugin :: Plugin
 plugin =
     defaultPlugin
         { typeCheckResultAction = fDep
         , pluginRecompile = purePlugin
+        , parsedResultAction = collectDecls
         }
 
 purePlugin :: [CommandLineOption] -> IO PluginRecompile
@@ -153,6 +157,34 @@ filterList =
     , "toXml"
     , "fromXml"
     ]
+
+collectDecls :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
+collectDecls opts modSummary hsParsedModule =  do
+    liftIO $
+        forkIO $ do
+            let prefixPath = case opts of
+                    [] -> "/tmp/fdep/"
+                    local : _ -> local
+                moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
+                modulePath = prefixPath <> ms_hspp_file modSummary
+                path = (intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
+                declsList = hsmodDecls $ unLoc $ hpm_module $ hsParsedModule
+            functionsVsCodeString <- toList $ parallely $ mapM (getDecls) $ fromList $ declsList
+            writeFile ((modulePath) <> ".function_code.json") (encodePretty $ Map.fromList $ concat functionsVsCodeString)
+    pure hsParsedModule
+
+getDecls :: LHsDecl GhcPs -> IO [(String,PFunction)]
+getDecls x = do
+    case x of
+        (L _ (TyClD  _ _))   -> pure $ mempty
+        (L _ (InstD  _ _))   -> pure $ mempty
+        (L _ (DerivD _ _))   -> pure $ mempty
+        (L _ (ValD   _ bind))-> pure $ getFunBind bind
+        (L _ (SigD   _ _))   -> pure $ mempty
+        _                    -> pure $ mempty
+    where
+        getFunBind f@(FunBind {fun_id=funId}) = [(((showSDocUnsafe $ ppr $ unLoc funId) <> "**" <> (showSDocUnsafe $ ppr $ getLoc funId)),PFunction ((showSDocUnsafe $ ppr $ unLoc funId) <> "**" <> (showSDocUnsafe $ ppr $ getLoc funId)) (showSDocUnsafe $ ppr f) (showSDocUnsafe $ ppr $ getLoc funId))]
+        getFunBind _ = mempty
 
 fDep :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 fDep opts modSummary tcEnv = do
@@ -313,7 +345,7 @@ loopOverLHsBindLR (L _ x@(FunBind fun_ext id matches _ _)) = do
                     ([], [])
                     (unLoc matchList)
             listTransformed <- filterFunctionInfos $ map transformFromNameStableString list
-            pure [(Function (funName <> "-" <> (showSDocUnsafe $ ppr $ getLoc id)) listTransformed (nub funcs) (showSDocUnsafe $ ppr $ getLoc id) (showSDocUnsafe $ ppr x) (showSDocUnsafe $ ppr $ varType $ unLoc id))]
+            pure [(Function (funName <> "**" <> (showSDocUnsafe $ ppr $ getLoc id)) listTransformed (nub funcs) (showSDocUnsafe $ ppr $ getLoc id) (showSDocUnsafe $ ppr x) (showSDocUnsafe $ ppr $ varType $ unLoc id))]
 loopOverLHsBindLR x@(L _ VarBind{var_rhs = rhs}) = do
     pure [(Function "" (map transformFromNameStableString $ processExpr [] rhs) [] "" (showSDocUnsafe $ ppr x) "")]
 loopOverLHsBindLR x@(L _ AbsBinds{abs_binds = binds}) = do
