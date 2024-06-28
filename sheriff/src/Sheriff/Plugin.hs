@@ -41,10 +41,10 @@ import GHC
     Name,
     Pat (..),
     PatSynBind (..),
-    noLoc, noExtField, Module (moduleName), moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass
+    noLoc, noExtField, Module (moduleName), moduleNameString,Id(..),getName,nameSrcSpan,IdP(..),GhcPass, getModSummary
   )
 import GHC.Hs.Binds
-import GhcPlugins (idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, isEnumerationTyCon, WarnReason(..))
+import GhcPlugins (idName,Var (varName), getOccString, unLoc, Plugin (pluginRecompile), PluginRecompile (..),showSDocUnsafe,ppr,elemNameSet,pprPrefixName,idType,tidyOpenType, isEnumerationTyCon, WarnReason(..), msHsFilePath, getModule)
 import HscTypes (ModSummary (..))
 import GhcPlugins (moduleEnvToList, ModIface, lookupModuleEnv)
 import HscTypes (hscEPS, eps_PTE, hsc_targets, mgModSummaries, hsc_mod_graph, hsc_HPT, eps_PIT, pprHPT, mi_decls, mi_exports, mi_complete_sigs, mi_insts, eps_complete_matches, eps_stats, eps_rule_base, mi_usages)
@@ -58,7 +58,7 @@ import Data.Aeson as A
 import Data.ByteString.Lazy (writeFile, appendFile)
 import System.Directory (createDirectoryIfMissing,getHomeDirectory)
 import Data.Maybe (fromMaybe)
-import Control.Exception (try,SomeException)
+import Control.Exception (try,SomeException, catch)
 import SrcLoc
 import Annotations
 import Outputable (showSDocUnsafe, ppr, Outputable(..))
@@ -85,7 +85,7 @@ import FastString
 import Data.Maybe (catMaybes)
 import DsMonad (initDsTc)
 import DsExpr (dsLExpr)
-import TcRnMonad (failWith, addErr, addWarn, addErrAt, addErrs, getEnv, env_top)
+import TcRnMonad (failWith, addErr, addWarn, addErrAt, addErrs, getEnv, env_top, env_gbl)
 import Name (isSystemName)
 import GHC (OverLitTc(..), HsOverLit(..))
 import CoreUtils (exprType)
@@ -101,6 +101,7 @@ import TysWiredIn
 import GHC.Hs.Lit (HsLit(..))
 import TcEvidence
 import qualified Data.HashMap.Strict as HM
+import qualified Data.Text as T
 
 plugin :: Plugin
 plugin = defaultPlugin {
@@ -114,6 +115,32 @@ purePlugin _ = return NoForceRecompile
 -- Parse the YAML file
 parseYAMLFile :: (FromJSON a) => FilePath -> IO (Either ParseException a)
 parseYAMLFile file = decodeFileEither file
+
+-- Function to extract the code segment based on SrcSpan
+extractSrcSpanSegment :: SrcSpan -> FilePath -> String -> IO String
+extractSrcSpanSegment srcSpan' filePath oldCode = case srcSpan' of
+  RealSrcSpan srcSpan -> do
+    content' <- try (readFile filePath) :: IO (Either SomeException String)
+    case content' of 
+      Left _ -> pure oldCode
+      Right content -> do
+        let fileLines = T.lines (T.pack content)
+            startLine = srcSpanStartLine srcSpan
+            endLine = srcSpanEndLine srcSpan
+            startCol = srcSpanStartCol srcSpan
+            endCol = srcSpanEndCol srcSpan
+
+            -- Extract relevant lines
+            relevantLines = take (endLine - startLine + 1) $ drop (startLine - 1) fileLines
+            -- Handle single-line and multi-line spans
+            result = case relevantLines of
+                        [] -> ""
+                        [singleLine] -> T.take (endCol - startCol) $ T.drop (startCol - 1) singleLine
+                        _ -> T.unlines $ [T.drop (startCol - 1) (head relevantLines)] ++
+                                        (init (tail relevantLines)) ++
+                                        [T.take endCol (last relevantLines)]
+        pure $ T.unpack result
+  _ -> pure oldCode
 
 sheriff :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 sheriff opts modSummary tcEnv = do
@@ -261,11 +288,11 @@ noWhereClauseExpansion expr = case expr of
 isBadFunApp :: Rules -> PluginOpts -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
 isBadFunApp rules opts ap@(L _ (HsVar _ v)) = isBadFunAppHelper rules opts ap
 isBadFunApp rules opts ap@(L _ (HsApp _ funl funr)) = isBadFunAppHelper rules opts ap
-isBadFunApp rules opts ap@(L loc (HsWrap _ _ expr)) = isBadFunApp rules opts (L loc expr) >>= pure . fmap (\(x, y) -> (x, trfViolationErrorInfo y ap x))
+isBadFunApp rules opts ap@(L loc (HsWrap _ _ expr)) = isBadFunApp rules opts (L loc expr) >>= mapM (\(x, y) -> trfViolationErrorInfo opts y ap x >>= \z -> pure (x, z))
 isBadFunApp rules opts ap@(L _ (ExplicitList _ _ _)) = isBadFunAppHelper rules opts ap
 isBadFunApp rules opts ap@(L loc (OpApp _ lfun op rfun)) = do
   case showS op of
-    "($)" -> isBadFunAppHelper rules opts (L loc (HsApp noExtField lfun rfun)) >>= pure . fmap (\(x, y) -> (x, trfViolationErrorInfo y ap x))
+    "($)" -> isBadFunAppHelper rules opts (L loc (HsApp noExtField lfun rfun)) >>= mapM (\(x, y) -> trfViolationErrorInfo opts y ap x >>= \z -> pure (x, z))
     _ -> pure []
 isBadFunApp _ _ _ = pure []
 
@@ -303,7 +330,7 @@ validateFunctionRule rule opts fnName args expr = do
       else do
         -- It's a rule function with to_be_checked type argument
         blockedFnsList <- getBlockedFnsList opts arg rule -- check if the expression has any stringification function
-        pure $ fmap (\(lExpr, blockedFnName, blockedFnArgTyp) -> (lExpr, FnBlockedInArg (blockedFnName, blockedFnArgTyp) (mkFnBlockedInArgErrorInfo expr lExpr) rule)) blockedFnsList
+        mapM (\(lExpr, blockedFnName, blockedFnArgTyp) -> mkFnBlockedInArgErrorInfo opts expr lExpr >>= \errorInfo -> pure (lExpr, FnBlockedInArg (blockedFnName, blockedFnArgTyp) errorInfo rule)) blockedFnsList
 
 validateType :: Type -> TypesToCheckInArg -> Bool
 validateType argTyp@(TyConApp tyCon ls) typs = 
@@ -562,7 +589,11 @@ isEnumType _ = False
 
 -- Pretty print the Internal Representations
 showOutputable :: (MonadIO m, Outputable a) => a -> m ()
-showOutputable = liftIO . putStrLn . showSDocUnsafe . ppr
+showOutputable = liftIO . putStrLn . showS
+
+-- Print the AST
+printAst :: (MonadIO m, Data a) => a -> m ()
+printAst = liftIO . putStrLn . showAst
 
 -- Create GHC compilation error from CompileError
 mkGhcCompileError :: CompileError -> (SrcSpan, OP.SDoc)
@@ -588,13 +619,22 @@ mkCompileError :: String -> (LHsExpr GhcTc, Violation) -> TcM CompileError
 mkCompileError modName (expr, violation) = pure $ CompileError "" modName (show violation) (getLoc expr) violation (getViolationSuggestions violation) (getErrorInfoFromViolation violation)
 
 -- Create Error Info for FnBlockedInArg Violation
-mkFnBlockedInArgErrorInfo :: LHsExpr GhcTc -> LHsExpr GhcTc -> Value
-mkFnBlockedInArgErrorInfo (L loc1 outsideExpr) (L loc2 insideExpr) = 
+mkFnBlockedInArgErrorInfo :: PluginOpts -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM Value
+mkFnBlockedInArgErrorInfo opts lOutsideExpr@(L loc1 outsideExpr) lInsideExpr@(L loc2 insideExpr) = do
+  filePath <- unpackFS . srcSpanFile . tcg_top_loc . env_gbl <$> getEnv
   let overall_src_span = showS loc1
-      overall_err_line = showS outsideExpr
+      overall_err_line_orig = showS lOutsideExpr
       err_fn_src_span = showS loc2
-      err_fn_err_line = showS insideExpr
-  in A.object [
+      err_fn_err_line_orig = showS lInsideExpr
+  overall_err_line <- 
+    if useIOForSourceCode opts
+      then liftIO $ extractSrcSpanSegment loc1 filePath overall_err_line_orig
+      else pure overall_err_line_orig
+  err_fn_err_line <- 
+    if useIOForSourceCode opts
+      then liftIO $ extractSrcSpanSegment loc2 filePath err_fn_err_line_orig
+      else pure err_fn_err_line_orig
+  pure $ A.object [
       ("overall_src_span", A.toJSON overall_src_span),
       ("overall_err_line", A.toJSON overall_err_line),
       ("err_fn_src_span", A.toJSON err_fn_src_span),
@@ -602,9 +642,11 @@ mkFnBlockedInArgErrorInfo (L loc1 outsideExpr) (L loc2 insideExpr) =
     ]
 
 -- Transform the FnBlockedInArg Violation with correct expression
-trfViolationErrorInfo :: Violation -> LHsExpr GhcTc -> LHsExpr GhcTc -> Violation
-trfViolationErrorInfo violation@(FnBlockedInArg p1 _ rule) outsideExpr insideExpr = FnBlockedInArg p1 (mkFnBlockedInArgErrorInfo outsideExpr insideExpr) rule
-trfViolationErrorInfo violation _ _ = violation
+trfViolationErrorInfo :: PluginOpts -> Violation -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM Violation
+trfViolationErrorInfo opts violation@(FnBlockedInArg p1 _ rule) outsideExpr insideExpr = do
+  errorInfo <- mkFnBlockedInArgErrorInfo opts outsideExpr insideExpr
+  pure $ FnBlockedInArg p1 errorInfo rule
+trfViolationErrorInfo _ violation _ _ = pure violation
 
 -- [DEPRECATED] Get Return type of the function application arg
 getArgTypeWrapper :: LHsExpr GhcTc -> [Type]

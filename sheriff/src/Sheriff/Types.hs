@@ -6,6 +6,10 @@ import Var
 import Outputable as OP hiding ((<>))
 import Control.Applicative ((<|>))
 import Data.Text (unpack)
+import Data.Data (Data)
+import GHC.Hs.Dump
+import Language.Haskell.GHC.ExactPrint (exactPrint)
+import Language.Haskell.GHC.ExactPrint.Annotater (Annotate)
 
 data PluginOpts = PluginOpts {
     saveToFile :: Bool,
@@ -19,7 +23,8 @@ data PluginOpts = PluginOpts {
     shouldCheckExceptions :: Bool,
     logDebugInfo :: Bool,
     logWarnInfo :: Bool,
-    logTypeDebugging :: Bool
+    logTypeDebugging :: Bool,
+    useIOForSourceCode :: Bool
   } deriving (Show, Eq)
 
 defaultPluginOpts :: PluginOpts
@@ -36,7 +41,8 @@ defaultPluginOpts =
     logDebugInfo = False,
     logWarnInfo = True,
     logTypeDebugging = False,
-    shouldCheckExceptions = True
+    shouldCheckExceptions = True,
+    useIOForSourceCode = False
   }
 
 instance FromJSON PluginOpts where
@@ -53,6 +59,7 @@ instance FromJSON PluginOpts where
     logDebugInfo <- o .:? "logDebugInfo" .!= (logDebugInfo defaultPluginOpts)
     logWarnInfo <- o .:? "logWarnInfo" .!= (logWarnInfo defaultPluginOpts)
     logTypeDebugging <- o .:? "logTypeDebugging" .!= (logTypeDebugging defaultPluginOpts)
+    useIOForSourceCode <- o .:? "useIOForSourceCode" .!= (useIOForSourceCode defaultPluginOpts)
     return PluginOpts { 
       saveToFile = saveToFile, 
       throwCompilationError = throwCompilationError, 
@@ -65,7 +72,8 @@ instance FromJSON PluginOpts where
       shouldCheckExceptions = shouldCheckExceptions, 
       logWarnInfo = logWarnInfo, 
       logDebugInfo = logDebugInfo, 
-      logTypeDebugging = logTypeDebugging 
+      logTypeDebugging = logTypeDebugging ,
+      useIOForSourceCode = useIOForSourceCode
       }
 
 data SheriffRules = SheriffRules
@@ -340,6 +348,12 @@ getRuleIgnoreModules rule = case rule of
 
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
+
+showPrettyPrinted :: (Annotate a) => Located a -> String
+showPrettyPrinted = flip exactPrint mempty
+
+showAst :: Data a => a -> String
+showAst = showSDocUnsafe . showAstData BlankSrcSpan
 
 noSuggestion :: Suggestions
 noSuggestion = []
