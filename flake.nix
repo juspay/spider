@@ -31,8 +31,10 @@
           #
           projectFlakeName = "spider";
           basePackages = pkgs.haskell.packages.ghc8107;
+          imports = [
+            inputs.references.haskellFlakeProjectModules.output
+          ];
           packages = {
-            references.source = inputs.references;
             classyplate.source = inputs.classyplate;
           };
           settings = {

@@ -1,26 +1,29 @@
-rules:
-  - ruleName: "GeneralRuleTest"
-    conditions:
-      - fnName: "pack"
-        isQualified: false
-        argNo: 0
-        action: "Blocked"
-        argTypes: []
-        argFns: []
-        suggestedFixes: ["Remove `pack` function call from the error location."]
-    ruleInfo: 
-        fnName: "show"
-        isQualified: false
-        argNo: 1
-        action: "Blocked"
-        argTypes: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-        argFns: []
-        suggestedFixes: ["Remove `show` function call from the error location. If quotes are required, manually add them to the text.","You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."]
+# rules: 
+#   - ruleName: "GeneralRuleTest"
+#     conditions:
+#       - fnName: "pack"
+#         isQualified: false
+#         argNo: 0
+#         action: "Blocked"
+#         argTypes: []
+#         argFns: []
+#         suggestedFixes: ["Remove `pack` function call from the error location."]
+#     ruleInfo: 
+#         fnName: "show"
+#         isQualified: false
+#         argNo: 1
+#         action: "Blocked"
+#         argTypes: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
+#         argFns: []
+#         suggestedFixes: ["Remove `show` function call from the error location. If quotes are required, manually add them to the text.","You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."]
   
-  - fn_rule_name: "ShowRule"
-    fn_name: "show"
-    arg_no: 1
-    fns_blocked_in_arg: []
-    types_blocked_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-    types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-    fn_rule_fixes: ["Remove `show` function call from the error location. If quotes are required, manually add them to the text.","You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."]
+#   - fn_rule_name: "ShowRule"
+#     fn_name: "show"
+#     arg_no: 1
+#     fns_blocked_in_arg: []
+#     types_blocked_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
+#     types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
+#     fn_rule_fixes: ["Remove `show` function call from the error location. If quotes are required, manually add them to the text.","You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."]
+#     fn_rule_exceptions: []
+
+rules: []
