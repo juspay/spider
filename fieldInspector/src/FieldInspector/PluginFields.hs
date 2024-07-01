@@ -4,7 +4,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-module FieldInspector.Plugin (plugin) where
+module FieldInspector.PluginFields (plugin) where
 
 import Control.Concurrent (MVar, modifyMVar, newMVar)
 import CoreMonad (CoreM, CoreToDo (CoreDoPluginPass), liftIO)
@@ -74,22 +74,20 @@ import Streamly.Prelude hiding (concatMap, init, length, map, splitOn,foldl')
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude hiding (mapM, mapM_)
 import Unique (mkUnique)
-import Var (isLocalId,varType)
+import Var (isLocalId,varType,varName)
 import Prelude hiding (id, mapM, mapM_)
 import FieldInspector.Types
 import TcRnTypes
 import TcRnMonad
 import DataCon
+import Control.Exception (evaluate)
 
 plugin :: Plugin
 plugin =
     defaultPlugin
         { installCoreToDos = install
         , pluginRecompile = GhcPlugins.purePlugin
-        , typeCheckResultAction = collectTypesTC
-        , parsedResultAction = collectTypeInfoParser
         }
-
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install args todos = return (CoreDoPluginPass "FieldInspector" (buildCfgPass args) : todos)
 
@@ -103,23 +101,23 @@ removeIfExists fileName = removeFile fileName `catch` handleExists
 buildCfgPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 buildCfgPass opts guts = do
     let prefixPath = case opts of
-            [] -> "/tmp/fieldInspector/"
+            [] -> "./tmp/fieldInspector/"
             [local] -> local
             _ -> error "unexpected no of arguments"
-    _ <- liftIO $ forkIO $ do
+    _ <- liftIO $ do
         let binds = mg_binds guts
             moduleN = moduleNameString $ GhcPlugins.moduleName $ mg_module guts
             moduleLoc = prefixPath Prelude.<> getFilePath (mg_loc guts)
         createDirectoryIfMissing True ((intercalate "/" . init . splitOn "/") moduleLoc)
         removeIfExists (moduleLoc Prelude.<> ".fieldUsage.json")
-        print ("start generating fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length binds)
-        t1 <- getCurrentTime
-        l <- toList $ serially $ mapM (liftIO . toLBind) (fromList binds)
-        print ("started writing to file fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length l)
-        DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") $ toStrict $ encodePretty $ Map.fromList $ groupByFunction $ Prelude.concat l
-        t2 <- getCurrentTime
-        print $ diffUTCTime t2 t1
-        print ("generated fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length binds)
+        -- print ("start generating fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length binds)
+        -- t1 <- getCurrentTime
+        l <- toList $ parallely $ mapM (liftIO . toLBind) (fromList binds)
+        -- print ("started writing to file fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length l)
+        DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ groupByFunction $ Prelude.concat l)
+        -- t2 <- getCurrentTime
+        -- print $ diffUTCTime t2 t1
+        -- print ("generated fieldUsage for module: " <> moduleN <> " at path: " <> moduleLoc, length binds)
     return guts
 
 getFilePath :: SrcSpan -> String
@@ -140,50 +138,140 @@ processHasField functionName b@(App (App (App getField (Type fieldName)) (Type h
     pure [(functionName,[FieldUsage (pack $ showSDocUnsafe $ ppr haskellType) (pack $ showSDocUnsafe $ ppr fieldName) (pack $ showSDocUnsafe $ ppr finalFieldType) (pack $ nameStableString $ GhcPlugins.tyConName haskellTypeT) (pack $ showSDocUnsafe $ ppr b)])]
 processHasField functionName b@(App (App (App getField (Type fieldName)) (Type haskellType)) (Type finalFieldType)) hasField =
     pure [(functionName,[FieldUsage (pack $ showSDocUnsafe $ ppr haskellType) (pack $ showSDocUnsafe $ ppr fieldName) (pack $ showSDocUnsafe $ ppr finalFieldType) (pack $ show $ toConstr haskellType) (pack $ showSDocUnsafe $ ppr b)])]
-processHasField functionName x (Var hasField) = do
-    res <- toLexpr functionName x
+processHasField functionName (Var x) (Var hasField) = do
+    res <- pure mempty
     let b = pack $ showSDocUnsafe $ ppr x
-        parts = words $ T.unpack $ T.replace "\t" "" $ T.replace "\n" "" $ T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField)
-    case parts of
-        ["HasField", fieldName, dataType, fieldType] ->
+        lensString = T.replace "\n" "" $ pack $ showSDocUnsafe $ ppr x
+        parts = 
+            if ((Prelude.length (T.splitOn " @ " lensString)) >= 2)
+                then []
+                else words $ T.unpack $ T.replace "\t" "" $ T.replace "\n" "" $ T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField)
+    case tyVarKind hasField of
+        (TyConApp haskellTypeT z) -> do
+            let y = map (\(zz) -> (pack $ showSDocUnsafe $ ppr zz,pack $ extractVarFromType zz)) z
+            if length y == 4
+                then
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (T.strip $ fst $ y Prelude.!! 2)
+                                (T.strip $ fst $ y Prelude.!! 1)
+                                (T.strip $ fst $ y Prelude.!! 3)
+                                (T.strip $ snd $ y Prelude.!! 2)
+                                lensString
+                        ])]
+                else if length y == 3 
+                    then
+                        pure $ res <> [(functionName,[
+                                FieldUsage
+                                    (T.strip $ fst $ y Prelude.!! 1)
+                                    (T.strip $ fst $ y Prelude.!! 0)
+                                    (T.strip $ fst $ y Prelude.!! 2)
+                                    (T.strip $ snd $ y Prelude.!! 1)
+                                    lensString
+                            ])]
+                else do 
+                    print y
+                    pure res
+        (FunTy _ a _) -> do
+            let fieldType = T.strip $ Prelude.last $ T.splitOn "->" $ pack $ showSDocUnsafe $ ppr $ varType hasField
             pure $ res <> [(functionName,[
                     FieldUsage
-                        (pack dataType)
-                        (pack $ init (Prelude.tail fieldName))
-                        (pack fieldType)
-                        ""--(pack $ show $ toConstr $ haskellType)
+                        (pack $ showSDocUnsafe $ ppr $ varType x)
+                        (pack $ showSDocUnsafe $ ppr hasField)
+                        fieldType
+                        (pack $ extractVarFromType $ varType x)
                         b
-            ])]
-        ("HasField":fieldName:dataType:fieldTypeRest) ->
+                    ])]
+        (TyVarTy a) -> do
+            let fieldType = T.strip $ Prelude.last $ T.splitOn "->" $ pack $ showSDocUnsafe $ ppr $ varType hasField
             pure $ res <> [(functionName,[
                     FieldUsage
-                        (pack dataType)
-                        (pack fieldName)
-                        (pack $ unwords fieldTypeRest)
-                        ""--(pack $ show $ toConstr $ haskellType)
+                        (pack $ showSDocUnsafe $ ppr $ varType x)
+                        (pack $ showSDocUnsafe $ ppr hasField)
+                        fieldType
+                        (pack $ extractVarFromType $ varType x)
                         b
-            ])]
-        ("Field":fieldName:dataType:fieldTypeRest) ->
-            pure $ res <> [(functionName,[
-                    FieldUsage
-                        (pack dataType)
-                        (pack fieldName)
-                        (pack $ unwords fieldTypeRest)
-                        ""--(pack $ show $ toConstr $ haskellType)
-                        b
-            ])]
-        ("Field'":fieldName:dataType:fieldTypeRest) ->
-            pure $ res <> [(functionName,[
-                    FieldUsage
-                        (pack dataType)
-                        (pack fieldName)
-                        (pack $ unwords fieldTypeRest)
-                        ""--(pack $ show $ toConstr $ haskellType)
-                        b
-            ])]
-        _ -> do
-            print (showSDocUnsafe $ ppr $ tyVarKind hasField)
-            pure res
+                    ])]
+        _ -> do 
+            case parts of
+                ["HasField", fieldName, dataType, fieldType] ->
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (pack dataType)
+                                (pack $ init (Prelude.tail fieldName))
+                                (pack fieldType)
+                                ""--(pack $ show $ toConstr $ haskellType)
+                                b
+                    ])]
+                ("HasField":fieldName:dataType:fieldTypeRest) ->
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (pack dataType)
+                                (pack fieldName)
+                                (pack $ unwords fieldTypeRest)
+                                ""--(pack $ show $ toConstr $ haskellType)
+                                b
+                    ])]
+                _ -> do
+                    print (T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField))
+                    pure res
+processHasField functionName x (Var hasField) = do 
+    res <-  toLexpr functionName x
+    let b = pack $ showSDocUnsafe $ ppr x
+        lensString = T.replace "\n" "" $ pack $ showSDocUnsafe $ ppr x
+        parts = 
+            if ((Prelude.length (T.splitOn " @ " lensString)) >= 2)
+                then []
+                else words $ T.unpack $ T.replace "\t" "" $ T.replace "\n" "" $ T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField)
+    case tyVarKind hasField of
+        (TyConApp haskellTypeT z) -> do
+            let y = map (\(zz) -> (pack $ showSDocUnsafe $ ppr zz,pack $ extractVarFromType zz)) z
+            if length y == 4
+                then
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (T.strip $ fst $ y Prelude.!! 2)
+                                (T.strip $ fst $ y Prelude.!! 1)
+                                (T.strip $ fst $ y Prelude.!! 3)
+                                (T.strip $ snd $ y Prelude.!! 2)
+                                lensString
+                        ])]
+                else if length y == 3 
+                    then
+                        pure $ res <> [(functionName,[
+                                FieldUsage
+                                    (T.strip $ fst $ y Prelude.!! 1)
+                                    (T.strip $ fst $ y Prelude.!! 0)
+                                    (T.strip $ fst $ y Prelude.!! 2)
+                                    (T.strip $ snd $ y Prelude.!! 1)
+                                    lensString
+                            ])]
+                else do 
+                    print y
+                    pure res
+        _ -> do 
+            case parts of
+                ["HasField", fieldName, dataType, fieldType] ->
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (pack dataType)
+                                (pack $ init (Prelude.tail fieldName))
+                                (pack fieldType)
+                                ""--(pack $ show $ toConstr $ haskellType)
+                                b
+                    ])]
+                ("HasField":fieldName:dataType:fieldTypeRest) ->
+                    pure $ res <> [(functionName,[
+                            FieldUsage
+                                (pack dataType)
+                                (pack fieldName)
+                                (pack $ unwords fieldTypeRest)
+                                ""--(pack $ show $ toConstr $ haskellType)
+                                b
+                    ])]
+                _ -> do
+                    print (T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField))
+                    pure res
 
 groupByFunction :: [(Text, [FieldUsage])] -> [(Text, [FieldUsage])]
 groupByFunction = map mergeGroups . groupBy ((==) `on` fst) . sortBy (compare `on` fst)
@@ -198,9 +286,9 @@ toLBind (NonRec binder expr) = do
 toLBind (Rec binds) = do
     r <-
         toList $
-            serially $
+            parallely $
                 mapM
-                    ( \(b, e) ->
+                    ( \(b, e) -> do
                         toLexpr (pack $ nameStableString (idName b)) e
                     )
                     (fromList binds)
@@ -208,30 +296,65 @@ toLBind (Rec binds) = do
 
 processFieldExtraction :: Text -> Var -> Var -> Text -> IO [(Text,[FieldUsage])]
 processFieldExtraction functionName _field _type b = do
-    if "FunTy" == show (toConstr $ varType _field)
-        then do
-            let fieldType = T.strip $ Prelude.last $ T.splitOn "->" $ pack $ showSDocUnsafe $ ppr $ varType _field
-            pure [(functionName,[
-                    FieldUsage
-                        (pack $ showSDocUnsafe $ ppr $ varType _type)
-                        (pack $ showSDocUnsafe $ ppr _field)
-                        fieldType
-                        (pack $ show $ toConstr _type)
-                        b
-                    ])]
-        else pure mempty
+    res <- case (varType _field) of
+                (FunTy _ a _) -> do
+                    let fieldType = T.strip $ Prelude.last $ T.splitOn "->" $ pack $ showSDocUnsafe $ ppr $ varType _field
+                    pure [(functionName,[
+                            FieldUsage
+                                (pack $ showSDocUnsafe $ ppr $ varType _type)
+                                (pack $ showSDocUnsafe $ ppr _field)
+                                fieldType
+                                (pack $ extractVarFromType $ varType _type)
+                                b
+                            ])]
+                (TyConApp haskellTypeT z) -> do
+                    let y = map (\(zz) -> (pack $ showSDocUnsafe $ ppr zz,pack $ extractVarFromType zz)) z
+                    if length y == 4
+                        then
+                            pure $ [(functionName,[
+                                    FieldUsage
+                                        (T.strip $ fst $ y Prelude.!! 2)
+                                        (T.strip $ fst $ y Prelude.!! 1)
+                                        (T.strip $ fst $ y Prelude.!! 3)
+                                        (T.strip $ snd $ y Prelude.!! 2)
+                                        b
+                                ])]
+                        else if length y == 3 
+                            then
+                                pure $ [(functionName,[
+                                        FieldUsage
+                                            (T.strip $ fst $ y Prelude.!! 1)
+                                            (T.strip $ fst $ y Prelude.!! 0)
+                                            (T.strip $ fst $ y Prelude.!! 2)
+                                            (T.strip $ snd $ y Prelude.!! 1)
+                                            b
+                                    ])]
+                        else do 
+                            print y
+                            pure mempty
+                _ -> pure mempty
+    pure $ res
+
+extractVarFromType :: Type -> String
+extractVarFromType = go
+    where
+        go :: Type -> String
+        go (TyVarTy v) = (nameStableString $ varName v)
+        go (TyConApp haskellTypeT z) = (nameStableString $ GhcPlugins.tyConName haskellTypeT)
+        go (AppTy a b) = go a <> "," <> go b
+        go _ = mempty
 
 toLexpr :: Text -> Expr Var -> IO [(Text,[FieldUsage])]
 toLexpr functionName (Var x) = pure mempty
 toLexpr functionName (Lit x) = pure mempty
-toLexpr functionName (Type _id) = pure mempty
-toLexpr functionName x@(App func@(Var _field) args@(Var _type)) = do
-    processFieldExtraction functionName _field _type (pack $ showSDocUnsafe $ ppr x)
+toLexpr functionName (Type _id) = pure mempty 
 toLexpr functionName x@(App func@(App _ _) args@(Var isHasField))
   | "$_sys$$dHasField" == pack (nameStableString $ idName isHasField) =
         processHasField functionName func args
   | otherwise = do
         processApp functionName x
+toLexpr functionName x@(App func@(Var _field) args@(Var _type)) = do
+    processFieldExtraction functionName _field _type (pack $ showSDocUnsafe $ ppr x)
 toLexpr functionName x@(App _ _)  = processApp functionName x
 toLexpr functionName (Lam func args) =
     toLexpr functionName args
@@ -241,7 +364,7 @@ toLexpr functionName (Let func args) = do
     pure $ map (\(x,y) -> (functionName,y)) f <> a
 toLexpr functionName (Case condition bind _type alts) = do
     c <- toLexpr functionName condition
-    a <- toList $ serially $ mapM (toLAlt functionName) (fromList alts)
+    a <- toList $ parallely $ mapM (toLAlt functionName) (fromList alts)
     pure $ c <> Prelude.concat a
 toLexpr functionName (Tick _ expr) = toLexpr functionName expr
 toLexpr functionName (Cast expr _) = toLexpr functionName expr
@@ -264,7 +387,7 @@ collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcg = do
     dflags <- getDynFlags
     _ <- liftIO $
-            forkIO $ do
+            do
                 let prefixPath = case opts of
                         [] -> "/tmp/fieldInspector/"
                         local : _ -> local
@@ -272,14 +395,14 @@ collectTypesTC opts modSummary tcg = do
                     modulePath = prefixPath <> ms_hspp_file modSummary
                     typeEnv = tcg_type_env tcg
                     path = (intercalate "/" . init . splitOn "/") modulePath
-                print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
+                -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
                 types <- toList $ parallely $ mapM (\tyThing ->
                             case tyThing of
                                 ATyCon tyCon -> collectTyCon dflags tyCon
                                 _            -> return []) (fromList $ typeEnvElts typeEnv)
                 createDirectoryIfMissing True path
                 DBS.writeFile (modulePath <> ".types.json") (toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
-                print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
+                -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
     return tcg
 
 collectTyCon :: DynFlags -> GhcPlugins.TyCon -> IO [(String,TypeInfo)]
@@ -304,7 +427,7 @@ collectDataCon dflags dataCon = do
       fieldTypes = map (showSDoc dflags . ppr) (dataConOrigArgTys dataCon)
       fieldInfo = Map.fromList $ zip fields fieldTypes
   return DataConInfo
-    { dataConName = dataConStr
+    { dataConNames = dataConStr
     , fields = fieldInfo
     , sumTypes = getAllFunTy $ dataConRepType dataCon
     }
@@ -321,7 +444,7 @@ pprDataCon = ppr
 collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectTypeInfoParser opts modSummary hpm = do
     _ <- liftIO $
-            forkIO $ do
+            do
                 let prefixPath = case opts of
                         [] -> "/tmp/fieldInspector/"
                         local : _ -> local
@@ -329,11 +452,11 @@ collectTypeInfoParser opts modSummary hpm = do
                     modulePath = prefixPath <> ms_hspp_file modSummary
                     hm_module = unLoc $ hpm_module hpm
                     path = (intercalate "/" . init . splitOn "/") modulePath
-                print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
+                -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
                 types <- toList $ parallely $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
                 createDirectoryIfMissing True path
                 DBS.writeFile (modulePath <> ".types.parser.json") (toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
-                print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
+                -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
     return hpm
 
 getTypeInfo :: LHsDecl GhcPs -> [(String,TypeInfo)]
@@ -354,13 +477,13 @@ getTypeInfo _ = []
 getDataConInfo :: LConDecl GhcPs -> DataConInfo
 getDataConInfo (L _ ConDeclH98{ con_name = lname, con_args = args }) =
   DataConInfo
-    { dataConName = showSDocUnsafe (ppr lname)
+    { dataConNames = showSDocUnsafe (ppr lname)
     , fields = getFieldMap args
     , sumTypes = [] -- For H98-style data constructors, sum types are not applicable
     }
 getDataConInfo (L _ ConDeclGADT{ con_names = lnames, con_res_ty = ty }) =
   DataConInfo
-    { dataConName = intercalate ", " (map (showSDocUnsafe . ppr) lnames)
+    { dataConNames = intercalate ", " (map (showSDocUnsafe . ppr) lnames)
     , fields = Map.singleton "gadt" (showSDocUnsafe (ppr ty))
     , sumTypes = [] -- For GADT-style data constructors, sum types can be represented by the type itself
     }

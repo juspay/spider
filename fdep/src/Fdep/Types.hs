@@ -1,5 +1,7 @@
+{-# LANGUAGE DeriveAnyClass #-}
 module Fdep.Types where
 import Data.Aeson
+import GHC.Generics (Generic)
 
 data DataTypeUC = DataTypeUC {
     function_name_ :: [String]
@@ -110,3 +112,11 @@ instance FromJSON TypeVsFields where
     parseJSON (Object v) =
         TypeVsFields <$> v .: "type_name" <*> v .: "fieldsVsExprs"
     parseJSON _ = fail "Invalid TypeVsFields JSON"
+
+
+data PFunction = PFunction {
+    parser_name :: String
+    , parser_stringified_code :: String
+    , parser_src_loc :: String
+}
+    deriving (Generic,Show, Eq, Ord,ToJSON ,FromJSON)

@@ -75,7 +75,6 @@ run bPath = do
             Just val -> val
             _ -> "/tmp/fieldInspector/"
   files <- getDirectoryContentsRecursive baseDirPath
-
   let jsonFiles = filter (\x -> (".hs.fieldUsage.json" `isSuffixOf`) $ x) files
   fieldUsage <- mapM (processDumpFileFieldUsage baseDirPath) jsonFiles
   B.writeFile (baseDirPath <> "/" <> "fieldUsage-data.json") (encodePretty (Map.fromList fieldUsage))

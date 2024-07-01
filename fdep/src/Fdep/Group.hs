@@ -13,11 +13,11 @@ import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.List.Extra (replace,splitOn)
 import System.Environment (lookupEnv)
 import Fdep.Types
+import qualified Data.HashMap.Strict as HM
 
-
-processDumpFile :: String -> FilePath -> IO (String,Map.Map String Function)
-processDumpFile baseDirPath path = do
-  let module_name = replace ".hs.json" ""
+processDumpFile :: String -> String -> FilePath -> IO (String,Map.Map String Function)
+processDumpFile toReplace baseDirPath path = do
+  let module_name = replace toReplace ""
                       $ replace "/" "."
                         $ if (("src/")) `isInfixOf` (path)
                             then last (splitOn ("src/") (replace baseDirPath "" path))
@@ -26,10 +26,22 @@ processDumpFile baseDirPath path = do
                           else if (("src-extras/")) `isInfixOf` (path)
                               then last (splitOn ("src-extras/") (replace baseDirPath "" path))
                           else replace baseDirPath "" path
-  putStrLn module_name
+  parserCodeExists <- doesFileExist (replace ".json" ".function_code.json" path)
+  contentHM <- if parserCodeExists
+                    then do
+                      parsercode <- B.readFile $ replace ".json" ".function_code.json" path
+                      case Aeson.decode parsercode of
+                        (Just (x :: HM.HashMap String PFunction)) -> pure $ x
+                        Nothing -> pure $ HM.empty
+                    else pure HM.empty
   content <- B.readFile path
-  let d = Map.fromList $ filter (\x -> fst x /= "") $ map (\x -> (function_name x,x)) $ fromMaybe [] (Aeson.decode content :: Maybe [Function])
+  let d = Map.fromList $ filter (\x -> fst x /= "") $ map (\x -> (function_name x,updateCodeString (function_name x) x contentHM)) $ fromMaybe [] (Aeson.decode content :: Maybe [Function])
   pure (module_name, d)
+  where
+    updateCodeString functionName functionObject contentHM =
+      case HM.lookup functionName contentHM of
+        Just val -> functionObject {stringified_code = (parser_stringified_code val)}
+        Nothing -> functionObject
 
 run :: Maybe String -> IO ()
 run bPath = do
@@ -39,7 +51,7 @@ run bPath = do
             _ -> "/tmp/fdep/"
   files <- getDirectoryContentsRecursive baseDirPath
   let jsonFiles = filter (\x -> (".hs.json" `isSuffixOf`) $ x) files
-  functionGraphs <- mapM (processDumpFile baseDirPath) jsonFiles
+  (functionGraphs) <- mapM (processDumpFile ".hs.json" baseDirPath) jsonFiles
   B.writeFile (baseDirPath <> "data.json") (encodePretty (Map.fromList functionGraphs))
 
 getDirectoryContentsRecursive :: FilePath -> IO [FilePath]
