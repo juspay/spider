@@ -2,6 +2,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE UndecidableInstances,DeriveDataTypeable,DeriveAnyClass #-}
 
 module FieldInspector.Types where
@@ -28,7 +29,7 @@ data TypeInfo = TypeInfo
   } deriving (Generic, Data, Show, ToJSON, FromJSON)
 
 data DataConInfo = DataConInfo
-  { dataConName :: String
+  { dataConNames :: String
   , fields      :: Map.Map String String
   , sumTypes    :: [String]
   } deriving (Generic, Data, Show, ToJSON, FromJSON)

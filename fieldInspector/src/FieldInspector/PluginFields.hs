@@ -427,7 +427,7 @@ collectDataCon dflags dataCon = do
       fieldTypes = map (showSDoc dflags . ppr) (dataConOrigArgTys dataCon)
       fieldInfo = Map.fromList $ zip fields fieldTypes
   return DataConInfo
-    { dataConName = dataConStr
+    { dataConNames = dataConStr
     , fields = fieldInfo
     , sumTypes = getAllFunTy $ dataConRepType dataCon
     }
@@ -477,13 +477,13 @@ getTypeInfo _ = []
 getDataConInfo :: LConDecl GhcPs -> DataConInfo
 getDataConInfo (L _ ConDeclH98{ con_name = lname, con_args = args }) =
   DataConInfo
-    { dataConName = showSDocUnsafe (ppr lname)
+    { dataConNames = showSDocUnsafe (ppr lname)
     , fields = getFieldMap args
     , sumTypes = [] -- For H98-style data constructors, sum types are not applicable
     }
 getDataConInfo (L _ ConDeclGADT{ con_names = lnames, con_res_ty = ty }) =
   DataConInfo
-    { dataConName = intercalate ", " (map (showSDocUnsafe . ppr) lnames)
+    { dataConNames = intercalate ", " (map (showSDocUnsafe . ppr) lnames)
     , fields = Map.singleton "gadt" (showSDocUnsafe (ppr ty))
     , sumTypes = [] -- For GADT-style data constructors, sum types can be represented by the type itself
     }
