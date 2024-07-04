@@ -40,6 +40,7 @@ import GHC.Hs.Decls
 import GhcPlugins (
     CommandLineOption,Arg (..),
     HsParsedModule(..),
+    dataConTyCon,
     Hsc,
     Name,SDoc,DataCon,DynFlags,ModSummary(..),TyCon,
     Literal (..),typeEnvElts,
@@ -376,8 +377,12 @@ processApp functionName x@(App func args) = do
     pure $ f <> a
 
 toLAlt :: Text -> (AltCon, [Var], CoreExpr) -> IO [(Text,[FieldUsage])]
-toLAlt functionName (DataAlt dataCon, val, e) =
-    toLexpr functionName e
+toLAlt functionName (DataAlt dataCon, val, e) = do
+    let typeName = GhcPlugins.tyConName $ GhcPlugins.dataConTyCon dataCon
+        extractingConstruct = showSDocUnsafe $ ppr $ GhcPlugins.dataConName dataCon
+        kindStr = showSDocUnsafe $ ppr $ tyConKind $ GhcPlugins.dataConTyCon dataCon
+    res <- toLexpr functionName e
+    pure $ ((map (\x -> (functionName,[FieldUsage (pack $ showSDocUnsafe $ ppr $ typeName) (pack $ extractingConstruct) (pack $ showSDocUnsafe $ ppr $ varType x) (pack $ nameStableString $ typeName) (pack $ showSDocUnsafe $ ppr x)])) val)) <>  res
 toLAlt functionName (LitAlt lit, val, e) =
     toLexpr functionName e
 toLAlt functionName (DEFAULT, val, e) =
