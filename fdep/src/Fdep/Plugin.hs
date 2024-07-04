@@ -17,7 +17,7 @@ import Control.Reference (biplateRef, (^?))
 import Data.Aeson
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.Bool (bool)
-import Data.ByteString.Lazy (writeFile)
+import Data.ByteString.Lazy (writeFile,toStrict)
 import Data.Data (toConstr)
 import Data.Generics.Uniplate.Data ()
 import Data.List
@@ -90,6 +90,8 @@ import TyCoPpr (pprSigmaType, pprTypeApp, pprUserForAll)
 import TyCon
 import Prelude hiding (id, mapM, mapM_, writeFile)
 import GHC.Hs.Decls
+import qualified Data.ByteString as DBS
+import qualified Data.HashMap.Strict as HM
 
 plugin :: Plugin
 plugin =
@@ -204,10 +206,10 @@ fDep opts modSummary tcEnv = do
             depsMapList <- toList $ parallely $ mapM loopOverLHsBindLR $ fromList $ binds
             -- functionVsUpdates <- getAllTypeManipulations binds
             createDirectoryIfMissing True path
-            -- writeFile ((modulePath) <> ".typeUpdates.json") =<< (evaluate $ encodePretty $ functionVsUpdates)
-            writeFile ((modulePath) <> ".json") =<< (evaluate $ encodePretty $ concat depsMapList)
+            -- writeFile ((modulePath) <> ".typeUpdates.json") (encodePretty $ functionVsUpdates)
+            DBS.writeFile ((modulePath) <> ".json") =<< evaluate (toStrict $ encodePretty $ map (\(x,y) -> y) $ HM.toList $ HM.fromList $ map (\x -> (function_name x,x)) $ concat depsMapList)
             -- writeFile ((modulePath) <> ".missing.signatures.json")
-            --     =<< (evaluate $ encodePretty $
+            --     (encodePretty $
             --             Map.fromList $
             --                 map (\element -> (\(x, y) -> (x, typeSignature y)) $ filterForMaxLenTypSig element) $
             --                     groupBy (\a b -> (srcSpan a) == (srcSpan b)) $
@@ -347,7 +349,7 @@ loopOverLHsBindLR (L _ x@(FunBind fun_ext id matches _ _)) = do
                     ([], [])
                     (unLoc matchList)
             listTransformed <- filterFunctionInfos $ map transformFromNameStableString list
-            evaluate [(Function (funName <> "**" <> (showSDocUnsafe $ ppr $ getLoc id)) listTransformed (nub funcs) (showSDocUnsafe $ ppr $ getLoc id) "" (showSDocUnsafe $ ppr $ varType $ unLoc id))]
+            pure [(Function (funName <> "**" <> (showSDocUnsafe $ ppr $ getLoc id)) listTransformed (nub funcs) (showSDocUnsafe $ ppr $ getLoc id) "" (showSDocUnsafe $ ppr $ varType $ unLoc id))]
 loopOverLHsBindLR x@(L _ VarBind{var_rhs = rhs}) = do
     pure [(Function "" (map transformFromNameStableString $ processExpr [] rhs) [] "" "" "")]
 loopOverLHsBindLR x@(L _ AbsBinds{abs_binds = binds}) = do
@@ -384,11 +386,11 @@ processMatch (L _ match) = do
     whereClause <- processHsLocalBinds $ unLoc $ grhssLocalBinds (m_grhss match)
     -- let names = map (\x -> (Just (nameStableString x), Just $ showSDocUnsafe $ ppr $ getLoc $ x, mempty)) $ (match ^? biplateRef :: [Name])
     r <- toList $ parallely $ (mapM processGRHS (fromList $ grhssGRHSs (m_grhss match)))
-    evaluate (concat r, whereClause)
+    pure (concat r, whereClause)
 
 processGRHS :: LGRHS GhcTc (LHsExpr GhcTc) -> IO [(Maybe String, Maybe String, Maybe String, [String])]
 processGRHS (L _ (GRHS _ _ body)) =
-    evaluate $ processExpr [] body
+    pure $ processExpr [] body
 processGRHS _ = pure $ []
 
 processHsLocalBinds :: HsLocalBindsLR GhcTc GhcTc -> IO [Function]
