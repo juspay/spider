@@ -10,7 +10,7 @@ import Bag (bagToList, listToBag)
 import BasicTypes (FractionalLit (..), IntegralLit (..))
 import Control.Concurrent
 import Control.Exception (SomeException, try,evaluate)
-import Control.Monad (foldM, when)
+import Control.Monad (foldM, when,void)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Reference (biplateRef, (^?))
 import Data.Aeson
@@ -88,6 +88,7 @@ import TcRnTypes (TcGblEnv (..), TcM)
 import TyCoPpr (pprSigmaType, pprTypeApp, pprUserForAll)
 import TyCon
 import Prelude hiding (id, mapM, mapM_, writeFile)
+import qualified Prelude as P
 import GHC.Hs.Decls
 import qualified Data.ByteString as DBS
 import qualified Data.HashMap.Strict as HM
@@ -199,6 +200,15 @@ getDecls x = do
         getFunBind f@(FunBind {fun_id=funId}) = [(((T.pack $ showSDocUnsafe $ ppr $ unLoc funId) <> "**" <> (T.pack $ showSDocUnsafe $ ppr $ getLoc funId)),PFunction ((T.pack $ showSDocUnsafe $ ppr $ unLoc funId) <> "**" <> (T.pack $ showSDocUnsafe $ ppr $ getLoc funId)) (T.pack $ showSDocUnsafe $ ppr f) (T.pack $ showSDocUnsafe $ ppr $ getLoc funId))]
         getFunBind _ = mempty
 
+shouldForkPerFile :: Bool
+shouldForkPerFile = readBool $ unsafePerformIO $ lookupEnv "SHOULD_FORK"
+    where
+        readBool :: (Maybe String) -> Bool
+        readBool (Just "true") = True
+        readBool (Just "True") = True
+        readBool (Just "TRUE") = True
+        readBool _ = False
+
 shouldLog :: Bool
 shouldLog = readBool $ unsafePerformIO $ lookupEnv "ENABLE_LOGS"
     where
@@ -220,7 +230,7 @@ decodeBlacklistedFunctions  = do
 
 fDep :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 fDep opts modSummary tcEnv = do
-    liftIO $ do
+    liftIO $ (bool P.id (void <$> forkIO) shouldForkPerFile) $ do
         mEnableLogsEnvVar <- lookupEnv "ENABLE_LOGS"
         let prefixPath = case opts of
                 [] -> "/tmp/fdep/"
