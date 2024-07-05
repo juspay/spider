@@ -2,44 +2,45 @@
 module Fdep.Types where
 import Data.Aeson
 import GHC.Generics (Generic)
+import Data.Text
 
 data DataTypeUC = DataTypeUC {
-    function_name_ :: [String]
+    function_name_ :: [Text]
     , typeVsFields :: [TypeVsFields]
     } deriving (Show, Eq, Ord)
 
 data TypeVsFields = TypeVsFields {
-    type_name :: String
+    type_name :: Text
     , fieldsVsExprs :: [(FieldRep)]
 } deriving (Show, Eq, Ord)
 
 data FieldRep = FieldRep {
-  field_name :: String
-  , expression :: String
-  , field_type :: String
+  field_name :: Text
+  , expression :: Text
+  , field_type :: Text
 } deriving (Show, Eq, Ord)
 
 data FunctionInfo = FunctionInfo
-  { package_name :: String
-  , module_name :: String
-  , name    :: String
-  , _type :: String
-  , src_Loc    :: String
-  , arguments :: [String]
+  { package_name :: Text
+  , module_name :: Text
+  , name    :: Text
+  , _type :: Text
+  , src_Loc    :: Text
+  , arguments :: [Text]
   } deriving (Show, Eq, Ord)
 
 data Function = Function
-  {  function_name    :: String
+  {  function_name    :: Text
   , functions_called :: [Maybe FunctionInfo]
   , where_functions :: [Function]
-  , src_loc    :: String
-  , stringified_code :: String
-  , function_signature :: String
+  , src_loc    :: Text
+  , stringified_code :: Text
+  , function_signature :: Text
   } deriving (Show, Eq, Ord)
 
 data MissingTopLevelBindsSignature = MissingTopLevelBindsSignature {
-  srcSpan :: String
-  , typeSignature :: String
+  srcSpan :: Text
+  , typeSignature :: Text
 } deriving (Show, Eq, Ord)
 
 instance ToJSON MissingTopLevelBindsSignature where
@@ -115,8 +116,8 @@ instance FromJSON TypeVsFields where
 
 
 data PFunction = PFunction {
-    parser_name :: String
-    , parser_stringified_code :: String
-    , parser_src_loc :: String
+    parser_name :: Text
+    , parser_stringified_code :: Text
+    , parser_src_loc :: Text
 }
     deriving (Generic,Show, Eq, Ord,ToJSON ,FromJSON)
