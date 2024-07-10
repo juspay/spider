@@ -248,7 +248,7 @@ sendTextData' conn path data_ = do
             withSocketsDo $ WS.runClient websocketHost websocketPort (T.unpack path) (\nconn -> WS.sendTextData nconn data_)
         Right _ -> pure ()
     t2 <- getCurrentTime
-    print ("websocket call timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1))
+    when (shouldLog) $ print ("websocket call timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1))
 
 loopOverLHsBindLR :: Maybe WS.Connection -> (Maybe Text) -> Text -> LHsBindLR GhcTc GhcTc -> IO ()
 loopOverLHsBindLR mConn mParentName path (L _ x@(FunBind fun_ext id matches _ _)) = do
