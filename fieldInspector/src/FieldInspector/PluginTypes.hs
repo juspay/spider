@@ -91,7 +91,6 @@ plugin :: Plugin
 plugin = (defaultPlugin{
             -- installCoreToDos = install
         pluginRecompile = GhcPlugins.purePlugin
-        -- , typeCheckResultAction = collectTypesTC
         , parsedResultAction = collectTypeInfoParser
         })
 #if defined(ENABLE_LR_PLUGINS)
@@ -148,58 +147,6 @@ combineTcPluginResults resP resQ =
 
 instance Monoid Plugin where
   mempty = defaultPlugin
-
-collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
-collectTypesTC opts modSummary tcg = do
-    dflags <- getDynFlags
-    _ <- liftIO $ forkIO $
-            do
-                let prefixPath = case opts of
-                        [] -> "/tmp/fieldInspector/"
-                        local : _ -> local
-                    moduleName' = moduleNameString $ GhcPlugins.moduleName $ ms_mod modSummary
-                    modulePath = prefixPath <> ms_hspp_file modSummary
-                    typeEnv = tcg_type_env tcg
-                    path = (intercalate "/" . init . splitOn "/") modulePath
-                -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
-                types <- toList $ parallely $ mapM (\tyThing ->
-                            case tyThing of
-                                ATyCon tyCon -> collectTyCon dflags tyCon
-                                _            -> return []) (fromList $ typeEnvElts typeEnv)
-                createDirectoryIfMissing True path
-                DBS.writeFile (modulePath <> ".types.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
-                -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
-    return tcg
-
-collectTyCon :: DynFlags -> GhcPlugins.TyCon -> IO [(String,TypeInfo)]
-collectTyCon dflags tyCon' = do
-  let name = GhcPlugins.tyConName tyCon'
-      tyConStr = showSDoc dflags (pprTyCon name)
-      tyConKind' = tyConKind tyCon'
-      kindStr = showSDoc dflags (ppr tyConKind')
-      dataCons = tyConDataCons tyCon'
-  dataConInfos <- toList $ parallely $ mapM (collectDataCon dflags) (fromList dataCons)
-  return [(tyConStr,TypeInfo
-    { name = tyConStr
-    , typeKind = kindStr
-    , dataConstructors = dataConInfos
-    })]
-
-collectDataCon :: DynFlags -> DataCon -> IO DataConInfo
-collectDataCon dflags dataCon = do
-  let name = GhcPlugins.dataConName dataCon
-      dataConStr = showSDoc dflags (pprDataCon name)
-      fields = map (unpackFS . flLabel) $ dataConFieldLabels dataCon
-      fieldTypes = map (showSDoc dflags . ppr) (dataConOrigArgTys dataCon)
-      fieldInfo = Map.fromList $ zip fields fieldTypes
-  return DataConInfo
-    { dataConNames = dataConStr
-    , fields = fieldInfo
-    , sumTypes = getAllFunTy $ dataConRepType dataCon
-    }
-    where
-        getAllFunTy (FunTy _ ftArg ftRes) = [showSDoc dflags $ ppr ftArg] <> getAllFunTy ftRes
-        getAllFunTy _ = mempty
 
 pprTyCon :: Name -> SDoc
 pprTyCon = ppr

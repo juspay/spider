@@ -6,12 +6,7 @@ import System.Directory
 import System.FilePath
 import Control.Monad
 import qualified Data.Map as Map
-import qualified Data.Set as Set
-import Data.Maybe (fromMaybe)
-import Data.List
 import Data.Aeson.Encode.Pretty (encodePretty)
-import Data.List.Extra (replace,splitOn)
-import System.Environment (lookupEnv)
 import Fdep.Types
 import qualified Data.HashMap.Strict as HM
 import Data.Text (Text)

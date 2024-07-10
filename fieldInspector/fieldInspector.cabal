@@ -47,13 +47,15 @@ build-type:         Simple
 
 -- Extra doc files to be distributed with the package, such as a CHANGELOG or a README.
 extra-doc-files:    CHANGELOG.md
+
 flag enable-lr-plugins
   description:       set this flag to enable these plugins Data.Record.Plugin , Data.Record.Anon.Plugin , Data.Record.Plugin.HasFieldPattern
   default:           False
   manual:            True
+
 common common-options
-  if flag(enable-lr-plugins)
-    cpp-options:     -DENABLE_LR_PLUGINS
+    if flag(enable-lr-plugins)
+        cpp-options:     -DENABLE_LR_PLUGINS
     ghc-options:
         -Wall
         -Wincomplete-uni-patterns
@@ -105,6 +107,9 @@ common common-options
         , typelet
         , record-hasfield
         , text
+        , binary
+        , references
+        , uniplate
 
 library
     -- Import common warning flags.
@@ -112,48 +117,6 @@ library
 
     -- Modules exported by the library.
     exposed-modules:  FieldInspector.PluginFields,FieldInspector.PluginTypes,FieldInspector.Group,FieldInspector.Types
-    default-extensions:
-        DeriveGeneric
-        GeneralizedNewtypeDeriving
-        InstanceSigs
-        LambdaCase
-        OverloadedStrings
-        RecordWildCards
-        ScopedTypeVariables
-        StandaloneDeriving
-        TypeApplications
-    build-depends:
-        bytestring
-        , containers
-        , filepath
-        , ghc ^>= 8.10.7
-        , unordered-containers
-        , aeson
-        , directory
-        , extra
-        , aeson-pretty
-        , aeson
-        , base ^>=4.14.3.0
-        , text
-        , base64-bytestring
-        , optparse-applicative
-        , deepseq
-        , time
-        , async
-        , cryptonite
-        , hasbolt
-        , universum
-        , data-default
-        , streamly
-        , large-records
-        , large-generics
-        , large-anon
-        , ghc-hasfield-plugin
-        , record-dot-preprocessor ==0.2.14
-        , ghc-tcplugin-api
-        , typelet
-        , record-hasfield
-        , text
 
     -- Directories containing source files.
     hs-source-dirs:   src
