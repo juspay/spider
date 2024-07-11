@@ -1,6 +1,6 @@
 import asyncio
 import os
-import websockets
+import concurrent.futures
 import json
 import asyncio
 import json
@@ -22,17 +22,22 @@ async def handler(websocket, path):
             except Exception as e:
                 print(e)
     except websockets.exceptions.ConnectionClosed as e:
-        print(e)
+        print(e,path)
     except Exception as e:
         print(e)
 
+def process_fdep_output(k,v):
+    os.makedirs(k[1:].replace(".json",""), exist_ok=True)
+    with open(k[1:],'w') as f:
+        json.dump(v,f,indent=4)
+
 async def drain_data(request):
     global data
-    for (k,v) in data.items():
-        os.makedirs(k[1:].replace(".json",""), exist_ok=True)
-        with open(k[1:],'w') as f:
-            json.dump(v,f,indent=4)
-    print(len(data))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=20) as executor:
+        future_to_file = {executor.submit(process_fdep_output, k,v): (k,v) for (k,v) in data.items()}
+        for future in concurrent.futures.as_completed(future_to_file):
+            pass
+    print(json.dumps(list(data.keys())))
     exit()
 
 async def start_websocket_server():

@@ -108,6 +108,7 @@ import GhcPlugins (
     tyConName,
     tyVarKind,
     unpackFS,
+    msHsFilePath,
  )
 import Name (OccName (occNameFS, occNameSpace), occNameString, pprNameSpaceBrief)
 import SrcLoc (
@@ -159,7 +160,7 @@ collectTypesTC opts modSummary tcEnv = do
                 let prefixPath = case opts of
                         [] -> "/tmp/fieldInspector/"
                         local : _ -> local
-                    modulePath = prefixPath <> ms_hspp_file modSummary
+                    modulePath = prefixPath <> msHsFilePath modSummary
                     path = (intercalate "/" . init . splitOn "/") modulePath
                     binds = bagToList $ tcg_binds tcEnv
                 createDirectoryIfMissing True path
@@ -611,7 +612,7 @@ collectTypeInfoParser opts modSummary hpm = do
                     [] -> "/tmp/fieldInspector/"
                     local : _ -> local
                 moduleName' = moduleNameString $ GhcPlugins.moduleName $ ms_mod modSummary
-                modulePath = prefixPath <> ms_hspp_file modSummary
+                modulePath = prefixPath <> msHsFilePath modSummary
                 hm_module = unLoc $ hpm_module hpm
                 path = (intercalate "/" . init . splitOn "/") modulePath
             -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)

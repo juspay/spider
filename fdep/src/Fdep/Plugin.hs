@@ -59,7 +59,7 @@ import GHC.Hs.Decls
     ( HsDecl(SigD, TyClD, InstD, DerivD, ValD), LHsDecl )
 import GHC.IO (unsafePerformIO)
 import GhcPlugins (HsParsedModule, Hsc, Plugin (..), PluginRecompile (..), Var (..), getOccString, hpm_module, ppr, showSDocUnsafe)
-import HscTypes (ModSummary (..))
+import HscTypes (ModSummary (..),msHsFilePath)
 import Name (nameStableString)
 import Network.Socket (withSocketsDo)
 import qualified Network.WebSockets as WS
@@ -74,6 +74,7 @@ import TcRnTypes (TcGblEnv (..), TcM)
 import Prelude hiding (id, mapM, mapM_, writeFile)
 import qualified Prelude as P
 import qualified Data.List.Extra as Data.List
+import StringBuffer
 
 plugin :: Plugin
 plugin =
@@ -152,7 +153,7 @@ collectDecls opts modSummary hsParsedModule = do
             let prefixPath = case opts of
                     [] -> "/tmp/fdep/"
                     local : _ -> local
-                modulePath = prefixPath <> ms_hspp_file modSummary
+                modulePath = prefixPath <> msHsFilePath modSummary
                 path = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
                 declsList = hsmodDecls $ unLoc $ hpm_module hsParsedModule
             createDirectoryIfMissing True path
@@ -218,7 +219,7 @@ fDep opts modSummary tcEnv = do
                     [] -> "/tmp/fdep/"
                     local : _ -> local
                 moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
-                modulePath = prefixPath <> ms_hspp_file modSummary
+                modulePath = prefixPath <> msHsFilePath modSummary
             let path = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
             when shouldLog $ print ("generating dependancy for module: " <> moduleName' <> " at path: " <> path)
             createDirectoryIfMissing True path
