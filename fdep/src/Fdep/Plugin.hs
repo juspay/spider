@@ -187,7 +187,7 @@ shouldForkPerFile = readBool $ unsafePerformIO $ lookupEnv "SHOULD_FORK"
     readBool _ = True
 
 shouldGenerateFdep :: Bool
-shouldGenerateFdep = readBool $ unsafePerformIO $ lookupEnv "GENERATE_FDEP"
+shouldGenerateFdep = True--readBool $ unsafePerformIO $ lookupEnv "GENERATE_FDEP"
   where
     readBool :: (Maybe String) -> Bool
     readBool (Just "true") = True
@@ -239,7 +239,10 @@ fDep opts modSummary tcEnv = do
                 let binds = bagToList $ tcg_binds tcEnv
                 t1 <- getCurrentTime
                 withSocketsDo $ do
-                    WS.runClient websocketHost websocketPort ("/" <> modulePath <> ".json") (\conn -> do mapM_ (loopOverLHsBindLR (Just conn) Nothing (T.pack ("/" <> modulePath <> ".json"))) (fromList binds))
+                    eres <- try $ WS.runClient websocketHost websocketPort ("/" <> modulePath <> ".json") (\conn -> do mapM_ (loopOverLHsBindLR (Just conn) Nothing (T.pack ("/" <> modulePath <> ".json"))) (fromList binds))
+                    case eres of
+                        Left (err :: SomeException) -> when shouldLog $ print err
+                        Right val -> pure ()
                 t2 <- getCurrentTime
                 when shouldLog $ print ("generated dependancy for module: " <> moduleName' <> " at path: " <> path <> " total-timetaken: " <> show (diffUTCTime t2 t1))
     return tcEnv
