@@ -186,6 +186,18 @@ shouldForkPerFile = readBool $ unsafePerformIO $ lookupEnv "SHOULD_FORK"
     readBool (Just "FALSE") = False
     readBool _ = True
 
+shouldGenerateFdep :: Bool
+shouldGenerateFdep = readBool $ unsafePerformIO $ lookupEnv "GENERATE_FDEP"
+  where
+    readBool :: (Maybe String) -> Bool
+    readBool (Just "true") = True
+    readBool (Just "True") = True
+    readBool (Just "TRUE") = True
+    readBool (Just "False") = False
+    readBool (Just "false") = False
+    readBool (Just "FALSE") = False
+    readBool _ = True
+
 shouldLog :: Bool
 shouldLog = readBool $ unsafePerformIO $ lookupEnv "ENABLE_LOGS"
   where
@@ -213,22 +225,23 @@ decodeBlacklistedFunctions = do
 
 fDep :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 fDep opts modSummary tcEnv = do
-    liftIO $
-        bool P.id (void . forkIO) shouldForkPerFile $ do
-            let prefixPath = case opts of
-                    [] -> "/tmp/fdep/"
-                    local : _ -> local
-                moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
-                modulePath = prefixPath <> msHsFilePath modSummary
-            let path = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
-            when shouldLog $ print ("generating dependancy for module: " <> moduleName' <> " at path: " <> path)
-            createDirectoryIfMissing True path
-            let binds = bagToList $ tcg_binds tcEnv
-            t1 <- getCurrentTime
-            withSocketsDo $ do
-                WS.runClient websocketHost websocketPort ("/" <> modulePath <> ".json") (\conn -> do mapM_ (loopOverLHsBindLR (Just conn) Nothing (T.pack ("/" <> modulePath <> ".json"))) (fromList binds))
-            t2 <- getCurrentTime
-            when shouldLog $ print ("generated dependancy for module: " <> moduleName' <> " at path: " <> path <> " total-timetaken: " <> show (diffUTCTime t2 t1))
+    when (shouldGenerateFdep) $
+        liftIO $
+            bool P.id (void . forkIO) shouldForkPerFile $ do
+                let prefixPath = case opts of
+                        [] -> "/tmp/fdep/"
+                        local : _ -> local
+                    moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
+                    modulePath = prefixPath <> msHsFilePath modSummary
+                let path = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
+                when shouldLog $ print ("generating dependancy for module: " <> moduleName' <> " at path: " <> path)
+                createDirectoryIfMissing True path
+                let binds = bagToList $ tcg_binds tcEnv
+                t1 <- getCurrentTime
+                withSocketsDo $ do
+                    WS.runClient websocketHost websocketPort ("/" <> modulePath <> ".json") (\conn -> do mapM_ (loopOverLHsBindLR (Just conn) Nothing (T.pack ("/" <> modulePath <> ".json"))) (fromList binds))
+                t2 <- getCurrentTime
+                when shouldLog $ print ("generated dependancy for module: " <> moduleName' <> " at path: " <> path <> " total-timetaken: " <> show (diffUTCTime t2 t1))
     return tcEnv
 
 transformFromNameStableString :: (Maybe Text, Maybe Text, Maybe Text, [Text]) -> Maybe FunctionInfo
