@@ -6,30 +6,42 @@ import System.Directory
 import System.FilePath
 import Control.Monad
 import qualified Data.Map as Map
-import qualified Data.Set as Set
-import Data.Maybe (fromMaybe)
-import Data.List
 import Data.Aeson.Encode.Pretty (encodePretty)
-import Data.List.Extra (replace,splitOn)
-import System.Environment (lookupEnv)
 import Fdep.Types
+import qualified Data.HashMap.Strict as HM
+import Data.Text (Text)
+import qualified Data.Text as T
 
-
-processDumpFile :: String -> FilePath -> IO (String,Map.Map String Function)
-processDumpFile baseDirPath path = do
-  let module_name = replace ".hs.json" ""
-                      $ replace "/" "."
-                        $ if (("src/")) `isInfixOf` (path)
-                            then last (splitOn ("src/") (replace baseDirPath "" path))
-                          else if (("src-generated/")) `isInfixOf` (path)
-                              then last (splitOn ("src-generated/") (replace baseDirPath "" path))
-                          else if (("src-extras/")) `isInfixOf` (path)
-                              then last (splitOn ("src-extras/") (replace baseDirPath "" path))
-                          else replace baseDirPath "" path
-  putStrLn module_name
-  content <- B.readFile path
-  let d = Map.fromList $ filter (\x -> fst x /= "") $ map (\x -> (function_name x,x)) $ fromMaybe [] (Aeson.decode content :: Maybe [Function])
+processDumpFile :: Text -> Text -> Text -> IO (Text,Map.Map Text Function)
+processDumpFile toReplace baseDirPath path = do
+  let module_name = T.replace toReplace ""
+                      $ T.replace "/" "."
+                        $ if (("src/")) `T.isInfixOf` (path)
+                            then last (T.splitOn ("src/") (T.replace baseDirPath "" path))
+                          else if (("src-generated/")) `T.isInfixOf` (path)
+                              then last (T.splitOn ("src-generated/") (T.replace baseDirPath "" path))
+                          else if (("src-extras/")) `T.isInfixOf` (path)
+                              then last (T.splitOn ("src-extras/") (T.replace baseDirPath "" path))
+                          else T.replace baseDirPath "" path
+  parserCodeExists <- doesFileExist (T.unpack $ T.replace ".json" ".function_code.json" path)
+  contentHM <- if parserCodeExists
+                    then do
+                      parsercode <- B.readFile $ T.unpack $ T.replace ".json" ".function_code.json" path
+                      case Aeson.decode parsercode of
+                        (Just (x :: HM.HashMap Text PFunction)) -> pure $ x
+                        Nothing -> pure $ HM.empty
+                    else pure HM.empty
+  content <- B.readFile $ T.unpack path
+  decodedContent <- case Aeson.decode content of
+      (Just (x :: HM.HashMap Text Function)) -> pure $ x
+      Nothing -> pure $ HM.empty
+  let d = Map.fromList $ filter (\x -> fst x /= "") $ map (\(name,x) -> (name,updateCodeString (name) x contentHM)) $ HM.toList $ decodedContent
   pure (module_name, d)
+  where
+    updateCodeString functionName functionObject contentHM =
+      case HM.lookup functionName contentHM of
+        Just val -> functionObject {stringified_code = (parser_stringified_code val)}
+        Nothing -> functionObject
 
 run :: Maybe String -> IO ()
 run bPath = do
@@ -38,8 +50,8 @@ run bPath = do
             Just val -> val
             _ -> "/tmp/fdep/"
   files <- getDirectoryContentsRecursive baseDirPath
-  let jsonFiles = filter (\x -> (".hs.json" `isSuffixOf`) $ x) files
-  functionGraphs <- mapM (processDumpFile baseDirPath) jsonFiles
+  let jsonFiles = map T.pack $ filter (\x -> (".hs.json" `T.isSuffixOf`) $ T.pack x) files
+  (functionGraphs) <- mapM (processDumpFile ".hs.json" (T.pack baseDirPath)) jsonFiles
   B.writeFile (baseDirPath <> "data.json") (encodePretty (Map.fromList functionGraphs))
 
 getDirectoryContentsRecursive :: FilePath -> IO [FilePath]

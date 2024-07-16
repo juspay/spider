@@ -8,6 +8,12 @@
     classyplate.url = "github:Chaitanya-nair/classyplate/46f5e0e7073e1d047f70473bf3c75366a613bfeb";
     references.flake = true;
     references.url = "github:eswar2001/references/35912f3cc72b67fa63a8d59d634401b79796469e";
+    ghc-hasfield-plugin.flake = false;
+    large-records.flake = false;
+    ghc-hasfield-plugin.url = "github:juspay/ghc-hasfield-plugin/d82ac5a6c0ad643eebe2b9b32c91f6523d3f30dc";
+    large-records.url = "github:eswar2001/large-records/e393f4501d76a98b4482b0a5b35d120ae70e5dd3";
+    record-dot-preprocessor.url = "github:ndmitchell/record-dot-preprocessor/99452d27f35ea1ff677be9af570d834e8fab4caf";
+    record-dot-preprocessor.flake = false;
   };
   outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
@@ -31,9 +37,18 @@
           #
           projectFlakeName = "spider";
           basePackages = pkgs.haskell.packages.ghc8107;
+          imports = [
+            inputs.references.haskellFlakeProjectModules.output
+          ];
           packages = {
-            references.source = inputs.references;
             classyplate.source = inputs.classyplate;
+            ghc-hasfield-plugin.source = inputs.ghc-hasfield-plugin;
+            large-records.source = inputs.large-records + /large-records;
+            large-generics.source = inputs.large-records + /large-generics;
+            large-anon.source = inputs.large-records + /large-anon;
+            ghc-tcplugin-api.source = "0.7.1.0";
+            typelet.source = inputs.large-records + /typelet;
+            record-dot-preprocessor.source = inputs.record-dot-preprocessor;
           };
           settings = {
             #  aeson = {

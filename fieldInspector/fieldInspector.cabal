@@ -48,10 +48,14 @@ build-type:         Simple
 -- Extra doc files to be distributed with the package, such as a CHANGELOG or a README.
 extra-doc-files:    CHANGELOG.md
 
--- Extra source files to be distributed with the package, such as examples, or a tutorial module.
--- extra-source-files:
+flag enable-lr-plugins
+  description:       set this flag to enable these plugins Data.Record.Plugin , Data.Record.Anon.Plugin , Data.Record.Plugin.HasFieldPattern
+  default:           False
+  manual:            True
 
 common common-options
+    if flag(enable-lr-plugins)
+        cpp-options:     -DENABLE_LR_PLUGINS
     ghc-options:
         -Wall
         -Wincomplete-uni-patterns
@@ -81,6 +85,7 @@ common common-options
         , directory
         , extra
         , aeson-pretty
+        , aeson
         , base ^>=4.14.3.0
         , text
         , base64-bytestring
@@ -93,22 +98,25 @@ common common-options
         , universum
         , data-default
         , streamly
+        , large-records
+        , large-generics
+        , large-anon
+        , ghc-hasfield-plugin
+        , record-dot-preprocessor ==0.2.14
+        , ghc-tcplugin-api
+        , typelet
+        , record-hasfield
+        , text
+        , binary
+        , references
+        , uniplate
 
 library
     -- Import common warning flags.
     import:           common-options
 
     -- Modules exported by the library.
-    exposed-modules:  FieldInspector.Plugin,FieldInspector.Group,FieldInspector.Types
-
-    -- Modules included in this library but not exported.
-    -- other-modules:
-
-    -- LANGUAGE extensions used by modules in this package.
-    -- other-extensions:
-
-    -- Other library packages from which modules are imported.
-    build-depends:    base
+    exposed-modules:  FieldInspector.PluginFields,FieldInspector.PluginTypes,FieldInspector.Group,FieldInspector.Types
 
     -- Directories containing source files.
     hs-source-dirs:   src
@@ -143,7 +151,7 @@ executable fieldInspector
 test-suite fieldInspector-test
     -- Import common warning flags.
     import:           common-options
-    ghc-options: -fplugin=FieldInspector.Plugin -fplugin-opt FieldInspector.Plugin:./tmp/fieldInspector/
+    ghc-options: -fplugin=FieldInspector.PluginFields -fplugin-opt FieldInspector.PluginFields:./tmp/fieldInspector/ -fplugin=FieldInspector.PluginTypes -fplugin-opt FieldInspector.PluginTypes:./tmp/fieldInspector/
     -- Base language which the package is written in.
     default-language: Haskell2010
 
@@ -164,5 +172,13 @@ test-suite fieldInspector-test
 
     -- Test dependencies.
     build-depends:
-        base,
-        fieldInspector
+        base
+        ,   fieldInspector
+        , large-records
+        , large-generics
+        , large-anon
+        , ghc-hasfield-plugin
+        , record-dot-preprocessor ==0.2.14
+        , ghc-tcplugin-api
+        , typelet
+        , record-hasfield

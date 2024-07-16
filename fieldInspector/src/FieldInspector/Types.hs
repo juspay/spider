@@ -1,8 +1,9 @@
-{-# LANGUAGE BangPatterns #-}
+
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE UndecidableInstances,DeriveDataTypeable,DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE UndecidableInstances, DeriveAnyClass #-}
 
 module FieldInspector.Types where
 
@@ -11,6 +12,8 @@ import GHC.Generics (Generic)
 import Data.Text
 import Data.Data
 import qualified Data.Map as Map
+import Data.Binary
+import Control.DeepSeq
 
 data FieldUsage = FieldUsage {
     typeName :: Text
@@ -19,16 +22,32 @@ data FieldUsage = FieldUsage {
     , typeSrcLoc :: Text
     , beautifiedCode :: Text
 }
-    deriving (Generic, Data, Show, ToJSON, FromJSON)
+    deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
 data TypeInfo = TypeInfo
   { name     :: String
   , typeKind     :: String
   , dataConstructors :: [DataConInfo]
-  } deriving (Generic, Data, Show, ToJSON, FromJSON)
+  } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
 data DataConInfo = DataConInfo
-  { dataConName :: String
+  { dataConNames :: String
   , fields      :: Map.Map String String
   , sumTypes    :: [String]
-  } deriving (Generic, Data, Show, ToJSON, FromJSON)
+  } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+data DataTypeUC = DataTypeUC {
+    function_name_ :: [Text]
+    , typeVsFields :: [TypeVsFields]
+    } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+data TypeVsFields = TypeVsFields {
+    type_name :: Text
+    , fieldsVsExprs :: [(FieldRep)]
+} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+data FieldRep = FieldRep {
+  field_name :: Text
+  , expression :: Text
+  , field_type :: Text
+} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
