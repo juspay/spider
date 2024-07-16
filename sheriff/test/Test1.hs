@@ -1,8 +1,12 @@
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 
 module Test1 where
 
@@ -14,6 +18,8 @@ import Data.Aeson as A
 import Data.String
 import GHC.Generics
 import qualified Data.ByteString.Lazy as BSL
+import           Data.Functor.Identity (Identity)
+import           Data.Kind (Type)
 
 
 -- Data Types Declarations
@@ -22,6 +28,17 @@ data A = A Int String
 
 data B = B {f1 :: Int, f2 :: A, f3 :: Text}
     deriving (Generic, Show, ToJSON, FromJSON)
+
+data DBT (f :: Type -> Type) = DB {dbf1 :: f Int}
+    deriving (Generic)
+
+type DB = DBT Identity
+
+deriving stock instance Show (DBT Identity)
+deriving anyclass instance FromJSON (DBT Identity)
+deriving anyclass instance ToJSON (DBT Identity)
+
+type P = Text
 
 data CC = C1 | C2 Text | C3 Int | C4 Bool
     deriving (Generic, Show, ToJSON, FromJSON)
@@ -54,6 +71,12 @@ en22 = "Hello"
 
 en3 :: EnumT3 ()
 en3 = M
+
+en21 :: P
+en21 = "Hello"
+
+en22 :: Text
+en22 = "Hello"
 
 ob :: SeqIs
 ob = SeqIs "fldName" "fldValue"
@@ -89,12 +112,18 @@ str3 = T.pack $ show "Hello Str3"
 str4 :: Text
 str4 = T.pack $ show (T.pack "Hello Str3")
 
+db1 :: DB
+db1 = DB 20
+
 -- Helper function
 encodeJSON :: (ToJSON a) => a -> Text
 encodeJSON = DTE.decodeUtf8 . BSL.toStrict . A.encode
 
 logErrorV :: (ToJSON a) => a -> IO ()
 logErrorV = print . toJSON
+
+logDebugT :: Text -> Text -> IO ()
+logDebugT _ = print
 
 logErrorT :: Text -> Text -> IO ()
 logErrorT _ = print
@@ -179,16 +208,23 @@ main = do
 
     print $ show temp
     print $ show temp1
+    print $ (show) (temp1)
     print $ show temp2
     print $ show en2
     print $ show en21
     print $ show en22
     print $ show temp3
     print $ show temp4
+    print $ show $ dbf1 db1
     logError "tag" $ show en2 <> show obA
     logError "tag" $ show en <> show obB
     logError "tag" $ show temp5
     logError "tag" $ show temp6
+
+    logDebugT "validateMandate" $ "effective limit is: " <> T.pack (show 10) <> ", custom limit for key: " <> " is " <> T.pack (show (Just ("Hello" :: Text)))
+
+    logErrorT "Incorrect Feature in DB" 
+          $  "merchantId: " <> ", error: " <> T.pack (show (["A", "B"] :: [Text]))
   where
     logErrorT = Test1.logErrorT
 
