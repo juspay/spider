@@ -3,17 +3,17 @@
     "classyplate": {
       "flake": false,
       "locked": {
-        "lastModified": 1678370822,
-        "narHash": "sha256-8AJ/55ShKCe49MEcyMqzJ3ADjs5dvtuTIhuTTq2q5nQ=",
-        "owner": "Chaitanya-nair",
+        "lastModified": 1715166860,
+        "narHash": "sha256-kbUJ8WVT/pusDDbTX8+pnxumWtztGSeX3UMbYp6xgHA=",
+        "owner": "iamanandsingh",
         "repo": "classyplate",
-        "rev": "46f5e0e7073e1d047f70473bf3c75366a613bfeb",
+        "rev": "2c869097df8fdbeb1da23842bf5f52366daf3893",
         "type": "github"
       },
       "original": {
-        "owner": "Chaitanya-nair",
+        "owner": "iamanandsingh",
         "repo": "classyplate",
-        "rev": "46f5e0e7073e1d047f70473bf3c75366a613bfeb",
+        "rev": "2c869097df8fdbeb1da23842bf5f52366daf3893",
         "type": "github"
       }
     },
@@ -56,17 +56,17 @@
     "ghc-hasfield-plugin": {
       "flake": false,
       "locked": {
-        "lastModified": 1658487566,
-        "narHash": "sha256-pZ6kFNfRtBWWqJ3zZSJhZQz7hcdgTdpkqUbzRCuRSl8=",
-        "owner": "juspay",
+        "lastModified": 1721371073,
+        "narHash": "sha256-1xTFZRE/vAHV/mLMW5rNyZH1SkkbyFqDxXZvw7JwOHo=",
+        "owner": "eswar2001",
         "repo": "ghc-hasfield-plugin",
-        "rev": "d82ac5a6c0ad643eebe2b9b32c91f6523d3f30dc",
+        "rev": "c932ebc0d7e824129bb70c8a078f3c68feed85c9",
         "type": "github"
       },
       "original": {
-        "owner": "juspay",
+        "owner": "eswar2001",
         "repo": "ghc-hasfield-plugin",
-        "rev": "d82ac5a6c0ad643eebe2b9b32c91f6523d3f30dc",
+        "rev": "c932ebc0d7e824129bb70c8a078f3c68feed85c9",
         "type": "github"
       }
     },
@@ -103,33 +103,32 @@
     "large-records": {
       "flake": false,
       "locked": {
-        "lastModified": 1719312727,
-        "narHash": "sha256-NLs4yiUh4vNf4sqOQUUTCr0Fpld1y6ZyZJNhqSTzAI0=",
-        "owner": "eswar2001",
+        "lastModified": 1719932869,
+        "narHash": "sha256-1J/II2BUtOGQ5Sywx7Un8I3+oVHNXeDzzt/mXBN0FZ4=",
+        "owner": "well-typed",
         "repo": "large-records",
-        "rev": "e393f4501d76a98b4482b0a5b35d120ae70e5dd3",
+        "rev": "5018da3d52c434b4fa11e5e1f2af2c23b2d9aa55",
         "type": "github"
       },
       "original": {
-        "owner": "eswar2001",
+        "owner": "well-typed",
         "repo": "large-records",
-        "rev": "e393f4501d76a98b4482b0a5b35d120ae70e5dd3",
         "type": "github"
       }
     },
     "nixpkgs": {
       "locked": {
-        "lastModified": 1643795778,
-        "narHash": "sha256-sBxYgXu+4JTpXPu3c1QGl2a2zzzDJj4VNsVatF1sEIY=",
+        "lastModified": 1698266953,
+        "narHash": "sha256-jf72t7pC8+8h8fUslUYbWTX5rKsRwOzRMX8jJsGqDXA=",
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "43e3b6af08f29c4447a6073e3d5b86a4f45dd420",
+        "rev": "75a52265bda7fd25e06e3a67dee3f0354e73243c",
         "type": "github"
       },
       "original": {
         "owner": "nixos",
         "repo": "nixpkgs",
-        "rev": "43e3b6af08f29c4447a6073e3d5b86a4f45dd420",
+        "rev": "75a52265bda7fd25e06e3a67dee3f0354e73243c",
         "type": "github"
       }
     },
@@ -179,23 +178,6 @@
         "type": "github"
       }
     },
-    "record-dot-preprocessor": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1644582826,
-        "narHash": "sha256-BXprRyjI4ZTG+Orz858xmttiC8O0yuubaaKmeRAL/UY=",
-        "owner": "ndmitchell",
-        "repo": "record-dot-preprocessor",
-        "rev": "99452d27f35ea1ff677be9af570d834e8fab4caf",
-        "type": "github"
-      },
-      "original": {
-        "owner": "ndmitchell",
-        "repo": "record-dot-preprocessor",
-        "rev": "99452d27f35ea1ff677be9af570d834e8fab4caf",
-        "type": "github"
-      }
-    },
     "references": {
       "inputs": {
         "flake-parts": "flake-parts_2",
@@ -203,17 +185,17 @@
         "nixpkgs": "nixpkgs_2"
       },
       "locked": {
-        "lastModified": 1686714318,
-        "narHash": "sha256-Ogy9S6cF/8WNfpcQ1k65rPjjTfWlH15Jp5JeraYaAQQ=",
-        "owner": "eswar2001",
+        "lastModified": 1715784802,
+        "narHash": "sha256-15TEa3cQi1a+pu+oQtaCHYoWMgwJV44OSfohtdWxmLM=",
+        "owner": "iamanandsingh",
         "repo": "references",
-        "rev": "35912f3cc72b67fa63a8d59d634401b79796469e",
+        "rev": "8366257fbeb4f63e1ec0347c9fe5f203ba6fdebc",
         "type": "github"
       },
       "original": {
-        "owner": "eswar2001",
+        "owner": "iamanandsingh",
         "repo": "references",
-        "rev": "35912f3cc72b67fa63a8d59d634401b79796469e",
+        "rev": "8366257fbeb4f63e1ec0347c9fe5f203ba6fdebc",
         "type": "github"
       }
     },
@@ -225,7 +207,6 @@
         "haskell-flake": "haskell-flake",
         "large-records": "large-records",
         "nixpkgs": "nixpkgs",
-        "record-dot-preprocessor": "record-dot-preprocessor",
         "references": "references",
         "systems": "systems"
       }
