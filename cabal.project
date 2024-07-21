@@ -2,3 +2,4 @@ packages:
   ./fdep
   ./coresyn2chart
   ./sheriff
+  ./paymentFlow
