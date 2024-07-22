@@ -118,7 +118,7 @@ paymentFlow opts modSummary tcEnv = do
                   (Just (RealSrcSpan s)) -> srcSpanStartLine s
                   _                 -> 0
 
-            let shouldThroughError = (any (\(VoilationRuleResult{..}) -> do
+                shouldThroughError = (any (\(VoilationRuleResult{..}) -> do
                         let whitelistedRules = field_access_whitelisted_fns rule
                         fnName `elem` whitelistedRules || coreFnName `elem` whitelistedRules) srcGrpErrArr) || (any (\result -> srcSpanLine `elem` (whitelisted_line_nos (rule result))) srcGrpErrArr)
             if shouldThroughError
