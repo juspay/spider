@@ -2,12 +2,88 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE CPP #-}
 
 module FieldInspector.PluginFields (plugin) where
 
-import Bag (bagToList)
-import Control.Exception (evaluate)
-import Control.Reference (biplateRef, (^?))
+
+#if __GLASGOW_HASKELL__ >= 900
+import qualified Data.IntMap.Internal as IntMap
+import Streamly.Prelude (fromList,mapM_,mapM,toList)
+import Streamly ( parallely)
+import GHC
+import GHC.Driver.Plugins (Plugin(..),CommandLineOption,defaultPlugin,PluginRecompile(..))
+import GHC as GhcPlugins
+import GHC.Core.DataCon as GhcPlugins
+import GHC.Core.TyCo.Rep
+import GHC.Core.TyCon as GhcPlugins
+import GHC.Driver.Env
+import GHC.Tc.Types
+import GHC.Unit.Module.ModSummary
+import GHC.Utils.Outputable (showSDocUnsafe,ppr,SDoc)
+import GHC.Data.Bag (bagToList)
+import GHC.Types.Name hiding (varName)
+import GHC.Types.Var
+import qualified Data.Aeson.KeyMap as HM
+import GHC.Core.Opt.Monad
+import GHC.Core
+import GHC.Unit.Module.ModGuts
+import GHC.Types.Name.Reader
+import GHC.Types.Id
+import GHC.Data.FastString
+
+#else
+import CoreMonad (CoreM, CoreToDo (CoreDoPluginPass), liftIO)
+import CoreSyn (
+    AltCon (..),
+    Bind (NonRec, Rec),
+    CoreBind,
+    CoreExpr,
+    Expr (..),
+    mkStringLit
+ )
+import TyCoRep
+import GHC.IO (unsafePerformIO)
+import GHC.Hs
+import GHC.Hs.Decls
+import GhcPlugins (
+    CommandLineOption,Arg (..),
+    HsParsedModule(..),
+    Hsc,
+    Name,SDoc,DataCon,DynFlags,ModSummary(..),TyCon,
+    Literal (..),typeEnvElts,
+    ModGuts (mg_binds, mg_loc, mg_module),showSDoc,
+    Module (moduleName),tyConKind,
+    NamedThing (getName),getDynFlags,tyConDataCons,dataConOrigArgTys,dataConName,
+    Outputable (..),dataConFieldLabels,
+    Plugin (..),
+    Var,flLabel,dataConRepType,
+    coVarDetails,
+    defaultPlugin,
+    idName,
+    mkInternalName,
+    mkLitString,
+    mkLocalVar,
+    mkVarOcc,
+    moduleNameString,
+    nameStableString,
+    noCafIdInfo,
+    purePlugin,
+    showSDocUnsafe,
+    tyVarKind,
+    unpackFS,
+    tyConName,
+    msHsFilePath
+ )
+import Id (isExportedId,idType)
+import Name (getSrcSpan)
+import SrcLoc
+import Unique (mkUnique)
+import Var (isLocalId,varType)
+import FieldInspector.Types
+import TcRnTypes
+import TcRnMonad
+import DataCon
 import CoreMonad (CoreM, CoreToDo (CoreDoPluginPass))
 import CoreSyn (
     AltCon (..),
@@ -16,27 +92,7 @@ import CoreSyn (
     CoreExpr,
     Expr (..),
  )
-import Data.Aeson.Encode.Pretty (encodePretty)
-import Data.Bool (bool)
-import qualified Data.ByteString as DBS
-import Data.ByteString.Lazy (toStrict)
-import Data.Data (Data (toConstr))
-import Data.Generics.Uniplate.Data ()
-import Data.List (sortBy)
-import Data.List.Extra (groupBy, intercalate, splitOn)
-import Data.Map (Map)
-import qualified Data.Map as Map
-import Data.Maybe (mapMaybe)
-import Data.Text (Text, pack)
-import qualified Data.Text as T
-import FieldInspector.Types (
-    DataConInfo (..),
-    DataTypeUC (DataTypeUC),
-    FieldRep (FieldRep),
-    FieldUsage (FieldUsage),
-    TypeInfo (..),
-    TypeVsFields (TypeVsFields),
- )
+import Bag (bagToList)
 import GHC.Hs (
     ConDecl (
         ConDeclGADT,
@@ -118,6 +174,61 @@ import SrcLoc (
     getLoc,
     unLoc,
  )
+import TcRnMonad (MonadIO (liftIO))
+import TcRnTypes (TcGblEnv (tcg_binds), TcM)
+import TyCoRep (Type (AppTy, FunTy, TyConApp, TyVarTy))
+import Var (varName, varType)
+#endif
+
+import FieldInspector.Types
+import Control.Concurrent (MVar, modifyMVar, newMVar)
+import Data.Aeson
+import Data.Aeson.Encode.Pretty (encodePretty)
+import qualified Data.ByteString as DBS
+import Data.ByteString.Lazy (toStrict)
+import Data.Int (Int64)
+import Data.List.Extra (intercalate, isSuffixOf, replace, splitOn,groupBy)
+import Data.List ( sortBy, intercalate ,foldl')
+import qualified Data.Map as Map
+import Data.Text (Text, concat, isInfixOf, pack, unpack)
+import qualified Data.Text as T
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
+import Data.Time
+import Data.Map (Map)
+import Data.Data
+import Data.Maybe (catMaybes)
+import Control.Monad.IO.Class (liftIO)
+import System.IO (writeFile)
+import Control.Monad (forM)
+import Streamly (parallely, serially)
+import Streamly.Prelude hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
+import System.Directory (createDirectoryIfMissing, removeFile)
+import System.Directory.Internal.Prelude hiding (mapM, mapM_)
+import Prelude hiding (id, mapM, mapM_)
+import Control.Exception (evaluate)
+import Control.Exception (evaluate)
+import Control.Reference (biplateRef, (^?))
+import Data.Aeson.Encode.Pretty (encodePretty)
+import Data.Bool (bool)
+import qualified Data.ByteString as DBS
+import Data.ByteString.Lazy (toStrict)
+import Data.Data (Data (toConstr))
+import Data.Generics.Uniplate.Data ()
+import Data.List (sortBy)
+import Data.List.Extra (groupBy, intercalate, splitOn)
+import Data.Map (Map)
+import qualified Data.Map as Map
+import Data.Maybe (mapMaybe)
+import Data.Text (Text, pack)
+import qualified Data.Text as T
+import FieldInspector.Types (
+    DataConInfo (..),
+    DataTypeUC (DataTypeUC),
+    FieldRep (FieldRep),
+    FieldUsage (FieldUsage),
+    TypeInfo (..),
+    TypeVsFields (TypeVsFields),
+ )
 import Streamly (parallely)
 import Streamly.Prelude (fromList, mapM, toList)
 import System.Directory (createDirectoryIfMissing, removeFile)
@@ -129,18 +240,14 @@ import System.Directory.Internal.Prelude (
     on,
     throwIO,
  )
-import TcRnMonad (MonadIO (liftIO))
-import TcRnTypes (TcGblEnv (tcg_binds), TcM)
-import TyCoRep (Type (AppTy, FunTy, TyConApp, TyVarTy))
-import Var (varName, varType)
 import Prelude hiding (id, mapM, mapM_)
 
 plugin :: Plugin
 plugin =
     defaultPlugin
         { installCoreToDos = install
-        , pluginRecompile = GhcPlugins.purePlugin
-        , typeCheckResultAction = collectTypesTC
+        , pluginRecompile = (\_ -> return NoForceRecompile)
+        -- , typeCheckResultAction = collectTypesTC
         }
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install args todos = return (CoreDoPluginPass "FieldInspector" (buildCfgPass args) : todos)
@@ -152,21 +259,21 @@ removeIfExists fileName = removeFile fileName `catch` handleExists
         | isDoesNotExistError e = return ()
         | otherwise = throwIO e
 
-collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
-collectTypesTC opts modSummary tcEnv = do
-    _ <- liftIO $
-        forkIO $
-            do
-                let prefixPath = case opts of
-                        [] -> "/tmp/fieldInspector/"
-                        local : _ -> local
-                    modulePath = prefixPath <> msHsFilePath modSummary
-                    path = (intercalate "/" . init . splitOn "/") modulePath
-                    binds = bagToList $ tcg_binds tcEnv
-                createDirectoryIfMissing True path
-                functionVsUpdates <- getAllTypeManipulations binds
-                DBS.writeFile ((modulePath) <> ".typeUpdates.json") (toStrict $ encodePretty functionVsUpdates)
-    return tcEnv
+-- collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
+-- collectTypesTC opts modSummary tcEnv = do
+--     _ <- liftIO $
+--         forkIO $
+--             do
+--                 let prefixPath = case opts of
+--                         [] -> "/tmp/fieldInspector/"
+--                         local : _ -> local
+--                     modulePath = prefixPath <> msHsFilePath modSummary
+--                     path = (intercalate "/" . init . splitOn "/") modulePath
+--                     binds = bagToList $ tcg_binds tcEnv
+--                 createDirectoryIfMissing True path
+--                 functionVsUpdates <- getAllTypeManipulations binds
+--                 DBS.writeFile ((modulePath) <> ".typeUpdates.json") (toStrict $ encodePretty functionVsUpdates)
+--     return tcEnv
 
 buildCfgPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 buildCfgPass opts guts = do
@@ -198,7 +305,11 @@ getAllTypeManipulations binds = do
     pure $ catMaybes bindWiseUpdates
   where
     getDataTypeDetails :: HsExpr GhcTc -> Maybe TypeVsFields
-    getDataTypeDetails (RecordCon _ (L _ (iD)) rcon_flds) = Just (TypeVsFields (T.pack $ nameStableString $ getName $ idName iD) (extractRecordBinds (rcon_flds)))
+#if __GLASGOW_HASKELL__ >= 900
+    getDataTypeDetails (RecordCon _ (iD) rcon_flds) = Just (TypeVsFields (T.pack $ nameStableString $ getName (GHC.unXRec @(GhcTc) iD)) (extractRecordBinds (rcon_flds)))
+#else
+    getDataTypeDetails (RecordCon _ (iD) rcon_flds) = Just (TypeVsFields (T.pack $ nameStableString $ getName $ idName $ unLoc $ iD) (extractRecordBinds (rcon_flds)))
+#endif
     getDataTypeDetails (RecordUpd _ rupd_expr rupd_flds) = Just (TypeVsFields (T.pack $ showSDocUnsafe $ ppr rupd_expr) (getFieldUpdates rupd_flds))
 
     -- inferFieldType :: Name -> String
@@ -213,7 +324,20 @@ getAllTypeManipulations binds = do
             Orig module' occName -> ((moduleNameString $ moduleName module') <> "$" <> (showSDocUnsafe $ pprNameSpaceBrief $ occNameSpace occName) <> "$" <> (occNameString occName) <> "$" <> (unpackFS $ occNameFS occName))
             Exact name -> nameStableString name
 
-    getFieldUpdates :: [LHsRecUpdField GhcTc] -> [FieldRep]
+#if __GLASGOW_HASKELL__ >= 900
+    getFieldUpdates :: Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> Either [FieldRep] [Text]
+    getFieldUpdates fields = 
+        case fields of
+           Left x -> (Left . map (extractField . unLoc)) x 
+           Right x -> (Right . map (T.pack . showSDocUnsafe . ppr)) x
+      where
+        extractField :: HsRecUpdField GhcTc -> FieldRep
+        extractField (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun}) =
+            if pun
+                then (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ inferFieldTypeAFieldOcc lbl))
+                else (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr (unLoc expr)) (T.pack $ inferFieldTypeAFieldOcc lbl))
+#else
+    getFieldUpdates :: [LHsRecUpdField p]-> Either [FieldRep] [Text]
     getFieldUpdates fields = map extractField fields
       where
         extractField :: LHsRecUpdField GhcTc -> FieldRep
@@ -221,10 +345,11 @@ getAllTypeManipulations binds = do
             if pun
                 then (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ inferFieldTypeAFieldOcc lbl))
                 else (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr (unLoc expr)) (T.pack $ inferFieldTypeAFieldOcc lbl))
+#endif
 
-    extractRecordBinds :: HsRecFields GhcTc (LHsExpr GhcTc) -> [FieldRep]
+    extractRecordBinds :: HsRecFields GhcTc (LHsExpr GhcTc) -> Either [FieldRep] [Text]
     extractRecordBinds (HsRecFields{rec_flds = fields}) =
-        map extractField fields
+        Left $ map extractField fields
       where
         extractField :: LHsRecField GhcTc (LHsExpr GhcTc) -> FieldRep
         extractField (L _ (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun})) =
@@ -233,29 +358,43 @@ getAllTypeManipulations binds = do
                 else (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr $ unLoc expr) (T.pack $ inferFieldTypeFieldOcc lbl))
 
     getFunctionName :: LHsBindLR GhcTc GhcTc -> [Text]
-    getFunctionName (L _ x@(FunBind fun_ext id matches _ _)) = [T.pack $ nameStableString $ getName id]
-    getFunctionName (L _ (VarBind{var_id = var, var_rhs = expr, var_inline = inline})) = [T.pack $ nameStableString $ getName var]
+    getFunctionName (L _ x@(FunBind fun_ext id matches _)) = [T.pack $ nameStableString $ getName id]
+    getFunctionName (L _ (VarBind{var_id = var, var_rhs = expr})) = [T.pack $ nameStableString $ getName var]
     getFunctionName (L _ (PatBind{pat_lhs = pat, pat_rhs = expr})) = [""]
     getFunctionName (L _ (AbsBinds{abs_binds = binds})) = Prelude.concatMap getFunctionName $ bagToList binds
 
 processPat :: LPat GhcTc -> [(Name, Maybe Text)]
 processPat (L _ pat) = case pat of
+#if __GLASGOW_HASKELL__ >= 900
+    ConPat _ _ details -> processDetails details
+#else
     ConPatIn _ details -> processDetails details
+#endif
     VarPat _ x@(L _ var) -> [(varName var, Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc $ x)]
     ParPat _ pat' -> processPat pat'
     _ -> []
 
 processDetails :: HsConPatDetails GhcTc -> [(Name, Maybe Text)]
+#if __GLASGOW_HASKELL__ >= 900
+processDetails (PrefixCon _ args) = Prelude.concatMap processPat args
+#else
 processDetails (PrefixCon args) = Prelude.concatMap processPat args
+#endif
 processDetails (InfixCon arg1 arg2) = processPat arg1 <> processPat arg2
 processDetails (RecCon rec) = Prelude.concatMap processPatField (rec_flds rec)
 
 processPatField :: LHsRecField GhcTc (LPat GhcTc) -> [(Name, Maybe Text)]
 processPatField (L _ HsRecField{hsRecFieldArg = arg}) = processPat arg
 
+#if __GLASGOW_HASKELL__ >= 900
+getFilePath :: SrcSpan -> String
+getFilePath (RealSrcSpan rSSpan _) = unpackFS $ srcSpanFile rSSpan
+getFilePath (UnhelpfulSpan fs) = showSDocUnsafe $ ppr $ fs
+#else
 getFilePath :: SrcSpan -> String
 getFilePath (RealSrcSpan rSSpan) = unpackFS $ srcSpanFile rSSpan
 getFilePath (UnhelpfulSpan fs) = unpackFS fs
+#endif
 
 --   1. `HasField _ r _` where r is a variable
 
@@ -318,7 +457,11 @@ processHasField functionName (Var x) (Var hasField) = do
                         else do
                             print y
                             pure res
+#if __GLASGOW_HASKELL__ >= 900
+        (FunTy _ _ a _) -> do
+#else
         (FunTy _ a _) -> do
+#endif
             let fieldType = T.strip $ Prelude.last $ T.splitOn "->" $ pack $ showSDocUnsafe $ ppr $ varType hasField
             pure $
                 res
@@ -492,7 +635,11 @@ toLBind (Rec binds) = do
 processFieldExtraction :: Text -> Var -> Var -> Text -> IO [(Text, [FieldUsage])]
 processFieldExtraction functionName _field _type b = do
     res <- case (varType _field) of
+#if __GLASGOW_HASKELL__ >= 900
+        (FunTy _ _ a _) -> do
+#else
         (FunTy _ a _) -> do
+#endif
             let fieldType = T.strip $ Prelude.last $ T.splitOn "->" $ pack $ showSDocUnsafe $ ppr $ varType _field
             pure
                 [
@@ -560,7 +707,7 @@ toLexpr functionName (Var x) = pure mempty
 toLexpr functionName (Lit x) = pure mempty
 toLexpr functionName (Type _id) = pure mempty
 toLexpr functionName x@(App func@(App _ _) args@(Var isHasField))
-    | "$_sys$$dHasField" == pack (nameStableString $ idName isHasField) =
+    | "$_sys$$dHasField" == pack (nameStableString $ idName isHasField) = do
         processHasField functionName func args
     | otherwise = do
         processApp functionName x
@@ -586,6 +733,22 @@ processApp functionName x@(App func args) = do
     a <- toLexpr functionName args
     pure $ f <> a
 
+#if __GLASGOW_HASKELL__ >= 900
+toLAlt :: Text -> Alt Var -> IO [(Text, [FieldUsage])]
+toLAlt x (Alt a b c) = toLAlt' x (a,b,c)
+    where
+        toLAlt' :: Text -> (AltCon, [Var], CoreExpr) -> IO [(Text, [FieldUsage])]
+        toLAlt' functionName (DataAlt dataCon, val, e) = do
+            let typeName = GhcPlugins.tyConName $ GhcPlugins.dataConTyCon dataCon
+                extractingConstruct = showSDocUnsafe $ ppr $ GhcPlugins.dataConName dataCon
+                kindStr = showSDocUnsafe $ ppr $ tyConKind $ GhcPlugins.dataConTyCon dataCon
+            res <- toLexpr functionName e
+            pure $ ((map (\x -> (functionName, [FieldUsage (pack $ showSDocUnsafe $ ppr $ typeName) (pack $ extractingConstruct) (pack $ showSDocUnsafe $ ppr $ varType x) (pack $ nameStableString $ typeName) (pack $ showSDocUnsafe $ ppr x)])) val)) <> res
+        toLAlt' functionName (LitAlt lit, val, e) =
+            toLexpr functionName e
+        toLAlt' functionName (DEFAULT, val, e) =
+            toLexpr functionName e
+#else
 toLAlt :: Text -> (AltCon, [Var], CoreExpr) -> IO [(Text, [FieldUsage])]
 toLAlt functionName (DataAlt dataCon, val, e) = do
     let typeName = GhcPlugins.tyConName $ GhcPlugins.dataConTyCon dataCon
@@ -597,71 +760,10 @@ toLAlt functionName (LitAlt lit, val, e) =
     toLexpr functionName e
 toLAlt functionName (DEFAULT, val, e) =
     toLexpr functionName e
+#endif
 
 pprTyCon :: Name -> SDoc
 pprTyCon = ppr
 
 pprDataCon :: Name -> SDoc
 pprDataCon = ppr
-
-collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
-collectTypeInfoParser opts modSummary hpm = do
-    _ <- liftIO $
-        do
-            let prefixPath = case opts of
-                    [] -> "/tmp/fieldInspector/"
-                    local : _ -> local
-                moduleName' = moduleNameString $ GhcPlugins.moduleName $ ms_mod modSummary
-                modulePath = prefixPath <> msHsFilePath modSummary
-                hm_module = unLoc $ hpm_module hpm
-                path = (intercalate "/" . init . splitOn "/") modulePath
-            -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
-            types <- toList $ parallely $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
-            createDirectoryIfMissing True path
-            DBS.writeFile (modulePath <> ".types.parser.json") (toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
-    -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
-    return hpm
-
-getTypeInfo :: LHsDecl GhcPs -> [(String, TypeInfo)]
-getTypeInfo (L _ (TyClD _ (DataDecl _ lname _ _ defn))) =
-    [
-        ( showSDocUnsafe (ppr lname)
-        , TypeInfo
-            { name = showSDocUnsafe (ppr lname)
-            , typeKind = "data"
-            , dataConstructors = map getDataConInfo (dd_cons defn)
-            }
-        )
-    ]
-getTypeInfo (L _ (TyClD _ (SynDecl _ lname _ _ rhs))) =
-    [
-        ( showSDocUnsafe (ppr lname)
-        , TypeInfo
-            { name = showSDocUnsafe (ppr lname)
-            , typeKind = "type"
-            , dataConstructors = [DataConInfo (showSDocUnsafe (ppr lname)) (Map.singleton "synonym" (showSDocUnsafe (ppr rhs))) []]
-            }
-        )
-    ]
-getTypeInfo _ = []
-
-getDataConInfo :: LConDecl GhcPs -> DataConInfo
-getDataConInfo (L _ ConDeclH98{con_name = lname, con_args = args}) =
-    DataConInfo
-        { dataConNames = showSDocUnsafe (ppr lname)
-        , fields = getFieldMap args
-        , sumTypes = [] -- For H98-style data constructors, sum types are not applicable
-        }
-getDataConInfo (L _ ConDeclGADT{con_names = lnames, con_res_ty = ty}) =
-    DataConInfo
-        { dataConNames = intercalate ", " (map (showSDocUnsafe . ppr) lnames)
-        , fields = Map.singleton "gadt" (showSDocUnsafe (ppr ty))
-        , sumTypes = [] -- For GADT-style data constructors, sum types can be represented by the type itself
-        }
-
-getFieldMap :: HsConDeclDetails GhcPs -> Map String String
-getFieldMap (PrefixCon args) = Map.fromList $ Prelude.zipWith (\i t -> (show i, showSDocUnsafe (ppr t))) [1 ..] args
-getFieldMap (RecCon (L _ fields)) = Map.fromList $ concatMap getRecField fields
-  where
-    getRecField (L _ (ConDeclField _ fnames t _)) = [(showSDocUnsafe (ppr fname), showSDocUnsafe (ppr t)) | L _ fname <- fnames]
-getFieldMap (InfixCon t1 t2) = Map.fromList [("field1", showSDocUnsafe (ppr t1)), ("field2", showSDocUnsafe (ppr t2))]

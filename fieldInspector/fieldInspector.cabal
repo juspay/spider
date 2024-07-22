@@ -79,14 +79,14 @@ common common-options
         bytestring
         , containers
         , filepath
-        , ghc ^>= 8.10.7
+        , ghc
         , unordered-containers
         , aeson
         , directory
         , extra
         , aeson-pretty
         , aeson
-        , base ^>=4.14.3.0
+        , base
         , text
         , base64-bytestring
         , optparse-applicative
@@ -102,7 +102,7 @@ common common-options
         , large-generics
         , large-anon
         , ghc-hasfield-plugin
-        , record-dot-preprocessor ==0.2.14
+        , record-dot-preprocessor
         , ghc-tcplugin-api
         , typelet
         , record-hasfield
@@ -177,8 +177,7 @@ test-suite fieldInspector-test
         , large-records
         , large-generics
         , large-anon
-        , ghc-hasfield-plugin
-        , record-dot-preprocessor ==0.2.14
+        , record-dot-preprocessor
         , ghc-tcplugin-api
         , typelet
         , record-hasfield

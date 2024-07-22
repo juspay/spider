@@ -10,11 +10,10 @@ main = do
     print $ demo $ (A "Test suite not yet implemented." 0)
     pure ()
 
-
 data A = A {name :: String,age :: Int} 
     deriving (Generic,Show)
 
 demo :: A -> String
 demo a = 
     case a of
-        (A {name}) -> name
+        (A {name}) -> name 
