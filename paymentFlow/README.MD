@@ -21,4 +21,4 @@ Also, we can provide flags to the plugin in as follows:
 ```
 -fplugin=PaymentFlow.Plugin:{"throwCompilationError":true,"saveToFile":true,"savePath":".juspay/tmp/paymentFlow/","failOnFileNotFound":true}
 ```
-By default, it throwsCompilationErrors and doesn't log to file. Also, it fails, if indexedKeys file is not found or is invalid
+By default, it throwsCompilationErrors.
