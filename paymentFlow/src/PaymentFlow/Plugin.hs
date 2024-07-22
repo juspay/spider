@@ -145,11 +145,7 @@ checkMatch _ _ _ = pure []
 
 loopOverExprInArgsPerFnName :: [LHsExpr GhcTc] -> [Rule] -> String -> TcM [VoilationRuleResult]
 loopOverExprInArgsPerFnName exprs rules coreFn = do
-  liftIO $ print "EXPRS_BEFORE_FN_ARG_SPLIT"
-  liftIO $ print $ showS exprs
   let fnArgTuple = catMaybes (getFnNameWithAllArgs <$> exprs)
-  liftIO $ print "EXPRS_AFTER_FN_ARG_SPLIT"
-  liftIO $ print $ showS fnArgTuple
   nub <$> concat <$> mapM (lookOverExpr rules coreFn) fnArgTuple
 loopOverExprInArgsPerFnName _ _ _ = pure []
 
