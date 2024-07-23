@@ -170,7 +170,7 @@ getDecls x = do
         (L _ (SigD _ _)) -> pure mempty
         _ -> pure mempty
   where
-    getFunBind f@FunBind{fun_id = funId} = [((T.pack $ showSDocUnsafe $ ppr $ unLoc funId) <> "**" <> (T.pack $ showSDocUnsafe $ ppr $ getLoc' funId), PFunction ((T.pack $ showSDocUnsafe $ ppr $ unLoc funId) <> "**" <> (T.pack $ showSDocUnsafe $ ppr $ getLoc' funId)) (T.pack $ showSDocUnsafe $ ppr f) (T.pack $ showSDocUnsafe $ ppr $ getLoc' funId))]
+    getFunBind f@FunBind{fun_id = funId} = [((T.pack $ showSDocUnsafe $ ppr $ unLoc funId) <> "**" <> (T.pack $ getLoc' funId), PFunction ((T.pack $ showSDocUnsafe $ ppr $ unLoc funId) <> "**" <> (T.pack $ getLoc' funId)) (T.pack $ showSDocUnsafe $ ppr f) (T.pack $ getLoc' funId))]
     getFunBind _ = mempty
 
 shouldForkPerFile :: Bool
@@ -274,13 +274,16 @@ loopOverLHsBindLR mConn mParentName path (L _ x@(FunBind fun_ext id matches _ _)
 #endif
     funName <- evaluate $ force $ T.pack $ getOccString $ unLoc id
     fName <- evaluate $ force $ T.pack $ nameStableString $ getName id
-    print (funName,fName,(T.pack $ showSDocUnsafe (ppr (getLoc' id))))
     let matchList = mg_alts matches
     if funName `elem` (unsafePerformIO $ decodeBlacklistedFunctions) || ("$_in$$" `T.isPrefixOf` fName)
         then pure mempty
         else do
             when (shouldLog) $ print ("processing function: " <> fName)
-            name <- evaluate $ force (fName <> "**" <> (T.pack $ showSDocUnsafe (ppr (getLoc' id))))
+#if __GLASGOW_HASKELL__ >= 900
+            name <- evaluate $ force (fName <> "**" <> (T.pack (getLoc' id)))
+#else
+            name <- evaluate $ force (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr . getLoc) id)))
+#endif
             typeSignature <- evaluate $ force $ (T.pack $ showSDocUnsafe (ppr (varType (unLoc id))))
             nestedNameWithParent <- evaluate $ force $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
             data_ <- evaluate $ force $ (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
@@ -330,8 +333,8 @@ processExpr :: WS.Connection -> Text -> Text -> LHsExpr GhcTc -> IO ()
 processExpr con keyFunction path x@(L _ (HsVar _ (L _ var))) = do
     let name = T.pack $ nameStableString $ varName var
         _type = T.pack $ showSDocUnsafe $ ppr $ varType var
-    print (Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc' $ x)
-    expr <- evaluate $ force $ transformFromNameStableString (Just name, Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc' $ x, Just _type, mempty)
+    print (Just $ T.pack $ getLocTC' $ x)
+    expr <- evaluate $ force $ transformFromNameStableString (Just name, Just $ T.pack $ getLocTC' $ x, Just _type, mempty)
     sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
 processExpr _ _ _ (L _ (HsUnboundVar _ _)) = pure mempty
 processExpr con keyFunction path (L _ (HsApp _ funl funr)) = do
@@ -367,8 +370,6 @@ processExpr con keyFunction path (L _ (HsTcBracketOut b exprLStmtL exprLStmtR)) 
     let stmtsL = (exprLStmtL ^? biplateRef :: [LHsExpr GhcTc])
         stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
      in mapM_ (processExpr con keyFunction path) (fromList $ stmtsL <> stmtsR)
-processExpr con keyFunction path (L _ x@(HsWrap _ fun)) =
-    processExpr con keyFunction path (fun)
 #else
 processExpr con keyFunction path (L _ (HsGetField _ exprLStmt _)) =
     let stmts = exprLStmt ^? biplateRef :: [LHsExpr GhcTc]
@@ -418,10 +419,10 @@ processExpr con keyFunction path (L _ x@(HsLam _ exprLStmt)) =
     let stmts = (exprLStmt ^? biplateRef :: [LHsExpr GhcTc])
      in mapM_ (processExpr con keyFunction path) (fromList stmts)
 processExpr con keyFunction path y@(L _ x@(HsLit _ hsLit)) = do
-    expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_lit$" <> (T.pack $ showSDocUnsafe $ ppr hsLit)), (Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc' $ y), (Just $ T.pack $ show $ toConstr hsLit), mempty)
+    expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_lit$" <> (T.pack $ showSDocUnsafe $ ppr hsLit)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr hsLit), mempty)
     sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
 processExpr con keyFunction path y@(L _ x@(HsOverLit _ overLitVal)) = do
-    expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_lit$" <> (T.pack $ showSDocUnsafe $ ppr overLitVal)), (Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc' $ y), (Just $ T.pack $ show $ toConstr overLitVal), mempty)
+    expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_lit$" <> (T.pack $ showSDocUnsafe $ ppr overLitVal)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr overLitVal), mempty)
     sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
 processExpr con keyFunction path (L _ (HsRecFld _ exprLStmt)) =
     let stmts = (exprLStmt ^? biplateRef :: [LHsExpr GhcTc])
@@ -462,7 +463,9 @@ processExpr con keyFunction path (L _ x) =
 
 
 #if __GLASGOW_HASKELL__ > 900
-getLoc' = la2r . getLoc
+getLocTC' = (showSDocUnsafe . ppr . la2r . getLoc)
+getLoc'   = (showSDocUnsafe . ppr . la2r . getLoc)
 #else
-getLoc' = getLoc
+getLocTC' = (showSDocUnsafe . ppr . getLoc)
+getLoc' = (showSDocUnsafe . ppr . getLoc)
 #endif

@@ -141,6 +141,7 @@ import GHC.Hs (
 import GhcPlugins (
     CommandLineOption,
     HsParsedModule (..),
+    PluginRecompile(..),
     Hsc,
     ModGuts (mg_binds, mg_loc),
     ModSummary (..),
@@ -337,8 +338,8 @@ getAllTypeManipulations binds = do
                 then (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ inferFieldTypeAFieldOcc lbl))
                 else (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr (unLoc expr)) (T.pack $ inferFieldTypeAFieldOcc lbl))
 #else
-    getFieldUpdates :: [LHsRecUpdField p]-> Either [FieldRep] [Text]
-    getFieldUpdates fields = map extractField fields
+    getFieldUpdates :: [LHsRecUpdField GhcTc]-> Either [FieldRep] [Text]
+    getFieldUpdates fields = Left $ map extractField fields
       where
         extractField :: LHsRecUpdField GhcTc -> FieldRep
         extractField (L _ (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun})) =
@@ -358,7 +359,11 @@ getAllTypeManipulations binds = do
                 else (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr $ unLoc expr) (T.pack $ inferFieldTypeFieldOcc lbl))
 
     getFunctionName :: LHsBindLR GhcTc GhcTc -> [Text]
+#if __GLASGOW_HASKELL__ >= 900
     getFunctionName (L _ x@(FunBind fun_ext id matches _)) = [T.pack $ nameStableString $ getName id]
+#else
+    getFunctionName (L _ x@(FunBind fun_ext id matches _ _)) = [T.pack $ nameStableString $ getName id]
+#endif
     getFunctionName (L _ (VarBind{var_id = var, var_rhs = expr})) = [T.pack $ nameStableString $ getName var]
     getFunctionName (L _ (PatBind{pat_lhs = pat, pat_rhs = expr})) = [""]
     getFunctionName (L _ (AbsBinds{abs_binds = binds})) = Prelude.concatMap getFunctionName $ bagToList binds

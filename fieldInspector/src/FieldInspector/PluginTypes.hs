@@ -54,7 +54,7 @@ import GhcPlugins (
     ModGuts (mg_binds, mg_loc, mg_module),showSDoc,
     Module (moduleName),tyConKind,
     NamedThing (getName),getDynFlags,tyConDataCons,dataConOrigArgTys,dataConName,
-    Outputable (..),dataConFieldLabels,
+    Outputable (..),dataConFieldLabels,PluginRecompile(..),
     Plugin (..),
     Var,flLabel,dataConRepType,
     coVarDetails,
