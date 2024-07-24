@@ -21,7 +21,7 @@ defaultSheriffRules = [
   -- , logRule13
   -- , logRule14
   -- , logRule15
-  , noKVDBRule
+  -- , noKVDBRule
   , showRule
   ]
 
