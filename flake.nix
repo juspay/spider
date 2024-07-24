@@ -5,7 +5,7 @@
     flake-parts.url = "github:hercules-ci/flake-parts";
     haskell-flake.url = "github:srid/haskell-flake";
     classyplate.url = "github:eswar2001/classyplate/a360f56820df6ca5284091f318bcddcd3e065243";
-    references.url = "github:eswar2001/references/d0d2223ac9d1d10a4af9434d295e2c64edc043cd";
+    references.url = "github:eswar2001/references/120ae7826a7af01a527817952ad0c3f5ef08efd0";
     large-records = { 
       url = "github:eswar2001/large-records/b60bcb312c7d55f1d638aa1a5143696e6586e76d";
     };
@@ -57,7 +57,6 @@
             #     jailbreak = true;
             # };
             sheriff.check = false;
-            references.check = false;
           };
 
           devShell = {

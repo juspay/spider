@@ -403,17 +403,17 @@
         "nixpkgs": "nixpkgs_5"
       },
       "locked": {
-        "lastModified": 1721387508,
-        "narHash": "sha256-R0aCMdXbWCqztrRFZyRYBYKOdbE+Ky5DA+BZZ58B7uk=",
+        "lastModified": 1721735703,
+        "narHash": "sha256-0F/xsz64sUwKQvKL5yuU+7+QPiyvlQFUb8zZI1ZTbrI=",
         "owner": "eswar2001",
         "repo": "references",
-        "rev": "d0d2223ac9d1d10a4af9434d295e2c64edc043cd",
+        "rev": "120ae7826a7af01a527817952ad0c3f5ef08efd0",
         "type": "github"
       },
       "original": {
         "owner": "eswar2001",
         "repo": "references",
-        "rev": "d0d2223ac9d1d10a4af9434d295e2c64edc043cd",
+        "rev": "120ae7826a7af01a527817952ad0c3f5ef08efd0",
         "type": "github"
       }
     },
