@@ -120,6 +120,9 @@ logErrorV = print . toJSON
 logDebugT :: Text -> Text -> IO ()
 logDebugT _ = print
 
+logDebug :: (Show b) => a -> b -> IO ()
+logDebug _ = print
+
 logErrorT :: Text -> Text -> IO ()
 logErrorT _ = print
 
@@ -200,6 +203,8 @@ main = do
     logErrorT "tag" $ encodeJSON (en, 20 :: Int) -- Should throw error because of encodeJSON
     logError "tag" $ obAT1 <> show Test1.obAT1
     fn $ logError "tag2" $ show obA
+
+    logDebug ("Some Tag" :: Text) (show "This to print")
 
     print $ show temp
     print $ show temp1

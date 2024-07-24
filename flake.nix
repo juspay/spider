@@ -5,6 +5,8 @@
     flake-parts.url = "github:hercules-ci/flake-parts";
     haskell-flake.url = "github:srid/haskell-flake";
     classyplate.url = "github:eswar2001/classyplate/a360f56820df6ca5284091f318bcddcd3e065243";
+    beam.url = "github:well-typed/beam/57a12e68727c027f0f1c25752f8c5704ddbe1516";
+    beam.flake = false;
     references.url = "github:eswar2001/references/120ae7826a7af01a527817952ad0c3f5ef08efd0";
     large-records = { 
       url = "github:eswar2001/large-records/b60bcb312c7d55f1d638aa1a5143696e6586e76d";

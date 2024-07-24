@@ -163,7 +163,7 @@ sheriff opts modSummary tcEnv = do
     else pure ()
 
   if saveToFile
-    then addErrToFile modSummary savePath filteredErrors  
+    then addErrToFile modSummary savePath filteredErrors
     else pure ()
 
   return tcEnv
@@ -234,11 +234,11 @@ isBadExpr rules opts ap@(L loc (OpApp _ lfun op rfun)) = do
 isBadExpr rules opts ap@(L loc (PatHsExpansion orig expanded)) = do
   case (orig, expanded) of
     ((OpApp _ _ op _), (HsApp _ (L _ (HsApp _ op' funl)) funr)) -> case showS op of
-      "($)" -> isBadExpr rules opts (L loc (HsApp noAnn funl funr))
+      "($)" -> isBadExpr rules opts (L loc (HsApp noExtFieldOrAnn funl funr)) >>= mapM (\(x, y) -> trfViolationErrorInfo opts y ap x >>= \z -> pure (x, z))
       _ -> isBadExpr rules opts (L loc expanded)
     _ -> isBadExpr rules opts (L loc expanded)
 #endif
-isBadExpr rules opts ap = isBadExprHelper rules opts ap
+isBadExpr rules opts ap = pure []
 
 -- Calls checkAndApplyRule, can be used to directly call without simplifier if needed
 isBadExprHelper :: Rules -> PluginOpts -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
