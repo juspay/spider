@@ -1,21 +1,21 @@
 rules: 
-  - ruleName: "GeneralRuleTest"
-    conditions:
-      - fnName: "pack"
-        isQualified: false
-        argNo: 0
-        action: "Blocked"
-        argTypes: []
-        argFns: []
-        suggestedFixes: ["Remove `pack` function call from the error location."]
-    ruleInfo: 
-        fnName: "show"
-        isQualified: false
-        argNo: 1
-        action: "Blocked"
-        argTypes: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-        argFns: []
-        suggestedFixes: ["Remove `show` function call from the error location. If quotes are required, manually add them to the text.","You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."]
+  # - ruleName: "GeneralRuleTest"
+  #   conditions:
+  #     - fnName: "pack"
+  #       isQualified: false
+  #       argNo: 0
+  #       action: "Blocked"
+  #       argTypes: []
+  #       argFns: []
+  #       suggestedFixes: ["Remove `pack` function call from the error location."]
+  #   ruleInfo: 
+  #       fnName: "show"
+  #       isQualified: false
+  #       argNo: 1
+  #       action: "Blocked"
+  #       argTypes: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
+  #       argFns: []
+  #       suggestedFixes: ["Remove `show` function call from the error location. If quotes are required, manually add them to the text.","You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."]
   
   # - fn_rule_name: "ShowRule"
   #   fn_name: "show"
@@ -26,6 +26,23 @@ rules:
   #   fn_rule_fixes: ["Remove `show` function call from the error location. If quotes are required, manually add them to the text.","You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."]
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
+
+  # - fn_rule_name: "ART KVDB Rule"
+  #   fn_name: "runKVDB"
+  #   arg_no: 0
+  #   fns_blocked_in_arg: []
+  #   types_blocked_in_arg: []
+  #   types_to_check_in_arg: []
+  #   fn_rule_fixes:
+  #     - "You might want to use some other wrapper function from `EulerHS.Extra.Redis` module."
+  #     - "For e.g. - rExists, rDel, rGet, rExpire, etc."
+  #   fn_rule_exceptions: []
+  #   fn_rule_ignore_modules:
+  #     - "EulerHS.Extra.Redis"
+  #     - "EulerHS.Framework.Interpreter"
+  #     - "EulerHS.Framework.Language"
+  #     - "EulerHS.KVDB.Interpreter"
+  #     - "KVDB.KVDBSpec"
 
   # - db_rule_name: "DBRuleTest"
   #   table_name: "TxnRiskCheck"

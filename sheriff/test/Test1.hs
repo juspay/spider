@@ -38,8 +38,6 @@ deriving stock instance Show (DBT Identity)
 deriving anyclass instance FromJSON (DBT Identity)
 deriving anyclass instance ToJSON (DBT Identity)
 
-type P = Text
-
 data CC = C1 | C2 Text | C3 Int | C4 Bool
     deriving (Generic, Show, ToJSON, FromJSON)
 
@@ -71,12 +69,6 @@ en22 = "Hello"
 
 en3 :: EnumT3 ()
 en3 = M
-
-en21 :: P
-en21 = "Hello"
-
-en22 :: Text
-en22 = "Hello"
 
 ob :: SeqIs
 ob = SeqIs "fldName" "fldValue"
@@ -110,14 +102,17 @@ str3 :: Text
 str3 = T.pack $ show "Hello Str3"
 
 str4 :: Text
-str4 = T.pack $ show (T.pack "Hello Str3")
+str4 = T.pack $ show (T.pack "Hello Str4")
 
 db1 :: DB
-db1 = DB 20
+db1 = DB 500
 
 -- Helper function
 encodeJSON :: (ToJSON a) => a -> Text
 encodeJSON = DTE.decodeUtf8 . BSL.toStrict . A.encode
+
+runKVDB :: IO ()
+runKVDB = print "Somehow it's runKVDB"
 
 logErrorV :: (ToJSON a) => a -> IO ()
 logErrorV = print . toJSON
@@ -220,6 +215,8 @@ main = do
     logError "tag" $ show en <> show obB
     logError "tag" $ show temp5
     logError "tag" $ show temp6
+    
+    runKVDB -- Should be error
 
     logDebugT "validateMandate" $ "effective limit is: " <> T.pack (show 10) <> ", custom limit for key: " <> " is " <> T.pack (show (Just ("Hello" :: Text)))
 

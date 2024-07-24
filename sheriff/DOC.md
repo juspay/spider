@@ -1,9 +1,10 @@
 ### Sheriff plugin
 #### What it does?
-`sheriff` is a compiler plugin to add business logic compilation checks. It checks for the following logics :
+`sheriff` is a compiler plugin to add general code related compilation checks. It checks for the following logics :
 1. ***Stringification of text/string*** - It checks if we have applied show function to any string literal or variable. We want this check to make sure that we are not having any unnecessary quotes in the code.
 2. ***Logging stringified haskell objects*** - It checks if we have applied show function to any variable inside any logging function. We want this check to make sure that our application level log filtering works fine and is not impacted by stringified values.
 3. ***NonIndexed DB queries check*** - It checks if we have any DB query which won't use any index. Indexed columns of a particular table are provided in *.juspay/indexedKeys.yaml* file. It works on all operations - select, update, delete. We want this check to make sure that our application doesn't make any slow sql queries.
+4. ***Detecting use of non-allowed functions*** - It checks if we have used some function which should not be used anywhere in the code.
 
 #### How to resolve compilation errors?
 > "show" on Text is not allowed

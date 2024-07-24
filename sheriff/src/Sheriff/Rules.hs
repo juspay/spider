@@ -1,10 +1,10 @@
 module Sheriff.Rules where
 
 import Sheriff.Types
+import Sheriff.Utils
 
--- TODO: Take these from the configuration file
-badPracticeRules :: Rules
-badPracticeRules = [
+defaultSheriffRules :: Rules
+defaultSheriffRules = [
     defaultRule
   -- , logRule1 
   -- , logRule2 
@@ -21,12 +21,13 @@ badPracticeRules = [
   -- , logRule13
   -- , logRule14
   -- , logRule15
+  , noKVDBRule
   , showRule
   ]
 
 -- Exceptions to rule out if these rules are also applied to same LHsExpr
-exceptionRules :: Rules
-exceptionRules = [
+defaultSheriffExceptionsRules :: Rules
+defaultSheriffExceptionsRules = [
     defaultRule
   -- , updateFunctionRuleArgNo logRule1  1
   -- , updateFunctionRuleArgNo logRule2  1
@@ -133,6 +134,9 @@ showRule = FunctionRuleT $ FunctionRule "ShowRule" "show" 1 stringifierFns textT
 
 noUseRule :: Rule
 noUseRule = FunctionRuleT $ FunctionRule "NoDecodeUtf8Rule" "$text-1.2.4.1$Data.Text.Encoding$decodeUtf8" 0 [] [] [] ["You might want to use some other wrapper function."] [] []
+
+noKVDBRule :: Rule
+noKVDBRule = FunctionRuleT $ FunctionRule "ART KVDB Rule" "runKVDB" 0 [] [] [] ["You might want to use some other wrapper function from `EulerHS.Extra.Redis` module.", "For e.g. - rExists, rDel, rGet, rExpire, etc."] [] []
 
 dbRule :: Rule
 dbRule = DBRuleT $ DBRule "NonIndexedDBRule" "TxnRiskCheck" [NonCompositeKey "partitionKey"] dbRuleSuggestions []

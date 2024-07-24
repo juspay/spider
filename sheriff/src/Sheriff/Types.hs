@@ -1,15 +1,20 @@
 module Sheriff.Types where
   
+import Sheriff.Utils
 import Data.Aeson as A
-import SrcLoc 
-import Var
-import Outputable as OP hiding ((<>))
 import Control.Applicative ((<|>))
 import Data.Text (unpack)
 import Data.Data (Data)
-import GHC.Hs.Dump
-import Language.Haskell.GHC.ExactPrint (exactPrint)
-import Language.Haskell.GHC.ExactPrint.Annotater (Annotate)
+
+#if __GLASGOW_HASKELL__ >= 900
+import GHC.Types.SrcLoc
+import GHC.Types.Var
+import GHC.Utils.Outputable as OP hiding ((<>))
+#else
+import SrcLoc 
+import Var
+import Outputable as OP hiding ((<>))
+#endif
 
 data PluginOpts = PluginOpts {
     saveToFile :: Bool,
@@ -131,14 +136,15 @@ data CompileError = CompileError
 
 instance ToJSON CompileError where
   toJSON (CompileError pkg modName errMsg srcLoc vlt suggestions errorInfo) =
-    object [ "package_name"    .= pkg
-           , "module_name"     .= modName
+    object [ 
+             "error_info"      .= errorInfo
            , "error_message"   .= errMsg
+           , "module_name"     .= modName
+           , "package_name"    .= pkg
            , "src_span"        .= show srcLoc
-           , "violation_type"  .= getViolationType vlt
-           , "violated_rule"   .= getViolationRuleName vlt
            , "suggested_fixes" .= suggestions
-           , "error_info"      .= errorInfo
+           , "violated_rule"   .= getViolationRuleName vlt
+           , "violation_type"  .= getViolationType vlt
            ]
 
 type Rules = [Rule]
@@ -289,6 +295,8 @@ instance Show Violation where
   show (NonIndexedDBColumn colName tableName _) = "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
   show NoViolation = "NoViolation"
 
+-- Types Utils
+
 getViolationSuggestions :: Violation -> Suggestions
 getViolationSuggestions v = case v of
   ArgTypeBlocked _ _ r -> fn_rule_fixes r
@@ -345,15 +353,6 @@ getRuleIgnoreModules :: Rule -> Modules
 getRuleIgnoreModules rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_ignore_modules fnRule
   _ -> []
-
-showS :: (Outputable a) => a -> String
-showS = showSDocUnsafe . ppr
-
-showPrettyPrinted :: (Annotate a) => Located a -> String
-showPrettyPrinted = flip exactPrint mempty
-
-showAst :: Data a => a -> String
-showAst = showSDocUnsafe . showAstData BlankSrcSpan
 
 noSuggestion :: Suggestions
 noSuggestion = []
