@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 module Sheriff.Types where
   
 import Data.Aeson as A
@@ -28,7 +29,8 @@ data PluginOpts = PluginOpts {
     logDebugInfo :: Bool,
     logWarnInfo :: Bool,
     logTypeDebugging :: Bool,
-    useIOForSourceCode :: Bool
+    useIOForSourceCode :: Bool,
+    useDefaultBadPracticeRules :: Bool
   } deriving (Show, Eq)
 
 defaultPluginOpts :: PluginOpts
@@ -38,16 +40,21 @@ defaultPluginOpts =
     throwCompilationError = fetchValueFromEnv True "SHERIFF_THROW_COMPILATION_ERROR", 
     failOnFileNotFound = fetchValueFromEnv True "SHERIFF_FAIL_ON_FILE_NOT_FOUND", 
     matchAllInsideAnd = fetchValueFromEnv False "SHERIFF_MATCH_ALL_INSIDE_AND",
-    savePath = fetchValueFromEnv ".juspay/tmp/sheriff/" "SHERIFF_SAVE_PATH", 
-    indexedKeysPath = fetchValueFromEnv ".juspay/indexedKeys.yaml" "SHERIFF_INDEXED_KEYS",
-    rulesConfigPath = fetchValueFromEnv ".juspay/sheriffRules.yaml" "SHERIFF_RULES_CONFIG",
-    exceptionsConfigPath = fetchValueFromEnv ".juspay/sheriffExceptionRules.yaml" "SHERIFF_EXCEPTION_CONFIG",
+    savePath = fetchValueFromEnvString ".juspay/tmp/sheriff/" "SHERIFF_SAVE_PATH", 
+    indexedKeysPath = fetchValueFromEnvString ".juspay/indexedKeys.yaml" "SHERIFF_INDEXED_KEYS",
+    rulesConfigPath = fetchValueFromEnvString ".juspay/sheriffRules.yaml" "SHERIFF_RULES_CONFIG",
+    exceptionsConfigPath = fetchValueFromEnvString ".juspay/sheriffExceptionRules.yaml" "SHERIFF_EXCEPTION_CONFIG",
     logDebugInfo = fetchValueFromEnv False "SHERIFF_LOG_DEBUG",
     logWarnInfo = fetchValueFromEnv True "SHERIFF_LOG_WARN",
     logTypeDebugging = fetchValueFromEnv False "SHERIFF_LOG_TYPE_DEBUGGING",
     shouldCheckExceptions = fetchValueFromEnv True "SHERIFF_CHECk_EXCEPTIONS",
-    useIOForSourceCode = fetchValueFromEnv False "SHERIFF_USE_IO_FOR_SOURCE_CODE"
+    useIOForSourceCode = fetchValueFromEnv False "SHERIFF_USE_IO_FOR_SOURCE_CODE",
+    useDefaultBadPracticeRules = fetchValueFromEnv True "SHERIFF_USE_DEFAULT_BAD_PRACTICE_RULES"
   }
+
+fetchValueFromEnvString :: String -> String -> String
+fetchValueFromEnvString defaultValue env =
+  Maybe.fromMaybe defaultValue $ SIU.unsafePerformIO $ SE.lookupEnv env
 
 fetchValueFromEnv :: (Read a) => a -> String -> a
 fetchValueFromEnv defaultValue env = Maybe.fromMaybe defaultValue . (>>= TR.readMaybe) $ SIU.unsafePerformIO $ SE.lookupEnv env

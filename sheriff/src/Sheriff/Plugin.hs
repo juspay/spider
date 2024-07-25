@@ -178,11 +178,10 @@ sheriff opts modSummary tcEnv = do
         pure []
       Right (YamlTables tables) -> pure $ (map yamlToDbRule tables)
   
-  rulesListWithDbRules <- do
-    addbadPracticeRules <- liftIO $ fromMaybe True . (>>= TR.readMaybe) <$> SE.lookupEnv "SHERIFF_ADD_BAD_PRACTICE_RULES"
-    case addbadPracticeRules of
-      True -> return $ badPracticeRules <> dbRulesList
-      False -> return dbRulesList
+  let rulesListWithDbRules = 
+        if useDefaultBadPracticeRules pluginOpts 
+          then badPracticeRules <> dbRulesList
+          else dbRulesList
 
   rulesList' <- case parsedRulesYaml of
                 Left err -> do
