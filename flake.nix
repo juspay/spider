@@ -10,6 +10,7 @@
     references.url = "github:eswar2001/references/120ae7826a7af01a527817952ad0c3f5ef08efd0";
     large-records = { 
       url = "github:eswar2001/large-records/b60bcb312c7d55f1d638aa1a5143696e6586e76d";
+      inputs.beam.follows = "beam";
     };
     streamly = {
       url = "github:composewell/streamly/12d85026291d9305f93f573d284d0d35abf40968";

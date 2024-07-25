@@ -228,7 +228,9 @@
     },
     "large-records": {
       "inputs": {
-        "beam": "beam",
+        "beam": [
+          "beam"
+        ],
         "flake-parts": "flake-parts_3",
         "ghc-hasfield-plugin": "ghc-hasfield-plugin",
         "haskell-flake": "haskell-flake_4",
@@ -419,6 +421,7 @@
     },
     "root": {
       "inputs": {
+        "beam": "beam",
         "classyplate": "classyplate",
         "flake-parts": "flake-parts_2",
         "haskell-flake": "haskell-flake_2",
