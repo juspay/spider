@@ -102,6 +102,10 @@ import GHC.Hs.Lit (HsLit(..))
 import TcEvidence
 import qualified Data.HashMap.Strict as HM
 import qualified Data.Text as T
+import qualified System.Environment as SE
+import qualified System.IO.Unsafe as SIU
+import qualified Text.Read as TR
+import qualified Data.Maybe as Maybe
 
 plugin :: Plugin
 plugin = defaultPlugin {
@@ -167,12 +171,18 @@ sheriff opts modSummary tcEnv = do
   parsedExceptionsYaml <- liftIO $ parseYAMLFile sheriffExceptionsPath
 
   -- Check the parsed yaml file for indexedDbKeys and throw compilation error if configured
-  rulesListWithDbRules <- case parsedYaml of
-                            Left err -> do
-                              when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
-                              pure badPracticeRules
-                            Right (YamlTables tables) -> pure $ badPracticeRules <> (map yamlToDbRule tables)
+  dbRulesList <- 
+    case parsedYaml of
+      Left err -> do
+        when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
+        pure []
+      Right (YamlTables tables) -> pure $ (map yamlToDbRule tables)
   
+  let rulesListWithDbRules = 
+        if useDefaultBadPracticeRules pluginOpts 
+          then badPracticeRules <> dbRulesList
+          else dbRulesList
+
   rulesList' <- case parsedRulesYaml of
                 Left err -> do
                   when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))

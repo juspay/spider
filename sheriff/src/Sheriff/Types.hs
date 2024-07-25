@@ -1,3 +1,4 @@
+{-# LANGUAGE BangPatterns #-}
 module Sheriff.Types where
   
 import Data.Aeson as A
@@ -10,6 +11,10 @@ import Data.Data (Data)
 import GHC.Hs.Dump
 import Language.Haskell.GHC.ExactPrint (exactPrint)
 import Language.Haskell.GHC.ExactPrint.Annotater (Annotate)
+import qualified System.Environment as SE
+import qualified System.IO.Unsafe as SIU
+import qualified Text.Read as TR
+import qualified Data.Maybe as Maybe
 
 data PluginOpts = PluginOpts {
     saveToFile :: Bool,
@@ -24,26 +29,35 @@ data PluginOpts = PluginOpts {
     logDebugInfo :: Bool,
     logWarnInfo :: Bool,
     logTypeDebugging :: Bool,
-    useIOForSourceCode :: Bool
+    useIOForSourceCode :: Bool,
+    useDefaultBadPracticeRules :: Bool
   } deriving (Show, Eq)
 
 defaultPluginOpts :: PluginOpts
 defaultPluginOpts = 
   PluginOpts { 
-    saveToFile = False, 
-    throwCompilationError = True, 
-    failOnFileNotFound = True, 
-    matchAllInsideAnd = False,
-    savePath = ".juspay/tmp/sheriff/", 
-    indexedKeysPath = ".juspay/indexedKeys.yaml" ,
-    rulesConfigPath = ".juspay/sheriffRules.yaml",
-    exceptionsConfigPath = ".juspay/sheriffExceptionRules.yaml",
-    logDebugInfo = False,
-    logWarnInfo = True,
-    logTypeDebugging = False,
-    shouldCheckExceptions = True,
-    useIOForSourceCode = False
+    saveToFile = fetchValueFromEnv False "SHERIFF_SAVE_TO_FILE", 
+    throwCompilationError = fetchValueFromEnv True "SHERIFF_THROW_COMPILATION_ERROR", 
+    failOnFileNotFound = fetchValueFromEnv True "SHERIFF_FAIL_ON_FILE_NOT_FOUND", 
+    matchAllInsideAnd = fetchValueFromEnv False "SHERIFF_MATCH_ALL_INSIDE_AND",
+    savePath = fetchValueFromEnvString ".juspay/tmp/sheriff/" "SHERIFF_SAVE_PATH", 
+    indexedKeysPath = fetchValueFromEnvString ".juspay/indexedKeys.yaml" "SHERIFF_INDEXED_KEYS",
+    rulesConfigPath = fetchValueFromEnvString ".juspay/sheriffRules.yaml" "SHERIFF_RULES_CONFIG",
+    exceptionsConfigPath = fetchValueFromEnvString ".juspay/sheriffExceptionRules.yaml" "SHERIFF_EXCEPTION_CONFIG",
+    logDebugInfo = fetchValueFromEnv False "SHERIFF_LOG_DEBUG",
+    logWarnInfo = fetchValueFromEnv True "SHERIFF_LOG_WARN",
+    logTypeDebugging = fetchValueFromEnv False "SHERIFF_LOG_TYPE_DEBUGGING",
+    shouldCheckExceptions = fetchValueFromEnv True "SHERIFF_CHECk_EXCEPTIONS",
+    useIOForSourceCode = fetchValueFromEnv False "SHERIFF_USE_IO_FOR_SOURCE_CODE",
+    useDefaultBadPracticeRules = fetchValueFromEnv True "SHERIFF_USE_DEFAULT_BAD_PRACTICE_RULES"
   }
+
+fetchValueFromEnvString :: String -> String -> String
+fetchValueFromEnvString defaultValue env =
+  Maybe.fromMaybe defaultValue $ SIU.unsafePerformIO $ SE.lookupEnv env
+
+fetchValueFromEnv :: (Read a) => a -> String -> a
+fetchValueFromEnv defaultValue env = Maybe.fromMaybe defaultValue . (>>= TR.readMaybe) $ SIU.unsafePerformIO $ SE.lookupEnv env
 
 instance FromJSON PluginOpts where
   parseJSON = withObject "PluginOpts" $ \o -> do
