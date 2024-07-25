@@ -39,8 +39,7 @@ import System.Directory ( createDirectoryIfMissing )
 import System.Environment (lookupEnv)
 import GHC.IO (unsafePerformIO)
 #if __GLASGOW_HASKELL__ >= 900
-import Streamly.Prelude (fromList,mapM_,mapM,toList)
-import Streamly ( parallely)
+import Streamly.Internal.Data.Stream (fromList,mapM_,mapM,toList)
 import GHC
 import GHC.Driver.Plugins (Plugin(..),CommandLineOption,defaultPlugin,PluginRecompile(..))
 import GHC.Driver.Env
@@ -52,8 +51,7 @@ import GHC.Types.Name hiding (varName)
 import GHC.Types.Var
 import qualified Data.Aeson.KeyMap as HM
 #else
-import Streamly.Prelude (fromList, mapM, mapM_, toList)
-import Streamly ( parallely )
+import Streamly.Internal.Data.Stream (fromList, mapM, mapM_, toList,parallely)
 import qualified Data.HashMap.Strict as HM
 import Bag (bagToList)
 import DynFlags ()
@@ -156,7 +154,7 @@ collectDecls opts modSummary hsParsedModule = do
                 path = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
                 declsList = hsmodDecls $ unLoc $ hpm_module hsParsedModule
             createDirectoryIfMissing True path
-            functionsVsCodeString <- toList $ parallely $ mapM getDecls $ fromList declsList
+            functionsVsCodeString <- toList $ mapM getDecls $ fromList declsList
             writeFile (modulePath <> ".function_code.json") (encodePretty $ Map.fromList $ concat functionsVsCodeString)
     pure hsParsedModule
 

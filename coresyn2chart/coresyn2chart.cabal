@@ -55,7 +55,6 @@ common common-options
         , hasbolt
         , universum
         , data-default
-        , streamly
 
 library
     import:           common-options

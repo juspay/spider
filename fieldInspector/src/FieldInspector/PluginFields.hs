@@ -9,8 +9,7 @@ module FieldInspector.PluginFields (plugin) where
 
 #if __GLASGOW_HASKELL__ >= 900
 import qualified Data.IntMap.Internal as IntMap
-import Streamly.Prelude (fromList,mapM_,mapM,toList)
-import Streamly ( parallely)
+import Streamly.Internal.Data.Stream (fromList,mapM_,mapM,toList)
 import GHC
 import GHC.Driver.Plugins (Plugin(..),CommandLineOption,defaultPlugin,PluginRecompile(..))
 import GHC as GhcPlugins
@@ -201,8 +200,7 @@ import Data.Maybe (catMaybes)
 import Control.Monad.IO.Class (liftIO)
 import System.IO (writeFile)
 import Control.Monad (forM)
-import Streamly (parallely, serially)
-import Streamly.Prelude hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
+import Streamly.Internal.Data.Stream hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude hiding (mapM, mapM_)
 import Prelude hiding (id, mapM, mapM_)
@@ -230,8 +228,7 @@ import FieldInspector.Types (
     TypeInfo (..),
     TypeVsFields (TypeVsFields),
  )
-import Streamly (parallely)
-import Streamly.Prelude (fromList, mapM, toList)
+import Streamly.Internal.Data.Stream (fromList, mapM, toList)
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude (
     catMaybes,
@@ -248,7 +245,7 @@ plugin =
     defaultPlugin
         { installCoreToDos = install
         , pluginRecompile = (\_ -> return NoForceRecompile)
-        -- , typeCheckResultAction = collectTypesTC
+        , typeCheckResultAction = collectTypesTC
         }
 install :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 install args todos = return (CoreDoPluginPass "FieldInspector" (buildCfgPass args) : todos)
@@ -260,21 +257,21 @@ removeIfExists fileName = removeFile fileName `catch` handleExists
         | isDoesNotExistError e = return ()
         | otherwise = throwIO e
 
--- collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
--- collectTypesTC opts modSummary tcEnv = do
---     _ <- liftIO $
---         forkIO $
---             do
---                 let prefixPath = case opts of
---                         [] -> "/tmp/fieldInspector/"
---                         local : _ -> local
---                     modulePath = prefixPath <> msHsFilePath modSummary
---                     path = (intercalate "/" . init . splitOn "/") modulePath
---                     binds = bagToList $ tcg_binds tcEnv
---                 createDirectoryIfMissing True path
---                 functionVsUpdates <- getAllTypeManipulations binds
---                 DBS.writeFile ((modulePath) <> ".typeUpdates.json") (toStrict $ encodePretty functionVsUpdates)
---     return tcEnv
+collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
+collectTypesTC opts modSummary tcEnv = do
+    _ <- liftIO $
+            forkIO $
+                do
+                    let prefixPath = case opts of
+                            [] -> "/tmp/fieldInspector/"
+                            local : _ -> local
+                        modulePath = prefixPath <> msHsFilePath modSummary
+                        path = (intercalate "/" . init . splitOn "/") modulePath
+                        binds = bagToList $ tcg_binds tcEnv
+                    createDirectoryIfMissing True path
+                    functionVsUpdates <- getAllTypeManipulations binds
+                    DBS.writeFile ((modulePath) <> ".typeUpdates.json") (toStrict $ encodePretty functionVsUpdates)
+    return tcEnv
 
 buildCfgPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 buildCfgPass opts guts = do
@@ -287,7 +284,7 @@ buildCfgPass opts guts = do
             moduleLoc = prefixPath Prelude.<> getFilePath (mg_loc guts)
         createDirectoryIfMissing True ((intercalate "/" . init . splitOn "/") moduleLoc)
         removeIfExists (moduleLoc Prelude.<> ".fieldUsage.json")
-        l <- toList $ parallely $ mapM (liftIO . toLBind) (fromList binds)
+        l <- toList $ mapM (liftIO . toLBind) (fromList binds)
         DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ groupByFunction $ Prelude.concat l)
     return guts
 
@@ -295,15 +292,15 @@ getAllTypeManipulations :: [LHsBindLR GhcTc GhcTc] -> IO [DataTypeUC]
 getAllTypeManipulations binds = do
     bindWiseUpdates <-
         toList $
-            parallely $
                 mapM
                     ( \x -> do
                         let functionName = getFunctionName x
-                            filterRecordUpdateAndCon = Prelude.filter (\x -> ((show $ toConstr x) `Prelude.elem` ["RecordCon", "RecordUpd"])) (x ^? biplateRef :: [HsExpr GhcTc])
+                            filterRecordUpdateAndCon = Prelude.filter (\x -> ((show $ toConstr x) `Prelude.elem` ["HsGetField","RecordCon", "RecordUpd"])) (x ^? biplateRef :: [HsExpr GhcTc])
+                        print functionName
                         pure $ bool (Nothing) (Just (DataTypeUC functionName (Data.Maybe.mapMaybe getDataTypeDetails filterRecordUpdateAndCon))) (not (Prelude.null filterRecordUpdateAndCon))
                     )
                     (fromList binds)
-    pure $ catMaybes bindWiseUpdates
+    pure $ System.Directory.Internal.Prelude.catMaybes bindWiseUpdates
   where
     getDataTypeDetails :: HsExpr GhcTc -> Maybe TypeVsFields
 #if __GLASGOW_HASKELL__ >= 900
@@ -629,7 +626,6 @@ toLBind (NonRec binder expr) = do
 toLBind (Rec binds) = do
     r <-
         toList $
-            parallely $
                 mapM
                     ( \(b, e) -> do
                         toLexpr (pack $ nameStableString (idName b)) e
@@ -727,7 +723,7 @@ toLexpr functionName (Let func args) = do
     pure $ map (\(x, y) -> (functionName, y)) f <> a
 toLexpr functionName (Case condition bind _type alts) = do
     c <- toLexpr functionName condition
-    a <- toList $ parallely $ mapM (toLAlt functionName) (fromList alts)
+    a <- toList $ mapM (toLAlt functionName) (fromList alts)
     pure $ c <> Prelude.concat a
 toLexpr functionName (Tick _ expr) = toLexpr functionName expr
 toLexpr functionName (Cast expr _) = toLexpr functionName expr

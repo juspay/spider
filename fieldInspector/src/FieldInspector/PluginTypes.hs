@@ -13,8 +13,7 @@ import GHC.Hs.Extension ()
 import GHC.Parser.Annotation ()
 import GHC.Utils.Outputable ()
 import qualified Data.IntMap.Internal as IntMap
-import Streamly.Prelude (fromList,mapM_,mapM,toList)
-import Streamly ( parallely)
+import Streamly.Internal.Data.Stream (fromList,mapM_,mapM,toList)
 import GHC
 import GHC.Driver.Plugins (Plugin(..),CommandLineOption,defaultPlugin,PluginRecompile(..))
 import GHC.Driver.Env
@@ -106,8 +105,7 @@ import Data.Maybe (catMaybes)
 import Control.Monad.IO.Class (liftIO)
 import System.IO (writeFile)
 import Control.Monad (forM)
-import Streamly (parallely, serially)
-import Streamly.Prelude hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
+import Streamly.Internal.Data.Stream hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude hiding (mapM, mapM_)
 import Prelude hiding (id, mapM, mapM_)
@@ -196,7 +194,7 @@ collectTypeInfoParser opts modSummary hpm = do
                     hm_module = unLoc $ hpm_module hpm
                     path = (intercalate "/" . init . splitOn "/") modulePath
                 -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
-                types <- toList $ parallely $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
+                types <- toList $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
                 createDirectoryIfMissing True path
                 DBS.writeFile (modulePath <> ".types.parser.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
                 -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)

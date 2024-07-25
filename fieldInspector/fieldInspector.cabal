@@ -96,8 +96,8 @@ common common-options
         , cryptonite
         , hasbolt
         , universum
+        , streamly-core
         , data-default
-        , streamly
         , large-records
         , large-generics
         , large-anon
@@ -181,3 +181,4 @@ test-suite fieldInspector-test
         , ghc-tcplugin-api
         , typelet
         , record-hasfield
+        , scientific

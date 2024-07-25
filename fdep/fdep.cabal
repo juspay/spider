@@ -49,7 +49,7 @@ library
                 , directory
                 , extra
                 , aeson-pretty
-                , streamly
+                , streamly-core
                 , async
                 , time
                 , text

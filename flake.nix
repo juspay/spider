@@ -9,6 +9,10 @@
     large-records = { 
       url = "github:eswar2001/large-records/b60bcb312c7d55f1d638aa1a5143696e6586e76d";
     };
+    streamly = {
+      url = "github:composewell/streamly/12d85026291d9305f93f573d284d0d35abf40968";
+      flake = false;
+    };
   };
   outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } {
@@ -16,7 +20,6 @@
       imports = [ inputs.haskell-flake.flakeModule ];
 
       perSystem = { self', pkgs, ... }: {
-
         # Typically, you just want a single project named "default". But
         # multiple projects are also possible, each using different GHC version.
         haskellProjects.default = {
@@ -43,7 +46,9 @@
             inputs.classyplate.haskellFlakeProjectModules.output
             inputs.large-records.haskellFlakeProjectModules.output
           ];
-          packages = {          };
+          packages = {
+            streamly-core.source = inputs.streamly + /core;
+          };
           settings = {
             #  aeson = {
             #    check = false;

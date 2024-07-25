@@ -425,7 +425,25 @@
         "large-records": "large-records",
         "nixpkgs": "nixpkgs_4",
         "references": "references",
+        "streamly": "streamly",
         "systems": "systems_4"
+      }
+    },
+    "streamly": {
+      "flake": false,
+      "locked": {
+        "lastModified": 1701516357,
+        "narHash": "sha256-Ap7kdurs4NZyMUeMUIF5qU5eHKifO9YmnO5eSEvdtA8=",
+        "owner": "composewell",
+        "repo": "streamly",
+        "rev": "12d85026291d9305f93f573d284d0d35abf40968",
+        "type": "github"
+      },
+      "original": {
+        "owner": "composewell",
+        "repo": "streamly",
+        "rev": "12d85026291d9305f93f573d284d0d35abf40968",
+        "type": "github"
       }
     },
     "systems": {
