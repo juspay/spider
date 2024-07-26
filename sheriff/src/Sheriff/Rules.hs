@@ -94,6 +94,15 @@ logRule14 = FunctionRuleT $ FunctionRule "LogRule" "debugLog" logArgNo stringifi
 logRule15 :: Rule
 logRule15 = FunctionRuleT $ FunctionRule "LogRule" "warnLog" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions [] []
 
+logRule16 :: Rule
+logRule16 = FunctionRuleT $ FunctionRule "LogRule" "logWarningT" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions [] []
+
+logRule17 :: Rule
+logRule17 = FunctionRuleT $ FunctionRule "LogRule" "logWarningV" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions [] []
+
+logRule18 :: Rule
+logRule18 = FunctionRuleT $ FunctionRule "LogRule" "logWarning" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions [] []
+
 showRuleExceptions :: Rules
 showRuleExceptions = [
     defaultRule
@@ -112,6 +121,9 @@ showRuleExceptions = [
   , logRule13
   , logRule14
   , logRule15
+  , logRule16
+  , logRule17
+  , logRule18
   , updateFunctionRuleArgNo logRule1  1
   , updateFunctionRuleArgNo logRule2  1
   , updateFunctionRuleArgNo logRule3  1
@@ -127,6 +139,9 @@ showRuleExceptions = [
   , updateFunctionRuleArgNo logRule13 1
   , updateFunctionRuleArgNo logRule14 1
   , updateFunctionRuleArgNo logRule15 1
+  , updateFunctionRuleArgNo logRule16 1
+  , updateFunctionRuleArgNo logRule17 1
+  , updateFunctionRuleArgNo logRule18 1
   ]
 
 showRule :: Rule

@@ -51,7 +51,7 @@ The plugin generates two JSON files for each module:
     Contains information about types and their constructors within the module.
 
 
-## The exe onsolidates these files into two comprehensive datasets:
+## The exe consolidates these files into two comprehensive datasets:
 
 ### fieldUsage-data.json:
     consolidated all modules data
