@@ -2,4 +2,5 @@ packages:
   ./fdep
   ./coresyn2chart
   ./sheriff
+  ./fieldInspector
   ./paymentFlow
