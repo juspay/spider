@@ -1,10 +1,10 @@
 module Sheriff.Rules where
 
 import Sheriff.Types
+import Sheriff.Utils
 
--- TODO: Take these from the configuration file
-badPracticeRules :: Rules
-badPracticeRules = [
+defaultSheriffRules :: Rules
+defaultSheriffRules = [
     defaultRule
   -- , logRule1 
   -- , logRule2 
@@ -21,12 +21,13 @@ badPracticeRules = [
   -- , logRule13
   -- , logRule14
   -- , logRule15
+  -- , noKVDBRule
   , showRule
   ]
 
 -- Exceptions to rule out if these rules are also applied to same LHsExpr
-exceptionRules :: Rules
-exceptionRules = [
+defaultSheriffExceptionsRules :: Rules
+defaultSheriffExceptionsRules = [
     defaultRule
   -- , updateFunctionRuleArgNo logRule1  1
   -- , updateFunctionRuleArgNo logRule2  1
@@ -93,6 +94,15 @@ logRule14 = FunctionRuleT $ FunctionRule "LogRule" "debugLog" logArgNo stringifi
 logRule15 :: Rule
 logRule15 = FunctionRuleT $ FunctionRule "LogRule" "warnLog" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions [] []
 
+logRule16 :: Rule
+logRule16 = FunctionRuleT $ FunctionRule "LogRule" "logWarningT" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions [] []
+
+logRule17 :: Rule
+logRule17 = FunctionRuleT $ FunctionRule "LogRule" "logWarningV" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions [] []
+
+logRule18 :: Rule
+logRule18 = FunctionRuleT $ FunctionRule "LogRule" "logWarning" logArgNo stringifierFns [] textTypesToCheck logRuleSuggestions [] []
+
 showRuleExceptions :: Rules
 showRuleExceptions = [
     defaultRule
@@ -111,6 +121,9 @@ showRuleExceptions = [
   , logRule13
   , logRule14
   , logRule15
+  , logRule16
+  , logRule17
+  , logRule18
   , updateFunctionRuleArgNo logRule1  1
   , updateFunctionRuleArgNo logRule2  1
   , updateFunctionRuleArgNo logRule3  1
@@ -126,6 +139,9 @@ showRuleExceptions = [
   , updateFunctionRuleArgNo logRule13 1
   , updateFunctionRuleArgNo logRule14 1
   , updateFunctionRuleArgNo logRule15 1
+  , updateFunctionRuleArgNo logRule16 1
+  , updateFunctionRuleArgNo logRule17 1
+  , updateFunctionRuleArgNo logRule18 1
   ]
 
 showRule :: Rule
@@ -133,6 +149,9 @@ showRule = FunctionRuleT $ FunctionRule "ShowRule" "show" 1 stringifierFns textT
 
 noUseRule :: Rule
 noUseRule = FunctionRuleT $ FunctionRule "NoDecodeUtf8Rule" "$text-1.2.4.1$Data.Text.Encoding$decodeUtf8" 0 [] [] [] ["You might want to use some other wrapper function."] [] []
+
+noKVDBRule :: Rule
+noKVDBRule = FunctionRuleT $ FunctionRule "ART KVDB Rule" "runKVDB" 0 [] [] [] ["You might want to use some other wrapper function from `EulerHS.Extra.Redis` module.", "For e.g. - rExists, rDel, rGet, rExpire, etc."] [] []
 
 dbRule :: Rule
 dbRule = DBRuleT $ DBRule "NonIndexedDBRule" "TxnRiskCheck" [NonCompositeKey "partitionKey"] dbRuleSuggestions []

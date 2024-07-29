@@ -38,8 +38,6 @@ deriving stock instance Show (DBT Identity)
 deriving anyclass instance FromJSON (DBT Identity)
 deriving anyclass instance ToJSON (DBT Identity)
 
-type P = Text
-
 data CC = C1 | C2 Text | C3 Int | C4 Bool
     deriving (Generic, Show, ToJSON, FromJSON)
 
@@ -55,20 +53,22 @@ data EnumT2 = U EnumT | V
 data EnumT3 x = M | N
     deriving (Generic, Show, ToJSON, FromJSON)
 
+type P = Text
+
 en :: EnumT
 en = Y
 
 en2 :: EnumT2
 en2 = V
 
-en3 :: EnumT3 ()
-en3 = M
-
 en21 :: P
 en21 = "Hello"
 
 en22 :: Text
 en22 = "Hello"
+
+en3 :: EnumT3 ()
+en3 = M
 
 ob :: SeqIs
 ob = SeqIs "fldName" "fldValue"
@@ -102,20 +102,29 @@ str3 :: Text
 str3 = T.pack $ show "Hello Str3"
 
 str4 :: Text
-str4 = T.pack $ show (T.pack "Hello Str3")
+str4 = T.pack $ show (T.pack "Hello Str4")
 
 db1 :: DB
-db1 = DB 20
+db1 = DB 500
 
 -- Helper function
 encodeJSON :: (ToJSON a) => a -> Text
 encodeJSON = DTE.decodeUtf8 . BSL.toStrict . A.encode
+
+runKVDB :: IO ()
+runKVDB = print "Somehow it's runKVDB"
 
 logErrorV :: (ToJSON a) => a -> IO ()
 logErrorV = print . toJSON
 
 logDebugT :: Text -> Text -> IO ()
 logDebugT _ = print
+
+logDebug :: (Show b) => a -> b -> IO ()
+logDebug _ = print
+
+forkErrorLog :: (Show b) => a -> b -> IO ()
+forkErrorLog _ = print
 
 logErrorT :: Text -> Text -> IO ()
 logErrorT _ = print
@@ -178,6 +187,12 @@ obC3T2 = encodeJSON obC3
 -- Scenario 4: Parameter sent to logger is same as some argument in the current function and that argument is of text type (mark current function as a logger function, and it needs to be checked all calls to this function, it will behave like `logErrorT`)
 -- Scenario 5: Parameter sent to logger is same as some argument in the current function and that argument is of non-text type (PASS case)
 
+addQuotes :: Text -> Text
+addQuotes t = "\"" <> t <> "\""
+
+noLogFn :: String -> String -> IO ()
+noLogFn _ _ = pure ()
+
 main :: IO ()
 main = do
     putStrLn "Test suite not yet implemented."
@@ -197,6 +212,11 @@ main = do
     logErrorT "tag" $ encodeJSON (en, 20 :: Int) -- Should throw error because of encodeJSON
     logError "tag" $ obAT1 <> show Test1.obAT1
     fn $ logError "tag2" $ show obA
+    fn $ logError "tag2" $ ("Hello" <> show obA)
+    forkErrorLog "tag2" $ ("Hello" <> (show $ addQuotes "Tll"))
+    noLogFn "tag2" $ ("Hello" <> (show $ addQuotes "Tll"))
+
+    logDebug ("Some Tag" :: Text) (show "This to print")
 
     print $ show temp
     print $ show temp1
@@ -212,6 +232,8 @@ main = do
     logError "tag" $ show en <> show obB
     logError "tag" $ show temp5
     logError "tag" $ show temp6
+    
+    runKVDB -- Should be error
 
     logDebugT "validateMandate" $ "effective limit is: " <> T.pack (show 10) <> ", custom limit for key: " <> " is " <> T.pack (show (Just ("Hello" :: Text)))
 

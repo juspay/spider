@@ -1,5 +1,4 @@
 packages:
   ./fdep
-  ./coresyn2chart
-  ./sheriff
   ./fieldInspector
+  ./sheriff

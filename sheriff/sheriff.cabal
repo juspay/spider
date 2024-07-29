@@ -1,7 +1,7 @@
 cabal-version:      3.0
 name:               sheriff
 version:            0.1.0.0
-synopsis:           A plugin to throw compilation errors based on given rules
+synopsis:           A checker plugin to throw compilation errors based on given rules; basically what a `Sheriff` does
 license:            MIT
 license-file:       LICENSE
 author:             piyushgarg-juspay
@@ -16,15 +16,15 @@ Flag Dev
   Manual:      True
 
 common common-options
-  build-depends:       base ^>=4.14.3.0
-  ghc-options:         -Wall
+  build-depends:       base
+  ghc-options:         -Werror
                        -Wincomplete-uni-patterns
                        -Wincomplete-record-updates
+                       -Wincomplete-patterns
                        -Wcompat
                        -Widentities
                        -Wredundant-constraints
                        -fhide-source-paths
-
   default-language:    Haskell2010
   default-extensions:  DeriveGeneric
                        GeneralizedNewtypeDeriving
@@ -35,7 +35,7 @@ common common-options
                        ScopedTypeVariables
                        StandaloneDeriving
                        TypeApplications
-
+                       CPP
 library
     import:              common-options
     exposed-modules:    
@@ -43,39 +43,37 @@ library
     other-modules: 
         Sheriff.Types
         Sheriff.Rules
+        Sheriff.Utils
+        Sheriff.Patterns
     build-depends:
-                bytestring
-                , containers
-                , filepath
-                , ghc ^>= 8.10.7
-                , ghc-exactprint
-                , unordered-containers
-                , uniplate >= 1.6  && < 1.7
-                , references
-                , classyplate
-                , aeson
-                , directory
-                , extra
-                , yaml
-                , text
-                , aeson-pretty
+        bytestring
+        , containers
+        , filepath
+        , ghc
+        , ghc-exactprint
+        , unordered-containers
+        , uniplate
+        , references
+        , classyplate
+        , aeson
+        , directory
+        , extra
+        , yaml
+        , text
+        , aeson-pretty
     hs-source-dirs:   src
     default-language: Haskell2010
 
 test-suite sheriff-test
     import:           common-options
-
     default-language: Haskell2010
     type:             exitcode-stdio-1.0
-
     hs-source-dirs:   test
-
     main-is:          Main.hs
     other-modules:
         Test1
-
     build-depends:
-        , sheriff
+          sheriff
         , aeson
         , text
         , containers
@@ -85,7 +83,8 @@ test-suite sheriff-test
 
     if flag(Dev)
         ghc-options: 
-            -- Plugin options order: {"throwCompilationError":true,"saveToFile":true,"savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/tmp"}
+            -- Plugin Options available (default values)
+            -- {"saveToFile":false,"throwCompilationError":true,"failOnFileNotFound":true,"matchAllInsideAnd":false",savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/indexedKeys.yaml","rulesConfigPath":".juspay/sheriffRules.yaml","exceptionsConfigPath":".juspay/sheriffExceptionRules.yaml","logDebugInfo":false,"logWarnInfo":true,"logTypeDebugging":false,"useIOForSourceCode":false}
             -fplugin=Sheriff.Plugin 
             -fplugin-opt=Sheriff.Plugin:{"throwCompilationError":true,"saveToFile":true,"savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/indexedKeys.yaml","failOnFileNotFound":true,"matchAllInsideAnd":true,"logDebugInfo":false,"logTypeDebugging":false,"useIOForSourceCode":true}
             -dumpdir=.juspay/tmp/sheriff/ -ddump-to-file -ddump-parsed-ast -ddump-tc-ast
