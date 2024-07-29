@@ -14,7 +14,6 @@ import Sheriff.Patterns
 import Control.Applicative ((<|>))
 import Control.Monad (foldM, when)
 import Control.Monad.IO.Class (MonadIO (..))
-import Control.Reference (biplateRef, (^?), Simple, Traversal)
 import Data.Aeson as A
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.Bool (bool)
@@ -195,8 +194,8 @@ getBadFnCalls rules opts (FunBind{fun_matches = matches}) = do
   where
     getBadFnCallsHelper :: Match GhcTc (LHsExpr GhcTc) -> TcM [(LHsExpr GhcTc, Violation)]
     getBadFnCallsHelper match = do
-      let whereBinds = (grhssLocalBinds $ m_grhss match) ^? biplateRef :: [LHsBinds GhcTc]
-          normalBinds = (grhssGRHSs $ m_grhss match) ^? biplateRef :: [LHsBinds GhcTc]
+      let whereBinds = traverseAst (grhssLocalBinds $ m_grhss match) :: [LHsBinds GhcTc]
+          normalBinds = traverseAst (grhssGRHSs $ m_grhss match) :: [LHsBinds GhcTc]
           argBinds = m_pats match
           -- exprs = match ^? biplateRef :: [LHsExpr GhcTc]
           -- use childrenBi and then repeated children usage as per use case
@@ -303,7 +302,7 @@ validateFunctionRule rule opts fnName args expr = do
         liftIO $ do
           print $ (fnName, map showS args)
           print $ (fnName, showS arg)
-          print $ rule
+          print $ fn_rule_name rule
           print $ "Arg Type = " <> argType
 
       if argTypeBlocked
@@ -332,7 +331,7 @@ validateType argTyp typs = showS argTyp `elem` typs
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
 getBlockedFnsList :: PluginOpts -> LHsExpr GhcTc -> FunctionRule -> TcM [(LHsExpr GhcTc, String, String)] 
 getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _ _) = do
-  let argHsExprs = arg ^? biplateRef :: [LHsExpr GhcTc]
+  let argHsExprs = traverseAst arg :: [LHsExpr GhcTc]
       fnApps = filter isFunApp argHsExprs
   when (logDebugInfo opts) $ liftIO $ do
     print "getBlockedFnsList"
@@ -503,7 +502,7 @@ getIsClauseData opts fieldArg _comp _clause = do
                                   (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> True
                                   (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> True
                                   _ -> False
-                          ) $ (fieldArg ^? biplateRef :: [HsExpr GhcTc])
+                          ) $ (traverseAst fieldArg :: [HsExpr GhcTc])
       if length tyApps > 0 
         then 
           case head tyApps of
@@ -523,7 +522,7 @@ getIsClauseData opts fieldArg _comp _clause = do
             _ -> when (logWarnInfo opts) (liftIO $ putStrLn "HsAppType not present. Should never be the case as we already filtered.") >> pure Nothing
         else when (logWarnInfo opts) (liftIO $ putStrLn "HsAppType not present after filtering. Should never reach as already deduced RecordDot.") >> pure Nothing
     Lens -> do
-      let opApps = filter isLensOpApp (fieldArg ^? biplateRef :: [HsExpr GhcTc])
+      let opApps = filter isLensOpApp (traverseAst fieldArg :: [HsExpr GhcTc])
       case opApps of
         [] -> when (logWarnInfo opts) (liftIO $ putStrLn "No lens operator application present in lens case.") >> pure Nothing
         (opExpr : _) -> do
@@ -537,7 +536,7 @@ getIsClauseData opts fieldArg _comp _clause = do
                               ty             -> showS ty
               pure $ Just (fldName, take (length tblName' - 1) tblName')
             (SectionR _ _ (L _ lens)) -> do
-              let tys = lens ^? biplateRef :: [Type]
+              let tys = traverseAst lens :: [Type]
                   typeForTableName = filter (\typ -> case typ of 
                                                       (TyConApp typ1 [typ2]) -> ("T" `isSuffixOf` showS typ1) && (showS typ2 == "Columnar' f")
                                                       (AppTy typ1 typ2) -> ("T" `isSuffixOf` showS typ1) && (showS typ2 == "Columnar' f")
@@ -598,8 +597,15 @@ getFnNameWithAllArgs (L loc (OpApp _ funl op funr)) = do
   case showS op of
     "($)" -> getFnNameWithAllArgs $ (L loc (HsApp noExtFieldOrAnn funl funr))
     _ -> Nothing
-getFnNameWithAllArgs (L loc ap@(PatHsWrap _ expr)) = do
-  getFnNameWithAllArgs (L loc expr)
+getFnNameWithAllArgs (L loc ap@(PatHsWrap _ expr)) = getFnNameWithAllArgs (L loc expr)
+#if __GLASGOW_HASKELL__ >= 900
+getFnNameWithAllArgs (L loc ap@(PatHsExpansion orig expanded)) = 
+  case (orig, expanded) of
+    ((OpApp _ _ op _), (HsApp _ (L _ (HsApp _ op' funl)) funr)) -> case showS op of
+      "($)" -> getFnNameWithAllArgs (L loc (HsApp noExtFieldOrAnn funl funr))
+      _ -> getFnNameWithAllArgs (L loc expanded)
+    _ -> getFnNameWithAllArgs (L loc expanded)
+#endif
 getFnNameWithAllArgs _ = Nothing
 
 --------------------------- Sheriff Plugin Utils ---------------------------
@@ -676,6 +682,13 @@ addErrToFile modSummary path errs = do
 isFunApp :: LHsExpr GhcTc -> Bool
 isFunApp (L _ (HsApp _ _ _)) = True
 isFunApp (L _ (OpApp _ funl op funr)) = True
+isFunApp (L loc (PatHsWrap _ expr)) = isFunApp (L loc expr)
+#if __GLASGOW_HASKELL__ >= 900
+isFunApp (L _ (PatHsExpansion orig expanded)) = 
+  case orig of
+    (OpApp{}) -> True
+    _ -> False
+#endif
 isFunApp _ = False
 
 -- Check if HsExpr is Lens operator application
@@ -715,7 +728,7 @@ getArgType (L _ (HsOverLit _ (OverLit (OverLitTc _ typ) v _))) _ = [typ]
 getArgType (L loc (PatHsWrap _ expr)) shouldReturnFinalType = getArgType (L loc expr) shouldReturnFinalType
 getArgType (L loc (HsApp _ lfun rfun)) shouldReturnFinalType = getArgType lfun shouldReturnFinalType
 getArgType arg shouldReturnFinalType = 
-  let vars = filter (not . isSystemName . varName) $ arg ^? biplateRef in 
+  let vars = filter (not . isSystemName . varName) $ traverseAst arg in 
   if length vars == 0
     then []
   else

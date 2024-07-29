@@ -123,6 +123,9 @@ logDebugT _ = print
 logDebug :: (Show b) => a -> b -> IO ()
 logDebug _ = print
 
+forkErrorLog :: (Show b) => a -> b -> IO ()
+forkErrorLog _ = print
+
 logErrorT :: Text -> Text -> IO ()
 logErrorT _ = print
 
@@ -184,6 +187,12 @@ obC3T2 = encodeJSON obC3
 -- Scenario 4: Parameter sent to logger is same as some argument in the current function and that argument is of text type (mark current function as a logger function, and it needs to be checked all calls to this function, it will behave like `logErrorT`)
 -- Scenario 5: Parameter sent to logger is same as some argument in the current function and that argument is of non-text type (PASS case)
 
+addQuotes :: Text -> Text
+addQuotes t = "\"" <> t <> "\""
+
+noLogFn :: String -> String -> IO ()
+noLogFn _ _ = pure ()
+
 main :: IO ()
 main = do
     putStrLn "Test suite not yet implemented."
@@ -203,6 +212,9 @@ main = do
     logErrorT "tag" $ encodeJSON (en, 20 :: Int) -- Should throw error because of encodeJSON
     logError "tag" $ obAT1 <> show Test1.obAT1
     fn $ logError "tag2" $ show obA
+    fn $ logError "tag2" $ ("Hello" <> show obA)
+    forkErrorLog "tag2" $ ("Hello" <> (show $ addQuotes "Tll"))
+    noLogFn "tag2" $ ("Hello" <> (show $ addQuotes "Tll"))
 
     logDebug ("Some Tag" :: Text) (show "This to print")
 

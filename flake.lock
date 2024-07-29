@@ -77,7 +77,7 @@
     },
     "flake-parts_3": {
       "inputs": {
-        "nixpkgs-lib": "nixpkgs-lib_4"
+        "nixpkgs-lib": "nixpkgs-lib_3"
       },
       "locked": {
         "lastModified": 1685662779,
@@ -95,7 +95,7 @@
     },
     "flake-parts_4": {
       "inputs": {
-        "nixpkgs-lib": "nixpkgs-lib_5"
+        "nixpkgs-lib": "nixpkgs-lib_4"
       },
       "locked": {
         "lastModified": 1719994518,
@@ -113,7 +113,7 @@
     },
     "flake-parts_5": {
       "inputs": {
-        "nixpkgs-lib": "nixpkgs-lib_6"
+        "nixpkgs-lib": "nixpkgs-lib_5"
       },
       "locked": {
         "lastModified": 1719994518,
@@ -131,7 +131,7 @@
     },
     "flake-parts_6": {
       "inputs": {
-        "nixpkgs-lib": "nixpkgs-lib_7"
+        "nixpkgs-lib": "nixpkgs-lib_6"
       },
       "locked": {
         "lastModified": 1685662779,
@@ -169,7 +169,7 @@
         "type": "github"
       }
     },
-    "ghc8107-beam": {
+    "ghc8-beam": {
       "flake": false,
       "locked": {
         "lastModified": 1689929344,
@@ -186,7 +186,7 @@
         "type": "github"
       }
     },
-    "ghc8107-classyplate": {
+    "ghc8-classyplate": {
       "flake": false,
       "locked": {
         "lastModified": 1678370822,
@@ -203,25 +203,7 @@
         "type": "github"
       }
     },
-    "ghc8107-flake-parts": {
-      "inputs": {
-        "nixpkgs-lib": "nixpkgs-lib_3"
-      },
-      "locked": {
-        "lastModified": 1719994518,
-        "narHash": "sha256-pQMhCCHyQGRzdfAkdJ4cIWiw+JNuWsTX7f0ZYSyz0VY=",
-        "owner": "hercules-ci",
-        "repo": "flake-parts",
-        "rev": "9227223f6d922fee3c7b190b2cc238a99527bbb7",
-        "type": "github"
-      },
-      "original": {
-        "owner": "hercules-ci",
-        "repo": "flake-parts",
-        "type": "github"
-      }
-    },
-    "ghc8107-ghc-hasfield-plugin": {
+    "ghc8-ghc-hasfield-plugin": {
       "flake": false,
       "locked": {
         "lastModified": 1658487566,
@@ -238,22 +220,7 @@
         "type": "github"
       }
     },
-    "ghc8107-haskell-flake": {
-      "locked": {
-        "lastModified": 1721530802,
-        "narHash": "sha256-eUMmQKXjt4WQq+IBscftg/Y9bXWiOYhasfeH5Yb9Psc=",
-        "owner": "srid",
-        "repo": "haskell-flake",
-        "rev": "f8f38ecd259338167cc0c85fd541479297a315af",
-        "type": "github"
-      },
-      "original": {
-        "owner": "srid",
-        "repo": "haskell-flake",
-        "type": "github"
-      }
-    },
-    "ghc8107-large-records": {
+    "ghc8-large-records": {
       "flake": false,
       "locked": {
         "lastModified": 1719312727,
@@ -270,7 +237,7 @@
         "type": "github"
       }
     },
-    "ghc8107-nixpkgs": {
+    "ghc8-nixpkgs": {
       "locked": {
         "lastModified": 1643795778,
         "narHash": "sha256-sBxYgXu+4JTpXPu3c1QGl2a2zzzDJj4VNsVatF1sEIY=",
@@ -286,7 +253,7 @@
         "type": "github"
       }
     },
-    "ghc8107-record-dot-preprocessor": {
+    "ghc8-record-dot-preprocessor": {
       "flake": false,
       "locked": {
         "lastModified": 1644582826,
@@ -303,7 +270,7 @@
         "type": "github"
       }
     },
-    "ghc8107-references": {
+    "ghc8-references": {
       "inputs": {
         "flake-parts": "flake-parts_3",
         "haskell-flake": "haskell-flake_2",
@@ -321,21 +288,6 @@
         "owner": "eswar2001",
         "repo": "references",
         "rev": "35912f3cc72b67fa63a8d59d634401b79796469e",
-        "type": "github"
-      }
-    },
-    "ghc8107-systems": {
-      "locked": {
-        "lastModified": 1681028828,
-        "narHash": "sha256-Vy1rq5AaRuLzOxct8nz4T6wlgyUR7zLU309k9mBC768=",
-        "owner": "nix-systems",
-        "repo": "default",
-        "rev": "da67096a3b9bf56a91d16901293e51ba5b49a27e",
-        "type": "github"
-      },
-      "original": {
-        "owner": "nix-systems",
-        "repo": "default",
         "type": "github"
       }
     },
@@ -371,14 +323,17 @@
     },
     "haskell-flake_3": {
       "locked": {
-        "lastModified": 1721990678,
-        "narHash": "sha256-27vom9mIFgTF05qkNM/pZkJuYhi1i0Dr0QF22Viom+g=",
-        "path": "/Users/piyush.garg/haskell-flake",
-        "type": "path"
+        "lastModified": 1721530802,
+        "narHash": "sha256-eUMmQKXjt4WQq+IBscftg/Y9bXWiOYhasfeH5Yb9Psc=",
+        "owner": "srid",
+        "repo": "haskell-flake",
+        "rev": "f8f38ecd259338167cc0c85fd541479297a315af",
+        "type": "github"
       },
       "original": {
-        "path": "/Users/piyush.garg/haskell-flake",
-        "type": "path"
+        "owner": "srid",
+        "repo": "haskell-flake",
+        "type": "github"
       }
     },
     "haskell-flake_4": {
@@ -494,18 +449,6 @@
     },
     "nixpkgs-lib_3": {
       "locked": {
-        "lastModified": 1719876945,
-        "narHash": "sha256-Fm2rDDs86sHy0/1jxTOKB1118Q0O3Uc7EC0iXvXKpbI=",
-        "type": "tarball",
-        "url": "https://github.com/NixOS/nixpkgs/archive/5daf0514482af3f97abaefc78a6606365c9108e2.tar.gz"
-      },
-      "original": {
-        "type": "tarball",
-        "url": "https://github.com/NixOS/nixpkgs/archive/5daf0514482af3f97abaefc78a6606365c9108e2.tar.gz"
-      }
-    },
-    "nixpkgs-lib_4": {
-      "locked": {
         "dir": "lib",
         "lastModified": 1685564631,
         "narHash": "sha256-8ywr3AkblY4++3lIVxmrWZFzac7+f32ZEhH/A8pNscI=",
@@ -522,6 +465,18 @@
         "type": "github"
       }
     },
+    "nixpkgs-lib_4": {
+      "locked": {
+        "lastModified": 1719876945,
+        "narHash": "sha256-Fm2rDDs86sHy0/1jxTOKB1118Q0O3Uc7EC0iXvXKpbI=",
+        "type": "tarball",
+        "url": "https://github.com/NixOS/nixpkgs/archive/5daf0514482af3f97abaefc78a6606365c9108e2.tar.gz"
+      },
+      "original": {
+        "type": "tarball",
+        "url": "https://github.com/NixOS/nixpkgs/archive/5daf0514482af3f97abaefc78a6606365c9108e2.tar.gz"
+      }
+    },
     "nixpkgs-lib_5": {
       "locked": {
         "lastModified": 1719876945,
@@ -535,18 +490,6 @@
       }
     },
     "nixpkgs-lib_6": {
-      "locked": {
-        "lastModified": 1719876945,
-        "narHash": "sha256-Fm2rDDs86sHy0/1jxTOKB1118Q0O3Uc7EC0iXvXKpbI=",
-        "type": "tarball",
-        "url": "https://github.com/NixOS/nixpkgs/archive/5daf0514482af3f97abaefc78a6606365c9108e2.tar.gz"
-      },
-      "original": {
-        "type": "tarball",
-        "url": "https://github.com/NixOS/nixpkgs/archive/5daf0514482af3f97abaefc78a6606365c9108e2.tar.gz"
-      }
-    },
-    "nixpkgs-lib_7": {
       "locked": {
         "dir": "lib",
         "lastModified": 1685564631,
@@ -670,16 +613,13 @@
         "beam": "beam",
         "classyplate": "classyplate",
         "flake-parts": "flake-parts_2",
-        "ghc8107-beam": "ghc8107-beam",
-        "ghc8107-classyplate": "ghc8107-classyplate",
-        "ghc8107-flake-parts": "ghc8107-flake-parts",
-        "ghc8107-ghc-hasfield-plugin": "ghc8107-ghc-hasfield-plugin",
-        "ghc8107-haskell-flake": "ghc8107-haskell-flake",
-        "ghc8107-large-records": "ghc8107-large-records",
-        "ghc8107-nixpkgs": "ghc8107-nixpkgs",
-        "ghc8107-record-dot-preprocessor": "ghc8107-record-dot-preprocessor",
-        "ghc8107-references": "ghc8107-references",
-        "ghc8107-systems": "ghc8107-systems",
+        "ghc8-beam": "ghc8-beam",
+        "ghc8-classyplate": "ghc8-classyplate",
+        "ghc8-ghc-hasfield-plugin": "ghc8-ghc-hasfield-plugin",
+        "ghc8-large-records": "ghc8-large-records",
+        "ghc8-nixpkgs": "ghc8-nixpkgs",
+        "ghc8-record-dot-preprocessor": "ghc8-record-dot-preprocessor",
+        "ghc8-references": "ghc8-references",
         "haskell-flake": "haskell-flake_3",
         "large-records": "large-records",
         "nixpkgs": "nixpkgs_5",
