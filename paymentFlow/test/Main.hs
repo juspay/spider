@@ -22,10 +22,6 @@ import Control.Lens
 main :: IO ()
 main = putStrLn "Test suite not yet implemented."
 
--- test a =
---   let ans = a ++ "TEST"
---   in "" ++ ans 
-
 decidePayStartPathbySurchargeAmt :: PT.TxnDetail -> Text -> Text -> PT.MerchantAccount -> Text
 decidePayStartPathbySurchargeAmt txn defaultStartPayPath payStartPath mAcc = do
   -- let surchargeConfigStatusAndValue = getMerchantConfigStatusAndvalueForPaymentFlow (mAcc ^. PT.showSurchargeBreakupScreen)
@@ -34,13 +30,14 @@ decidePayStartPathbySurchargeAmt txn defaultStartPayPath payStartPath mAcc = do
       shouldShowSurchargePage = case surchargeConfigStatusAndValue of
         (PT.PaymentFlowNotEligible, _) -> 
           -- (mAcc.shouldAddSurcharge ) && (mAcc.showSurchargeBreakupScreen)
+          -- mAcc.shouldAddSurcharge && mAcc.showSurchargeBreakupScreen
           -- mAcc.shouldAddSurcharge && mAcc ^. PT.showSurchargeBreakupScreen
           mAcc ^. PT.showSurchargeBreakupScreen && mAcc.shouldAddSurcharge
           -- (PT.shouldAddSurcharge mAcc) && (PT.showSurchargeBreakupScreen mAcc)
         (PT.Disabled, _) -> False
         (PT.Enabled, surchargeConfigV) ->
           (fromMaybe False $ (surchargeConfigV >>= (\sc -> sc.showSurchargeBreakupScreen)) <|> (Just $ mAcc ^. PT.showSurchargeBreakupScreen))
-          -- (fromMaybe False $ (surchargeConfigV >>= (\sc -> PT1.showSurchargeBreakupScreen sc)) <|> (Just $ PT.showSurchargeBreakupScreen mAcc))
+          -- (fromMaybe False $ (surchargeConfigV >>= (\sc -> PT1.showSurchargeBreakupScreen sc)) <|> (Just (PT.showSurchargeBreakupScreen mAcc)))
   if shouldShowSurchargePage
     then payStartPath
     else defaultStartPayPath
@@ -48,20 +45,10 @@ decidePayStartPathbySurchargeAmt txn defaultStartPayPath payStartPath mAcc = do
   where
 
     getMerchantConfigStatus :: (PT.MerchantConfigStatus, Maybe PT1.SurchargeConfig)
-    getMerchantConfigStatus = getMerchantConfigStatusAndvalueForPaymentFlow (mAcc ^. PT.showSurchargeBreakupScreen)
-    
-
--- getMerchantPIdFromMerchantAccount :: PT.MerchantAccount -> Text
--- getMerchantPIdFromMerchantAccount = undefined
-
--- mMCLookupConfig :: Bool
--- mMCLookupConfig = undefined
-
--- isSurchargeNotZero :: PT.TxnDetail -> Bool
--- isSurchargeNotZero = undefined
-
--- getMerchantConfigStatusAndvalueForPaymentFlow :: Text -> Text -> AK -> (PT.MerchantConfigStatus, Maybe PT1.SurchargeConfig)
--- getMerchantConfigStatusAndvalueForPaymentFlow _ _ _ = (PT.Enabled, Just $ PT1.SurchargeConfig {shouldAddSurchargeToRefund = False, showSurchargeBreakupScreen = Just True})
+    getMerchantConfigStatus = 
+      -- getMerchantConfigStatusAndvalueForPaymentFlow $ PT.showSurchargeBreakupScreen mAcc
+      -- getMerchantConfigStatusAndvalueForPaymentFlow (PT.showSurchargeBreakupScreen mAcc)
+      getMerchantConfigStatusAndvalueForPaymentFlow (mAcc ^. PT.showSurchargeBreakupScreen)
 
 getMerchantConfigStatusAndvalueForPaymentFlow ::Bool -> (PT.MerchantConfigStatus, Maybe PT1.SurchargeConfig)
 getMerchantConfigStatusAndvalueForPaymentFlow _ = (PT.Enabled, Just $ PT1.SurchargeConfig {shouldAddSurchargeToRefund = False, showSurchargeBreakupScreen = Just True})

@@ -13,6 +13,7 @@ data TxnDetail = TxnDetail
 data MerchantAccount = MerchantAccount {
   merchantId :: Maybe Text,
   shouldAddSurcharge :: Bool,
+  -- showSurchargeBreakupScreen :: Bool
   _showSurchargeBreakupScreen :: Bool
 }
 

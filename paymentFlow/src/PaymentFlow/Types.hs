@@ -1,8 +1,12 @@
 module PaymentFlow.Types where
   
 import Data.Aeson
--- import SrcLoc 
-import GHC (SrcSpan)
+
+#if __GLASGOW_HASKELL__ >= 900
+import GHC.Types.SrcLoc
+#else
+import SrcLoc 
+#endif
 
 data PluginOpts = PluginOpts {
     saveToFile :: Bool,
@@ -75,7 +79,7 @@ data VoilationRuleResult = VoilationRuleResult
 
 defaultRule :: [Rule]
 defaultRule =
-  [ Rule "MerchantAccount" ["isMerchantEnabledForPaymentFlow", "getStartPayPath", "transformECMerchantAccountToEulerMerchantAccount", "surchargeConfigStatusAndValue"] "shouldAddSurcharge" "Direct access of `shouldAddSurcharge` from `MerchantAccount` type is not allowed." []
+  [ Rule "MerchantAccount" ["isMerchantEnabledForPaymentFlow", "getStartPayPath", "transformECMerchantAccountToEulerMerchantAccount", "surchargeConfigStatusAndValue"] "shouldAddSurcharge" "Direct access of `shouldAddSurcharge` from `MerchantAccount` type is not allowed. Use the `isMerchantEnabledForPaymentFlow` function instead." []
   , Rule "MerchantAccount" ["getMerchantConfigStatusAndvalueForPaymentFlow", "getMerchantConfigStatusAndValueForMAPfs", "transformECMerchantAccountToEulerMerchantAccount", "surchargeConfigStatusAndValue"] "showSurchargeBreakupScreen" "Direct access of `showSurchargeBreakupScreen` from `MerchantAccount` type is not allowed." []
   , Rule "MerchantAccount" ["getMerchantConfigStatusAndValueForMAPfs", "transformECMerchantAccountToEulerMerchantAccount"] "includeSurchargeAmountForRefund" "Direct access of `includeSurchargeAmountForRefund` from `MerchantAccount` type is not allowed." []
   , Rule "MerchantAccount" ["isMerchantEnabledForPaymentFlow", "transformECMerchantAccountToEulerMerchantAccount"] "offerEnabled" "Direct access of `offerEnabled` from `MerchantAccount` type is not allowed. Use `isMerchantEnabledForPaymentFlow` function instead." []

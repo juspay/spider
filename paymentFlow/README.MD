@@ -3,7 +3,7 @@
 
 ## Overview
 
-This Haskell plugin automatically verifies function calls for rule violations. It scans the source code to identify function calls and evaluates them against predefined rules to detect any violations. Currently, it supports the following rules:
+This Haskell plugin automatically verifies `fields` access from a `type` for rule violations. It scans the source code to identify types and evaluates them against predefined rules to detect any violations. Currently, it supports the following rules:
 
 1. Blocking access to certain `fields` from a specified `type`.
 2. Allowing exceptions to the rule for field access from the type based on field_access_whitelisted_fns or whitelisted_line_nos.

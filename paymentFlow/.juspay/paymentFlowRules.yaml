@@ -2,7 +2,7 @@ rules:
   - type_name: "MerchantAccount"
     blocked_field : "shouldAddSurcharge"
     field_access_whitelisted_fns: ["decidePayStartPathbySurchargeAmt", "isMerchantEnabledForPaymentFlow", "getStartPayPath", "transformECMerchantAccountToEulerMerchantAccount"]
-    field_rule_fixes: "Direct access of `shouldAddSurcharge` field from `MerchantAccount` type is not allowed."
+    field_rule_fixes: "Direct access of `shouldAddSurcharge` field from `MerchantAccount` type is not allowed. Use the `isMerchantEnabledForPaymentFlow` function instead."
     whitelisted_line_nos : []
   
   - type_name: "MerchantAccount"
