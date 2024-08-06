@@ -43,7 +43,7 @@ data DataTypeUC = DataTypeUC {
 
 data TypeVsFields = TypeVsFields {
     type_name :: Text
-    , fieldsVsExprs :: [(FieldRep)]
+    , fieldsVsExprs :: Either [(FieldRep)] [Text]
 } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
 data FieldRep = FieldRep {
