@@ -5,7 +5,7 @@
 module PaymentFlow.Plugin (plugin) where
 
 -- paymentFlow imports
-import PaymentFlow.Types (VoilationRuleResult(..), PFRules(..), Rule(..), PluginOpts(..), defaultPluginOpts, defaultRule)
+import PaymentFlow.Types (VoilationRuleResult(..), PFRules(..), Rule(..), PluginOpts(..), defaultPluginOpts)
 import PaymentFlow.Patterns
 
 -- GHC imports
@@ -52,9 +52,6 @@ import TcType
 import TyCoRep
 #endif
 
-logWarnInfo :: Bool
-logWarnInfo = True
-
 mkInvalidYamlFileErr :: String -> OP.SDoc
 mkInvalidYamlFileErr err = OP.text err
 
@@ -81,9 +78,9 @@ paymentFlow opts modSummary tcEnv = do
   parsedPaymentFlowRules <- liftIO $ parseYAMLFile paymentFlowRulesConfigPath
   ruleList <- case parsedPaymentFlowRules of
                 Left err -> do
-                  when logWarnInfo $ addWarn NoReason (mkInvalidYamlFileErr (show err))
-                  pure defaultRule
-                Right (rule :: PFRules) -> pure (nub $ defaultRule <> (rules rule))
+                  when (failOnFileNotFound pluginOpts) $ addErr (mkInvalidYamlFileErr (show err))
+                  pure []
+                Right (rule :: PFRules) -> pure (rules rule)
   let binds = tcg_binds tcEnv
   if ("Types" `isSuffixOf` moduleNm || "Types" `isPrefixOf` moduleNm || "Types" `isInfixOf` moduleNm )
     then pure ()
