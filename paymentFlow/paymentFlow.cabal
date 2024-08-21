@@ -42,8 +42,9 @@ library
     import:              common-options
     exposed-modules:    
         PaymentFlow.Plugin
-        PaymentFlow.Types
     other-modules: 
+        PaymentFlow.Types
+        PaymentFlow.Patterns
     build-depends:
                 bytestring
                 , containers
