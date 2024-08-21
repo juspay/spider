@@ -83,7 +83,6 @@ import TcRnTypes
 import TcRnMonad
 import DataCon
 #endif
-import Debug.Trace
 
 import FieldInspector.Types
 import Control.Concurrent (MVar, modifyMVar, newMVar)
@@ -223,8 +222,7 @@ instance Outputable Void where
 
 getDataConInfo :: LConDecl GhcPs -> DataConInfo
 getDataConInfo (L _ x@ConDeclH98{ con_name = lname, con_args = args }) =
-  Debug.Trace.trace (showSDocUnsafe $ ppr args) $
-    DataConInfo
+  DataConInfo
       { dataConNames = showSDocUnsafe' lname
       , fields = getFieldMap args
       , sumTypes = [] -- For H98-style data constructors, sum types are not applicable

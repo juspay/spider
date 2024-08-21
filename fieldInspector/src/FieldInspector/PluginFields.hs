@@ -296,7 +296,6 @@ getAllTypeManipulations binds = do
                     ( \x -> do
                         let functionName = getFunctionName x
                             filterRecordUpdateAndCon = Prelude.filter (\x -> ((show $ toConstr x) `Prelude.elem` ["HsGetField","RecordCon", "RecordUpd"])) (x ^? biplateRef :: [HsExpr GhcTc])
-                        print functionName
                         pure $ bool (Nothing) (Just (DataTypeUC functionName (Data.Maybe.mapMaybe getDataTypeDetails filterRecordUpdateAndCon))) (not (Prelude.null filterRecordUpdateAndCon))
                     )
                     (fromList binds)
@@ -457,7 +456,6 @@ processHasField functionName (Var x) (Var hasField) = do
                                            )
                                        ]
                         else do
-                            print y
                             pure res
 #if __GLASGOW_HASKELL__ >= 900
         (FunTy _ _ a _) -> do
@@ -528,7 +526,6 @@ processHasField functionName (Var x) (Var hasField) = do
                                    )
                                ]
                 _ -> do
-                    print (T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField))
                     pure res
 processHasField functionName x (Var hasField) = do
     res <- toLexpr functionName x
@@ -575,7 +572,6 @@ processHasField functionName x (Var hasField) = do
                                            )
                                        ]
                         else do
-                            print y
                             pure res
         _ -> do
             case parts of
@@ -610,7 +606,6 @@ processHasField functionName x (Var hasField) = do
                                    )
                                ]
                 _ -> do
-                    print (T.strip (pack $ showSDocUnsafe $ ppr $ tyVarKind hasField))
                     pure res
 
 groupByFunction :: [(Text, [FieldUsage])] -> [(Text, [FieldUsage])]
@@ -689,7 +684,6 @@ processFieldExtraction functionName _field _type b = do
                                     )
                                 ]
                         else do
-                            print y
                             pure mempty
         _ -> pure mempty
     pure $ res
