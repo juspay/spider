@@ -42,8 +42,9 @@ library
     import:              common-options
     exposed-modules:    
         PaymentFlow.Plugin
-        PaymentFlow.Types
     other-modules: 
+        PaymentFlow.Types
+        PaymentFlow.Patterns
     build-depends:
                 bytestring
                 , containers
@@ -89,10 +90,10 @@ test-suite paymentFlow-test
         , lens >= 4.0
     if flag(Dev)
         ghc-options: 
-            -fplugin=PaymentFlow.Plugin 
-            -fplugin-opt=PaymentFlow.Plugin:{"rulesConfigPath":".juspay/paymentFlowRules.yaml","failOnFileNotFound":true}
+            -- -fplugin=PaymentFlow.Plugin 
+            -- -fplugin-opt=PaymentFlow.Plugin:{"rulesConfigPath":".juspay/paymentFlowRules.yaml","failOnFileNotFound":true}
     else
         ghc-options: 
-            -fplugin=PaymentFlow.Plugin
+            -- -fplugin=PaymentFlow.Plugin
     
     default-extensions: DataKinds
