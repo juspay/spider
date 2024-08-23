@@ -51,7 +51,7 @@ import GHC.Types.Name hiding (varName)
 import GHC.Types.Var
 import qualified Data.Aeson.KeyMap as HM
 #else
-import Streamly.Internal.Data.Stream (fromList, mapM, mapM_, toList,parallely)
+import Streamly.Internal.Data.Stream (fromList, mapM, mapM_, toList)
 import qualified Data.HashMap.Strict as HM
 import Bag (bagToList)
 import DynFlags ()
@@ -335,7 +335,11 @@ hsStmtsExpr con keyFunction path stmts = mapM_ (stmtExpr con keyFunction path) $
 
 stmtExpr :: WS.Connection -> Text -> Text -> LStmt GhcTc (LHsExpr GhcTc) -> IO ()
 stmtExpr con keyFunction path (L _ stmt) = case stmt of
+#if __GLASGOW_HASKELL__ >= 900
     BindStmt _ pat expr -> processExpr con keyFunction path expr
+#else
+    BindStmt _ pat expr _ _-> processExpr con keyFunction path expr
+#endif
     BodyStmt _ expr _ _     -> processExpr con keyFunction path expr
     LastStmt _ expr _ _     -> processExpr con keyFunction path expr
     ParStmt _ stmtBlocks _ _ -> mapM_ blockExprs (fromList stmtBlocks)
@@ -344,17 +348,28 @@ stmtExpr con keyFunction path (L _ stmt) = case stmt of
         processExpr con keyFunction path trS_using
         maybe (pure ()) (processExpr con keyFunction path) trS_by
     ApplicativeStmt _ args _ -> mapM_ (extractApplicativeArg con keyFunction path . snd) (fromList args)
-    LetStmt _ binds         -> processHsLocalBinds con keyFunction path binds
+#if __GLASGOW_HASKELL__ >= 900
     RecStmt{..}             -> mapM_ (stmtExpr con keyFunction path) (fromList $ unXRec @(GhcTc) recS_stmts)
+    LetStmt _ binds         -> processHsLocalBinds con keyFunction path binds
+#else
+    RecStmt{..}             -> mapM_ (stmtExpr con keyFunction path) (fromList recS_stmts)
+    LetStmt _ binds         -> processHsLocalBinds con keyFunction path (unLoc binds)
+#endif
     XStmtLR{}               -> pure ()
   where
     blockExprs :: ParStmtBlock GhcTc GhcTc -> IO ()
     blockExprs (ParStmtBlock _ stmts _ _) = mapM_ (stmtExpr con keyFunction path) (fromList stmts)
-
+#if __GLASGOW_HASKELL__ >= 900
     extractApplicativeArg con keyFunction path (ApplicativeArgOne _ _ arg_expr _) = processExpr con keyFunction path arg_expr
     extractApplicativeArg con keyFunction path (ApplicativeArgMany _ app_stmts final_expr _ _) = do
         hsStmtsExpr con keyFunction path app_stmts
         processExpr con keyFunction path $ wrapXRec @(GhcTc) final_expr
+#else
+    extractApplicativeArg con keyFunction path (ApplicativeArgOne _ _ arg_expr _ _) = processExpr con keyFunction path arg_expr
+    extractApplicativeArg con keyFunction path (ApplicativeArgMany _ app_stmts final_expr _) = do
+        hsStmtsExpr con keyFunction path app_stmts
+        processExpr con keyFunction path (noLoc final_expr)
+#endif
     extractApplicativeArg _  _ _ _ = pure ()
 
 processExpr :: WS.Connection -> Text -> Text -> LHsExpr GhcTc -> IO ()
@@ -420,7 +435,11 @@ processExpr con keyFunction path (L _ (ExprWithTySig _ fun _)) =
 processExpr con keyFunction path (L _ (HsDo _ _ exprLStmt)) =
     hsStmtsExpr con keyFunction path $ unLoc exprLStmt
 processExpr con keyFunction path (L _ (HsLet _ exprLStmt func)) = do
+#if __GLASGOW_HASKELL__ >= 900
     processHsLocalBinds con keyFunction path exprLStmt
+#else
+    processHsLocalBinds con keyFunction path (unLoc exprLStmt)
+#endif
     processExpr con keyFunction path func
 processExpr con keyFunction path (L _ (HsMultiIf _ exprLStmt)) = do
     mapM_ (processExpr con keyFunction path . grhsExpr) (fromList exprLStmt)
@@ -430,10 +449,15 @@ processExpr con keyFunction path (L _ (HsCase _ funl exprLStmt)) = do
 processExpr con keyFunction path (L _ (ExplicitSum _ _ _ fun)) = processExpr con keyFunction path fun
 processExpr con keyFunction path (L _ (SectionR _ funl funr)) = processExpr con keyFunction path funl <> processExpr con keyFunction path funr
 processExpr con keyFunction path (L _ (ExplicitTuple _ exprLStmt _)) =
-    mapM_ (\x ->
+#if __GLASGOW_HASKELL__ >= 900
+    let l = (fromList exprLStmt)
+#else
+    let l = fromList (unLoc <$> exprLStmt)
+#endif
+    in mapM_ (\x ->
             case x of
                 (Present _ exprs) -> processExpr con keyFunction path exprs
-                _ -> pure ()) (fromList exprLStmt)
+                _ -> pure ()) l
 processExpr con keyFunction path (L _ (HsPar _ fun)) =
     processExpr con keyFunction path fun
 processExpr con keyFunction path (L _ (HsAppType _ fun _)) = processExpr con keyFunction path fun
