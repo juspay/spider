@@ -11,6 +11,8 @@
 module Test1 where
 
 import qualified Sheriff.Plugin ()
+import qualified TestUtils as TU
+import qualified TestUtils
 import Data.Text as T
 import qualified Data.Text.Lazy as DTL
 import qualified Data.Text.Encoding as DTE
@@ -193,6 +195,9 @@ addQuotes t = "\"" <> t <> "\""
 noLogFn :: String -> String -> IO ()
 noLogFn _ _ = pure ()
 
+throwException :: ()
+throwException = ()
+
 main :: IO ()
 main = do
     putStrLn "Test suite not yet implemented."
@@ -217,6 +222,13 @@ main = do
     noLogFn "tag2" $ ("Hello" <> (show $ addQuotes "Tll"))
 
     logDebug ("Some Tag" :: Text) (show "This to print")
+
+    -- Test for Qualified Function Names Rules
+    print TU.throwException -- should throw error
+    print throwException -- should NOT throw error
+    print TU.throwExceptionV2
+    print TU.throwExceptionV3
+    print TU.throwExceptionV4
 
     print $ show temp
     print $ show temp1

@@ -1,21 +1,31 @@
 rules: 
-  - ruleName: "GeneralRuleTest"
+  - ruleName: GeneralRuleTest
     conditions:
-      - fnName: "pack"
+      - fnName: pack
         isQualified: false
         argNo: 0
-        action: "Blocked"
+        action: Blocked
         argTypes: []
         argFns: []
-        suggestedFixes: ["Remove `pack` function call from the error location."]
+        suggestedFixes:
+          - Remove `pack` function call from the error location.
     ruleInfo: 
-        fnName: "show"
+        fnName: show
         isQualified: false
         argNo: 1
-        action: "Blocked"
-        argTypes: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
+        action: Blocked
+        argTypes:
+          - Text
+          - String
+          - Char
+          - "[Char]"
+          - Maybe
+          - "(,)"
+          - "[]"
         argFns: []
-        suggestedFixes: ["Remove `show` function call from the error location. If quotes are required, manually add them to the text.","You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."]
+        suggestedFixes:
+          - Remove `show` function call from the error location. If quotes are required, manually add them to the text.
+          - You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc.
   
   # - fn_rule_name: "ShowRule"
   #   fn_name: "show"
@@ -23,7 +33,9 @@ rules:
   #   fns_blocked_in_arg: []
   #   types_blocked_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location. If quotes are required, manually add them to the text.","You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location. If quotes are required, manually add them to the text."
+  #     - "You might want to use a convertor function like `Data.Text.pack`, `Data.Text.unpack`, `decodeUtf8`, `encodeUtf8`, etc."
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -43,7 +55,20 @@ rules:
   #     - "EulerHS.Framework.Language"
   #     - "EulerHS.KVDB.Interpreter"
   #     - "KVDB.KVDBSpec"
-
+    
+  - fn_rule_name: Test Qualified Function Name Rule
+    fn_name: TestUtils.throwException
+    arg_no: 0
+    fns_blocked_in_arg: []
+    types_blocked_in_arg: []
+    types_to_check_in_arg: []
+    fn_rule_fixes:
+      - You are not allowed to use helper function `throwException` from `TestUtils` module.
+      - Use `throwExceptionV2` or `throwExceptionV4` function from `TestUtils` module.
+    fn_rule_exceptions: []
+    fn_rule_ignore_modules:
+      - TestUtils
+      
   # - db_rule_name: "DBRuleTest"
   #   table_name: "TxnRiskCheck"
   #   indexed_cols_names: 
@@ -51,7 +76,8 @@ rules:
   #     - and:
   #       - txnId
   #       - customerId
-  #   db_rule_fixes: ["You might want to include an indexed column in the `where` clause of the query."]
+  #   db_rule_fixes: 
+  #     - "You might want to include an indexed column in the `where` clause of the query."]
   #   db_rule_exceptions: []
 
   # - fn_rule_name: "LogRule"
@@ -60,7 +86,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -70,7 +98,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -80,7 +110,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -90,7 +122,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -100,7 +134,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -110,7 +146,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -120,7 +158,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -130,7 +170,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -140,7 +182,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -150,7 +194,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -160,7 +206,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -170,7 +218,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
   
@@ -180,7 +230,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
   
@@ -190,7 +242,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -200,7 +254,9 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
   
@@ -210,6 +266,8 @@ rules:
   #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
-  #   fn_rule_fixes: ["Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module.", "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"]
+  #   fn_rule_fixes:
+  #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []

@@ -216,7 +216,7 @@ noGivenFunctionCallExpansion :: String -> LHsExpr GhcTc -> Bool
 noGivenFunctionCallExpansion fnName expr = case expr of
   (L loc (PatHsWrap _ expr)) -> noGivenFunctionCallExpansion fnName (L loc expr)
   _ -> case getFnNameWithAllArgs expr of
-        Just (lVar, _) -> (getOccString . varName . unLoc $ lVar) == fnName
+        Just (lVar, _) -> matchFnNames (getFnNameWithModuleName lVar) fnName -- (getOccString . varName . unLoc $ lVar) == fnName
         Nothing -> False
 
 -- Simplifies few things and handles some final transformations
@@ -256,8 +256,8 @@ checkAndApplyRule ruleT opts ap = case ruleT of
   FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _ _ _ _) -> do
     let res = getFnNameWithAllArgs ap
     -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
-        (fnName, args) = maybe ("NA", []) (\(x, y) -> ((getOccString . varName . unLoc) x, y)) $ res
-    case (fnName == ruleFnName && length args >= arg_no) of
+        (fnName, args) = maybe ("NA", []) (\(x, y) -> (getFnNameWithModuleName x, y)) $ res
+    case (matchFnNames fnName ruleFnName && length args >= arg_no) of
       True  -> validateFunctionRule rule opts fnName args ap 
       False -> pure [] 
   GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
@@ -347,7 +347,7 @@ getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _ _) =
         showOutputable res
       case res of
         Nothing -> pure Nothing
-        Just (fnName, args) -> isPresentInBlockedFnList expr fnsBlocked ((getOccString . varName . unLoc) fnName) args
+        Just (fnNameVar, args) -> isPresentInBlockedFnList expr fnsBlocked (getFnNameWithModuleName fnNameVar) args
     
     isPresentInBlockedFnList :: LHsExpr GhcTc -> FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> TcM (Maybe (LHsExpr GhcTc, String, String))
     isPresentInBlockedFnList expr [] _ _ = pure Nothing
@@ -355,7 +355,7 @@ getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _ _) =
       when (logDebugInfo opts) $ liftIO $ do
         print "isPresentInBlockedFnList"
         print (ruleFnName, ruleArgNo, ruleAllowedTypes)
-      case ruleFnName == fnName && length fnArgs >= ruleArgNo of
+      case matchFnNames fnName ruleFnName && length fnArgs >= ruleArgNo of
         False -> isPresentInBlockedFnList expr ls fnName fnArgs
         True  -> do
           let reqArg = head $ drop (ruleArgNo - 1) fnArgs

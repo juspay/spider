@@ -56,6 +56,26 @@ import TyCoRep
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
 
+getFnNameWithModuleName :: Located Var -> String
+getFnNameWithModuleName lvar = 
+  let lvarName = (varName . unLoc) lvar
+      fnName = getOccString lvarName
+  in case nameModule_maybe lvarName of
+        Just modName -> (moduleNameString $ moduleName modName) <> "." <> fnName
+        Nothing -> "NO_MODULE" <> "." <> fnName
+
+matchFnNames :: String -> String -> Bool
+matchFnNames varNameWithModule fnToMatch = 
+  let (varModuleName, varName) = splitAtLastChar '.' varNameWithModule
+  in case splitAtLastChar '.' fnToMatch of
+      ("", fnName) -> fnName == varName
+      (modName, fnName) -> varModuleName == modName && fnName == varName
+  where
+    splitAtLastChar :: Char -> String -> (String, String)
+    splitAtLastChar ch str = 
+      let (before, after) = break (== ch) (reverse str)
+      in (reverse (drop 1 after), reverse before) 
+
 -- Pretty print haskell internal representation types using `exactprint`
 #if __GLASGOW_HASKELL__ >= 900
 showPrettyPrinted :: (ExactPrint a) => Located a -> String
@@ -75,6 +95,7 @@ noExprLoc = noLoc
 
 getLocated :: GenLocated (SrcSpanAnn' a) e -> Located e
 getLocated ap = L (getLocA ap) (unLoc ap)
+
 #else 
 showPrettyPrinted :: (Annotate a) => Located a -> String
 showPrettyPrinted = flip exactPrint mempty

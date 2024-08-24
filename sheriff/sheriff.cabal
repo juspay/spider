@@ -72,6 +72,7 @@ test-suite sheriff-test
     main-is:          Main.hs
     other-modules:
         Test1
+        TestUtils
     build-depends:
           sheriff
         , aeson
