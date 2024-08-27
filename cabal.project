@@ -3,3 +3,4 @@ packages:
   ./fieldInspector
   ./sheriff
   ./paymentFlow
+  ./api-contract

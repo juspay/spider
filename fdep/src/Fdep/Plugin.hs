@@ -3,7 +3,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE CPP #-}
 
-module Fdep.Plugin (plugin) where
+module Fdep.Plugin (plugin,collectDecls) where
 
 import Control.Concurrent ( forkIO )
 import Control.DeepSeq (force)
@@ -81,7 +81,6 @@ plugin =
     defaultPlugin
         { typeCheckResultAction = fDep
         , pluginRecompile = (\_ -> return NoForceRecompile)
-        , parsedResultAction = collectDecls
         }
 
 filterList :: [Text]
