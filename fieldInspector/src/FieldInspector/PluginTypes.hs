@@ -109,10 +109,12 @@ import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude hiding (mapM, mapM_)
 import Prelude hiding (id, mapM, mapM_)
 import Control.Exception (evaluate)
-import qualified Data.Record.Plugin as DRP 
+import qualified Data.Record.Plugin as DRP
 import qualified Data.Record.Anon.Plugin as DRAP
 import qualified Data.Record.Plugin.HasFieldPattern as DRPH
 import qualified RecordDotPreprocessor as RDP
+import qualified ApiContract.Plugin as ApiContract
+import qualified Fdep.Plugin as Fdep
 
 plugin :: Plugin
 plugin = (defaultPlugin{
@@ -120,6 +122,7 @@ plugin = (defaultPlugin{
         pluginRecompile = (\_ -> return NoForceRecompile)
         , parsedResultAction = collectTypeInfoParser
         })
+        <> ApiContract.plugin
 #if defined(ENABLE_LR_PLUGINS)
         <> DRP.plugin
         <> DRAP.plugin
@@ -183,6 +186,7 @@ pprDataCon = ppr
 
 collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectTypeInfoParser opts modSummary hpm = do
+    _ <- Fdep.collectDecls opts modSummary hpm
     _ <- liftIO $ forkIO $
             do
                 let prefixPath = case opts of

@@ -3,7 +3,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE CPP #-}
 
-module Fdep.Plugin (plugin) where
+module Fdep.Plugin (plugin,collectDecls) where
 
 import Control.Concurrent ( forkIO )
 import Control.DeepSeq (force)
@@ -81,7 +81,6 @@ plugin =
     defaultPlugin
         { typeCheckResultAction = fDep
         , pluginRecompile = (\_ -> return NoForceRecompile)
-        , parsedResultAction = collectDecls
         }
 
 filterList :: [Text]
@@ -376,7 +375,6 @@ processExpr :: WS.Connection -> Text -> Text -> LHsExpr GhcTc -> IO ()
 processExpr con keyFunction path x@(L _ (HsVar _ (L _ var))) = do
     let name = T.pack $ nameStableString $ varName var
         _type = T.pack $ showSDocUnsafe $ ppr $ varType var
-    print (Just $ T.pack $ getLocTC' $ x)
     expr <- evaluate $ force $ transformFromNameStableString (Just name, Just $ T.pack $ getLocTC' $ x, Just _type, mempty)
     sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
 processExpr _ _ _ (L _ (HsUnboundVar _ _)) = pure mempty
