@@ -116,7 +116,7 @@ import Data.Maybe (catMaybes,isJust,fromJust)
 import Control.Monad.IO.Class (liftIO)
 import System.IO (writeFile)
 import Streamly.Internal.Data.Stream hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
-import System.Directory (createDirectoryIfMissing, removeFile)
+import System.Directory (createDirectoryIfMissing, removeFile,doesFileExist)
 import System.Directory.Internal.Prelude hiding (mapM, mapM_)
 import Prelude hiding (id, mapM, mapM_)
 import Control.Exception (evaluate)
@@ -238,7 +238,8 @@ collectTypeInfoParser opts modSummary hpm = do
     (shouldAddTypes :: [String]) <- foldM (\acc (inst,type_) -> if inst `Prelude.elem` instanceToAdd then pure $ acc <> [type_] else pure $ acc) [] (Data.List.nub $ Prelude.concat typesToInstancesPresent)
     let (srcSpansHM :: HM.KeyMap SrcSpan) = HM.fromList $ map (\(srcSpan,a,_) -> (HM.fromString a, srcSpan)) $ Prelude.concat typesInThisModule
         (typeVsFields :: HM.KeyMap TypeRule) = HM.fromList $ Prelude.filter (\(typeName,_) -> (HM.toString typeName) `Prelude.elem` shouldAddTypes) $ map (\(_,a,b) -> (HM.fromString a, b)) $ Prelude.concat typesInThisModule
-    if generateTypesRules
+    isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
+    if generateTypesRules || (not $ isOldFile)
         then
             liftIO $ DBS.writeFile (modulePath <> ".yaml") (YAML.encode typeVsFields)
         else do
@@ -284,7 +285,8 @@ collectInstanceInfo opts modSummary tcEnv = do
                                             Just v  -> HM.insert (HM.fromString typeName) (v{instances = Map.insert instanceName x (instances v)}) hm
                                             Nothing -> hm
                                     ) typeRules $ Prelude.concat typeInstances
-            if generateTypesRules
+            isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
+            if generateTypesRules || (not $ isOldFile)
                 then do
                     when (generateTypesRules) $ liftIO $ print "dumping rules"
                     liftIO $ DBS.writeFile (modulePath <> ".yaml") (YAML.encode updatedTypesRules)
