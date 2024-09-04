@@ -40,7 +40,7 @@
         # multiple projects are also possible, each using different GHC version.
 
         # GHC 8 support
-        haskellProjects.ghc8 = {
+        haskellProjects.default = {
           projectFlakeName = "spider";
           basePackages = inputs.ghc8-nixpkgs.legacyPackages.${system}.haskell.packages.ghc8107;
           imports = [
@@ -70,7 +70,7 @@
           };
         };
 
-        haskellProjects.default = {
+        haskellProjects.ghc928 = {
           # The base package set representing a specific GHC version.
           # By default, this is pkgs.haskellPackages.
           # You may also create your own. See https://community.flake.parts/haskell-flake/package-set
@@ -133,13 +133,13 @@
 
       flake.haskellFlakeProjectModules = {
         # To use ghc 9 version, use
-        # inputs.spider.haskellFlakeProjectModules.output
+        # inputs.spider.haskellFlakeProjectModules.output-ghc928
 
         # To use ghc 8 version, use
-        # inputs.spider.haskellFlakeProjectModules.output-ghc8
+        # inputs.spider.haskellFlakeProjectModules.output
 
-        output-ghc8 = { pkgs, lib, ... }: withSystem pkgs.system ({ config, ... }:
-            config.haskellProjects."ghc8".defaults.projectModules.output
+        output-ghc928 = { pkgs, lib, ... }: withSystem pkgs.system ({ config, ... }:
+            config.haskellProjects."928".defaults.projectModules.output
           );
       };
     });
