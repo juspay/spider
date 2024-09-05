@@ -77,4 +77,5 @@ test-suite fdep-test
     main-is:          Main.hs
     build-depends:
         fdep
+        , text
     ghc-options: -fplugin=Fdep.Plugin -fplugin-opt Fdep.Plugin:./tmp/fdep/
