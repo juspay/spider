@@ -156,12 +156,13 @@ type TypesBlockedInArg = [String]
 type TypesToCheckInArg = [String]
 type Suggestions = [String]
 type Modules = [String]
+type FunctionNames = [String]
 
 data FunctionRule = 
   FunctionRule
     {
       fn_rule_name           :: String,
-      fn_name                :: String,
+      fn_name                :: FunctionNames,
       arg_no                 :: ArgNo,
       fns_blocked_in_arg     :: FnsBlockedInArg,
       types_blocked_in_arg   :: TypesBlockedInArg,
@@ -175,7 +176,7 @@ data FunctionRule =
 instance FromJSON FunctionRule where
   parseJSON = withObject "FunctionRule" $ \o -> do
                 fn_rule_name <- o .: "fn_rule_name"
-                fn_name <- o .: "fn_name"
+                fn_name <- (o .: "fn_name" >>= parseAsListOrString)
                 arg_no <- o .: "arg_no"
                 fns_blocked_in_arg <- o .: "fns_blocked_in_arg"
                 types_blocked_in_arg <- o .: "types_blocked_in_arg"
@@ -281,17 +282,17 @@ data DBFieldSpecType =
   deriving (Show, Eq)
 
 data Violation = 
-    ArgTypeBlocked String String FunctionRule
-  | FnBlockedInArg (String, String) Value FunctionRule
+    ArgTypeBlocked String String String FunctionRule
+  | FnBlockedInArg (String, String) String Value FunctionRule
   | NonIndexedDBColumn String String DBRule
-  | FnUseBlocked FunctionRule
+  | FnUseBlocked String FunctionRule
   | NoViolation
   deriving (Eq)
 
 instance Show Violation where
-  show (ArgTypeBlocked typ exprTy rule) = "Use of '" <> (fn_name rule) <> "' on '" <> typ <> "' is not allowed in the overall expression type '" <> exprTy <> "'."
-  show (FnBlockedInArg (fnName, typ) _ rule) = "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> (fn_name rule) <> "' is not allowed."
-  show (FnUseBlocked rule) = "Use of '" <> (fn_name rule) <> "' in the code is not allowed."
+  show (ArgTypeBlocked typ exprTy ruleFnName rule) = "Use of '" <> ruleFnName <> "' on '" <> typ <> "' is not allowed in the overall expression type '" <> exprTy <> "'."
+  show (FnBlockedInArg (fnName, typ) ruleFnName _ rule) = "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> ruleFnName <> "' is not allowed."
+  show (FnUseBlocked ruleFnName rule) = "Use of '" <> ruleFnName <> "' in the code is not allowed."
   show (NonIndexedDBColumn colName tableName _) = "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
   show NoViolation = "NoViolation"
 
@@ -299,33 +300,33 @@ instance Show Violation where
 
 getViolationSuggestions :: Violation -> Suggestions
 getViolationSuggestions v = case v of
-  ArgTypeBlocked _ _ r -> fn_rule_fixes r
-  FnBlockedInArg _ _ r -> fn_rule_fixes r
-  FnUseBlocked r -> fn_rule_fixes r
+  ArgTypeBlocked _ _ _ r -> fn_rule_fixes r
+  FnBlockedInArg _ _ _ r -> fn_rule_fixes r
+  FnUseBlocked _ r -> fn_rule_fixes r
   NonIndexedDBColumn _ _ r -> db_rule_fixes r
   NoViolation -> []
 
 getViolationType :: Violation -> String
 getViolationType v = case v of
-  ArgTypeBlocked _ _ _ -> "ArgTypeBlocked"
-  FnBlockedInArg _ _ _ -> "FnBlockedInArg"
-  FnUseBlocked _ -> "FnUseBlocked"
+  ArgTypeBlocked _ _ _ _ -> "ArgTypeBlocked"
+  FnBlockedInArg _ _ _ _ -> "FnBlockedInArg"
+  FnUseBlocked _ _ -> "FnUseBlocked"
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
   NoViolation -> "NoViolation"
 
 getViolationRule :: Violation -> Rule
 getViolationRule v = case v of
-  ArgTypeBlocked _ _ r -> FunctionRuleT r
-  FnBlockedInArg _ _ r -> FunctionRuleT r
-  FnUseBlocked r -> FunctionRuleT r
+  ArgTypeBlocked _ _ _ r -> FunctionRuleT r
+  FnBlockedInArg _ _ _ r -> FunctionRuleT r
+  FnUseBlocked _ r -> FunctionRuleT r
   NonIndexedDBColumn _ _ r -> DBRuleT r
   NoViolation -> defaultRule
 
 getViolationRuleName :: Violation -> String
 getViolationRuleName v = case v of
-  ArgTypeBlocked _ _ r -> fn_rule_name r
-  FnBlockedInArg _ _ r -> fn_rule_name r
-  FnUseBlocked r -> fn_rule_name r
+  ArgTypeBlocked _ _ _ r -> fn_rule_name r
+  FnBlockedInArg _ _ _ r -> fn_rule_name r
+  FnUseBlocked _ r -> fn_rule_name r
   NonIndexedDBColumn _ _ r -> db_rule_name r
   NoViolation -> "NA"
 
@@ -334,7 +335,7 @@ getViolationRuleExceptions = getRuleExceptions . getViolationRule
 
 getErrorInfoFromViolation :: Violation -> Value
 getErrorInfoFromViolation violation = case violation of
-  FnBlockedInArg _ errInfo _ -> errInfo
+  FnBlockedInArg _ _ errInfo _ -> errInfo
   _ -> A.Null
 
 getRuleFromCompileError :: CompileError -> Rule
@@ -358,7 +359,7 @@ noSuggestion :: Suggestions
 noSuggestion = []
 
 defaultRule :: Rule
-defaultRule = FunctionRuleT $ FunctionRule "NA" "NA" (-1) [] [] [] noSuggestion [] []
+defaultRule = FunctionRuleT $ FunctionRule "NA" ["NA"] (-1) [] [] [] noSuggestion [] []
 
 emptyLoggingError :: CompileError
 emptyLoggingError = CompileError "" "" "$NA$" noSrcSpan NoViolation noSuggestion A.Null

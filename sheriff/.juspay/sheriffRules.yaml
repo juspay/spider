@@ -68,6 +68,21 @@ rules:
     fn_rule_exceptions: []
     fn_rule_ignore_modules:
       - TestUtils
+
+  - fn_rule_name: Test Multiple Function Names in Single Rule
+    fn_name: 
+      - TestUtils.throwExceptionV2
+      - TestUtils.throwExceptionV4
+    arg_no: 0
+    fns_blocked_in_arg: []
+    types_blocked_in_arg: []
+    types_to_check_in_arg: []
+    fn_rule_fixes:
+      - You are not allowed to use helper function `throwException` from `TestUtils` module.
+      - Use `throwExceptionV2` or `throwExceptionV4` function from `TestUtils` module.
+    fn_rule_exceptions: []
+    fn_rule_ignore_modules:
+      - TestUtils
       
   # - db_rule_name: "DBRuleTest"
   #   table_name: "TxnRiskCheck"

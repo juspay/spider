@@ -6,7 +6,7 @@
 
 module Sheriff.Utils where
 
-import Sheriff.Patterns
+import Control.Applicative ((<|>))
 import Control.Exception
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (..))
@@ -20,6 +20,7 @@ import GHC hiding (exprType)
 import GHC.Hs.Dump
 import GHC.Hs.Extension
 import Language.Haskell.GHC.ExactPrint (exactPrint)
+import Sheriff.Patterns
 
 #if __GLASGOW_HASKELL__ >= 900
 import GHC.Core.TyCo.Rep
@@ -299,3 +300,6 @@ getHsExprTypeGeneric logTypeDebugging expr = case ghcPass @p of
       typ <- liftIO $ runIOEnv e $ exprType <$> initDsTc (dsLExpr expr)
       when logTypeDebugging $ liftIO . print $ "DebugType = " <> (debugPrintType typ)
       pure (Just typ)
+
+parseAsListOrString :: Value -> Parser [String]
+parseAsListOrString v = parseJSON v <|> fmap (:[]) (parseJSON v)
