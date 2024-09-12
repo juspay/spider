@@ -138,9 +138,13 @@
         # To use ghc 8 version, use
         # inputs.spider.haskellFlakeProjectModules.output-ghc8
 
+        output-ghc9 = { pkgs, lib, ... }: withSystem pkgs.system ({ config, ... }:
+            config.haskellProjects."default".defaults.projectModules.output
+        );
+
         output-ghc8 = { pkgs, lib, ... }: withSystem pkgs.system ({ config, ... }:
             config.haskellProjects."ghc8".defaults.projectModules.output
-          );
+        );
       };
     });
 }

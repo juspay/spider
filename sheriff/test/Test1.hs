@@ -224,11 +224,11 @@ main = do
     logDebug ("Some Tag" :: Text) (show "This to print")
 
     -- Test for Qualified Function Names Rules
-    print TU.throwException -- should throw error
+    print $ TU.throwException "Hello" -- should throw error
     print throwException -- should NOT throw error
-    print TU.throwExceptionV2 -- should throw error as part of combined rule
-    print TU.throwExceptionV3
-    print TU.throwExceptionV4 -- should throw error as part of combined rule
+    print $ TU.throwExceptionV2 "Hello" -- should throw error as part of combined rule "Hello"
+    print $ TU.throwExceptionV3 "Hello"
+    print $ TU.throwExceptionV4 "Hello" -- should throw error as part of combined rule "Hello"
 
     print $ show temp
     print $ show temp1
