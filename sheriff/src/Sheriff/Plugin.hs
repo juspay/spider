@@ -255,12 +255,14 @@ checkAndApplyRule ruleT opts ap = case ruleT of
       _ -> pure []
   FunctionRuleT rule@(FunctionRule _ ruleFnNames arg_no _ _ _ _ _ _) -> do
     let res = getFnNameWithAllArgs ap
-    -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
-        (fnName, args) = maybe ("NA", []) (\(x, y) -> (getFnNameWithModuleName x, y)) $ res
-    fmap concat . flip mapM ruleFnNames $ \ruleFnName ->
-      case (matchFnNames fnName ruleFnName && length args >= arg_no) of
-        True  -> validateFunctionRule rule opts ruleFnName fnName args ap 
-        False -> pure []
+    case res of
+      Nothing                   -> pure []
+      Just (fnLocatedVar, args) -> do
+        let fnName    = getFnNameWithModuleName fnLocatedVar
+            fnLHsExpr = mkLHsVar fnLocatedVar
+        case (find (\ruleFnName -> matchFnNames fnName ruleFnName && length args >= arg_no) ruleFnNames) of
+          Just ruleFnName  -> validateFunctionRule rule opts ruleFnName fnName fnLHsExpr args ap 
+          Nothing -> pure []
   GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
 
 --------------------------- Function Rule Validation Logic ---------------------------
@@ -284,10 +286,10 @@ Part-2 Validation
 -}
 
 -- Function to check if given function rule is violated or not
-validateFunctionRule :: FunctionRule -> PluginOpts -> String -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
-validateFunctionRule rule opts ruleFnName fnName args expr = do
+validateFunctionRule :: FunctionRule -> PluginOpts -> String -> String -> LHsExpr GhcTc -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
+validateFunctionRule rule opts ruleFnName fnName fnNameExpr args expr = do
   if (arg_no rule) == 0 -- considering arg 0 as the case for blocking the whole function occurence
-    then pure [(expr, FnUseBlocked ruleFnName rule)]
+    then pure [(fnNameExpr, FnUseBlocked ruleFnName rule)]
   else do
     let matches = drop ((arg_no rule) - 1) args
     if length matches == 0
@@ -584,10 +586,10 @@ getWhereClauseFnNameWithAllArgs _ = Nothing
 -- TODO: Verify the correctness of this function before moving it to utils
 -- Get function name with all it's arguments
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
-getFnNameWithAllArgs (L _ (HsVar _ v)) = Just (getLocated v, [])
+getFnNameWithAllArgs (L loc (HsVar _ v)) = Just (getLocated v loc, [])
 getFnNameWithAllArgs (L _ (HsConLikeOut _ cl)) = (\clId -> (noExprLoc clId, [])) <$> conLikeWrapId cl
 getFnNameWithAllArgs (L _ (HsAppType _ expr _)) = getFnNameWithAllArgs expr
-getFnNameWithAllArgs (L _ (HsApp _ (L _ (HsVar _ v)) funr)) = Just (getLocated v, [funr])
+getFnNameWithAllArgs (L _ (HsApp _ (L loc (HsVar _ v)) funr)) = Just (getLocated v loc, [funr])
 getFnNameWithAllArgs (L _ (HsPar _ expr)) = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   let res = getFnNameWithAllArgs funl

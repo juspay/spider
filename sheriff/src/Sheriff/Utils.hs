@@ -94,8 +94,11 @@ getLoc2 = getLocA
 noExprLoc :: a -> Located a
 noExprLoc = noLoc
 
-getLocated :: GenLocated (SrcSpanAnn' a) e -> Located e
-getLocated ap = L (getLocA ap) (unLoc ap)
+getLocated :: GenLocated (SrcSpanAnn' a) e -> (SrcSpanAnn' b) -> Located e
+getLocated ap (SrcSpanAnn _ loc) = L loc (unLoc ap)
+
+mkGenLocated :: a -> SrcSpan -> GenLocated (SrcAnn ann) a
+mkGenLocated e srcSpan = L (noAnnSrcSpan srcSpan) e
 
 #else 
 showPrettyPrinted :: (Annotate a) => Located a -> String
@@ -113,9 +116,16 @@ getLoc2 = getLoc
 noExprLoc :: (HasSrcSpan a) => SrcSpanLess a -> a
 noExprLoc = noLoc
 
-getLocated :: (HasSrcSpan a) => a -> Located (SrcSpanLess a)
-getLocated ap = L (getLoc ap) (unLoc ap)
+getLocated :: (HasSrcSpan a) => a -> SrcSpan -> Located (SrcSpanLess a)
+getLocated ap loc = L loc (unLoc ap)
+
+mkGenLocated :: a -> SrcSpan -> GenLocated SrcSpan a
+mkGenLocated e srcSpan = L srcSpan e
 #endif
+
+-- Create Located HSExpr for HsVar type
+mkLHsVar :: Located Var -> LHsExpr GhcTc
+mkLHsVar (L srcSpan e) = mkGenLocated (HsVar noExtField $ mkGenLocated e srcSpan) srcSpan
 
 -- Debug print the Type represented in Haskell
 debugPrintType :: Type -> String
