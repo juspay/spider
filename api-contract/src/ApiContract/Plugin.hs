@@ -116,7 +116,7 @@ import Data.Maybe (catMaybes,isJust,fromJust)
 import Control.Monad.IO.Class (liftIO)
 import System.IO (writeFile)
 import Streamly.Internal.Data.Stream hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
-import System.Directory (createDirectoryIfMissing, removeFile)
+import System.Directory (createDirectoryIfMissing, removeFile,doesFileExist)
 import System.Directory.Internal.Prelude hiding (mapM, mapM_)
 import Prelude hiding (id, mapM, mapM_)
 import Control.Exception (evaluate)
@@ -135,6 +135,8 @@ import GHC.ExecutionStack (Location(srcLoc))
 import Streamly.Internal.Data.Parser (ParseError(ParseError))
 import ApiContract.Types
 import Data.List (nub)
+import Control.Concurrent (MVar,putMVar,takeMVar,readMVar,newMVar)
+import Data.ByteString (elem)
 
 -- ENABLE_ISOLATION
 #if defined(ENABLE_LR_PLUGINS)
@@ -164,12 +166,12 @@ instance Semigroup Plugin where
             (<>)
         <$> pluginRecompile p args
         <*> pluginRecompile q args
-    , tcPlugin = \args -> 
+    , tcPlugin = \args ->
         case (tcPlugin p args, tcPlugin q args) of
           (Nothing, Nothing) -> Nothing
           (Just tp, Nothing) -> Just tp
           (Nothing, Just tq) -> Just tq
-          (Just (TcPlugin tcPluginInit1 tcPluginSolve1 tcPluginStop1), Just (TcPlugin tcPluginInit2 tcPluginSolve2 tcPluginStop2)) -> Just $ TcPlugin 
+          (Just (TcPlugin tcPluginInit1 tcPluginSolve1 tcPluginStop1), Just (TcPlugin tcPluginInit2 tcPluginSolve2 tcPluginStop2)) -> Just $ TcPlugin
             { tcPluginInit = do
                 ip <- tcPluginInit1
                 iq <- tcPluginInit2
@@ -189,16 +191,16 @@ combineTcPluginResults resP resQ =
   case (resP, resQ) of
     (TcPluginContradiction ctsP, TcPluginContradiction ctsQ) ->
       TcPluginContradiction (ctsP ++ ctsQ)
- 
+
     (TcPluginContradiction ctsP, TcPluginOk _ _) ->
       TcPluginContradiction ctsP
- 
+
     (TcPluginOk _ _, TcPluginContradiction ctsQ) ->
       TcPluginContradiction ctsQ
- 
+
     (TcPluginOk solvedP newP, TcPluginOk solvedQ newQ) ->
       TcPluginOk (solvedP ++ solvedQ) (newP ++ newQ)
- 
+
 
 instance Monoid Plugin where
   mempty = defaultPlugin
@@ -238,8 +240,11 @@ collectTypeInfoParser opts modSummary hpm = do
     (shouldAddTypes :: [String]) <- foldM (\acc (inst,type_) -> if inst `Prelude.elem` instanceToAdd then pure $ acc <> [type_] else pure $ acc) [] (Data.List.nub $ Prelude.concat typesToInstancesPresent)
     let (srcSpansHM :: HM.KeyMap SrcSpan) = HM.fromList $ map (\(srcSpan,a,_) -> (HM.fromString a, srcSpan)) $ Prelude.concat typesInThisModule
         (typeVsFields :: HM.KeyMap TypeRule) = HM.fromList $ Prelude.filter (\(typeName,_) -> (HM.toString typeName) `Prelude.elem` shouldAddTypes) $ map (\(_,a,b) -> (HM.fromString a, b)) $ Prelude.concat typesInThisModule
-    if generateTypesRules
-        then
+    isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
+    if generateTypesRules || (not $ isOldFile)
+        then do
+            newModuleList <- liftIO $ takeMVar newModuleListMvar
+            liftIO $ putMVar newModuleListMvar (newModuleList <> [modulePath])
             liftIO $ DBS.writeFile (modulePath <> ".yaml") (YAML.encode typeVsFields)
         else do
             (eitherTypeRules :: Either (YAML.ParseException) (HM.KeyMap TypeRule)) <- liftIO $ fetchRules (modulePath <> ".yaml")
@@ -265,6 +270,10 @@ collectTypeInfoParser opts modSummary hpm = do
                         else pure ()
     pure hpm
 
+newModuleListMvar :: MVar [String]
+{-# NOINLINE newModuleListMvar #-}
+newModuleListMvar = unsafePerformIO (newMVar mempty)
+
 collectInstanceInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectInstanceInfo opts modSummary tcEnv = do
     let prefixPath = "./.juspay/api-contract/"
@@ -276,6 +285,7 @@ collectInstanceInfo opts modSummary tcEnv = do
     (instanceSrcSpansHM :: HM.KeyMap SrcSpan) <- pure $ HM.fromList $ map (\(srcSpan,typeName,instanceName,_) -> (HM.fromString (typeName <> "--" <> instanceName), srcSpan)) $ Prelude.concat typeInstances
     (instanceTypeHM :: HM.KeyMap InstanceFromTC) <- pure $ HM.fromList $ map (\(_,typeName,instanceName,x) -> (HM.fromString (typeName <> "--" <> instanceName), x)) $ Prelude.concat typeInstances
     (eitherTypeRules :: Either (YAML.ParseException) (HM.KeyMap TypeRule)) <- liftIO $ fetchRules (modulePath <> ".yaml")
+    newModuleList <- liftIO $ readMVar newModuleListMvar
     case eitherTypeRules of
         Left err -> TCError.addErrs $ [(moduleSrcSpan,docToSDoc $ Pretty.text $ (modulePath <> ".yaml") <> " " <> "is missing for this module :" <> show err)]
         Right typeRules -> do
@@ -284,7 +294,8 @@ collectInstanceInfo opts modSummary tcEnv = do
                                             Just v  -> HM.insert (HM.fromString typeName) (v{instances = Map.insert instanceName x (instances v)}) hm
                                             Nothing -> hm
                                     ) typeRules $ Prelude.concat typeInstances
-            if generateTypesRules
+            isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
+            if generateTypesRules || (not $ isOldFile) || (modulePath `Prelude.elem` newModuleList)
                 then do
                     when (generateTypesRules) $ liftIO $ print "dumping rules"
                     liftIO $ DBS.writeFile (modulePath <> ".yaml") (YAML.encode updatedTypesRules)
@@ -377,7 +388,7 @@ processHsSplice (HsUntypedSplice _ _ name expr) = do
         typeName = map (\(_,y) -> replace "''" "" y) $ Prelude.filter (\(const,_) -> const `Prelude.elem` ["HsBracket"]) $ map (\x -> (show $ toConstr x,showSDocUnsafe $ ppr x)) types
         possibleInstances = map (\(_,y) -> y) $ Prelude.filter (\(const,_) -> const `Prelude.elem` ["HsVar"]) $ map (\x -> (show $ toConstr x,showSDocUnsafe $ ppr x)) types
     pure $ Prelude.concat $ map (\x -> map (\y -> (y,x)) possibleInstances) typeName
-processHsSplice (HsQuasiQuote _ id1 id2 srcSpan fs) = do 
+processHsSplice (HsQuasiQuote _ id1 id2 srcSpan fs) = do
     when (generateTypesRules) $ print ("HsQuasiQuote",showSDocUnsafe $ ppr id1 , showSDocUnsafe $ ppr id2)
     pure mempty
 processHsSplice (HsSpliced _ _ expr) = do
@@ -581,3 +592,4 @@ mkFileSrcSpan mod_loc
   = case ml_hs_file mod_loc of
       Just file_path -> mkGeneralSrcSpan (mkFastString file_path)
       Nothing        -> interactiveSrcSpan
+

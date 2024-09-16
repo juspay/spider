@@ -135,6 +135,9 @@ instance Semigroup Plugin where
       parsedResultAction = \args summary ->
             parsedResultAction p args summary
         >=> parsedResultAction q args summary
+    ,  typeCheckResultAction = \args summary ->
+            typeCheckResultAction p args summary
+        >=> typeCheckResultAction q args summary
     , pluginRecompile = \args ->
             (<>)
         <$> pluginRecompile p args
