@@ -150,6 +150,7 @@ instance ToJSON CompileError where
 type Rules = [Rule]
 type ArgNo = Int
 type ArgTypes = [String]
+type SignaturesBlockedInFn = [String]
 type FnsBlockedInArg = [(String, ArgNo, TypesAllowedInArg)]
 type TypesAllowedInArg = [String]
 type TypesBlockedInArg = [String]
@@ -164,12 +165,14 @@ data FunctionRule =
       fn_rule_name           :: String,
       fn_name                :: FunctionNames,
       arg_no                 :: ArgNo,
+      fn_sigs_blocked       :: SignaturesBlockedInFn,
       fns_blocked_in_arg     :: FnsBlockedInArg,
       types_blocked_in_arg   :: TypesBlockedInArg,
       types_to_check_in_arg  :: TypesToCheckInArg,
       fn_rule_fixes          :: Suggestions,
       fn_rule_exceptions     :: Rules,
-      fn_rule_ignore_modules :: Modules
+      fn_rule_ignore_modules :: Modules,
+      fn_rule_allowed_modules  :: Modules
     }
   deriving (Show, Eq)  
 
@@ -178,13 +181,15 @@ instance FromJSON FunctionRule where
                 fn_rule_name <- o .: "fn_rule_name"
                 fn_name <- (o .: "fn_name" >>= parseAsListOrString)
                 arg_no <- o .: "arg_no"
+                fn_sigs_blocked <- o .:? "fn_sigs_blocked" .!= ([] :: [String])
                 fns_blocked_in_arg <- o .: "fns_blocked_in_arg"
                 types_blocked_in_arg <- o .: "types_blocked_in_arg"
                 types_to_check_in_arg <- o .: "types_to_check_in_arg"
                 fn_rule_fixes <- o .: "fn_rule_fixes"
                 fn_rule_exceptions <- o .: "fn_rule_exceptions"
                 fn_rule_ignore_modules <- o .: "fn_rule_ignore_modules"
-                return (FunctionRule {fn_rule_name = fn_rule_name, fn_name = fn_name, arg_no = arg_no, fns_blocked_in_arg = fns_blocked_in_arg, types_blocked_in_arg = types_blocked_in_arg, types_to_check_in_arg = types_to_check_in_arg, fn_rule_fixes = fn_rule_fixes, fn_rule_exceptions = fn_rule_exceptions, fn_rule_ignore_modules = fn_rule_ignore_modules })
+                fn_rule_allowed_modules <- o .:? "fn_rule_allowed_modules" .!= ["*"]
+                return (FunctionRule {fn_rule_name = fn_rule_name, fn_name = fn_name, arg_no = arg_no, fn_sigs_blocked = fn_sigs_blocked, fns_blocked_in_arg = fns_blocked_in_arg, types_blocked_in_arg = types_blocked_in_arg, types_to_check_in_arg = types_to_check_in_arg, fn_rule_fixes = fn_rule_fixes, fn_rule_exceptions = fn_rule_exceptions, fn_rule_ignore_modules = fn_rule_ignore_modules, fn_rule_allowed_modules = fn_rule_allowed_modules })
 
 data DBRule =
   DBRule 
@@ -286,6 +291,7 @@ data Violation =
   | FnBlockedInArg (String, String) String Value FunctionRule
   | NonIndexedDBColumn String String DBRule
   | FnUseBlocked String FunctionRule
+  | FnSigBlocked String String FunctionRule
   | NoViolation
   deriving (Eq)
 
@@ -293,6 +299,7 @@ instance Show Violation where
   show (ArgTypeBlocked typ exprTy ruleFnName rule) = "Use of '" <> ruleFnName <> "' on '" <> typ <> "' is not allowed in the overall expression type '" <> exprTy <> "'."
   show (FnBlockedInArg (fnName, typ) ruleFnName _ rule) = "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> ruleFnName <> "' is not allowed."
   show (FnUseBlocked ruleFnName rule) = "Use of '" <> ruleFnName <> "' in the code is not allowed."
+  show (FnSigBlocked ruleFnName ruleFnSig rule) = "Use of '" <> ruleFnName <> "' with signature '" <> ruleFnSig <> "' is not allowed in the code."
   show (NonIndexedDBColumn colName tableName _) = "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
   show NoViolation = "NoViolation"
 
@@ -303,6 +310,7 @@ getViolationSuggestions v = case v of
   ArgTypeBlocked _ _ _ r -> fn_rule_fixes r
   FnBlockedInArg _ _ _ r -> fn_rule_fixes r
   FnUseBlocked _ r -> fn_rule_fixes r
+  FnSigBlocked _ _ r -> fn_rule_fixes r
   NonIndexedDBColumn _ _ r -> db_rule_fixes r
   NoViolation -> []
 
@@ -311,6 +319,7 @@ getViolationType v = case v of
   ArgTypeBlocked _ _ _ _ -> "ArgTypeBlocked"
   FnBlockedInArg _ _ _ _ -> "FnBlockedInArg"
   FnUseBlocked _ _ -> "FnUseBlocked"
+  FnSigBlocked _ _ _ -> "FnSigBlocked"
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
   NoViolation -> "NoViolation"
 
@@ -319,6 +328,7 @@ getViolationRule v = case v of
   ArgTypeBlocked _ _ _ r -> FunctionRuleT r
   FnBlockedInArg _ _ _ r -> FunctionRuleT r
   FnUseBlocked _ r -> FunctionRuleT r
+  FnSigBlocked _ _ r -> FunctionRuleT r
   NonIndexedDBColumn _ _ r -> DBRuleT r
   NoViolation -> defaultRule
 
@@ -327,6 +337,7 @@ getViolationRuleName v = case v of
   ArgTypeBlocked _ _ _ r -> fn_rule_name r
   FnBlockedInArg _ _ _ r -> fn_rule_name r
   FnUseBlocked _ r -> fn_rule_name r
+  FnSigBlocked _ _ r -> fn_rule_name r
   NonIndexedDBColumn _ _ r -> db_rule_name r
   NoViolation -> "NA"
 
@@ -355,11 +366,16 @@ getRuleIgnoreModules rule = case rule of
   FunctionRuleT fnRule -> fn_rule_ignore_modules fnRule
   _ -> []
 
+getRuleAllowedModules :: Rule -> Modules
+getRuleAllowedModules rule = case rule of 
+  FunctionRuleT fnRule -> fn_rule_allowed_modules fnRule
+  _ -> []
+
 noSuggestion :: Suggestions
 noSuggestion = []
 
 defaultRule :: Rule
-defaultRule = FunctionRuleT $ FunctionRule "NA" ["NA"] (-1) [] [] [] noSuggestion [] []
+defaultRule = FunctionRuleT $ FunctionRule "NA" ["NA"] (-1) [] [] [] [] noSuggestion [] [] []
 
 emptyLoggingError :: CompileError
 emptyLoggingError = CompileError "" "" "$NA$" noSrcSpan NoViolation noSuggestion A.Null

@@ -2,6 +2,8 @@ module TestUtils where
 
 import Data.Text
 
+newtype Number = Number Int
+
 throwException :: Text -> ()
 throwException _ = ()
 
@@ -16,3 +18,21 @@ throwExceptionV3 = throwExceptionV2
 
 throwExceptionV4 :: Text -> ()
 throwExceptionV4 = throwException
+
+addNumber :: Number -> Number -> Number
+addNumber (Number a) (Number b) = Number (a + b)
+
+subtractNumber :: Number -> Number -> Number
+subtractNumber (Number a) (Number b) = Number (a - b)
+
+multiplyNumber :: Number -> Number -> Number
+multiplyNumber (Number a) (Number b) = Number (a * b)
+
+(+?) :: Number -> Number -> Number
+(+?) = addNumber
+
+(-?) :: Number -> Number -> Number
+(-?) = subtractNumber
+
+(*?) :: Maybe (Either (Maybe Int) (Maybe Int)) -> Number -> Number -> Number
+(*?) _ = multiplyNumber
