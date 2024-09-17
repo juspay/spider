@@ -661,8 +661,8 @@ isAllowedOnCurrentModule :: String -> Rule -> Bool
 isAllowedOnCurrentModule moduleName rule = 
   let ignoredModules = getRuleIgnoreModules rule
       allowedModules = getRuleCheckModules rule
-      isCurrentModuleAllowed = any (matchNamesWithAsterisk moduleName) allowedModules
-      isCurrentModuleIgnored = any (matchNamesWithAsterisk moduleName) ignoredModules
+      isCurrentModuleAllowed = any (matchModNamesWithAsterisk moduleName) allowedModules
+      isCurrentModuleIgnored = any (matchModNamesWithAsterisk moduleName) ignoredModules
   in isCurrentModuleAllowed && not isCurrentModuleIgnored
 
 -- Create GHC compilation error from CompileError

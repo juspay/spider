@@ -76,15 +76,29 @@ matchNamesWithModuleName varNameWithModule fnToMatch =
   let (varModuleName, varName) = splitAtLastChar '.' varNameWithModule
   in case splitAtLastChar '.' fnToMatch of
       ("", fnName) -> matchNamesWithAsterisk fnName varName
-      (modName, fnName) -> matchNamesWithAsterisk varModuleName modName && matchNamesWithAsterisk fnName varName
+      (modName, fnName) -> matchModNamesWithAsterisk varModuleName modName && matchNamesWithAsterisk fnName varName
   where
     splitAtLastChar :: Char -> String -> (String, String)
     splitAtLastChar ch str = 
       let (before, after) = break (== ch) (reverse str)
       in (reverse (drop 1 after), reverse before) 
 
+-- TODO: Use some other special character for wildcard
 matchNamesWithAsterisk :: String -> String -> Bool
 matchNamesWithAsterisk str1 str2 = 
+  let splitList1 = splitOn "." str1
+      splitList2 = splitOn "." str2
+  in go splitList1 splitList2
+  where
+    go :: [String] -> [String] -> Bool
+    go [] []             = True
+    -- go (x : xs) []       = x == "*"
+    -- go [] (y : ys)       = y == "*"
+    -- go (x : xs) (y : ys) = x == "*" || y == "*" || x == y && go xs ys
+    go (x : xs) (y : ys) = x == y && go xs ys
+
+matchModNamesWithAsterisk :: String -> String -> Bool
+matchModNamesWithAsterisk str1 str2 = 
   let splitList1 = splitOn "." str1
       splitList2 = splitOn "." str2
   in go splitList1 splitList2
