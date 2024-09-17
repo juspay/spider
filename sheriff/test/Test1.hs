@@ -165,6 +165,12 @@ obC3T1 = T.pack $ show obC3
 obC3T2 :: Text
 obC3T2 = encodeJSON obC3
 
+num1 :: TU.Number
+num1 = TU.Number 20
+
+num2 :: TU.Number
+num2 = TU.Number 10
+
 -- Test Case 1: Text inside logErrorT (No error should be raised by plugin)
 -- Test Case 2: Text inside logErrorV (An error should be raised by plugin)
 -- Test Case 3: Object inside logErrorV (No error should be generated)
@@ -245,6 +251,18 @@ main = do
     logError "tag" $ show temp5
     logError "tag" $ show temp6
     
+    let (TU.Number sRes) = num1 `TU.subtractNumber` num2
+        (TU.Number aRes) = TU.addNumber num1 num2
+        (TU.Number mRes) = (TU.*?) Nothing num1 num2
+        (TU.Number n1) = TU.fstArg num1 num2
+        (TU.Number n2) = TU.sndArg num1 num2
+
+    print sRes
+    print aRes
+    print mRes
+    print n1
+    print n2
+
     runKVDB -- Should be error
 
     logDebugT "validateMandate" $ "effective limit is: " <> T.pack (show 10) <> ", custom limit for key: " <> " is " <> T.pack (show (Just ("Hello" :: Text)))

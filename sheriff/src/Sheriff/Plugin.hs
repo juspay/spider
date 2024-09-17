@@ -216,7 +216,7 @@ noGivenFunctionCallExpansion :: String -> LHsExpr GhcTc -> Bool
 noGivenFunctionCallExpansion fnName expr = case expr of
   (L loc (PatHsWrap _ expr)) -> noGivenFunctionCallExpansion fnName (L loc expr)
   _ -> case getFnNameWithAllArgs expr of
-        Just (lVar, _) -> matchFnNames (getFnNameWithModuleName lVar) fnName -- (getOccString . varName . unLoc $ lVar) == fnName
+        Just (lVar, _) -> matchNamesWithModuleName (getLocatedVarNameWithModuleName lVar) fnName -- (getOccString . varName . unLoc $ lVar) == fnName
         Nothing -> False
 
 -- Simplifies few things and handles some final transformations
@@ -253,14 +253,14 @@ checkAndApplyRule ruleT opts ap = case ruleT of
           True  -> validateDBRule rule opts (showS tblName) exprs ap
           False -> pure []
       _ -> pure []
-  FunctionRuleT rule@(FunctionRule _ ruleFnNames arg_no _ _ _ _ _ _) -> do
+  FunctionRuleT rule@(FunctionRule _ ruleFnNames arg_no _ _ _ _ _ _ _ _) -> do
     let res = getFnNameWithAllArgs ap
     case res of
       Nothing                   -> pure []
       Just (fnLocatedVar, args) -> do
-        let fnName    = getFnNameWithModuleName fnLocatedVar
+        let fnName    = getLocatedVarNameWithModuleName fnLocatedVar
             fnLHsExpr = mkLHsVar fnLocatedVar
-        case (find (\ruleFnName -> matchFnNames fnName ruleFnName && length args >= arg_no) ruleFnNames) of
+        case (find (\ruleFnName -> matchNamesWithModuleName fnName ruleFnName && length args >= arg_no) ruleFnNames) of
           Just ruleFnName  -> validateFunctionRule rule opts ruleFnName fnName fnLHsExpr args ap 
           Nothing -> pure []
   GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
@@ -288,8 +288,20 @@ Part-2 Validation
 -- Function to check if given function rule is violated or not
 validateFunctionRule :: FunctionRule -> PluginOpts -> String -> String -> LHsExpr GhcTc -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 validateFunctionRule rule opts ruleFnName fnName fnNameExpr args expr = do
-  if (arg_no rule) == 0 -- considering arg 0 as the case for blocking the whole function occurence
+  if arg_no rule == 0 && fn_sigs_blocked rule == [] -- considering arg 0 as the case for blocking the whole function occurence
     then pure [(fnNameExpr, FnUseBlocked ruleFnName rule)]
+  else if arg_no rule == 0
+    then do
+      -- Check argument types for functions with polymorphic signature
+      argTyps <- concat <$> mapM (\arg -> getHsExprTypeAsTypeDataList <$> getHsExprTypeWithResolver (logTypeDebugging opts) arg) args
+      fnReturnType <- getHsExprTypeAsTypeDataList <$> getHsExprTypeWithResolver (logTypeDebugging opts) expr
+      let fnSigFromArg = argTyps <> fnReturnType
+
+      -- Given function signature
+      fnExprTyp <- getHsExprTypeWithResolver (logTypeDebugging opts) fnNameExpr
+      let fnSigTypList = getHsExprTypeAsTypeDataList fnExprTyp
+
+      pure . concat $ fmap (\ruleFnSig -> if matchFnSignatures fnSigTypList ruleFnSig || matchFnSignatures fnSigFromArg ruleFnSig then [(fnNameExpr, FnSigBlocked ruleFnName ruleFnSig rule)] else []) (fn_sigs_blocked rule)
   else do
     let matches = drop ((arg_no rule) - 1) args
     if length matches == 0
@@ -333,7 +345,7 @@ validateType argTyp typs = showS argTyp `elem` typs
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
 getBlockedFnsList :: PluginOpts -> LHsExpr GhcTc -> FunctionRule -> TcM [(LHsExpr GhcTc, String, String)] 
-getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _ _) = do
+getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no _ fnsBlocked _ _ _ _ _ _) = do
   let argHsExprs = traverseAst arg :: [LHsExpr GhcTc]
       fnApps = filter isFunApp argHsExprs
   when (logDebugInfo opts) $ liftIO $ do
@@ -350,7 +362,7 @@ getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _ _) =
         showOutputable res
       case res of
         Nothing -> pure Nothing
-        Just (fnNameVar, args) -> isPresentInBlockedFnList expr fnsBlocked (getFnNameWithModuleName fnNameVar) args
+        Just (fnNameVar, args) -> isPresentInBlockedFnList expr fnsBlocked (getLocatedVarNameWithModuleName fnNameVar) args
     
     isPresentInBlockedFnList :: LHsExpr GhcTc -> FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> TcM (Maybe (LHsExpr GhcTc, String, String))
     isPresentInBlockedFnList expr [] _ _ = pure Nothing
@@ -358,7 +370,7 @@ getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _ _) =
       when (logDebugInfo opts) $ liftIO $ do
         print "isPresentInBlockedFnList"
         print (ruleFnName, ruleArgNo, ruleAllowedTypes)
-      case matchFnNames fnName ruleFnName && length fnArgs >= ruleArgNo of
+      case matchNamesWithModuleName fnName ruleFnName && length fnArgs >= ruleArgNo of
         False -> isPresentInBlockedFnList expr ls fnName fnArgs
         True  -> do
           let reqArg = head $ drop (ruleArgNo - 1) fnArgs
@@ -647,8 +659,11 @@ mkFnBlockedInArgErrorInfo opts lOutsideExpr@(L _ outsideExpr) lInsideExpr@(L _ i
 -- Check if a rule is allowed on current module
 isAllowedOnCurrentModule :: String -> Rule -> Bool
 isAllowedOnCurrentModule moduleName rule = 
-  let ignoreModules = getRuleIgnoreModules rule
-  in moduleName `notElem` ignoreModules
+  let ignoredModules = getRuleIgnoreModules rule
+      allowedModules = getRuleCheckModules rule
+      isCurrentModuleAllowed = any (matchNamesWithAsterisk moduleName) allowedModules
+      isCurrentModuleIgnored = any (matchNamesWithAsterisk moduleName) ignoredModules
+  in isCurrentModuleAllowed && not isCurrentModuleIgnored
 
 -- Create GHC compilation error from CompileError
 mkGhcCompileError :: CompileError -> (SrcSpan, OP.SDoc)

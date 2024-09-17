@@ -13,6 +13,7 @@ import Control.Monad.IO.Class (MonadIO (..))
 import Data.Aeson
 import Data.Data (Data)
 import Data.Generics.Uniplate.Data
+import Data.List.Extra (splitOn, trim)
 import Data.Maybe (maybe)
 import qualified Data.Text as T
 import Data.Yaml
@@ -57,25 +58,42 @@ import TyCoRep
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
 
-getFnNameWithModuleName :: Located Var -> String
-getFnNameWithModuleName lvar = 
-  let lvarName = (varName . unLoc) lvar
-      fnName = getOccString lvarName
-  in case nameModule_maybe lvarName of
-        Just modName -> (moduleNameString $ moduleName modName) <> "." <> fnName
-        Nothing -> "NO_MODULE" <> "." <> fnName
+getLocatedVarNameWithModuleName :: Located Var -> String
+getLocatedVarNameWithModuleName lvar = getVarNameWithModuleName $ unLoc lvar
 
-matchFnNames :: String -> String -> Bool
-matchFnNames varNameWithModule fnToMatch = 
+getVarNameWithModuleName :: Var -> String
+getVarNameWithModuleName var = getNameWithModuleName $ varName var
+
+getNameWithModuleName :: Name -> String
+getNameWithModuleName name = 
+  let occName = getOccString name
+  in case nameModule_maybe name of
+        Just modName -> (moduleNameString $ moduleName modName) <> "." <> occName
+        Nothing -> "NO_MODULE" <> "." <> occName
+
+matchNamesWithModuleName :: String -> String -> Bool
+matchNamesWithModuleName varNameWithModule fnToMatch = 
   let (varModuleName, varName) = splitAtLastChar '.' varNameWithModule
   in case splitAtLastChar '.' fnToMatch of
-      ("", fnName) -> fnName == varName
-      (modName, fnName) -> varModuleName == modName && fnName == varName
+      ("", fnName) -> matchNamesWithAsterisk fnName varName
+      (modName, fnName) -> matchNamesWithAsterisk varModuleName modName && matchNamesWithAsterisk fnName varName
   where
     splitAtLastChar :: Char -> String -> (String, String)
     splitAtLastChar ch str = 
       let (before, after) = break (== ch) (reverse str)
       in (reverse (drop 1 after), reverse before) 
+
+matchNamesWithAsterisk :: String -> String -> Bool
+matchNamesWithAsterisk str1 str2 = 
+  let splitList1 = splitOn "." str1
+      splitList2 = splitOn "." str2
+  in go splitList1 splitList2
+  where
+    go :: [String] -> [String] -> Bool
+    go [] []             = True
+    go (x : xs) []       = x == "*"
+    go [] (y : ys)       = y == "*"
+    go (x : xs) (y : ys) = x == "*" || y == "*" || x == y && go xs ys
 
 -- Pretty print haskell internal representation types using `exactprint`
 #if __GLASGOW_HASKELL__ >= 900
@@ -129,9 +147,9 @@ mkLHsVar (L srcSpan e) = mkGenLocated (HsVar noExtField $ mkGenLocated e srcSpan
 
 -- Debug print the Type represented in Haskell
 debugPrintType :: Type -> String
-debugPrintType (TyVarTy v) = "(TyVar " <> showS v <> ")"
+debugPrintType (TyVarTy v) = "(TyVarTy " <> showS v <> ")"
 debugPrintType (AppTy ty1 ty2) = "(AppTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
-debugPrintType (TyConApp tycon tys) = "(TyCon (" <> showS tycon <> ") [" <> foldr (\x r -> debugPrintType x <> ", " <> r) "" tys <> "]"
+debugPrintType (TyConApp tycon tys) = "(TyConApp (" <> showS tycon <> ") [" <> foldr (\x r -> debugPrintType x <> ", " <> r) "" tys <> "]"
 debugPrintType (ForAllTy _ ty) = "(ForAllTy " <> debugPrintType ty <> ")"
 debugPrintType (PatFunTy ty1 ty2) = "(FunTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
 debugPrintType (LitTy litTy) = "(LitTy " <> showS litTy <> ")"
@@ -258,6 +276,56 @@ getHsExprType logTypeDebugging expr = do
 -- Get type for a LHsExpr GhcTc with resolving type aliases to `data` or `newtype`
 getHsExprTypeWithResolver :: Bool -> LHsExpr GhcTc -> TcM Type
 getHsExprTypeWithResolver logTypeDebugging expr = deNoteType <$> getHsExprType logTypeDebugging expr
+
+-- Recursive data type for simpler type representation
+data TypeData = TextTy String | NestedTy [TypeData]
+    deriving (Show, Eq)
+
+-- TODO: Add support for matching constraints
+-- Get Qualified Types as List
+getHsExprTypeAsTypeDataList :: Type -> [TypeData]
+getHsExprTypeAsTypeDataList typ = case typ of
+  LitTy ty -> [TextTy $ showS ty]
+  TyVarTy var -> [TextTy $ getVarNameWithModuleName var]
+  TyConApp tycon tys -> [NestedTy $ [TextTy $ getNameWithModuleName (tyConName tycon)] <> (concat $ fmap getHsExprTypeAsTypeDataList tys)]
+  AppTy ty1 ty2 -> getHsExprTypeAsTypeDataList ty1 <> getHsExprTypeAsTypeDataList ty2
+  ForAllTy _ ty -> getHsExprTypeAsTypeDataList ty
+  PatFunTy ty1 ty2 -> getHsExprTypeAsTypeDataList ty1 <> getHsExprTypeAsTypeDataList ty2
+  _ -> []
+
+parseParenData :: String -> ([TypeData], String)
+parseParenData [] = ([], [])
+parseParenData (x:xs)
+    | x == '('  = let (nestedData, rest) = parseParenData xs
+                      (remainingData, rest') = parseParenData rest
+                  in (NestedTy nestedData : remainingData, rest')
+    | x == ')'  = ([], xs)
+    | otherwise = let (textData, rest) = parseParenData xs
+                  in case textData of
+                       (TextTy t : ts) -> if x == ' ' then (TextTy t : ts, rest) else (TextTy (x:t) : ts, rest) -- append char to current text if it is not empty space
+                       _ -> if x == ' ' then (textData, rest) else (TextTy [x] : textData, rest)         -- start new text if it is not empty space
+
+-- Top-level function to handle parsing from the root
+extractParenData :: String -> [TypeData]
+extractParenData str = fst (parseParenData str)
+
+-- Match function signatures
+matchFnSignatures :: [TypeData] -> String -> Bool
+matchFnSignatures exprSig ruleSig = 
+  let splitRuleSig = fmap (NestedTy . extractParenData . trim) $ splitOn "->" ruleSig
+  in go exprSig splitRuleSig
+  where
+    go :: [TypeData] -> [TypeData] -> Bool
+    go [] []             = True
+    go (x : xs) []       = x == TextTy "*"
+    go [] (y : ys)       = y == TextTy "*"
+    go (x : xs) (y : ys)
+      | x == TextTy "*" = go xs ys
+      | y == TextTy "*" = go xs ys
+      | otherwise = case (x, y) of
+        (TextTy a, TextTy b)     -> matchNamesWithModuleName a b && go xs ys
+        (NestedTy a, NestedTy b) -> go a b && go xs ys
+        _                        -> False
 
 -- Get name of the variable
 getVarName :: IdP GhcTc -> String
