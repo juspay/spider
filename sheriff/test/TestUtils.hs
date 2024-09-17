@@ -36,3 +36,9 @@ multiplyNumber (Number a) (Number b) = Number (a * b)
 
 (*?) :: Maybe (Either (Maybe Int) (Maybe Int)) -> Number -> Number -> Number
 (*?) _ = multiplyNumber
+
+fstArg :: a -> a -> a
+fstArg a1 a2 = a1
+
+sndArg :: a -> a -> a
+sndArg a1 a2 = a2

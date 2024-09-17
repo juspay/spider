@@ -1,5 +1,8 @@
 # Revision history for sheriff
 
+## 0.2.0.1
+* Add derived signature from the arg types for Signature Check rules
+
 ## 0.2.0.0
 * Add allowed modules list for function rule
 * Add support for wilcard character "*" in function rules

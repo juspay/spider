@@ -98,7 +98,7 @@ rules:
       - Use `throwExceptionV2` or `throwExceptionV4` function from `TestUtils` module.
     fn_rule_exceptions: []
     fn_rule_ignore_modules: []
-    fn_rule_allowed_modules:
+    fn_rule_check_modules:
       - "Test1"
     
   # We should get error for usage of any function with Number type
@@ -118,7 +118,7 @@ rules:
       - Contact senior dev for the solution.
     fn_rule_exceptions: []
     fn_rule_ignore_modules: []
-    fn_rule_allowed_modules:
+    fn_rule_check_modules:
       - Test1
 
   # - db_rule_name: "DBRuleTest"

@@ -172,7 +172,7 @@ data FunctionRule =
       fn_rule_fixes          :: Suggestions,
       fn_rule_exceptions     :: Rules,
       fn_rule_ignore_modules :: Modules,
-      fn_rule_allowed_modules  :: Modules
+      fn_rule_check_modules  :: Modules
     }
   deriving (Show, Eq)  
 
@@ -188,8 +188,8 @@ instance FromJSON FunctionRule where
                 fn_rule_fixes <- o .: "fn_rule_fixes"
                 fn_rule_exceptions <- o .: "fn_rule_exceptions"
                 fn_rule_ignore_modules <- o .: "fn_rule_ignore_modules"
-                fn_rule_allowed_modules <- o .:? "fn_rule_allowed_modules" .!= ["*"]
-                return (FunctionRule {fn_rule_name = fn_rule_name, fn_name = fn_name, arg_no = arg_no, fn_sigs_blocked = fn_sigs_blocked, fns_blocked_in_arg = fns_blocked_in_arg, types_blocked_in_arg = types_blocked_in_arg, types_to_check_in_arg = types_to_check_in_arg, fn_rule_fixes = fn_rule_fixes, fn_rule_exceptions = fn_rule_exceptions, fn_rule_ignore_modules = fn_rule_ignore_modules, fn_rule_allowed_modules = fn_rule_allowed_modules })
+                fn_rule_check_modules <- o .:? "fn_rule_check_modules" .!= ["*"]
+                return (FunctionRule {fn_rule_name = fn_rule_name, fn_name = fn_name, arg_no = arg_no, fn_sigs_blocked = fn_sigs_blocked, fns_blocked_in_arg = fns_blocked_in_arg, types_blocked_in_arg = types_blocked_in_arg, types_to_check_in_arg = types_to_check_in_arg, fn_rule_fixes = fn_rule_fixes, fn_rule_exceptions = fn_rule_exceptions, fn_rule_ignore_modules = fn_rule_ignore_modules, fn_rule_check_modules = fn_rule_check_modules })
 
 data DBRule =
   DBRule 
@@ -366,9 +366,9 @@ getRuleIgnoreModules rule = case rule of
   FunctionRuleT fnRule -> fn_rule_ignore_modules fnRule
   _ -> []
 
-getRuleAllowedModules :: Rule -> Modules
-getRuleAllowedModules rule = case rule of 
-  FunctionRuleT fnRule -> fn_rule_allowed_modules fnRule
+getRuleCheckModules :: Rule -> Modules
+getRuleCheckModules rule = case rule of 
+  FunctionRuleT fnRule -> fn_rule_check_modules fnRule
   _ -> []
 
 noSuggestion :: Suggestions

@@ -251,13 +251,17 @@ main = do
     logError "tag" $ show temp5
     logError "tag" $ show temp6
     
-    let (TU.Number sRes) = num1 TU.-? num2
-        (TU.Number aRes) = num1 TU.+? num2
+    let (TU.Number sRes) = num1 `TU.subtractNumber` num2
+        (TU.Number aRes) = TU.addNumber num1 num2
         (TU.Number mRes) = (TU.*?) Nothing num1 num2
+        (TU.Number n1) = TU.fstArg num1 num2
+        (TU.Number n2) = TU.sndArg num1 num2
 
     print sRes
     print aRes
     print mRes
+    print n1
+    print n2
 
     runKVDB -- Should be error
 

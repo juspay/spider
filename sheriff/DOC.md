@@ -52,7 +52,7 @@ Any additional rules for a package can be provided as `yaml` file. The path to t
 >   fn_rule_ignore_modules:
 >     - ModuleT
 >     - ModuleP
->   fn_rule_allowed_modules:
+>   fn_rule_check_modules:
 >     - ModuleA
 >     - ModuleB
 >```

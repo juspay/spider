@@ -292,9 +292,16 @@ validateFunctionRule rule opts ruleFnName fnName fnNameExpr args expr = do
     then pure [(fnNameExpr, FnUseBlocked ruleFnName rule)]
   else if arg_no rule == 0
     then do
-      typ <- getHsExprTypeWithResolver (logTypeDebugging opts) fnNameExpr
-      let typList = getHsExprTypeAsTypeDataList typ
-      pure . concat $ fmap (\ruleFnSig -> if matchFnSignatures typList ruleFnSig then [(fnNameExpr, FnSigBlocked ruleFnName ruleFnSig rule)] else []) (fn_sigs_blocked rule)
+      -- Check argument types for functions with polymorphic signature
+      argTyps <- concat <$> mapM (\arg -> getHsExprTypeAsTypeDataList <$> getHsExprTypeWithResolver (logTypeDebugging opts) arg) args
+      fnReturnType <- getHsExprTypeAsTypeDataList <$> getHsExprTypeWithResolver (logTypeDebugging opts) expr
+      let fnSigFromArg = argTyps <> fnReturnType
+
+      -- Given function signature
+      fnExprTyp <- getHsExprTypeWithResolver (logTypeDebugging opts) fnNameExpr
+      let fnSigTypList = getHsExprTypeAsTypeDataList fnExprTyp
+
+      pure . concat $ fmap (\ruleFnSig -> if matchFnSignatures fnSigTypList ruleFnSig || matchFnSignatures fnSigFromArg ruleFnSig then [(fnNameExpr, FnSigBlocked ruleFnName ruleFnSig rule)] else []) (fn_sigs_blocked rule)
   else do
     let matches = drop ((arg_no rule) - 1) args
     if length matches == 0
@@ -653,7 +660,7 @@ mkFnBlockedInArgErrorInfo opts lOutsideExpr@(L _ outsideExpr) lInsideExpr@(L _ i
 isAllowedOnCurrentModule :: String -> Rule -> Bool
 isAllowedOnCurrentModule moduleName rule = 
   let ignoredModules = getRuleIgnoreModules rule
-      allowedModules = getRuleAllowedModules rule
+      allowedModules = getRuleCheckModules rule
       isCurrentModuleAllowed = any (matchNamesWithAsterisk moduleName) allowedModules
       isCurrentModuleIgnored = any (matchNamesWithAsterisk moduleName) ignoredModules
   in isCurrentModuleAllowed && not isCurrentModuleIgnored
