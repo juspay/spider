@@ -95,17 +95,17 @@ matchNamesWithAsterisk :: AsteriskMatching -> String -> String -> Bool
 matchNamesWithAsterisk asteriskMatching str1 str2 = 
   let splitList1 = splitOn "." str1
       splitList2 = splitOn "." str2
-  in go splitList1 splitList2
+  in go "" "" splitList1 splitList2
   where
     checkAsteriskInFirst  = (asteriskMatching == AsteriskInFirst || asteriskMatching == AsteriskInBoth)
     checkAsteriskInSecond = (asteriskMatching == AsteriskInSecond || asteriskMatching == AsteriskInBoth)
 
-    go :: [String] -> [String] -> Bool
-    go [] []             = True
-    go (x : xs) []       = x == "*" && checkAsteriskInFirst
-    go [] (y : ys)       = y == "*" && checkAsteriskInSecond
-    go (x : xs) (y : ys) = ((x == "*" && checkAsteriskInFirst) || (y == "*" && checkAsteriskInSecond) || x == y) && go xs ys
-
+    go :: String -> String -> [String] -> [String] -> Bool
+    go lastX lastY [] []             = True
+    go lastX lastY xs []             = lastY == "*" && checkAsteriskInSecond
+    go lastX lastY [] ys             = lastX == "*" && checkAsteriskInFirst
+    go lastX lastY (x : xs) (y : ys) = (x == y || checkAsteriskInFirst && x == "*" || y == "*" && checkAsteriskInSecond) && go x y xs ys
+      
 -- Pretty print haskell internal representation types using `exactprint`
 #if __GLASGOW_HASKELL__ >= 900
 showPrettyPrinted :: (ExactPrint a) => Located a -> String

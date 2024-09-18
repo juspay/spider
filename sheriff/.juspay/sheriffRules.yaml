@@ -107,10 +107,10 @@ rules:
       - "*"
     arg_no: 0
     fn_sigs_blocked:
-      - Number -> TestUtils1.Number -> * # Should not throw Error
-      - Number -> Number -> Number # Should throw Error
-      - TestUtils.Number -> TestUtils.Number -> TestUtils.Number # Should throw Error
-      - Maybe (Either (Maybe (Int)) (Maybe (Int))) -> Number -> Number -> Number # Should throw Error
+      - Number -> TestUtils1.Number -> *
+      - Number -> Number -> Number
+      - TestUtils.Number -> TestUtils.Number -> TestUtils.Number
+      - Maybe (Either (Maybe (Int)) (Maybe (Int))) -> Number -> Number -> Number
     fns_blocked_in_arg: []
     types_blocked_in_arg: []
     types_to_check_in_arg: []
@@ -120,6 +120,7 @@ rules:
     fn_rule_ignore_modules: []
     fn_rule_check_modules:
       - Test1
+      - SubTest.Test1
 
   # - db_rule_name: "DBRuleTest"
   #   table_name: "TxnRiskCheck"
@@ -297,7 +298,8 @@ rules:
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
   #   fn_rule_fixes:
   #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
-  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging."
+  #     - "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
   

@@ -1,5 +1,8 @@
 # Revision history for sheriff
 
+## 0.2.0.4
+* Fix modules names not getting matched due to wildcard support logical bug
+
 ## 0.2.0.3
 * Fix non-exhaustive pattern
 * Fix wildcard character matching for asterisk operator
