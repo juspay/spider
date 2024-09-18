@@ -1,6 +1,7 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 
 module Sheriff.Plugin (plugin) where
 
@@ -216,7 +217,7 @@ noGivenFunctionCallExpansion :: String -> LHsExpr GhcTc -> Bool
 noGivenFunctionCallExpansion fnName expr = case expr of
   (L loc (PatHsWrap _ expr)) -> noGivenFunctionCallExpansion fnName (L loc expr)
   _ -> case getFnNameWithAllArgs expr of
-        Just (lVar, _) -> matchNamesWithModuleName (getLocatedVarNameWithModuleName lVar) fnName -- (getOccString . varName . unLoc $ lVar) == fnName
+        Just (lVar, _) -> matchNamesWithModuleName (getLocatedVarNameWithModuleName lVar) fnName AsteriskInSecond -- (getOccString . varName . unLoc $ lVar) == fnName
         Nothing -> False
 
 -- Simplifies few things and handles some final transformations
@@ -260,7 +261,7 @@ checkAndApplyRule ruleT opts ap = case ruleT of
       Just (fnLocatedVar, args) -> do
         let fnName    = getLocatedVarNameWithModuleName fnLocatedVar
             fnLHsExpr = mkLHsVar fnLocatedVar
-        case (find (\ruleFnName -> matchNamesWithModuleName fnName ruleFnName && length args >= arg_no) ruleFnNames) of
+        case (find (\ruleFnName -> matchNamesWithModuleName fnName ruleFnName AsteriskInSecond && length args >= arg_no) ruleFnNames) of
           Just ruleFnName  -> validateFunctionRule rule opts ruleFnName fnName fnLHsExpr args ap 
           Nothing -> pure []
   GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
@@ -301,7 +302,7 @@ validateFunctionRule rule opts ruleFnName fnName fnNameExpr args expr = do
       fnExprTyp <- getHsExprTypeWithResolver (logTypeDebugging opts) fnNameExpr
       let fnSigTypList = getHsExprTypeAsTypeDataList fnExprTyp
 
-      pure . concat $ fmap (\ruleFnSig -> if matchFnSignatures fnSigTypList ruleFnSig || matchFnSignatures fnSigFromArg ruleFnSig then [(fnNameExpr, FnSigBlocked ruleFnName ruleFnSig rule)] else []) (fn_sigs_blocked rule)
+      pure . concat $ fmap (\ruleFnSig -> if matchFnSignatures fnSigTypList ruleFnSig || matchFnSignatures fnSigFromArg ruleFnSig then [(fnNameExpr, FnSigBlocked fnName ruleFnSig rule)] else []) (fn_sigs_blocked rule)
   else do
     let matches = drop ((arg_no rule) - 1) args
     if length matches == 0
@@ -370,7 +371,7 @@ getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no _ fnsBlocked _ _ _ _ _ 
       when (logDebugInfo opts) $ liftIO $ do
         print "isPresentInBlockedFnList"
         print (ruleFnName, ruleArgNo, ruleAllowedTypes)
-      case matchNamesWithModuleName fnName ruleFnName && length fnArgs >= ruleArgNo of
+      case matchNamesWithModuleName fnName ruleFnName AsteriskInSecond && length fnArgs >= ruleArgNo of
         False -> isPresentInBlockedFnList expr ls fnName fnArgs
         True  -> do
           let reqArg = head $ drop (ruleArgNo - 1) fnArgs
@@ -661,8 +662,8 @@ isAllowedOnCurrentModule :: String -> Rule -> Bool
 isAllowedOnCurrentModule moduleName rule = 
   let ignoredModules = getRuleIgnoreModules rule
       allowedModules = getRuleCheckModules rule
-      isCurrentModuleAllowed = any (matchModNamesWithAsterisk moduleName) allowedModules
-      isCurrentModuleIgnored = any (matchModNamesWithAsterisk moduleName) ignoredModules
+      isCurrentModuleAllowed = any (matchNamesWithAsterisk AsteriskInBoth moduleName) allowedModules
+      isCurrentModuleIgnored = any (matchNamesWithAsterisk AsteriskInBoth moduleName) ignoredModules
   in isCurrentModuleAllowed && not isCurrentModuleIgnored
 
 -- Create GHC compilation error from CompileError

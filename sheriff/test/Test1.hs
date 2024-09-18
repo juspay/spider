@@ -262,6 +262,8 @@ main = do
     print mRes
     print n1
     print n2
+    print (n1 * n2)
+    print ((*) 10 20)
 
     runKVDB -- Should be error
 
@@ -271,6 +273,9 @@ main = do
           $  "merchantId: " <> ", error: " <> T.pack (show (["A", "B"] :: [Text]))
   where
     logErrorT = Test1.logErrorT
+
+(^*^) :: Num a => a -> a -> a
+(^*^) a b = a 
 
 logInfoT :: String -> (forall a b. (IsString b, Show a) => String -> a -> b) -> String
 logInfoT x _ = x

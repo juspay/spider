@@ -371,6 +371,12 @@ getRuleCheckModules rule = case rule of
   FunctionRuleT fnRule -> fn_rule_check_modules fnRule
   _ -> []
 
+getRuleName :: Rule -> String
+getRuleName rule = case rule of
+  FunctionRuleT fnRule -> fn_rule_name fnRule
+  DBRuleT dbRule -> db_rule_name dbRule
+  _ -> "Rule not handled"
+
 noSuggestion :: Suggestions
 noSuggestion = []
 

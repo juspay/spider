@@ -1,5 +1,10 @@
 # Revision history for sheriff
 
+## 0.2.0.3
+* Fix non-exhaustive pattern
+* Fix wildcard character matching for asterisk operator
+* Customizable asterisk matching based on use case
+
 ## 0.2.0.2
 * Remove support for wilcard character "*" in function rules (to be fixed)
 

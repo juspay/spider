@@ -1,8 +1,9 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE AllowAmbiguousTypes #-}
 
 module Sheriff.Utils where
 
@@ -13,7 +14,7 @@ import Control.Monad.IO.Class (MonadIO (..))
 import Data.Aeson
 import Data.Data (Data)
 import Data.Generics.Uniplate.Data
-import Data.List.Extra (splitOn, trim)
+import Data.List.Extra (splitOn, trim, isInfixOf)
 import Data.Maybe (maybe)
 import qualified Data.Text as T
 import Data.Yaml
@@ -54,6 +55,13 @@ import TyCoRep
   Mainly it has generic functions for all - parse, rename and typecheck plugin.
 -}
 
+-- Recursive data type for simpler type representation
+data TypeData = TextTy String | NestedTy [TypeData]
+  deriving (Show, Eq)
+
+data AsteriskMatching = AsteriskInFirst | AsteriskInSecond | AsteriskInBoth
+  deriving (Show, Eq)
+
 -- Debug Show any haskell internal representation type
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
@@ -71,43 +79,32 @@ getNameWithModuleName name =
         Just modName -> (moduleNameString $ moduleName modName) <> "." <> occName
         Nothing -> "NO_MODULE" <> "." <> occName
 
-matchNamesWithModuleName :: String -> String -> Bool
-matchNamesWithModuleName varNameWithModule fnToMatch = 
+matchNamesWithModuleName :: String -> String -> AsteriskMatching -> Bool
+matchNamesWithModuleName varNameWithModule fnToMatch asteriskMatching = 
   let (varModuleName, varName) = splitAtLastChar '.' varNameWithModule
   in case splitAtLastChar '.' fnToMatch of
-      ("", fnName) -> matchNamesWithAsterisk fnName varName
-      (modName, fnName) -> matchModNamesWithAsterisk varModuleName modName && matchNamesWithAsterisk fnName varName
+      ("", fnName) -> matchNamesWithAsterisk asteriskMatching varName fnName
+      (modName, fnName) -> matchNamesWithAsterisk AsteriskInBoth varModuleName modName && matchNamesWithAsterisk asteriskMatching varName fnName
   where
     splitAtLastChar :: Char -> String -> (String, String)
     splitAtLastChar ch str = 
       let (before, after) = break (== ch) (reverse str)
       in (reverse (drop 1 after), reverse before) 
 
--- TODO: Use some other special character for wildcard
-matchNamesWithAsterisk :: String -> String -> Bool
-matchNamesWithAsterisk str1 str2 = 
+matchNamesWithAsterisk :: AsteriskMatching -> String -> String -> Bool
+matchNamesWithAsterisk asteriskMatching str1 str2 = 
   let splitList1 = splitOn "." str1
       splitList2 = splitOn "." str2
   in go splitList1 splitList2
   where
-    go :: [String] -> [String] -> Bool
-    go [] []             = True
-    -- go (x : xs) []       = x == "*"
-    -- go [] (y : ys)       = y == "*"
-    -- go (x : xs) (y : ys) = x == "*" || y == "*" || x == y && go xs ys
-    go (x : xs) (y : ys) = x == y && go xs ys
+    checkAsteriskInFirst  = (asteriskMatching == AsteriskInFirst || asteriskMatching == AsteriskInBoth)
+    checkAsteriskInSecond = (asteriskMatching == AsteriskInSecond || asteriskMatching == AsteriskInBoth)
 
-matchModNamesWithAsterisk :: String -> String -> Bool
-matchModNamesWithAsterisk str1 str2 = 
-  let splitList1 = splitOn "." str1
-      splitList2 = splitOn "." str2
-  in go splitList1 splitList2
-  where
     go :: [String] -> [String] -> Bool
     go [] []             = True
-    go (x : xs) []       = x == "*"
-    go [] (y : ys)       = y == "*"
-    go (x : xs) (y : ys) = x == "*" || y == "*" || x == y && go xs ys
+    go (x : xs) []       = x == "*" && checkAsteriskInFirst
+    go [] (y : ys)       = y == "*" && checkAsteriskInSecond
+    go (x : xs) (y : ys) = ((x == "*" && checkAsteriskInFirst) || (y == "*" && checkAsteriskInSecond) || x == y) && go xs ys
 
 -- Pretty print haskell internal representation types using `exactprint`
 #if __GLASGOW_HASKELL__ >= 900
@@ -291,10 +288,6 @@ getHsExprType logTypeDebugging expr = do
 getHsExprTypeWithResolver :: Bool -> LHsExpr GhcTc -> TcM Type
 getHsExprTypeWithResolver logTypeDebugging expr = deNoteType <$> getHsExprType logTypeDebugging expr
 
--- Recursive data type for simpler type representation
-data TypeData = TextTy String | NestedTy [TypeData]
-    deriving (Show, Eq)
-
 -- TODO: Add support for matching constraints
 -- Get Qualified Types as List
 getHsExprTypeAsTypeDataList :: Type -> [TypeData]
@@ -337,7 +330,7 @@ matchFnSignatures exprSig ruleSig =
       | x == TextTy "*" = go xs ys
       | y == TextTy "*" = go xs ys
       | otherwise = case (x, y) of
-        (TextTy a, TextTy b)     -> matchNamesWithModuleName a b && go xs ys
+        (TextTy a, TextTy b)     -> matchNamesWithModuleName a b AsteriskInBoth && go xs ys
         (NestedTy a, NestedTy b) -> go a b && go xs ys
         _                        -> False
 
