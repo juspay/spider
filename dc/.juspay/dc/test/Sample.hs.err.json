@@ -1,0 +1,14 @@
+{
+    "proxyFunction": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 13,
+            "src_span_endl": 8,
+            "src_span_name": "test/Sample.hs",
+            "src_span_startC": 5,
+            "src_span_startl": 8
+        }
+    ]
+}

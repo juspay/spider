@@ -84,6 +84,7 @@ checkIntegrity opts modSummary tcEnv = do
           FunctionCheck (FunctionCheckConfig{..}) -> do
             if moduleName' == moduleNameToCheck then do
               let exprsC = foldl (\acc (val) -> acc ++ getErrorrs val ) [] exprs
+              -- liftIO $ print ("Module Name found" ++ moduleNameToCheck ++ "  " ++  show exprs )
               addErrs $ map (mkGhcCompileError) (exprsC)
             else do
               let exprsC = foldl (\acc (val) -> HM.union acc (getFuncs val) ) HM.empty exprs
@@ -391,9 +392,12 @@ checkInOtherModsWithoutErrorFuns allPaths checkerCase moduleName' fun@(FunctionI
     FunctionCheck _ ->
       if module_name fun ==  moduleName' || "_in" == module_name fun then pure []
       else do
+        -- print ("Dnct", fun)
         let newFileName = "/" ++ (intercalate "/" . splitOn "." $ y) ++ ".hs.err.json"
         filterNames <- liftIO $ filterM (\pos -> doesFileExist (prefixPath ++ pos ++ newFileName)) allPaths
-        let orgName = if null filterNames then ("test" ++ newFileName) else prefixPath ++ head filterNames ++ newFileName
+        -- print ("Dnct", filterNames)
+        let orgName = if null filterNames then (prefixPath ++ "test" ++ newFileName) else prefixPath ++ head filterNames ++ newFileName
+        -- print ("Org", orgName)
         fileContents <- liftIO $ (try $ B.readFile orgName :: IO (Either SomeException B.ByteString))
         pure $ either (\_ -> []) (\contents -> 
             maybe []

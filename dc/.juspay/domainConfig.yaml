@@ -1,0 +1,7 @@
+tag: FunctionCheck
+contents:
+  listOfRestrictedFuns:
+    - "throwExceptionV2"
+    - "throwErr"
+  moduleNameToCheck: "Main"
+  funNameToCheck: "testParentFunction"

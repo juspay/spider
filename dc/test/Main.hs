@@ -1,4 +1,13 @@
 module Main (main) where
 
+import Sample
+
 main :: IO ()
-main = putStrLn "Test suite not yet implemented."
+main = do
+    let s = testParentFunction
+    putStrLn "Test suite not ye implemented."
+
+testParentFunction :: String
+testParentFunction = proxyFunction
+
+

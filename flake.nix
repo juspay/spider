@@ -61,6 +61,7 @@
           settings = {
             beam-core.jailbreak = true;
             sheriff.check = false;
+            dc.check = false;
           };
           devShell = {
             mkShellArgs = {
@@ -110,6 +111,7 @@
             #     jailbreak = true;
             # };
             sheriff.check = false;
+            dc.check = false;
           };
 
           devShell = {
