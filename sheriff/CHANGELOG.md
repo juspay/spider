@@ -1,5 +1,10 @@
 # Revision history for sheriff
 
+## 0.2.0.6
+* Refactor test cases in cabal file to use smaller test suites
+* Revert functionality to provide sheriff plugin opt in single module
+* Refactor plugin to split types modules
+
 ## 0.2.0.5
 * Refactor test cases to different sub test cases instead of single test file
 * Add functionality to provide sheriff plugin opt in single module

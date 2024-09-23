@@ -9,9 +9,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
--- {-# OPTIONS_GHC -fplugin-opt=Sheriff.Plugin:throwCompilationError=false #-} -- Uncomment to disable compilation error throw
-
-module Test2 where
+module Exceptions where
 
 import           Control.Concurrent (threadDelay)
 import qualified Sheriff.Plugin ()

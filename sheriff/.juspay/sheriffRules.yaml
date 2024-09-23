@@ -125,7 +125,7 @@ rules:
     fn_rule_exceptions: []
     fn_rule_ignore_modules:
       - TestUtils
-      - Test2
+      - Exceptions
 
   # We should get the errors for below functions two times only in Test1
   - fn_rule_name: Test Allowed Modules
@@ -137,6 +137,7 @@ rules:
     types_blocked_in_arg: []
     types_to_check_in_arg: []
     fn_rule_fixes:
+      - Check Allowed Modules
       - You are not allowed to use helper function `throwException` from `TestUtils` module.
       - Use `throwExceptionV2` or `throwExceptionV4` function from `TestUtils` module.
     fn_rule_exceptions: []

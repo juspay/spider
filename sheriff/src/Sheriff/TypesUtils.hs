@@ -176,10 +176,18 @@ updateValInOpts key val currentOpts = case key of
       Nothing -> currentOpts
   _ -> currentOpts
 
+{- Note: We do not allow sheriff plugin opts in individual module as of now
 decodeAndUpdateOpts :: [String] -> PluginOpts -> PluginOpts
 decodeAndUpdateOpts [] currentOpts       = currentOpts
 decodeAndUpdateOpts (x : xs) currentOpts = case A.decode (Char8.pack x) of
-                                          Just decodedOpts -> decodeAndUpdateOpts xs decodedOpts
-                                          Nothing -> case (splitOn "=" x) of
-                                                      (key:val:[]) -> decodeAndUpdateOpts xs (updateValInOpts key val currentOpts)
-                                                      _ -> decodeAndUpdateOpts xs currentOpts
+                                            Just decodedOpts -> decodeAndUpdateOpts xs decodedOpts
+                                            Nothing -> case (splitOn "=" x) of
+                                                        (key:val:[]) -> decodeAndUpdateOpts xs (updateValInOpts key val currentOpts)
+                                                        _ -> decodeAndUpdateOpts xs currentOpts
+-}
+
+decodeAndUpdateOpts :: [String] -> PluginOpts -> PluginOpts
+decodeAndUpdateOpts [] currentOpts       = currentOpts
+decodeAndUpdateOpts (x : xs) currentOpts = case A.decode (Char8.pack x) of
+                                            Just decodedOpts -> decodedOpts
+                                            Nothing -> currentOpts
