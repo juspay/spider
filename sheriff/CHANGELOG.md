@@ -1,5 +1,11 @@
 # Revision history for sheriff
 
+## 0.2.0.5
+* Refactor test cases to different sub test cases instead of single test file
+* Add functionality to provide sheriff plugin opt in single module
+* Refactor & Re-enable log rules check as a subtest
+* Add -fkeep-going to keep testing individual sub-test despite compilation error
+
 ## 0.2.0.4
 * Fix modules names not getting matched due to wildcard support logical bug
 

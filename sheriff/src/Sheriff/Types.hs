@@ -3,8 +3,10 @@ module Sheriff.Types where
 import Sheriff.Utils
 import Data.Aeson as A
 import Control.Applicative ((<|>))
+import qualified Data.ByteString.Lazy.Char8 as Char8
 import Data.Text (unpack)
 import Data.Data (Data)
+import Data.List.Extra (splitOn)
 
 #if __GLASGOW_HASKELL__ >= 900
 import GHC.Types.SrcLoc
@@ -80,6 +82,89 @@ instance FromJSON PluginOpts where
       logTypeDebugging = logTypeDebugging ,
       useIOForSourceCode = useIOForSourceCode
       }
+
+updateValInOpts :: String -> String -> PluginOpts -> PluginOpts
+updateValInOpts key val currentOpts = case key of
+  "saveToFile" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {saveToFile = v}
+      Nothing -> currentOpts
+  "throwCompilationError" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {throwCompilationError = v}
+      Nothing -> currentOpts
+  "failOnFileNotFound" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {failOnFileNotFound = v}
+      Nothing -> currentOpts
+  "savePath" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {savePath = v}
+      Nothing -> currentOpts
+  "indexedKeysPath" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {indexedKeysPath = v}
+      Nothing -> currentOpts
+  "rulesConfigPath" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {rulesConfigPath = v}
+      Nothing -> currentOpts
+  "exceptionsConfigPath" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {exceptionsConfigPath = v}
+      Nothing -> currentOpts
+  "matchAllInsideAnd" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {matchAllInsideAnd = v}
+      Nothing -> currentOpts
+  "shouldCheckExceptions" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {shouldCheckExceptions = v}
+      Nothing -> currentOpts
+  "logDebugInfo" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {logDebugInfo = v}
+      Nothing -> currentOpts
+  "logWarnInfo" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {logWarnInfo = v}
+      Nothing -> currentOpts
+  "logTypeDebugging" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {logTypeDebugging = v}
+      Nothing -> currentOpts
+  "useIOForSourceCode" -> 
+    case decode (Char8.pack val) of
+      Just v -> currentOpts {useIOForSourceCode = v}
+      Nothing -> currentOpts
+  _ -> currentOpts
+
+updateOptsInOpts :: PluginOpts -> PluginOpts -> PluginOpts
+updateOptsInOpts newOpts oldOpts =
+  oldOpts {
+    saveToFile = saveToFile newOpts,
+    throwCompilationError = throwCompilationError newOpts,
+    failOnFileNotFound = failOnFileNotFound newOpts,
+    savePath = savePath newOpts,
+    indexedKeysPath = indexedKeysPath newOpts,
+    rulesConfigPath = rulesConfigPath newOpts,
+    exceptionsConfigPath = exceptionsConfigPath newOpts,
+    matchAllInsideAnd = matchAllInsideAnd newOpts,
+    shouldCheckExceptions = shouldCheckExceptions newOpts,
+    logDebugInfo = logDebugInfo newOpts,
+    logWarnInfo = logWarnInfo newOpts,
+    logTypeDebugging = logTypeDebugging newOpts,
+    useIOForSourceCode = useIOForSourceCode newOpts
+  }
+
+decodeAndUpdateOpts :: [String] -> PluginOpts -> PluginOpts
+decodeAndUpdateOpts [] currentOpts       = currentOpts
+decodeAndUpdateOpts (x : xs) currentOpts = case A.decode (Char8.pack x) of
+                                          Just decodedOpts -> decodeAndUpdateOpts xs (updateOptsInOpts decodedOpts currentOpts)
+                                          Nothing -> case (splitOn "=" x) of
+                                                      (key:val:[]) -> decodeAndUpdateOpts xs (updateValInOpts key val currentOpts)
+                                                      _ -> decodeAndUpdateOpts xs currentOpts
+
 
 data SheriffRules = SheriffRules
   { rules :: Rules

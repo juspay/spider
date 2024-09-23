@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               sheriff
-version:            0.2.0.4
+version:            0.2.0.5
 synopsis:           A checker plugin to throw compilation errors based on given rules; basically what a `Sheriff` does
 license:            MIT
 license-file:       LICENSE
@@ -71,9 +71,12 @@ test-suite sheriff-test
     hs-source-dirs:   test
     main-is:          Main.hs
     other-modules:
-        SubTest.Test1
-        Test1
+        SubTests.ShowTest
+        SubTests.LogTest
+        SubTests.FunctionUseTest
         TestUtils
+        Test1
+        Test2
     build-depends:
           sheriff
         , aeson
@@ -87,9 +90,11 @@ test-suite sheriff-test
         ghc-options: 
             -- Plugin Options available (default values)
             -- {"saveToFile":false,"throwCompilationError":true,"failOnFileNotFound":true,"matchAllInsideAnd":false",savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/indexedKeys.yaml","rulesConfigPath":".juspay/sheriffRules.yaml","exceptionsConfigPath":".juspay/sheriffExceptionRules.yaml","logDebugInfo":false,"logWarnInfo":true,"logTypeDebugging":false,"useIOForSourceCode":false}
+            -fkeep-going
             -fplugin=Sheriff.Plugin 
             -fplugin-opt=Sheriff.Plugin:{"throwCompilationError":true,"saveToFile":true,"savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/indexedKeys.yaml","failOnFileNotFound":true,"matchAllInsideAnd":true,"logDebugInfo":false,"logTypeDebugging":false,"useIOForSourceCode":true}
             -dumpdir=.juspay/tmp/sheriff/ -ddump-to-file -ddump-parsed-ast -ddump-tc-ast
     else
         ghc-options: 
+            -fkeep-going
             -fplugin=Sheriff.Plugin

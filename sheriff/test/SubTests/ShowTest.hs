@@ -1,4 +1,5 @@
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -7,9 +8,8 @@
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DuplicateRecordFields #-}
-{-# OPTIONS_GHC -fplugin-opt=Sheriff.Plugin:throwCompilationError=false #-}
 
-module Test1 where
+module SubTests.ShowTest where
 
 import qualified Sheriff.Plugin ()
 import qualified TestUtils as TU
@@ -207,36 +207,23 @@ throwException = ()
 
 main :: IO ()
 main = do
-    putStrLn "Test suite not yet implemented."
     print ("HI there" :: String)
     let obAT1 = "Dummy"
     let b = logInfoT "tester" logger
-    logError "tag" $ show obC1
-    logError "tag" $ show en
-    logErrorT "tag" $ encodeJSON en
-    logError "tag" $ show en2
-    logErrorT (T.pack $ show "tag") $ encodeJSON en2
-    logError "tag" $ show en3
-    logErrorT "tag" $ encodeJSON en3
-    logError "tag" $ show (en, "This is Text" :: String)
-    logErrorT "tag" $ encodeJSON (en, "This is Text" :: String)
-    logError "tag" $ show (en, 20 :: Int) -- Should not throw error because of show is allowed on both enums and int
-    logErrorT "tag" $ encodeJSON (en, 20 :: Int) -- Should throw error because of encodeJSON
-    logError "tag" $ obAT1 <> show Test1.obAT1
-    fn $ logError "tag2" $ show obA
-    fn $ logError "tag2" $ ("Hello" <> show obA)
-    forkErrorLog "tag2" $ ("Hello" <> (show $ addQuotes "Testing forkErrorLog"))
-    forkErrorLog "tag2" $ T.pack $ show "Testing Multiple dollar"
-    noLogFn "tag2" $ ("Hello" <> (show $ addQuotes "Testing Show on text"))
-
-    logDebug ("Some Tag" :: Text) (show "This to print")
-
-    -- Test for Qualified Function Names Rules
-    print $ TU.throwException "Hello" -- should throw error
-    print throwException -- should NOT throw error
-    print $ TU.throwExceptionV2 "Hello" -- should throw error as part of combined rule "Hello"
-    print $ TU.throwExceptionV3 "Hello"
-    print $ TU.throwExceptionV4 "Hello" -- should throw error as part of combined rule "Hello"
+        !_ = show obC1
+        !_ = show en
+        !_ = show en2
+        !_ = (T.pack $ show "tag")
+        !_ = show en3
+        !_ = show (en, "This is Text" :: String)
+        !_ = show (en, 20 :: Int) -- Should not throw error because of show is allowed on both enums and int
+        !_ = obAT1 <> show SubTests.ShowTest.obAT1
+        !_ = fn $ pure $ show obA
+        !_ = fn $ pure $ ("Hello" <> show obA)
+        !_ = ("Hello" <> (show $ addQuotes "Testing forkErrorLog"))
+        !_ = T.pack $ show "Testing Multiple dollar"
+        !_ = ("Hello" <> (show $ addQuotes "Testing Show on text"))
+        !_ = (show "This to print")
 
     print $ show temp
     print $ show temp1
@@ -248,33 +235,15 @@ main = do
     print $ show temp3
     print $ show temp4
     print $ show $ dbf1 db1
-    logError "tag" $ show en2 <> show obA
-    logError "tag" $ show en <> show obB
-    logError "tag" $ show temp5
-    logError "tag" $ show temp6
-    
-    let (TU.Number sRes) = num1 `TU.subtractNumber` num2
-        (TU.Number aRes) = TU.addNumber num1 num2
-        (TU.Number mRes) = (TU.*?) Nothing num1 num2
-        (TU.Number n1) = TU.fstArg num1 num2
-        (TU.Number n2) = TU.sndArg num1 num2
-
-    print sRes
-    print aRes
-    print mRes
-    print n1
-    print n2
-    print (n1 * n2)
-    print ((*) 10 20)
-
-    runKVDB -- Should be error
-
-    logDebugT "validateMandate" $ "effective limit is: " <> T.pack (show 10) <> ", custom limit for key: " <> " is " <> T.pack (show (Just ("Hello" :: Text)))
-
-    logErrorT "Incorrect Feature in DB" 
-          $  "merchantId: " <> ", error: " <> T.pack (show (["A", "B"] :: [Text]))
+    let !_ = show en2 <> show obA
+        !_ = show en <> show obB
+        !_ = show temp5
+        !_ = show temp6
+        !_ = "effective limit is: " <> T.pack (show 10) <> ", custom limit for key: " <> " is " <> T.pack (show (Just ("Hello" :: Text)))
+        !_ = "merchantId: " <> ", error: " <> T.pack (show (["A", "B"] :: [Text]))
+    pure ()
   where
-    logErrorT = Test1.logErrorT
+    logErrorT = SubTests.ShowTest.logErrorT
 
 (^*^) :: Num a => a -> a -> a
 (^*^) a b = a * b
@@ -306,9 +275,9 @@ temp5 = []
 temp6 :: [EnumT2]
 temp6 = []
 
-fn :: IO () -> IO ()
+fn :: IO String -> IO ()
 fn x = do
-    _ <- x
+    !_ <- x
     pure ()
 
 -- myFun :: A -> IO Text

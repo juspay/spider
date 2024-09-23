@@ -1,4 +1,5 @@
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -8,7 +9,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 
-module SubTest.Test1 where
+module SubTests.FunctionUseTest where
 
 import qualified Sheriff.Plugin ()
 import qualified TestUtils as TU
@@ -210,25 +211,6 @@ main = do
     print ("HI there" :: String)
     let obAT1 = "Dummy"
     let b = logInfoT "tester" logger
-    logError "tag" $ show obC1
-    logError "tag" $ show en
-    logErrorT "tag" $ encodeJSON en
-    logError "tag" $ show en2
-    logErrorT (T.pack $ show "tag") $ encodeJSON en2
-    logError "tag" $ show en3
-    logErrorT "tag" $ encodeJSON en3
-    logError "tag" $ show (en, "This is Text" :: String)
-    logErrorT "tag" $ encodeJSON (en, "This is Text" :: String)
-    logError "tag" $ show (en, 20 :: Int) -- Should not throw error because of show is allowed on both enums and int
-    logErrorT "tag" $ encodeJSON (en, 20 :: Int) -- Should throw error because of encodeJSON
-    logError "tag" $ obAT1 <> show SubTest.Test1.obAT1
-    fn $ logError "tag2" $ show obA
-    fn $ logError "tag2" $ ("Hello" <> show obA)
-    forkErrorLog "tag2" $ ("Hello" <> (show $ addQuotes "Testing forkErrorLog"))
-    forkErrorLog "tag2" $ T.pack $ show "Testing Multiple dollar"
-    noLogFn "tag2" $ ("Hello" <> (show $ addQuotes "Testing Show on text"))
-
-    logDebug ("Some Tag" :: Text) (show "This to print")
 
     -- Test for Qualified Function Names Rules
     print $ TU.throwException "Hello" -- should throw error
@@ -236,21 +218,6 @@ main = do
     print $ TU.throwExceptionV2 "Hello" -- should throw error as part of combined rule "Hello"
     print $ TU.throwExceptionV3 "Hello"
     print $ TU.throwExceptionV4 "Hello" -- should throw error as part of combined rule "Hello"
-
-    print $ show temp
-    print $ show temp1
-    print $ (show) (temp1)
-    print $ show temp2
-    print $ show en2
-    print $ show en21
-    print $ show en22
-    print $ show temp3
-    print $ show temp4
-    print $ show $ dbf1 db1
-    logError "tag" $ show en2 <> show obA
-    logError "tag" $ show en <> show obB
-    logError "tag" $ show temp5
-    logError "tag" $ show temp6
     
     let (TU.Number sRes) = num1 `TU.subtractNumber` num2
         (TU.Number aRes) = TU.addNumber num1 num2
@@ -267,13 +234,8 @@ main = do
     print ((*) 10 20)
 
     runKVDB -- Should be error
-
-    logDebugT "validateMandate" $ "effective limit is: " <> T.pack (show 10) <> ", custom limit for key: " <> " is " <> T.pack (show (Just ("Hello" :: Text)))
-
-    logErrorT "Incorrect Feature in DB" 
-          $  "merchantId: " <> ", error: " <> T.pack (show (["A", "B"] :: [Text]))
   where
-    logErrorT = SubTest.Test1.logErrorT
+    logErrorT = SubTests.FunctionUseTest.logErrorT
 
 (^*^) :: Num a => a -> a -> a
 (^*^) a b = a * b
@@ -309,9 +271,3 @@ fn :: IO () -> IO ()
 fn x = do
     _ <- x
     pure ()
-
--- myFun :: A -> IO Text
--- myFun ob = do
---     let (A x y) = ob
---         res1 = A x "Modified"
---         res2 = encodeJSON 

@@ -102,10 +102,8 @@ sheriff :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 sheriff opts modSummary tcEnv = do
   -- STAGE-1
   let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
-      pluginOpts@PluginOpts{..} = case opts of
-                                    []      -> defaultPluginOpts
-                                    (x : _) -> fromMaybe defaultPluginOpts $ A.decode (Char8.pack x)
-
+      pluginOpts@PluginOpts{..} = decodeAndUpdateOpts opts defaultPluginOpts
+      
   -- parse the yaml file from the path given
   parsedYaml <- liftIO $ parseYAMLFile indexedKeysPath
 
