@@ -1,13 +1,15 @@
-{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE BangPatterns #-}
-{-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StandaloneDeriving #-}
+
+-- {-# OPTIONS_GHC -fplugin-opt=Sheriff.Plugin:throwCompilationError=false #-} -- Uncomment to disable compilation error throw
 
 module SubTests.FunctionUseTest where
 

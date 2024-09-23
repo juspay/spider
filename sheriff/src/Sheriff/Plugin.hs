@@ -2,14 +2,17 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Sheriff.Plugin (plugin) where
 
 -- Sheriff imports
-import Sheriff.Types
-import Sheriff.Rules
-import Sheriff.Utils
+import Sheriff.CommonTypes
 import Sheriff.Patterns
+import Sheriff.Rules
+import Sheriff.Types
+import Sheriff.TypesUtils
+import Sheriff.Utils
 
 -- GHC imports
 import Control.Applicative ((<|>))
@@ -103,7 +106,7 @@ sheriff opts modSummary tcEnv = do
   -- STAGE-1
   let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
       pluginOpts@PluginOpts{..} = decodeAndUpdateOpts opts defaultPluginOpts
-      
+
   -- parse the yaml file from the path given
   parsedYaml <- liftIO $ parseYAMLFile indexedKeysPath
 
@@ -245,14 +248,14 @@ isBadExprHelper rules opts ap = concat <$> mapM (\rule -> checkAndApplyRule rule
 -- Check if a particular rule applies to given expr
 checkAndApplyRule :: Rule -> PluginOpts -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 checkAndApplyRule ruleT opts ap = case ruleT of
-  DBRuleT rule@(DBRule _ ruleTableName _ _ _) ->
+  DBRuleT rule@(DBRule {table_name = ruleTableName}) ->
     case ap of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
         case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
           True  -> validateDBRule rule opts (showS tblName) exprs ap
           False -> pure []
       _ -> pure []
-  FunctionRuleT rule@(FunctionRule _ ruleFnNames arg_no _ _ _ _ _ _ _ _) -> do
+  FunctionRuleT rule@(FunctionRule {fn_name = ruleFnNames, arg_no}) -> do
     let res = getFnNameWithAllArgs ap
     case res of
       Nothing                   -> pure []
@@ -262,6 +265,7 @@ checkAndApplyRule ruleT opts ap = case ruleT of
         case (find (\ruleFnName -> matchNamesWithModuleName fnName ruleFnName AsteriskInSecond && length args >= arg_no) ruleFnNames) of
           Just ruleFnName  -> validateFunctionRule rule opts ruleFnName fnName fnLHsExpr args ap 
           Nothing -> pure []
+  InfiniteRecursionRuleT rule -> pure [] --TODO: Add handling of infinite recursion rule
   GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
 
 --------------------------- Function Rule Validation Logic ---------------------------
@@ -344,7 +348,7 @@ validateType argTyp typs = showS argTyp `elem` typs
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
 getBlockedFnsList :: PluginOpts -> LHsExpr GhcTc -> FunctionRule -> TcM [(LHsExpr GhcTc, String, String)] 
-getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no _ fnsBlocked _ _ _ _ _ _) = do
+getBlockedFnsList opts arg rule@(FunctionRule { arg_no, fns_blocked_in_arg = fnsBlocked }) = do
   let argHsExprs = traverseAst arg :: [LHsExpr GhcTc]
       fnApps = filter isFunApp argHsExprs
   when (logDebugInfo opts) $ liftIO $ do

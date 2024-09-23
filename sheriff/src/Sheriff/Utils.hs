@@ -23,6 +23,7 @@ import GHC.Hs.Dump
 import GHC.Hs.Extension
 import Language.Haskell.GHC.ExactPrint (exactPrint)
 import Sheriff.Patterns
+import Sheriff.CommonTypes
 
 #if __GLASGOW_HASKELL__ >= 900
 import GHC.Core.TyCo.Rep
@@ -54,13 +55,6 @@ import TyCoRep
   These are the common utility functions which can be used for building any plugin of any sort
   Mainly it has generic functions for all - parse, rename and typecheck plugin.
 -}
-
--- Recursive data type for simpler type representation
-data TypeData = TextTy String | NestedTy [TypeData]
-  deriving (Show, Eq)
-
-data AsteriskMatching = AsteriskInFirst | AsteriskInSecond | AsteriskInBoth
-  deriving (Show, Eq)
 
 -- Debug Show any haskell internal representation type
 showS :: (Outputable a) => a -> String
@@ -337,35 +331,6 @@ matchFnSignatures exprSig ruleSig =
 -- Get name of the variable
 getVarName :: IdP GhcTc -> String
 getVarName var = occNameString . occName $ var
-
-#if __GLASGOW_HASKELL__ >= 900
-type family PassMonad (p :: Pass) a
-type instance PassMonad 'Parsed a = Hsc a
-type instance PassMonad 'Renamed a = TcRn a
-type instance PassMonad 'Typechecked a = TcM a
-#else
-data MyGhcPass (p :: Pass) where
-  GhcPs :: MyGhcPass 'Parsed 
-  GhcRn :: MyGhcPass 'Renamed
-  GhcTc :: MyGhcPass 'Typechecked
-
-class IsPass (p :: Pass) where
-  ghcPass :: MyGhcPass p
-
-instance IsPass 'Parsed where
-  ghcPass = GhcPs
-
-instance IsPass 'Renamed where
-  ghcPass = GhcRn
-
-instance IsPass 'Typechecked where
-  ghcPass = GhcTc
-
-type family PassMonad (p :: Pass) a
-type instance PassMonad 'Parsed a = Hsc a
-type instance PassMonad 'Renamed a = TcRn a
-type instance PassMonad 'Typechecked a = TcM a
-#endif
 
 -- Generic function to get type for a LHsExpr (GhcPass p) at any compilation phase p
 getHsExprTypeGeneric :: forall p m. (IsPass p) => Bool -> LHsExpr (GhcPass p) -> PassMonad p (Maybe Type)

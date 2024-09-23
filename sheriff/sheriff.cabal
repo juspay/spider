@@ -41,10 +41,12 @@ library
     exposed-modules:    
         Sheriff.Plugin
     other-modules: 
-        Sheriff.Types
-        Sheriff.Rules
-        Sheriff.Utils
+        Sheriff.CommonTypes
         Sheriff.Patterns
+        Sheriff.Rules
+        Sheriff.Types
+        Sheriff.TypesUtils
+        Sheriff.Utils
     build-depends:
         bytestring
         , containers
@@ -71,9 +73,10 @@ test-suite sheriff-test
     hs-source-dirs:   test
     main-is:          Main.hs
     other-modules:
-        SubTests.ShowTest
-        SubTests.LogTest
         SubTests.FunctionUseTest
+        SubTests.InfiniteRecursionTest
+        SubTests.LogTest
+        SubTests.ShowTest
         TestUtils
         Test1
         Test2

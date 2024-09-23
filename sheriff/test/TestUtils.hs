@@ -1,3 +1,5 @@
+-- {-# OPTIONS_GHC -fplugin-opt=Sheriff.Plugin:throwCompilationError=false #-} -- Uncomment to disable compilation error throw
+
 module TestUtils where
 
 import Data.Text
