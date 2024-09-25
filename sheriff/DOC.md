@@ -21,8 +21,8 @@ Any additional rules for a package can be provided as `yaml` file. The path to t
 >   fn_name: "<Function Name: can be Qualified as \"A.fn1\" or Unqualified as \"fn1\">"
 >   arg_no: 1
 >   fns_blocked_in_arg:
->     - ModuleA.dummyFn
->     - dummyFn2
+>     - [ModuleA.dummyFn, 0, []]
+>     - [dummyFn2, 0, []]
 >   types_blocked_in_arg:
 >     - String
 >     - Text
@@ -52,6 +52,9 @@ Any additional rules for a package can be provided as `yaml` file. The path to t
 >   fn_rule_ignore_modules:
 >     - ModuleT
 >     - ModuleP
+>   fn_rule_check_modules:
+>     - ModuleA
+>     - ModuleB
 >```
 
 > Structure of DB Rules:

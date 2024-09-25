@@ -8,12 +8,11 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DuplicateRecordFields #-}
 
-module Test1 where
+module SubTest.Test1 where
 
 import qualified Sheriff.Plugin ()
 import qualified TestUtils as TU
 import qualified TestUtils
-import qualified SubTest.Test1 as SubTest1
 import Data.Text as T
 import qualified Data.Text.Lazy as DTL
 import qualified Data.Text.Encoding as DTE
@@ -222,7 +221,7 @@ main = do
     logErrorT "tag" $ encodeJSON (en, "This is Text" :: String)
     logError "tag" $ show (en, 20 :: Int) -- Should not throw error because of show is allowed on both enums and int
     logErrorT "tag" $ encodeJSON (en, 20 :: Int) -- Should throw error because of encodeJSON
-    logError "tag" $ obAT1 <> show Test1.obAT1
+    logError "tag" $ obAT1 <> show SubTest.Test1.obAT1
     fn $ logError "tag2" $ show obA
     fn $ logError "tag2" $ ("Hello" <> show obA)
     forkErrorLog "tag2" $ ("Hello" <> (show $ addQuotes "Testing forkErrorLog"))
@@ -274,7 +273,7 @@ main = do
     logErrorT "Incorrect Feature in DB" 
           $  "merchantId: " <> ", error: " <> T.pack (show (["A", "B"] :: [Text]))
   where
-    logErrorT = Test1.logErrorT
+    logErrorT = SubTest.Test1.logErrorT
 
 (^*^) :: Num a => a -> a -> a
 (^*^) a b = a * b

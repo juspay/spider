@@ -68,7 +68,60 @@ rules:
     fn_rule_exceptions: []
     fn_rule_ignore_modules:
       - TestUtils
-      
+
+  - fn_rule_name: Test Multiple Function Names in Single Rule
+    fn_name: 
+      - TestUtils.throwExceptionV2
+      - TestUtils.throwExceptionV4
+    arg_no: 0
+    fns_blocked_in_arg: []
+    types_blocked_in_arg: []
+    types_to_check_in_arg: []
+    fn_rule_fixes:
+      - You are not allowed to use helper function `throwException` from `TestUtils` module.
+      - Use `throwExceptionV2` or `throwExceptionV4` function from `TestUtils` module.
+    fn_rule_exceptions: []
+    fn_rule_ignore_modules:
+      - TestUtils
+
+  # We should get the errors for below functions two times only in Test1
+  - fn_rule_name: Test Allowed Modules
+    fn_name:
+      - throwExceptionV2
+      - TestUtils.throwExceptionV4
+    arg_no: 0
+    fns_blocked_in_arg: []
+    types_blocked_in_arg: []
+    types_to_check_in_arg: []
+    fn_rule_fixes:
+      - You are not allowed to use helper function `throwException` from `TestUtils` module.
+      - Use `throwExceptionV2` or `throwExceptionV4` function from `TestUtils` module.
+    fn_rule_exceptions: []
+    fn_rule_ignore_modules: []
+    fn_rule_check_modules:
+      - "Test1"
+    
+  # We should get error for usage of any function with Number type
+  - fn_rule_name: Test Functions usage blocked having any function name with given signature
+    fn_name:
+      - "*"
+    arg_no: 0
+    fn_sigs_blocked:
+      - Number -> TestUtils1.Number -> *
+      - Number -> Number -> Number
+      - TestUtils.Number -> TestUtils.Number -> TestUtils.Number
+      - Maybe (Either (Maybe (Int)) (Maybe (Int))) -> Number -> Number -> Number
+    fns_blocked_in_arg: []
+    types_blocked_in_arg: []
+    types_to_check_in_arg: []
+    fn_rule_fixes:
+      - Contact senior dev for the solution.
+    fn_rule_exceptions: []
+    fn_rule_ignore_modules: []
+    fn_rule_check_modules:
+      - Test1
+      - SubTest.Test1
+
   # - db_rule_name: "DBRuleTest"
   #   table_name: "TxnRiskCheck"
   #   indexed_cols_names: 
@@ -107,12 +160,25 @@ rules:
   # - fn_rule_name: "LogRule"
   #   fn_name: "logError"
   #   arg_no: 2
-  #   fns_blocked_in_arg: [["show", 1, ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]], ["encode", 1, []], ["encodeJSON", 1, []]]
+  #   fns_blocked_in_arg:
+  #     - 
+  #       - "show"
+  #       - 1
+  #       - ["EnumTypes", "Integer", "Double", "Float", "Int64", "Int", "Bool", "Number", "(,)", "[]", "Maybe"]
+  #     - 
+  #       - "encode"
+  #       - 1
+  #       - [] 
+  #     - 
+  #       - "encodeJSON"
+  #       - 1
+  #       - []
   #   types_blocked_in_arg: []
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
   #   fn_rule_fixes:
   #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
-  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging."
+  #     - "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
 
@@ -232,7 +298,8 @@ rules:
   #   types_to_check_in_arg: ["Text", "String", "Char", "[Char]", "Maybe", "(,)", "[]"]
   #   fn_rule_fixes:
   #     - "Remove `show` function call from the error location and use `L.logErrorV @Text` or `L.logDebugV @Text` or `L.logInfoV @Text` function(s) imported from `EulerHS.Language` module."
-  #     - "Make sure that there is `ToJSON` instance on the value we are logging.", "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
+  #     - "Make sure that there is `ToJSON` instance on the value we are logging."
+  #     - "You may use tuples for combining string and objects. For e.g., (\"Failed to fetch object: \" :: Text, obj)"
   #   fn_rule_exceptions: []
   #   fn_rule_ignore_modules: []
   
