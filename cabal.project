@@ -4,3 +4,4 @@ packages:
   ./sheriff
   ./paymentFlow
   ./api-contract
+  ./dc

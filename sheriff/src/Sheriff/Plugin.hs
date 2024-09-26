@@ -1,6 +1,7 @@
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 
 module Sheriff.Plugin (plugin) where
 
@@ -216,7 +217,7 @@ noGivenFunctionCallExpansion :: String -> LHsExpr GhcTc -> Bool
 noGivenFunctionCallExpansion fnName expr = case expr of
   (L loc (PatHsWrap _ expr)) -> noGivenFunctionCallExpansion fnName (L loc expr)
   _ -> case getFnNameWithAllArgs expr of
-        Just (lVar, _) -> matchFnNames (getFnNameWithModuleName lVar) fnName -- (getOccString . varName . unLoc $ lVar) == fnName
+        Just (lVar, _) -> matchNamesWithModuleName (getLocatedVarNameWithModuleName lVar) fnName AsteriskInSecond -- (getOccString . varName . unLoc $ lVar) == fnName
         Nothing -> False
 
 -- Simplifies few things and handles some final transformations
@@ -253,13 +254,16 @@ checkAndApplyRule ruleT opts ap = case ruleT of
           True  -> validateDBRule rule opts (showS tblName) exprs ap
           False -> pure []
       _ -> pure []
-  FunctionRuleT rule@(FunctionRule _ ruleFnName arg_no _ _ _ _ _ _) -> do
+  FunctionRuleT rule@(FunctionRule _ ruleFnNames arg_no _ _ _ _ _ _ _ _) -> do
     let res = getFnNameWithAllArgs ap
-    -- let (fnName, args) = maybe ("NA", []) (\(x, y) -> ((nameStableString . varName . unLoc) x, y)) $ res
-        (fnName, args) = maybe ("NA", []) (\(x, y) -> (getFnNameWithModuleName x, y)) $ res
-    case (matchFnNames fnName ruleFnName && length args >= arg_no) of
-      True  -> validateFunctionRule rule opts fnName args ap 
-      False -> pure [] 
+    case res of
+      Nothing                   -> pure []
+      Just (fnLocatedVar, args) -> do
+        let fnName    = getLocatedVarNameWithModuleName fnLocatedVar
+            fnLHsExpr = mkLHsVar fnLocatedVar
+        case (find (\ruleFnName -> matchNamesWithModuleName fnName ruleFnName AsteriskInSecond && length args >= arg_no) ruleFnNames) of
+          Just ruleFnName  -> validateFunctionRule rule opts ruleFnName fnName fnLHsExpr args ap 
+          Nothing -> pure []
   GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
 
 --------------------------- Function Rule Validation Logic ---------------------------
@@ -283,10 +287,22 @@ Part-2 Validation
 -}
 
 -- Function to check if given function rule is violated or not
-validateFunctionRule :: FunctionRule -> PluginOpts -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
-validateFunctionRule rule opts fnName args expr = do
-  if (arg_no rule) == 0 -- considering arg 0 as the case for blocking the whole function occurence
-    then pure [(expr, FnUseBlocked rule)]
+validateFunctionRule :: FunctionRule -> PluginOpts -> String -> String -> LHsExpr GhcTc -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
+validateFunctionRule rule opts ruleFnName fnName fnNameExpr args expr = do
+  if arg_no rule == 0 && fn_sigs_blocked rule == [] -- considering arg 0 as the case for blocking the whole function occurence
+    then pure [(fnNameExpr, FnUseBlocked ruleFnName rule)]
+  else if arg_no rule == 0
+    then do
+      -- Check argument types for functions with polymorphic signature
+      argTyps <- concat <$> mapM (\arg -> getHsExprTypeAsTypeDataList <$> getHsExprTypeWithResolver (logTypeDebugging opts) arg) args
+      fnReturnType <- getHsExprTypeAsTypeDataList <$> getHsExprTypeWithResolver (logTypeDebugging opts) expr
+      let fnSigFromArg = argTyps <> fnReturnType
+
+      -- Given function signature
+      fnExprTyp <- getHsExprTypeWithResolver (logTypeDebugging opts) fnNameExpr
+      let fnSigTypList = getHsExprTypeAsTypeDataList fnExprTyp
+
+      pure . concat $ fmap (\ruleFnSig -> if matchFnSignatures fnSigTypList ruleFnSig || matchFnSignatures fnSigFromArg ruleFnSig then [(fnNameExpr, FnSigBlocked fnName ruleFnSig rule)] else []) (fn_sigs_blocked rule)
   else do
     let matches = drop ((arg_no rule) - 1) args
     if length matches == 0
@@ -308,11 +324,11 @@ validateFunctionRule rule opts fnName args expr = do
       if argTypeBlocked
         then do
           exprType <- getHsExprTypeWithResolver (logTypeDebugging opts) expr
-          pure [(expr, ArgTypeBlocked argType (showS exprType) rule)]
+          pure [(expr, ArgTypeBlocked argType (showS exprType) ruleFnName rule)]
       else if isArgTypeToCheck
         then do
           blockedFnsList <- getBlockedFnsList opts arg rule -- check if the expression has any stringification function
-          mapM (\(lExpr, blockedFnName, blockedFnArgTyp) -> mkFnBlockedInArgErrorInfo opts expr lExpr >>= \errorInfo -> pure (lExpr, FnBlockedInArg (blockedFnName, blockedFnArgTyp) errorInfo rule)) blockedFnsList
+          mapM (\(lExpr, blockedFnName, blockedFnArgTyp) -> mkFnBlockedInArgErrorInfo opts expr lExpr >>= \errorInfo -> pure (lExpr, FnBlockedInArg (blockedFnName, blockedFnArgTyp) ruleFnName errorInfo rule)) blockedFnsList
       else pure []
 
 -- Helper to validate types based on custom types present in the rules -- tuples, list, maybe
@@ -330,7 +346,7 @@ validateType argTyp typs = showS argTyp `elem` typs
 
 -- Get List of blocked functions used inside a HsExpr; Uses `getBlockedFnsList` 
 getBlockedFnsList :: PluginOpts -> LHsExpr GhcTc -> FunctionRule -> TcM [(LHsExpr GhcTc, String, String)] 
-getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _ _) = do
+getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no _ fnsBlocked _ _ _ _ _ _) = do
   let argHsExprs = traverseAst arg :: [LHsExpr GhcTc]
       fnApps = filter isFunApp argHsExprs
   when (logDebugInfo opts) $ liftIO $ do
@@ -347,7 +363,7 @@ getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _ _) =
         showOutputable res
       case res of
         Nothing -> pure Nothing
-        Just (fnNameVar, args) -> isPresentInBlockedFnList expr fnsBlocked (getFnNameWithModuleName fnNameVar) args
+        Just (fnNameVar, args) -> isPresentInBlockedFnList expr fnsBlocked (getLocatedVarNameWithModuleName fnNameVar) args
     
     isPresentInBlockedFnList :: LHsExpr GhcTc -> FnsBlockedInArg -> String -> [LHsExpr GhcTc] -> TcM (Maybe (LHsExpr GhcTc, String, String))
     isPresentInBlockedFnList expr [] _ _ = pure Nothing
@@ -355,7 +371,7 @@ getBlockedFnsList opts arg rule@(FunctionRule _ _ arg_no fnsBlocked _ _ _ _ _) =
       when (logDebugInfo opts) $ liftIO $ do
         print "isPresentInBlockedFnList"
         print (ruleFnName, ruleArgNo, ruleAllowedTypes)
-      case matchFnNames fnName ruleFnName && length fnArgs >= ruleArgNo of
+      case matchNamesWithModuleName fnName ruleFnName AsteriskInSecond && length fnArgs >= ruleArgNo of
         False -> isPresentInBlockedFnList expr ls fnName fnArgs
         True  -> do
           let reqArg = head $ drop (ruleArgNo - 1) fnArgs
@@ -583,10 +599,10 @@ getWhereClauseFnNameWithAllArgs _ = Nothing
 -- TODO: Verify the correctness of this function before moving it to utils
 -- Get function name with all it's arguments
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
-getFnNameWithAllArgs (L _ (HsVar _ v)) = Just (getLocated v, [])
+getFnNameWithAllArgs (L loc (HsVar _ v)) = Just (getLocated v loc, [])
 getFnNameWithAllArgs (L _ (HsConLikeOut _ cl)) = (\clId -> (noExprLoc clId, [])) <$> conLikeWrapId cl
 getFnNameWithAllArgs (L _ (HsAppType _ expr _)) = getFnNameWithAllArgs expr
-getFnNameWithAllArgs (L _ (HsApp _ (L _ (HsVar _ v)) funr)) = Just (getLocated v, [funr])
+getFnNameWithAllArgs (L _ (HsApp _ (L loc (HsVar _ v)) funr)) = Just (getLocated v loc, [funr])
 getFnNameWithAllArgs (L _ (HsPar _ expr)) = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   let res = getFnNameWithAllArgs funl
@@ -611,9 +627,9 @@ getFnNameWithAllArgs _ = Nothing
 --------------------------- Sheriff Plugin Utils ---------------------------
 -- Transform the FnBlockedInArg Violation with correct expression 
 trfViolationErrorInfo :: PluginOpts -> Violation -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM Violation
-trfViolationErrorInfo opts violation@(FnBlockedInArg p1 _ rule) outsideExpr insideExpr = do
+trfViolationErrorInfo opts violation@(FnBlockedInArg p1 ruleFnName _ rule) outsideExpr insideExpr = do
   errorInfo <- mkFnBlockedInArgErrorInfo opts outsideExpr insideExpr
-  pure $ FnBlockedInArg p1 errorInfo rule
+  pure $ FnBlockedInArg p1 ruleFnName errorInfo rule
 trfViolationErrorInfo _ violation _ _ = pure violation
 
 -- Create Error Info for FnBlockedInArg Violation
@@ -644,8 +660,11 @@ mkFnBlockedInArgErrorInfo opts lOutsideExpr@(L _ outsideExpr) lInsideExpr@(L _ i
 -- Check if a rule is allowed on current module
 isAllowedOnCurrentModule :: String -> Rule -> Bool
 isAllowedOnCurrentModule moduleName rule = 
-  let ignoreModules = getRuleIgnoreModules rule
-  in moduleName `notElem` ignoreModules
+  let ignoredModules = getRuleIgnoreModules rule
+      allowedModules = getRuleCheckModules rule
+      isCurrentModuleAllowed = any (matchNamesWithAsterisk AsteriskInBoth moduleName) allowedModules
+      isCurrentModuleIgnored = any (matchNamesWithAsterisk AsteriskInBoth moduleName) ignoredModules
+  in isCurrentModuleAllowed && not isCurrentModuleIgnored
 
 -- Create GHC compilation error from CompileError
 mkGhcCompileError :: CompileError -> (SrcSpan, OP.SDoc)

@@ -76,6 +76,17 @@ import TcRnTypes (TcGblEnv (..), TcM)
 import StringBuffer
 #endif
 
+import Control.Concurrent (threadDelay)
+import Control.Monad (when)
+import Control.Exception (try, Handler(..), catches)
+import qualified Database.SQLite.Simple as SQLite
+
+maxRetries :: Int
+maxRetries = 5
+
+initialDelayMicros :: Int
+initialDelayMicros = 100000
+
 plugin :: Plugin
 plugin =
     defaultPlugin
