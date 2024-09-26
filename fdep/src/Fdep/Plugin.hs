@@ -76,17 +76,6 @@ import TcRnTypes (TcGblEnv (..), TcM)
 import StringBuffer
 #endif
 
-import Control.Concurrent (threadDelay)
-import Control.Monad (when)
-import Control.Exception (try, Handler(..), catches)
-import qualified Database.SQLite.Simple as SQLite
-
-maxRetries :: Int
-maxRetries = 5
-
-initialDelayMicros :: Int
-initialDelayMicros = 100000
-
 plugin :: Plugin
 plugin =
     defaultPlugin
@@ -297,6 +286,7 @@ loopOverLHsBindLR con mParentName path (L _ x@(FunBind fun_ext id matches _ _)) 
             nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
             data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
             t1 <- getCurrentTime
+            sendTextData' con path data_
             mapM_ (processMatch (nestedNameWithParent) path) (unLoc matchList)
             t2 <- getCurrentTime
             when (shouldLog) $ print $ "processed function: " <> fName <> " timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1)
@@ -652,17 +642,28 @@ loopOverLHsBindLR con mParentName path (L _ x@(FunBind fun_ext id matches _ _)) 
         extractExprsFromPat :: Text -> Text -> LPat GhcTc -> IO ()
         extractExprsFromPat keyFunction path y@(L _ pat) =
             case pat of
-                WildPat _     -> pure ()
+                WildPat hsType     -> do
+                    expr <- pure $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr hsType)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr hsType), mempty)
+                    sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
                 VarPat _ var    -> processExpr keyFunction path ((wrapXRec @(GhcTc)) (HsVar noExtField (var)))
                 LazyPat _ p   -> (extractExprsFromPat keyFunction path) p
-                AsPat _ _ p   -> (extractExprsFromPat keyFunction path) p
+                AsPat _ var p   -> do
+                    processExpr keyFunction path ((wrapXRec @(GhcTc)) (HsVar noExtField (var)))
+                    (extractExprsFromPat keyFunction path) p
                 ParPat _ p    -> (extractExprsFromPat keyFunction path) p
                 BangPat _ p   -> (extractExprsFromPat keyFunction path) p
                 ListPat _ ps  -> mapM_ (extractExprsFromPat keyFunction path) ps
                 TuplePat _ ps _ -> mapM_ (extractExprsFromPat keyFunction path) ps
-                SumPat _ p _ _ -> (extractExprsFromPat keyFunction path) p
+                SumPat hsTypes p _ _ -> do 
+                    mapM_ (\hsType -> do
+                                expr <- pure $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr hsType)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr hsType), mempty)
+                                sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
+                            ) hsTypes
+                    (extractExprsFromPat keyFunction path) p
                 ConPat {pat_args = args} -> (extractExprsFromHsConPatDetails args)
-                ViewPat _ expr p -> do
+                ViewPat hsType expr p -> do
+                    expr' <- pure $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr hsType)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr hsType), mempty)
+                    sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr')])
                     processExpr keyFunction path expr
                     (extractExprsFromPat keyFunction path) p
                 SplicePat _ splice -> mapM_ (processExpr keyFunction path) $ extractExprsFromSplice splice
@@ -711,6 +712,11 @@ loopOverLHsBindLR con mParentName path (L _ x@(FunBind fun_ext id matches _ _)) 
             processExpr keyFunction path (wrapXRec @(GhcTc) hsExpr)
         processXXExpr keyFunction path (ExpansionExpr (HsExpanded _ expansionExpr)) =
             mapM_ (processExpr keyFunction path . (wrapXRec @(GhcTc))) [expansionExpr]
+loopOverLHsBindLR _ _ _ (L _ VarBind{var_rhs = rhs}) = pure mempty
+loopOverLHsBindLR _ _ _ (L _ (PatSynBind _ PSB{psb_def = def})) = pure mempty
+loopOverLHsBindLR _ _ _ (L _ (PatSynBind _ (XPatSynBind _))) = pure mempty
+loopOverLHsBindLR _ _ _ (L _ (XHsBindsLR _)) = pure mempty
+loopOverLHsBindLR _ _ _ (L _ (PatBind _ _ pat_rhs _)) = pure mempty
 loopOverLHsBindLR _ _ _ _ = pure mempty
 
 getLocTC' = (showSDocUnsafe . ppr . la2r . getLoc)
