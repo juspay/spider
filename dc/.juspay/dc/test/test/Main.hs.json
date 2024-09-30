@@ -1,9 +1,6 @@
 {
     "allFailuresRecords": [],
-    "commonErrorFuns": [
-        "temp",
-        "proxyFunction"
-    ],
+    "commonErrorFuns": [],
     "createdFailures": [],
     "createdRecords": [],
     "updatedFailures": [],

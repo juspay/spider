@@ -1,20 +1,21 @@
 module Sample where
 
 testParentFunctionF :: String
-testParentFunctionF = "this should not get caught"
+testParentFunctionF = "this should no get caught"
+
 
 proxyFunction :: String
 proxyFunction = case maybeTest of
-    Left str -> temp
-    Right str -> "asdfghj"
+    Left _str -> temp
+    Right _str -> throwErr
 
 maybeTest :: Either String String
 maybeTest = Right "test string"
 
 temp :: String
 temp = case maybeTest of
-    Left str -> "throwErr"
-    Right str -> throwErr
+    Left _str -> throwErr
+    Right _str -> throwErr
 
 throwErr :: String
 throwErr = "This should be an error"
