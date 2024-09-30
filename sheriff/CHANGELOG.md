@@ -1,5 +1,13 @@
 # Revision history for sheriff
 
+## 0.2.1.0
+* Add infinite recursion rule
+* Add test suite for infinite recursion rule detection
+* Add ignore functions in function rules
+* Refactor to use implicit params for passing plugin opts
+* Refactor CommonTypes, Types, Utils and TypeUtils
+* Update documentation for infinite recursion rule and supported patterns
+
 ## 0.2.0.6
 * Refactor test cases in cabal file to use smaller test suites
 * Revert functionality to provide sheriff plugin opt in single module

@@ -8,6 +8,7 @@ defaultSheriffRules :: Rules
 defaultSheriffRules = [
     defaultRule
   -- , noKVDBRule
+  -- , infiniteRecursionRule
   , showRule
   ]
 
@@ -24,6 +25,12 @@ showRuleExceptions = [
 
 showRule :: Rule
 showRule = FunctionRuleT $ FunctionRule "ShowRule" ["show"] 1 [] stringifierFns textTypesBlocked textTypesToCheck showRuleSuggestions showRuleExceptions [] ["*"] []
+
+infiniteRecursionRule :: Rule
+infiniteRecursionRule = InfiniteRecursionRuleT infiniteRecursionRuleT
+
+infiniteRecursionRuleT :: InfiniteRecursionRule 
+infiniteRecursionRuleT = defaultInfiniteRecursionRule {infinite_recursion_rule_name = "Infinite Recursion", infinite_recursion_rule_fixes = ["Remove the infinite recursion.", "Add a base case check.", "Pass the modified value to function arguments."]}
 
 noKVDBRule :: Rule
 noKVDBRule = FunctionRuleT $ FunctionRule "ART KVDB Rule" ["runKVDB"] 0 [] [] [] [] ["You might want to use some other wrapper function from `EulerHS.Extra.Redis` module.", "For e.g. - rExists, rDel, rGet, rExpire, etc."] [] [] ["*"] []

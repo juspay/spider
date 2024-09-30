@@ -78,7 +78,7 @@ type TypesToCheckInArg = [String]
 type Suggestions = [String]
 type Modules = [String]
 type FunctionNames = [String]
-type ModulesWithFunctions = [(String, FunctionNames)]
+type ModulesWithFunctions = [String]
 
 data SheriffRules = SheriffRules
   { rules :: Rules

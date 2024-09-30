@@ -97,15 +97,23 @@ getRuleIgnoreModules rule = case rule of
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_modules infiniteRecursionRule
   _ -> []
 
+getRuleIgnoreFunctions :: Rule -> Modules
+getRuleIgnoreFunctions rule = case rule of 
+  FunctionRuleT fnRule -> fn_rule_ignore_functions fnRule
+  InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_functions infiniteRecursionRule
+  _ -> []
+
 getRuleCheckModules :: Rule -> Modules
 getRuleCheckModules rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_check_modules fnRule
+  InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_check_modules infiniteRecursionRule
   _ -> []
 
 getRuleName :: Rule -> String
 getRuleName rule = case rule of
   FunctionRuleT fnRule -> fn_rule_name fnRule
   DBRuleT dbRule -> db_rule_name dbRule
+  InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_name infiniteRecursionRule
   _ -> "Rule not handled"
 
 noSuggestion :: Suggestions

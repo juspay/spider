@@ -205,10 +205,15 @@ noLogFn _ _ = pure ()
 throwException :: ()
 throwException = ()
 
+-- TODO: Add this validation in sheriff (Yet to decide whether to do using variable tracing or show constraint)
+showConstraint :: (Show a) => a -> IO ()
+showConstraint x = putStrLn $ show x
+
 main :: IO ()
 main = do
     print ("HI there" :: String)
     let obAT1 = "Dummy"
+        mbStr = Just "ToBeFailed"
     let b = logInfoT "tester" logger
         !_ = show obC1
         !_ = show en
@@ -224,6 +229,7 @@ main = do
         !_ = T.pack $ show "Testing Multiple dollar"
         !_ = ("Hello" <> (show $ addQuotes "Testing Show on text"))
         !_ = (show "This to print")
+        !_ = show $ mbStr
 
     print $ show temp
     print $ show temp1

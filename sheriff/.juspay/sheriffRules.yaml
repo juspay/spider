@@ -166,6 +166,15 @@ rules:
       - Test1
       - SubTests.FunctionUseTest
 
+  # We should get error for any infinite recursion cases
+  - infinite_recursion_rule_name: Infinite Recursions
+    infinite_recursion_rule_fixes:
+      - "Remove the infinite recursion."
+      - "Add a base case check."
+      - "Pass the modified value to function arguments."
+    infinite_recursion_rule_ignore_functions:
+      - Exceptions.pattern6
+
   # - db_rule_name: "DBRuleTest"
   #   table_name: "TxnRiskCheck"
   #   indexed_cols_names: 
