@@ -12,6 +12,7 @@
 module Sheriff.CommonTypes where
 
 import Data.Hashable
+import qualified Data.HashMap.Strict as HM
 import GHC hiding (exprType)
 
 #if __GLASGOW_HASKELL__ >= 900
@@ -22,8 +23,18 @@ import GhcPlugins hiding ((<>), getHscEnv)
 import TcRnMonad
 #endif
 
+data NameModuleValue = 
+    NMV_Name Name
+  | NMV_Module String -- This should be terminating
+  deriving (Eq)
+
+instance Show NameModuleValue where
+  show (NMV_Name name) = "NMV_Name " <> getOccString name <> "_" <> show (nameUnique name)
+  show (NMV_Module str) = "NMV_Module " <> str
+
 data PluginCommonOpts a = PluginCommonOpts {
     currentModule :: String,
+    nameModuleMap :: HM.HashMap NameModuleValue NameModuleValue,
     pluginOpts    :: a
   }
   deriving (Show, Eq)
@@ -72,7 +83,7 @@ instance Eq SimpleTcExpr where
   (==) _                            _                            = False
 
 -- Data type to represent asterisk matching
-data AsteriskMatching = AsteriskInFirst | AsteriskInSecond | AsteriskInBoth
+data AsteriskMatching = AsteriskInFirst | AsteriskInSecond | AsteriskInBoth | NoAsteriskMatching
   deriving (Show, Eq)
 
 -- Type family and GADT for generic phase related stuff
@@ -107,3 +118,20 @@ type instance PassMonad 'Typechecked a = TcM a
 
 instance Hashable (Located Var) where
   hashWithSalt salt (L srcSpan var) = hashWithSalt salt $ show srcSpan <> "::" <> (nameStableString . getName $ var) 
+
+instance Hashable NameModuleValue where
+  hashWithSalt salt (NMV_Name name)      = hashWithSalt salt (nameStableString name)
+  hashWithSalt salt (NMV_Module modName) = hashWithSalt salt modName
+
+class StrictEq a where
+  (===) :: (HasPluginOpts u) => a -> a -> Bool
+
+instance (StrictEq a) => StrictEq (Maybe a) where
+  (===) (Just x) (Just y) = x === y
+  (===) Nothing  Nothing  = True
+  (===) _        _        = False
+
+instance (StrictEq a) => StrictEq [a] where
+  (===) [] [] = True
+  (===) (x:xs) (y:ys) = (x === y && xs === ys)
+  (===) _ _ = False

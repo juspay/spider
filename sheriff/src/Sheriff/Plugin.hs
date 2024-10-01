@@ -19,6 +19,7 @@ import Sheriff.Utils
 import Control.Applicative ((<|>))
 import Control.Monad (foldM, when)
 import Control.Monad.IO.Class (MonadIO (..))
+import Control.Monad.State
 import Data.Aeson as A
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.Bool (bool)
@@ -37,7 +38,9 @@ import Prelude hiding (id, writeFile, appendFile)
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
 
 #if __GLASGOW_HASKELL__ >= 900
+import GHC.Core.Class
 import GHC.Core.ConLike
+import GHC.Core.InstEnv
 import GHC.Core.TyCo.Rep
 import GHC.Data.Bag
 import GHC.HsToCore.Monad
@@ -51,10 +54,12 @@ import GHC.Types.Annotations
 import qualified GHC.Utils.Outputable as OP
 #else
 import Bag
+import Class
 import ConLike
 import DsExpr
 import DsMonad
 import GhcPlugins hiding ((<>), getHscEnv, purePlugin)
+import InstEnv
 import qualified Outputable as OP
 import TcEvidence
 import TcRnMonad
@@ -103,6 +108,15 @@ Stage - 3 ERRORS AND IO
 
 -}
 
+{-
+  TODO: 
+    1. Generalize the custom state monad and run things with context available to all functions
+    2. Reuse the same type for implicit param and state (for interusability)
+    3. Add helper functions to set in implicit params from state
+    4. Change module name matching to direct variable matching by means of transforming to top most level
+-}
+
+type SheriffTcM = StateT (HM.HashMap NameModuleValue NameModuleValue) TcM
 
 sheriff :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 sheriff opts modSummary tcEnv = do
@@ -110,7 +124,7 @@ sheriff opts modSummary tcEnv = do
   let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
       pluginOpts@PluginOpts{..} = decodeAndUpdateOpts opts defaultPluginOpts
 
-  let ?pluginOpts = PluginCommonOpts moduleName' pluginOpts
+  let ?pluginOpts = PluginCommonOpts moduleName' HM.empty pluginOpts
 
   -- parse the yaml file from the path given
   parsedYaml <- liftIO $ parseYAMLFile indexedKeysPath
@@ -153,15 +167,20 @@ sheriff opts modSummary tcEnv = do
                                     _ -> False
       infRule = case find isInfiniteRecursionRule globalRules of
                   Just (InfiniteRecursionRuleT r) -> r
-                  _ -> infiniteRecursionRuleT
+                  _ -> defaultInfiniteRecursionRuleT
 
   when logDebugInfo $ liftIO $ print globalRules
   when logDebugInfo $ liftIO $ print globalExceptionRules
 
   -- STAGE-2
+  -- Get Instance declarations and add class name to module name binding in initial state
+  insts <- tcg_insts . env_gbl <$> getEnv
+  let namesModTuple = fmap (\inst -> (is_dfun_name inst, getModuleName . className . is_cls $ inst)) insts
+      nameModMap = foldr (\(name, modname) r -> HM.insert (NMV_Name name) (NMV_Module modname) r) HM.empty namesModTuple
+  
   rawErrors <- concat <$> (mapM (loopOverModBinds finalSheriffRules) $ bagToList $ tcg_binds tcEnv)
-  rawInfiniteRecursionErrors <- concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)
-
+  (rawInfiniteRecursionErrors, _) <- flip runStateT nameModMap $ concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)
+  
   -- STAGE-3
   errors <- mapM (mkCompileError moduleName') (rawErrors <> rawInfiniteRecursionErrors)
 
@@ -169,7 +188,7 @@ sheriff opts modSummary tcEnv = do
       groupedErrors = groupBy (\a b -> src_span a == src_span b) sortedErrors
       filteredErrorsForRuleLevelExceptions = fmap (\x -> let errorRulesInCurrentGroup = fmap getRuleFromCompileError x in filter (\err -> not $ (getRuleExceptionsFromCompileError err) `hasAny` errorRulesInCurrentGroup) x) groupedErrors
       filteredErrorsForGlobalExceptions = concat $ filter (\x -> not $ (\err -> (getRuleFromCompileError err) `elem` globalExceptionRules) `any` x) filteredErrorsForRuleLevelExceptions
-      filteredErrors = nub $ filter (\x -> getRuleFromCompileError x `elem` globalRules) filteredErrorsForGlobalExceptions -- Filter errors to take only rules since we might have some individual rule level errors in this list
+      filteredErrors = nub $ filter (\x -> getRuleFromCompileError x `elem` (InfiniteRecursionRuleT infRule : globalRules)) filteredErrorsForGlobalExceptions -- Filter errors to take only rules since we might have some individual rule level errors in this list
 
   if throwCompilationError
     then addErrs $ map mkGhcCompileError filteredErrors
@@ -184,18 +203,20 @@ sheriff opts modSummary tcEnv = do
 --------------------------- Infinite Recursion Detection Logic ---------------------------
 {-
 
-  1. Check if bind is FunBind, then get the function `var`
-  2. Get all the match groups from the match (One match group is single definition for a function, a function may have multiple match groups)
-  3. For each match group, perform below steps:
-    3.1 Get the Pattern matches
-    3.2 Transform pattern matches into common type `SimpleTcExpr`
-    3.3 Append function name var to the beginning to complete the transformation
-    3.4 Fetch all the HsExpr from the match group's guarded rhs (includes where clause)
-    3.5 Filter out FunApp from all the HsExpr
-    3.6 Simplify for ($) operator and transform to `SimpleTcExpr`
-    3.7 Check if any of the `SimpleTcExpr` representation of HsExpr is same as `SimpleTcExpr` representation of pattern matches
-    3.8 Fetch all the FunBinds from the guarded rhs
-    3.9 Recur for each fun bind and repeat from step 1 
+  1. Check if bind is AbsBind, add a mapping from mono to poly Var and recurse for binds
+  2. Check if bind is VarBind, add mappings for child HsVar to VarId and update state
+  3. Check if bind is FunBind, then get the function `var`
+  4. Get all the match groups from the match (One match group is single definition for a function, a function may have multiple match groups)
+  5. For each match group, perform below steps:
+    5.1 Get the Pattern matches
+    5.2 Transform pattern matches into common type `SimpleTcExpr`
+    5.3 Append function name var to the beginning to complete the transformation
+    5.4 Fetch all the HsExpr from the match group's guarded rhs (includes where clause)
+    5.5 Filter out FunApp from all the HsExpr
+    5.6 Simplify for ($) operator and transform to `SimpleTcExpr`
+    5.7 Check if any of the `SimpleTcExpr` representation of HsExpr is same as `SimpleTcExpr` representation of pattern matches
+    5.8 Fetch all the FunBinds from the guarded rhs
+    5.9 Recur for each fun bind and repeat from step 1 
 
 TODO: (Optimizations)
   1. Traverse a functions's body HsExpr once only and traverse the list/tree manually filtering based on location for local function binds
@@ -213,24 +234,39 @@ TODO: (Extending Patterns)
 
 
 -- Function to check if the AST has deterministic infinite recursion
-checkInfiniteRecursion :: (HasPluginOpts PluginOpts) => Bool -> InfiniteRecursionRule -> LHsBindLR GhcTc GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
+checkInfiniteRecursion :: (HasPluginOpts PluginOpts) => Bool -> InfiniteRecursionRule -> LHsBindLR GhcTc GhcTc -> SheriffTcM [(LHsExpr GhcTc, Violation)]
 checkInfiniteRecursion recurseForBinds rule (L _ ap@(FunBind{fun_id = funVar, fun_matches = matches})) = do
+  currNameModMap <- get
+  let ?pluginOpts = ?pluginOpts {nameModuleMap = currNameModMap}
   errs <- mapM (checkAndVerifyAlt recurseForBinds rule funVar) (fmap unLoc . unLoc $ mg_alts matches)
   pure $ concat errs
-checkInfiniteRecursion recurseForBinds rule (L _ ap@(AbsBinds{abs_binds = binds})) = do
-  list <- mapM (checkInfiniteRecursion recurseForBinds rule) $ bagToList binds
-  pure (concat list)
+checkInfiniteRecursion recurseForBinds rule (L _ ap@(AbsBinds{abs_binds = binds, abs_exports = bindVars})) = do
+  let mbVar = case bindVars of
+                x : _ -> Just $ (varName $ abe_poly x, varName $ abe_mono x)
+                _ -> Nothing
+  currNameModMap <- get
+  let updatedNameModMap = maybe currNameModMap (\(poly, mono) -> HM.insert (NMV_Name mono) (NMV_Name poly) currNameModMap) mbVar
+  put updatedNameModMap
+  list <- mapM (\x -> checkInfiniteRecursion recurseForBinds rule x) $ bagToList binds
+  pure $ concat list
+checkInfiniteRecursion recurseForBinds rule (L loc ap@(VarBind{var_id = varId, var_rhs = rhs})) = do
+  let currVarName = varName varId
+      childHsVar = fmap varName (traverseAst rhs)
+  currNameModMap <- get
+  let updatedNameModMap = foldr (\childVar r -> HM.insert (NMV_Name childVar) (NMV_Name currVarName) r) currNameModMap childHsVar
+  put updatedNameModMap
+  pure []
 checkInfiniteRecursion _ _ _ = pure []
 
 -- Helper function to verify if any of the body HsExpr results in infinite recursion
-checkAndVerifyAlt :: (HasPluginOpts PluginOpts) => Bool -> InfiniteRecursionRule -> LIdP GhcTc -> Match GhcTc (LHsExpr GhcTc) -> TcM [(LHsExpr GhcTc, Violation)]
+checkAndVerifyAlt :: (HasPluginOpts PluginOpts) => Bool -> InfiniteRecursionRule -> LIdP GhcTc -> Match GhcTc (LHsExpr GhcTc) -> SheriffTcM [(LHsExpr GhcTc, Violation)]
 checkAndVerifyAlt recurseForBinds rule ap@(L loc fnVar) match = do
   let argsInFnDefn = m_pats match
       currentFnNameWithModule = getVarNameWithModuleName fnVar
       ignoredFunctions = infinite_recursion_rule_ignore_functions rule
       trfArgsInFnDefn = fmap (trfPatToSimpleTcExpr . unLoc) argsInFnDefn
       finalTrfArgsInFnDefn = (SimpleFnNameVar fnVar) : trfArgsInFnDefn
-  argLenByTy <- length <$> getHsExprTypeAsTypeDataList <$> getHsExprType False (mkLHsVar $ getLocated ap loc)
+  argLenByTy <- lift $ length <$> getHsExprTypeAsTypeDataList <$> getHsExprType False (mkLHsVar $ getLocated ap loc)
   let isPartialFn = length argsInFnDefn /= argLenByTy - 1
       (hsExprs :: [LHsExpr GhcTc]) = 
         if isPartialFn then traverseAst (foldr getLastStmt [] $ grhssGRHSs (m_grhss match))
@@ -238,7 +274,7 @@ checkAndVerifyAlt recurseForBinds rule ap@(L loc fnVar) match = do
       (funApps :: [LHsExpr GhcTc]) = filter (\expr -> isFunApp expr || isHsVar expr) hsExprs
       (simplifiedFnApps :: [(Located Var, (LHsExpr GhcTc, [LHsExpr GhcTc]))]) = HM.toList $ foldr (\x r -> maybe r (\(lVar, args) -> HM.insertWith (\newArgs oldArgs -> if length newArgs >= length oldArgs then newArgs else oldArgs) lVar (x, args) r) $ getFnNameWithAllArgs x) HM.empty funApps
       (trfSimplifiedFunApps :: [(LHsExpr GhcTc, [SimpleTcExpr])]) = fmap trfSimplifiedFunApp simplifiedFnApps 
-      currentFnErrors = map (\(lhsExpr, _) -> (lhsExpr, InfiniteRecursionDetected rule)) $ filter (\x -> (any (\ignoredFnName -> matchNamesWithModuleName currentFnNameWithModule ignoredFnName AsteriskInSecond) ignoredFunctions == False) && (snd x == finalTrfArgsInFnDefn)) trfSimplifiedFunApps 
+      currentFnErrors = map (\(lhsExpr, _) -> (lhsExpr, InfiniteRecursionDetected rule)) $ filter (\x -> (any (\ignoredFnName -> matchNamesWithModuleName currentFnNameWithModule ignoredFnName AsteriskInSecond) ignoredFunctions == False) && (snd x === finalTrfArgsInFnDefn)) trfSimplifiedFunApps 
         
   -- Process sub binds if further recursion allowed
   subBindsErrors <- 

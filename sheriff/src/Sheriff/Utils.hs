@@ -15,6 +15,7 @@ import Control.Monad.IO.Class (MonadIO (..))
 import Data.Aeson
 import Data.Data (Data)
 import Data.Generics.Uniplate.Data
+import qualified Data.HashMap.Strict as HM
 import Data.List.Extra (splitOn, trim, isInfixOf)
 import Data.Maybe (maybe)
 import qualified Data.Text as T
@@ -63,6 +64,15 @@ import TyCoRep
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
 
+matchLocatedVarNamesWithModuleName :: (HasPluginOpts a) => Located Var -> Located Var -> AsteriskMatching -> Bool
+matchLocatedVarNamesWithModuleName v1 v2 asteriskMatching = matchVarNamesWithModuleName (unLoc v1) (unLoc v2) asteriskMatching
+
+matchVarNamesWithModuleName :: (HasPluginOpts a) => Var -> Var -> AsteriskMatching -> Bool
+matchVarNamesWithModuleName v1 v2 asteriskMatching = 
+  let var1nameWithModule = getVarNameWithModuleName v1
+      var2nameWithModule = getVarNameWithModuleName v2
+  in matchNamesWithModuleName var1nameWithModule var2nameWithModule asteriskMatching
+
 getLocatedVarNameWithModuleName :: (HasPluginOpts a) => Located Var -> String
 getLocatedVarNameWithModuleName lvar = getVarNameWithModuleName $ unLoc lvar
 
@@ -72,9 +82,27 @@ getVarNameWithModuleName var = getNameWithModuleName $ varName var
 getNameWithModuleName :: (HasPluginOpts a) => Name -> String
 getNameWithModuleName name = 
   let occName = getOccString name
-  in case nameModule_maybe name of
-        Just modName -> (moduleNameString $ moduleName modName) <> "." <> occName
-        Nothing -> (currentModule ?pluginOpts) <> "." <> occName
+  in getModuleName name <> "." <> occName
+
+getModuleName :: (HasPluginOpts a) => Name -> String
+getModuleName name = 
+  case nameModule_maybe name of
+    Just modName -> (moduleNameString $ moduleName modName)
+    Nothing -> (currentModule ?pluginOpts)
+
+getModuleNameWithNMV :: (HasPluginOpts a) => Name -> String
+getModuleNameWithNMV name = 
+  let modNameMap = nameModuleMap ?pluginOpts
+  in case getFromNMV modNameMap (NMV_Name name) of
+    Just modName -> modName
+    Nothing -> getModuleName name
+  where
+    getFromNMV :: HM.HashMap NameModuleValue NameModuleValue -> NameModuleValue -> Maybe String
+    getFromNMV mp nmv = case HM.lookup nmv mp of
+      Just val -> case val of
+        NMV_Module modName -> Just modName
+        NMV_Name nm -> getFromNMV mp (NMV_Name nm)
+      Nothing -> Nothing
 
 matchNamesWithModuleName :: String -> String -> AsteriskMatching -> Bool
 matchNamesWithModuleName varNameWithModule fnToMatch asteriskMatching = 
@@ -419,3 +447,7 @@ trfLHsExprToSimpleTcExpr (L loc hsExpr) = case hsExpr of
       Present _ lhsExpr -> trfLHsExprToSimpleTcExpr lhsExpr
       _                 -> SimpleUnhandledTcExpr
 #endif
+
+instance StrictEq SimpleTcExpr where
+  (===) (SimpleFnNameVar var1) (SimpleFnNameVar var2) = (getModuleNameWithNMV (varName var1) == getModuleNameWithNMV (varName var2)) && (getVarName var1 == getVarName var2)
+  (===) var1                   var2                   = (var1 == var2)

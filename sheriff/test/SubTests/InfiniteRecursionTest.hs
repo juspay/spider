@@ -154,6 +154,14 @@ pattern21 =
       y = "Hello"
   in pattern21 -- STE :: Should Throw Error
 
+-- Self recursive straight away
+pattern22 :: Int
+pattern22 = pattern22 -- STE :: Should Throw Error
+
+-- Same function name but from different module
+toJSON :: (A.ToJSON a) => a -> A.Value
+toJSON = A.toJSON -- Should NOT Throw Error
+
 main :: IO ()
 main = do
   pure ()
