@@ -47,7 +47,7 @@ data TypeData = TextTy String | NestedTy [TypeData]
 
 data SimpleTcExpr = 
     SimpleVar Var
-  | SimpleFnNameVar Var -- Just for lenient checking
+  | SimpleFnNameVar Var Type -- Just for checking function Variable
   | SimpleList [SimpleTcExpr]
   | SimpleAliasPat SimpleTcExpr SimpleTcExpr
   | SimpleTuple [SimpleTcExpr]
@@ -59,7 +59,7 @@ data SimpleTcExpr =
 instance Outputable SimpleTcExpr where
   ppr simpleTcExpr = case simpleTcExpr of
     SimpleVar v -> "SimpleVar " $$ ppr v
-    SimpleFnNameVar v -> "SimpleFnNameVar " $$ ppr v
+    SimpleFnNameVar v ty -> "SimpleFnNameVar " $$ ppr v $$ ppr ty
     SimpleList ls -> "SimpleList " $$ ppr ls
     SimpleAliasPat p1 p2 -> "SimpleAliasPat "
     SimpleTuple ls -> "SimpleTuple " $$ ppr ls
@@ -73,7 +73,7 @@ instance Eq SimpleTcExpr where
   (==) (SimpleAliasPat pat1 pat2)   pat                          = pat1 == pat || pat2 == pat
   (==) pat                          (SimpleAliasPat pat1 pat2)   = pat1 == pat || pat2 == pat
   (==) (SimpleVar var1)             (SimpleVar var2)             = var1 == var2
-  (==) (SimpleFnNameVar var1)       (SimpleFnNameVar var2)       = nameOccName (varName var1) == nameOccName (varName var2)
+  (==) (SimpleFnNameVar var1 ty1)   (SimpleFnNameVar var2 ty2)   = nameOccName (varName var1) == nameOccName (varName var2)
   (==) (SimpleList pat1)            (SimpleList pat2)            = pat1 == pat2
   (==) (SimpleTuple pat1)           (SimpleTuple pat2)           = pat1 == pat2
   (==) (SimpleDataCon mbVar1 pat1)  (SimpleDataCon mbVar2 pat2)  = mbVar1 == mbVar2 && pat1 == pat2

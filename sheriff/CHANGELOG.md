@@ -1,5 +1,8 @@
 # Revision history for sheriff
 
+## 0.2.1.2
+* Add type signature check for self recursive function calls (edge cases for instance calls)
+
 ## 0.2.1.1
 * Add module name check for self recursive function calls
 * Add top level module name resolving for instance functions

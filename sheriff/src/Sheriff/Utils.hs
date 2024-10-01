@@ -449,5 +449,5 @@ trfLHsExprToSimpleTcExpr (L loc hsExpr) = case hsExpr of
 #endif
 
 instance StrictEq SimpleTcExpr where
-  (===) (SimpleFnNameVar var1) (SimpleFnNameVar var2) = (getModuleNameWithNMV (varName var1) == getModuleNameWithNMV (varName var2)) && (getVarName var1 == getVarName var2)
-  (===) var1                   var2                   = (var1 == var2)
+  (===) (SimpleFnNameVar var1 ty1) (SimpleFnNameVar var2 ty2) = (getModuleNameWithNMV (varName var1) == getModuleNameWithNMV (varName var2)) && (getVarName var1 == getVarName var2) && (getHsExprTypeAsTypeDataList ty1 == getHsExprTypeAsTypeDataList ty2)
+  (===) var1                       var2                       = (var1 == var2)
