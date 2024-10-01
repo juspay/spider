@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -23,8 +24,10 @@ import GHC.Hs.Dump
 import GHC.Hs.Extension
 import Language.Haskell.GHC.ExactPrint (exactPrint)
 import Sheriff.Patterns
+import Sheriff.CommonTypes
 
 #if __GLASGOW_HASKELL__ >= 900
+import GHC.Core.ConLike
 import GHC.Core.TyCo.Rep
 import GHC.Data.IOEnv
 import GHC.Driver.Main
@@ -37,6 +40,7 @@ import GHC.Tc.Types
 import GHC.Tc.Utils.TcType
 import Language.Haskell.GHC.ExactPrint (ExactPrint)
 #else
+import ConLike
 import DsMonad
 import DsExpr
 import GhcPlugins hiding ((<>), getHscEnv)
@@ -55,29 +59,22 @@ import TyCoRep
   Mainly it has generic functions for all - parse, rename and typecheck plugin.
 -}
 
--- Recursive data type for simpler type representation
-data TypeData = TextTy String | NestedTy [TypeData]
-  deriving (Show, Eq)
-
-data AsteriskMatching = AsteriskInFirst | AsteriskInSecond | AsteriskInBoth
-  deriving (Show, Eq)
-
 -- Debug Show any haskell internal representation type
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
 
-getLocatedVarNameWithModuleName :: Located Var -> String
+getLocatedVarNameWithModuleName :: (HasPluginOpts a) => Located Var -> String
 getLocatedVarNameWithModuleName lvar = getVarNameWithModuleName $ unLoc lvar
 
-getVarNameWithModuleName :: Var -> String
+getVarNameWithModuleName :: (HasPluginOpts a) => Var -> String
 getVarNameWithModuleName var = getNameWithModuleName $ varName var
 
-getNameWithModuleName :: Name -> String
+getNameWithModuleName :: (HasPluginOpts a) => Name -> String
 getNameWithModuleName name = 
   let occName = getOccString name
   in case nameModule_maybe name of
         Just modName -> (moduleNameString $ moduleName modName) <> "." <> occName
-        Nothing -> "NO_MODULE" <> "." <> occName
+        Nothing -> (currentModule ?pluginOpts) <> "." <> occName
 
 matchNamesWithModuleName :: String -> String -> AsteriskMatching -> Bool
 matchNamesWithModuleName varNameWithModule fnToMatch asteriskMatching = 
@@ -290,7 +287,7 @@ getHsExprTypeWithResolver logTypeDebugging expr = deNoteType <$> getHsExprType l
 
 -- TODO: Add support for matching constraints
 -- Get Qualified Types as List
-getHsExprTypeAsTypeDataList :: Type -> [TypeData]
+getHsExprTypeAsTypeDataList :: (HasPluginOpts a) => Type -> [TypeData]
 getHsExprTypeAsTypeDataList typ = case typ of
   LitTy ty -> [TextTy $ showS ty]
   TyVarTy var -> [TextTy $ getVarNameWithModuleName var]
@@ -338,35 +335,6 @@ matchFnSignatures exprSig ruleSig =
 getVarName :: IdP GhcTc -> String
 getVarName var = occNameString . occName $ var
 
-#if __GLASGOW_HASKELL__ >= 900
-type family PassMonad (p :: Pass) a
-type instance PassMonad 'Parsed a = Hsc a
-type instance PassMonad 'Renamed a = TcRn a
-type instance PassMonad 'Typechecked a = TcM a
-#else
-data MyGhcPass (p :: Pass) where
-  GhcPs :: MyGhcPass 'Parsed 
-  GhcRn :: MyGhcPass 'Renamed
-  GhcTc :: MyGhcPass 'Typechecked
-
-class IsPass (p :: Pass) where
-  ghcPass :: MyGhcPass p
-
-instance IsPass 'Parsed where
-  ghcPass = GhcPs
-
-instance IsPass 'Renamed where
-  ghcPass = GhcRn
-
-instance IsPass 'Typechecked where
-  ghcPass = GhcTc
-
-type family PassMonad (p :: Pass) a
-type instance PassMonad 'Parsed a = Hsc a
-type instance PassMonad 'Renamed a = TcRn a
-type instance PassMonad 'Typechecked a = TcM a
-#endif
-
 -- Generic function to get type for a LHsExpr (GhcPass p) at any compilation phase p
 getHsExprTypeGeneric :: forall p m. (IsPass p) => Bool -> LHsExpr (GhcPass p) -> PassMonad p (Maybe Type)
 getHsExprTypeGeneric logTypeDebugging expr = case ghcPass @p of
@@ -388,3 +356,66 @@ getHsExprTypeGeneric logTypeDebugging expr = case ghcPass @p of
 
 parseAsListOrString :: Value -> Parser [String]
 parseAsListOrString v = parseJSON v <|> fmap (:[]) (parseJSON v)
+
+-- Get Var for the data constructor
+conLikeWrapId :: ConLike -> Maybe Var
+conLikeWrapId (RealDataCon dc) = Just (dataConWrapId dc)
+conLikeWrapId _ = Nothing
+
+-- TODO: Verify the correctness of this function
+-- Get Pattern Match as SimpleTcExpr 
+trfPatToSimpleTcExpr :: Pat GhcTc -> SimpleTcExpr
+trfPatToSimpleTcExpr pat = case pat of
+  VarPat _ (L _ var)           -> SimpleVar var
+  LazyPat _ (L _ lPat)         -> trfPatToSimpleTcExpr lPat
+  AsPat _ (L _ var) (L _ sPat) -> SimpleAliasPat (SimpleVar var) (trfPatToSimpleTcExpr sPat)
+  ParPat _ (L _ sPat)          -> trfPatToSimpleTcExpr sPat
+  BangPat _ (L _ sPat)         -> trfPatToSimpleTcExpr sPat
+  SigPat _ (L _ sPat) _        -> trfPatToSimpleTcExpr sPat
+  ListPat _ lPatList           -> SimpleList (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
+  TuplePat _ lPatList _        -> SimpleTuple (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
+  LitPat _ lit                 -> SimpleLit lit
+  NPat _ (L _ (OverLit{ol_val = overloadedLit})) _ _ -> SimpleOverloadedLit overloadedLit
+#if __GLASGOW_HASKELL__ >= 900
+  ConPat _ (L _ con) (PrefixCon [] lPatList) -> SimpleDataCon (conLikeWrapId con) (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
+#else
+  ConPatIn (L _ con) (PrefixCon lPatList)            -> SimpleDataCon (Just con) (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
+  ConPatOut (L _ con) _ _ _ _ (PrefixCon lPatList) _ -> SimpleDataCon (conLikeWrapId con) (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
+#endif
+  _                            -> SimpleUnhandledTcExpr
+
+-- TODO: Verify the correctness of this function
+-- Get LHsExpr as SimpleTcExpr
+trfLHsExprToSimpleTcExpr :: LHsExpr GhcTc -> SimpleTcExpr
+trfLHsExprToSimpleTcExpr (L loc hsExpr) = case hsExpr of
+  HsVar _ (L _ var)            -> SimpleVar var
+  HsConLikeOut _ cl            -> SimpleDataCon (conLikeWrapId cl) []
+  HsLit _ lit                  -> SimpleLit lit
+  HsPar _ expr                 -> trfLHsExprToSimpleTcExpr expr
+  HsAppType _ expr _           -> trfLHsExprToSimpleTcExpr expr
+  PatHsWrap _ expr             -> trfLHsExprToSimpleTcExpr (L loc expr)
+  ExplicitTuple _ ls _         -> SimpleTuple (fmap trfTupleArg ls)
+  PatExplicitList _ ls         -> SimpleList (fmap trfLHsExprToSimpleTcExpr ls)
+  ExprWithTySig _ expr _       -> trfLHsExprToSimpleTcExpr expr
+#if __GLASGOW_HASKELL__ >= 900
+  PatHsExpansion _ expanded    -> trfLHsExprToSimpleTcExpr (L loc expanded)
+#endif
+  HsOverLit _ (OverLit{ol_val = overloadedLit}) -> SimpleOverloadedLit overloadedLit
+  HsApp _ (L _ (HsConLikeOut _ cl)) funr -> SimpleDataCon (conLikeWrapId cl) [trfLHsExprToSimpleTcExpr funr]
+  HsApp _ funl funr -> 
+    case trfLHsExprToSimpleTcExpr funl of
+      SimpleDataCon mbVar ls -> SimpleDataCon mbVar (ls ++ [trfLHsExprToSimpleTcExpr funr])
+      _ -> SimpleUnhandledTcExpr
+  _                            -> SimpleUnhandledTcExpr
+  where
+#if __GLASGOW_HASKELL__ >= 900
+    trfTupleArg :: HsTupArg GhcTc -> SimpleTcExpr
+    trfTupleArg hsTupleArg = case hsTupleArg of
+      Present _ lhsExpr -> trfLHsExprToSimpleTcExpr lhsExpr
+      _                 -> SimpleUnhandledTcExpr
+#else
+    trfTupleArg :: LHsTupArg GhcTc -> SimpleTcExpr
+    trfTupleArg (L _ hsTupleArg) = case hsTupleArg of
+      Present _ lhsExpr -> trfLHsExprToSimpleTcExpr lhsExpr
+      _                 -> SimpleUnhandledTcExpr
+#endif

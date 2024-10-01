@@ -8,7 +8,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
-module Test1 where
+module SubTests.LogTest where
 
 import qualified Sheriff.Plugin ()
 import qualified TestUtils as TU
@@ -206,7 +206,6 @@ throwException = ()
 
 main :: IO ()
 main = do
-    putStrLn "Test suite not yet implemented."
     print ("HI there" :: String)
     let obAT1 = "Dummy"
     let b = logInfoT "tester" logger
@@ -221,7 +220,7 @@ main = do
     logErrorT "tag" $ encodeJSON (en, "This is Text" :: String)
     logError "tag" $ show (en, 20 :: Int) -- Should not throw error because of show is allowed on both enums and int
     logErrorT "tag" $ encodeJSON (en, 20 :: Int) -- Should throw error because of encodeJSON
-    logError "tag" $ obAT1 <> show Test1.obAT1
+    logError "tag" $ obAT1 <> show SubTests.LogTest.obAT1
     fn $ logError "tag2" $ show obA
     fn $ logError "tag2" $ ("Hello" <> show obA)
     forkErrorLog "tag2" $ ("Hello" <> (show $ addQuotes "Testing forkErrorLog"))
@@ -230,50 +229,16 @@ main = do
 
     logDebug ("Some Tag" :: Text) (show "This to print")
 
-    -- Test for Qualified Function Names Rules
-    print $ TU.throwException "Hello" -- should throw error
-    print throwException -- should NOT throw error
-    print $ TU.throwExceptionV2 "Hello" -- should throw error as part of combined rule "Hello"
-    print $ TU.throwExceptionV3 "Hello"
-    print $ TU.throwExceptionV4 "Hello" -- should throw error as part of combined rule "Hello"
-
-    print $ show temp
-    print $ show temp1
-    print $ (show) (temp1)
-    print $ show temp2
-    print $ show en2
-    print $ show en21
-    print $ show en22
-    print $ show temp3
-    print $ show temp4
-    print $ show $ dbf1 db1
     logError "tag" $ show en2 <> show obA
     logError "tag" $ show en <> show obB
     logError "tag" $ show temp5
     logError "tag" $ show temp6
-    
-    let (TU.Number sRes) = num1 `TU.subtractNumber` num2
-        (TU.Number aRes) = TU.addNumber num1 num2
-        (TU.Number mRes) = (TU.*?) Nothing num1 num2
-        (TU.Number n1) = TU.fstArg num1 num2
-        (TU.Number n2) = TU.sndArg num1 num2
-
-    print sRes
-    print aRes
-    print mRes
-    print n1
-    print n2
-    print (n1 * n2)
-    print ((*) 10 20)
-
-    runKVDB -- Should be error
 
     logDebugT "validateMandate" $ "effective limit is: " <> T.pack (show 10) <> ", custom limit for key: " <> " is " <> T.pack (show (Just ("Hello" :: Text)))
-
     logErrorT "Incorrect Feature in DB" 
           $  "merchantId: " <> ", error: " <> T.pack (show (["A", "B"] :: [Text]))
   where
-    logErrorT = Test1.logErrorT
+    logErrorT = SubTests.LogTest.logErrorT
 
 (^*^) :: Num a => a -> a -> a
 (^*^) a b = a * b

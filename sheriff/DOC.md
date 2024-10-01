@@ -4,7 +4,8 @@
 1. ***Stringification of text/string*** - It checks if we have applied show function to any string literal or variable. We want this check to make sure that we are not having any unnecessary quotes in the code.
 2. ***Logging stringified haskell objects*** - It checks if we have applied show function to any variable inside any logging function. We want this check to make sure that our application level log filtering works fine and is not impacted by stringified values.
 3. ***NonIndexed DB queries check*** - It checks if we have any DB query which won't use any index. Indexed columns of a particular table are provided in *.juspay/indexedKeys.yaml* file. It works on all operations - select, update, delete. We want this check to make sure that our application doesn't make any slow sql queries.
-4. ***Detecting use of non-allowed functions*** - It checks if we have used some function which should not be used anywhere in the code.
+4. ***Detecting use of non-allowed functions*** - It checks if we have used some function which should not be used anywhere in the code. The function can be specified by name or signature.
+5. ***Detecting infinite recursions in code*** - It checks whether there is any recursive call for which we can say that it is infinite recursion. For more details, check [Infinite Recursion Detected Patterns](./InfiniteRecursionPatterns.md)
 
 ## How to write rules?
 Any additional rules for a package can be provided as `yaml` file. The path to this rules file can be given as plugin option as follows: <br>
@@ -71,6 +72,21 @@ Any additional rules for a package can be provided as `yaml` file. The path to t
 >   db_rule_exceptions: []
 >```
 
+> Structure of Infinite Recursion Rule:
+>```yaml
+> - infinite_recursion_rule_name: "Infinite Recursion Rule"
+>   infinite_recursion_rule_fixes: 
+>     - Fix1
+>     - Fix 2
+>   infinite_recursion_rule_exceptions: []
+>   infinite_recursion_rule_ignore_modules:
+>     - ModuleA
+>   infinite_recursion_rule_check_modules:
+>     - "*"
+>   infinite_recursion_rule_ignore_functions:
+>     - ModuleB.fn2
+>```
+
 Refer Sample Rules and exception rules in [.juspay](.juspay/sheriffRules.yaml) directory.
 
 ## How to resolve compilation errors?
@@ -112,3 +128,6 @@ Refer Sample Rules and exception rules in [.juspay](.juspay/sheriffRules.yaml) d
 
 > Querying on non-indexed column 'ColumnName' of table 'TableName' is not allowed
   - Make sure that the `where` clause in the DB query use at least one index, be it composite index or a key
+
+> Infinite Recursion Detected
+  - Remove infinite recursion by adding base case or changing the function logic. If it is genuine case that must stay in code like server loop, interval loop, etc., then add the function as ignore function.

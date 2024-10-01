@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               sheriff
-version:            0.2.0.4
+version:            0.2.1.0
 synopsis:           A checker plugin to throw compilation errors based on given rules; basically what a `Sheriff` does
 license:            MIT
 license-file:       LICENSE
@@ -10,7 +10,7 @@ category:           Development
 build-type:         Simple
 extra-doc-files:    CHANGELOG.md
 
-Flag Dev
+Flag SheriffDev
   Description: Use ghc options to dump ASTs in dev mode
   Default:     False
   Manual:      True
@@ -41,16 +41,19 @@ library
     exposed-modules:    
         Sheriff.Plugin
     other-modules: 
-        Sheriff.Types
-        Sheriff.Rules
-        Sheriff.Utils
+        Sheriff.CommonTypes
         Sheriff.Patterns
+        Sheriff.Rules
+        Sheriff.Types
+        Sheriff.TypesUtils
+        Sheriff.Utils
     build-depends:
         bytestring
         , containers
         , filepath
         , ghc
         , ghc-exactprint
+        , hashable
         , unordered-containers
         , uniplate
         , references
@@ -63,17 +66,16 @@ library
         , aeson-pretty
     hs-source-dirs:   src
     default-language: Haskell2010
+    if flag(SheriffDev)
+        cpp-options: -DSheriffDev
 
-test-suite sheriff-test
-    import:           common-options
+common test-common-options
+    import:           common-options  
     default-language: Haskell2010
-    type:             exitcode-stdio-1.0
     hs-source-dirs:   test
-    main-is:          Main.hs
     other-modules:
-        SubTest.Test1
-        Test1
         TestUtils
+        Exceptions
     build-depends:
           sheriff
         , aeson
@@ -82,14 +84,60 @@ test-suite sheriff-test
         , bytestring
         , aeson-pretty
         , extra
-
-    if flag(Dev)
+    if flag(SheriffDev)
         ghc-options: 
             -- Plugin Options available (default values)
             -- {"saveToFile":false,"throwCompilationError":true,"failOnFileNotFound":true,"matchAllInsideAnd":false",savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/indexedKeys.yaml","rulesConfigPath":".juspay/sheriffRules.yaml","exceptionsConfigPath":".juspay/sheriffExceptionRules.yaml","logDebugInfo":false,"logWarnInfo":true,"logTypeDebugging":false,"useIOForSourceCode":false}
+            -fkeep-going
             -fplugin=Sheriff.Plugin 
             -fplugin-opt=Sheriff.Plugin:{"throwCompilationError":true,"saveToFile":true,"savePath":".juspay/tmp/sheriff/","indexedKeysPath":".juspay/indexedKeys.yaml","failOnFileNotFound":true,"matchAllInsideAnd":true,"logDebugInfo":false,"logTypeDebugging":false,"useIOForSourceCode":true}
             -dumpdir=.juspay/tmp/sheriff/ -ddump-to-file -ddump-parsed-ast -ddump-tc-ast
     else
         ghc-options: 
+            -fkeep-going
             -fplugin=Sheriff.Plugin
+
+test-suite sheriff-test
+    import:           test-common-options
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    other-modules:
+        SubTests.FunctionUseTest
+        SubTests.InfiniteRecursionTest
+        SubTests.LogTest
+        SubTests.ShowTest
+        Test1
+    
+test-suite sheriff-show-test
+    import:           test-common-options
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    other-modules:    SubTests.ShowTest
+        
+test-suite sheriff-log-test
+    import:           test-common-options
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    other-modules:    SubTests.LogTest
+    
+test-suite sheriff-function-use-test
+    import:           test-common-options
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    other-modules:    SubTests.FunctionUseTest
+    
+test-suite sheriff-infinite-recursion-test
+    import:           test-common-options
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    other-modules:    SubTests.InfiniteRecursionTest
