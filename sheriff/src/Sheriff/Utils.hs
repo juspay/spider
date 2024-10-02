@@ -13,6 +13,7 @@ import Control.Exception
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (..))
 import Data.Aeson
+import Data.Bool
 import Data.Data (Data)
 import Data.Generics.Uniplate.Data
 import qualified Data.HashMap.Strict as HM
@@ -187,7 +188,7 @@ debugPrintType (TyVarTy v) = "(TyVarTy " <> showS v <> ")"
 debugPrintType (AppTy ty1 ty2) = "(AppTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
 debugPrintType (TyConApp tycon tys) = "(TyConApp (" <> showS tycon <> ") [" <> foldr (\x r -> debugPrintType x <> ", " <> r) "" tys <> "]"
 debugPrintType (ForAllTy _ ty) = "(ForAllTy " <> debugPrintType ty <> ")"
-debugPrintType (PatFunTy ty1 ty2) = "(FunTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
+debugPrintType (PatFunTy _ ty1 ty2) = "(FunTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
 debugPrintType (LitTy litTy) = "(LitTy " <> showS litTy <> ")"
 debugPrintType _ = ""
 
@@ -315,15 +316,23 @@ getHsExprTypeWithResolver logTypeDebugging expr = deNoteType <$> getHsExprType l
 
 -- TODO: Add support for matching constraints
 -- Get Qualified Types as List
-getHsExprTypeAsTypeDataList :: (HasPluginOpts a) => Type -> [TypeData]
-getHsExprTypeAsTypeDataList typ = case typ of
+getHsExprTypeAsTypeDataListWithConstraintCheck :: (HasPluginOpts a) => Bool -> Type -> [TypeData]
+getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg typ = case typ of
   LitTy ty -> [TextTy $ showS ty]
   TyVarTy var -> [TextTy $ getVarNameWithModuleName var]
-  TyConApp tycon tys -> [NestedTy $ [TextTy $ getNameWithModuleName (tyConName tycon)] <> (concat $ fmap getHsExprTypeAsTypeDataList tys)]
-  AppTy ty1 ty2 -> getHsExprTypeAsTypeDataList ty1 <> getHsExprTypeAsTypeDataList ty2
-  ForAllTy _ ty -> getHsExprTypeAsTypeDataList ty
-  PatFunTy ty1 ty2 -> getHsExprTypeAsTypeDataList ty1 <> getHsExprTypeAsTypeDataList ty2
+  TyConApp tycon tys -> [NestedTy $ [TextTy $ getNameWithModuleName (tyConName tycon)] <> (concat $ fmap (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg) tys)]
+  AppTy ty1 ty2 -> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty1 <> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2
+  ForAllTy _ ty -> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty
+  PatFunTy anonArgFlag ty1 ty2 -> bool (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty1 <> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2) (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2) (ignoreConstraintArg && anonArgFlag == InvisArg)
   _ -> []
+
+-- Get Qualified Types as List Ignoring constraint checks
+getHsExprTypeAsTypeDataList :: (HasPluginOpts a) => Type -> [TypeData]
+getHsExprTypeAsTypeDataList = getHsExprTypeAsTypeDataListWithConstraintCheck True
+
+-- Get Qualified Types as List
+getHsExprTypeAsTypeDataListKeepConstraints :: (HasPluginOpts a) => Type -> [TypeData]
+getHsExprTypeAsTypeDataListKeepConstraints = getHsExprTypeAsTypeDataListWithConstraintCheck False
 
 parseParenData :: String -> ([TypeData], String)
 parseParenData [] = ([], [])

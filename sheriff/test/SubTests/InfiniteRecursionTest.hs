@@ -165,6 +165,15 @@ pattern22 = pattern22 -- STE :: Should Throw Error
 toJSON :: (A.ToJSON a) => a -> A.Value
 toJSON = A.toJSON -- Should NOT Throw Error
 
+pattern23 :: (Num a) => a -> a
+pattern23 numVal = pattern23 numVal -- STE :: Should throw error
+
+pattern24 :: forall a. (Num a) => a -> a
+pattern24 numVal = pattern24 numVal -- STE :: Should throw error
+
+pattern25 :: forall a. a -> a
+pattern25 numVal = pattern25 numVal -- STE :: Should throw error
+
 class TypeChanger a b where
   changeType :: a -> b
 

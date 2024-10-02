@@ -1,5 +1,8 @@
 # Revision history for sheriff
 
+## 0.2.1.3
+* Fix type signature check case by avoiding constraint matching (edge case for functions with constraint cases, only in GHC 9.2.8)
+
 ## 0.2.1.2
 * Add type signature check for self recursive function calls (edge cases for instance calls)
 

@@ -285,11 +285,13 @@ checkAndVerifyAlt recurseForBinds rule ap@(L loc fnVar) match = do
         concat <$> mapM (checkInfiniteRecursion False rule) subBinds
       else pure []
   
-  when (logTypeDebugging . pluginOpts $ ?pluginOpts) $ 
+  when (logDebugInfo . pluginOpts $ ?pluginOpts) $ 
     liftIO $ do
-      showOutputable simplifiedFnApps >> putStrLn "***"
-      showOutputable trfSimplifiedFunApps >> putStrLn "***"
-      showOutputable finalTrfArgsInFnDefn >> putStrLn "\n"
+      putStrLn (showS loc <> " :: " <> showS fnVar) >> putStrLn "***"
+      print (getHsExprTypeAsTypeDataList fnVarTyp) >> putStrLn "***"
+      let tyL = concat $ fmap (foldr (\x r -> case x of; SimpleFnNameVar v ty -> (v, ty) : r; _ -> r;) [] . snd) trfSimplifiedFunApps
+      mapM (\(v, t) -> putStrLn $ showS v <> " ::: " <> show (getHsExprTypeAsTypeDataList t)) tyL
+      putStrLn "******"
 
   pure (currentFnErrors <> subBindsErrors)
   where
