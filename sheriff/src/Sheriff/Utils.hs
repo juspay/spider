@@ -13,8 +13,10 @@ import Control.Exception
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (..))
 import Data.Aeson
+import Data.Bool
 import Data.Data (Data)
 import Data.Generics.Uniplate.Data
+import qualified Data.HashMap.Strict as HM
 import Data.List.Extra (splitOn, trim, isInfixOf)
 import Data.Maybe (maybe)
 import qualified Data.Text as T
@@ -63,6 +65,15 @@ import TyCoRep
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
 
+matchLocatedVarNamesWithModuleName :: (HasPluginOpts a) => Located Var -> Located Var -> AsteriskMatching -> Bool
+matchLocatedVarNamesWithModuleName v1 v2 asteriskMatching = matchVarNamesWithModuleName (unLoc v1) (unLoc v2) asteriskMatching
+
+matchVarNamesWithModuleName :: (HasPluginOpts a) => Var -> Var -> AsteriskMatching -> Bool
+matchVarNamesWithModuleName v1 v2 asteriskMatching = 
+  let var1nameWithModule = getVarNameWithModuleName v1
+      var2nameWithModule = getVarNameWithModuleName v2
+  in matchNamesWithModuleName var1nameWithModule var2nameWithModule asteriskMatching
+
 getLocatedVarNameWithModuleName :: (HasPluginOpts a) => Located Var -> String
 getLocatedVarNameWithModuleName lvar = getVarNameWithModuleName $ unLoc lvar
 
@@ -72,9 +83,27 @@ getVarNameWithModuleName var = getNameWithModuleName $ varName var
 getNameWithModuleName :: (HasPluginOpts a) => Name -> String
 getNameWithModuleName name = 
   let occName = getOccString name
-  in case nameModule_maybe name of
-        Just modName -> (moduleNameString $ moduleName modName) <> "." <> occName
-        Nothing -> (currentModule ?pluginOpts) <> "." <> occName
+  in getModuleName name <> "." <> occName
+
+getModuleName :: (HasPluginOpts a) => Name -> String
+getModuleName name = 
+  case nameModule_maybe name of
+    Just modName -> (moduleNameString $ moduleName modName)
+    Nothing -> (currentModule ?pluginOpts)
+
+getModuleNameWithNMV :: (HasPluginOpts a) => Name -> String
+getModuleNameWithNMV name = 
+  let modNameMap = nameModuleMap ?pluginOpts
+  in case getFromNMV modNameMap (NMV_Name name) of
+    Just modName -> modName
+    Nothing -> getModuleName name
+  where
+    getFromNMV :: HM.HashMap NameModuleValue NameModuleValue -> NameModuleValue -> Maybe String
+    getFromNMV mp nmv = case HM.lookup nmv mp of
+      Just val -> case val of
+        NMV_Module modName -> Just modName
+        NMV_Name nm -> getFromNMV mp (NMV_Name nm)
+      Nothing -> Nothing
 
 matchNamesWithModuleName :: String -> String -> AsteriskMatching -> Bool
 matchNamesWithModuleName varNameWithModule fnToMatch asteriskMatching = 
@@ -159,7 +188,7 @@ debugPrintType (TyVarTy v) = "(TyVarTy " <> showS v <> ")"
 debugPrintType (AppTy ty1 ty2) = "(AppTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
 debugPrintType (TyConApp tycon tys) = "(TyConApp (" <> showS tycon <> ") [" <> foldr (\x r -> debugPrintType x <> ", " <> r) "" tys <> "]"
 debugPrintType (ForAllTy _ ty) = "(ForAllTy " <> debugPrintType ty <> ")"
-debugPrintType (PatFunTy ty1 ty2) = "(FunTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
+debugPrintType (PatFunTy _ ty1 ty2) = "(FunTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
 debugPrintType (LitTy litTy) = "(LitTy " <> showS litTy <> ")"
 debugPrintType _ = ""
 
@@ -287,15 +316,23 @@ getHsExprTypeWithResolver logTypeDebugging expr = deNoteType <$> getHsExprType l
 
 -- TODO: Add support for matching constraints
 -- Get Qualified Types as List
-getHsExprTypeAsTypeDataList :: (HasPluginOpts a) => Type -> [TypeData]
-getHsExprTypeAsTypeDataList typ = case typ of
+getHsExprTypeAsTypeDataListWithConstraintCheck :: (HasPluginOpts a) => Bool -> Type -> [TypeData]
+getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg typ = case typ of
   LitTy ty -> [TextTy $ showS ty]
   TyVarTy var -> [TextTy $ getVarNameWithModuleName var]
-  TyConApp tycon tys -> [NestedTy $ [TextTy $ getNameWithModuleName (tyConName tycon)] <> (concat $ fmap getHsExprTypeAsTypeDataList tys)]
-  AppTy ty1 ty2 -> getHsExprTypeAsTypeDataList ty1 <> getHsExprTypeAsTypeDataList ty2
-  ForAllTy _ ty -> getHsExprTypeAsTypeDataList ty
-  PatFunTy ty1 ty2 -> getHsExprTypeAsTypeDataList ty1 <> getHsExprTypeAsTypeDataList ty2
+  TyConApp tycon tys -> [NestedTy $ [TextTy $ getNameWithModuleName (tyConName tycon)] <> (concat $ fmap (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg) tys)]
+  AppTy ty1 ty2 -> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty1 <> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2
+  ForAllTy _ ty -> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty
+  PatFunTy anonArgFlag ty1 ty2 -> bool (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty1 <> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2) (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2) (ignoreConstraintArg && anonArgFlag == InvisArg)
   _ -> []
+
+-- Get Qualified Types as List Ignoring constraint checks
+getHsExprTypeAsTypeDataList :: (HasPluginOpts a) => Type -> [TypeData]
+getHsExprTypeAsTypeDataList = getHsExprTypeAsTypeDataListWithConstraintCheck True
+
+-- Get Qualified Types as List
+getHsExprTypeAsTypeDataListKeepConstraints :: (HasPluginOpts a) => Type -> [TypeData]
+getHsExprTypeAsTypeDataListKeepConstraints = getHsExprTypeAsTypeDataListWithConstraintCheck False
 
 parseParenData :: String -> ([TypeData], String)
 parseParenData [] = ([], [])
@@ -419,3 +456,7 @@ trfLHsExprToSimpleTcExpr (L loc hsExpr) = case hsExpr of
       Present _ lhsExpr -> trfLHsExprToSimpleTcExpr lhsExpr
       _                 -> SimpleUnhandledTcExpr
 #endif
+
+instance StrictEq SimpleTcExpr where
+  (===) (SimpleFnNameVar var1 ty1) (SimpleFnNameVar var2 ty2) = (getModuleNameWithNMV (varName var1) == getModuleNameWithNMV (varName var2)) && (getVarName var1 == getVarName var2) && (getHsExprTypeAsTypeDataList ty1 == getHsExprTypeAsTypeDataList ty2)
+  (===) var1                       var2                       = (var1 == var2)

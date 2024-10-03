@@ -1,4 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 
 module SubTests.InfiniteRecursionTest where
 
@@ -37,7 +40,7 @@ pattern1 x = do
 -- Self recursive variable
 pattern2 :: String -> String
 pattern2 _ = 
- let x = x <> "Dummy" in x -- STE :: Should Throw Error since infinite self recursive variable usage
+ let sameVal = sameVal <> "Dummy" in sameVal -- STE :: Should Throw Error since infinite self recursive variable usage
 
 -- Self recursive function
 pattern3 :: String -> String
@@ -153,6 +156,35 @@ pattern21 =
   let z = "Dummy" 
       y = "Hello"
   in pattern21 -- STE :: Should Throw Error
+
+-- Self recursive straight away
+pattern22 :: Int
+pattern22 = pattern22 -- STE :: Should Throw Error
+
+-- Same function name but from different module
+toJSON :: (A.ToJSON a) => a -> A.Value
+toJSON = A.toJSON -- Should NOT Throw Error
+
+pattern23 :: (Num a) => a -> a
+pattern23 numVal = pattern23 numVal -- STE :: Should throw error
+
+pattern24 :: forall a. (Num a) => a -> a
+pattern24 numVal = pattern24 numVal -- STE :: Should throw error
+
+pattern25 :: forall a. a -> a
+pattern25 numVal = pattern25 numVal -- STE :: Should throw error
+
+class TypeChanger a b where
+  changeType :: a -> b
+
+instance TypeChanger Integer Int where
+  changeType = fromIntegral -- Should not throw error since no recursion
+
+instance TypeChanger Integer SumType where
+  changeType = TypeA . changeType -- Should NOT throw Error since type is changed
+
+instance TypeChanger Integer Integer where
+  changeType = changeType -- STE :: Should throw Error
 
 main :: IO ()
 main = do

@@ -12,6 +12,7 @@
 module Sheriff.CommonTypes where
 
 import Data.Hashable
+import qualified Data.HashMap.Strict as HM
 import GHC hiding (exprType)
 
 #if __GLASGOW_HASKELL__ >= 900
@@ -22,8 +23,18 @@ import GhcPlugins hiding ((<>), getHscEnv)
 import TcRnMonad
 #endif
 
+data NameModuleValue = 
+    NMV_Name Name
+  | NMV_Module String -- This should be terminating
+  deriving (Eq)
+
+instance Show NameModuleValue where
+  show (NMV_Name name) = "NMV_Name " <> getOccString name <> "_" <> show (nameUnique name)
+  show (NMV_Module str) = "NMV_Module " <> str
+
 data PluginCommonOpts a = PluginCommonOpts {
     currentModule :: String,
+    nameModuleMap :: HM.HashMap NameModuleValue NameModuleValue,
     pluginOpts    :: a
   }
   deriving (Show, Eq)
@@ -36,7 +47,7 @@ data TypeData = TextTy String | NestedTy [TypeData]
 
 data SimpleTcExpr = 
     SimpleVar Var
-  | SimpleFnNameVar Var -- Just for lenient checking
+  | SimpleFnNameVar Var Type -- Just for checking function Variable
   | SimpleList [SimpleTcExpr]
   | SimpleAliasPat SimpleTcExpr SimpleTcExpr
   | SimpleTuple [SimpleTcExpr]
@@ -48,7 +59,7 @@ data SimpleTcExpr =
 instance Outputable SimpleTcExpr where
   ppr simpleTcExpr = case simpleTcExpr of
     SimpleVar v -> "SimpleVar " $$ ppr v
-    SimpleFnNameVar v -> "SimpleFnNameVar " $$ ppr v
+    SimpleFnNameVar v ty -> "SimpleFnNameVar " $$ ppr v $$ ppr ty
     SimpleList ls -> "SimpleList " $$ ppr ls
     SimpleAliasPat p1 p2 -> "SimpleAliasPat "
     SimpleTuple ls -> "SimpleTuple " $$ ppr ls
@@ -62,7 +73,7 @@ instance Eq SimpleTcExpr where
   (==) (SimpleAliasPat pat1 pat2)   pat                          = pat1 == pat || pat2 == pat
   (==) pat                          (SimpleAliasPat pat1 pat2)   = pat1 == pat || pat2 == pat
   (==) (SimpleVar var1)             (SimpleVar var2)             = var1 == var2
-  (==) (SimpleFnNameVar var1)       (SimpleFnNameVar var2)       = nameOccName (varName var1) == nameOccName (varName var2)
+  (==) (SimpleFnNameVar var1 ty1)   (SimpleFnNameVar var2 ty2)   = nameOccName (varName var1) == nameOccName (varName var2)
   (==) (SimpleList pat1)            (SimpleList pat2)            = pat1 == pat2
   (==) (SimpleTuple pat1)           (SimpleTuple pat2)           = pat1 == pat2
   (==) (SimpleDataCon mbVar1 pat1)  (SimpleDataCon mbVar2 pat2)  = mbVar1 == mbVar2 && pat1 == pat2
@@ -72,7 +83,7 @@ instance Eq SimpleTcExpr where
   (==) _                            _                            = False
 
 -- Data type to represent asterisk matching
-data AsteriskMatching = AsteriskInFirst | AsteriskInSecond | AsteriskInBoth
+data AsteriskMatching = AsteriskInFirst | AsteriskInSecond | AsteriskInBoth | NoAsteriskMatching
   deriving (Show, Eq)
 
 -- Type family and GADT for generic phase related stuff
@@ -107,3 +118,20 @@ type instance PassMonad 'Typechecked a = TcM a
 
 instance Hashable (Located Var) where
   hashWithSalt salt (L srcSpan var) = hashWithSalt salt $ show srcSpan <> "::" <> (nameStableString . getName $ var) 
+
+instance Hashable NameModuleValue where
+  hashWithSalt salt (NMV_Name name)      = hashWithSalt salt (nameStableString name)
+  hashWithSalt salt (NMV_Module modName) = hashWithSalt salt modName
+
+class StrictEq a where
+  (===) :: (HasPluginOpts u) => a -> a -> Bool
+
+instance (StrictEq a) => StrictEq (Maybe a) where
+  (===) (Just x) (Just y) = x === y
+  (===) Nothing  Nothing  = True
+  (===) _        _        = False
+
+instance (StrictEq a) => StrictEq [a] where
+  (===) [] [] = True
+  (===) (x:xs) (y:ys) = (x === y && xs === ys)
+  (===) _ _ = False

@@ -15,8 +15,8 @@ import TyCoRep
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
-pattern PatFunTy :: Type -> Type -> Type
-pattern PatFunTy ty1 ty2 <- (FunTy _ _ ty1 ty2)
+pattern PatFunTy :: AnonArgFlag -> Type -> Type -> Type
+pattern PatFunTy anonArgFlag ty1 ty2 <- (FunTy anonArgFlag _ ty1 ty2)
 
 pattern PatHsIf :: LHsExpr (GhcPass p) -> LHsExpr (GhcPass p) -> LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
 pattern PatHsIf pred thenCl elseCl <- (HsIf _ pred thenCl elseCl)
@@ -31,8 +31,8 @@ pattern PatExplicitList :: (XExplicitList (GhcPass p)) -> [LHsExpr (GhcPass p)] 
 pattern PatExplicitList typ arg = (ExplicitList typ arg)
 
 #else
-pattern PatFunTy :: Type -> Type -> Type
-pattern PatFunTy ty1 ty2 <- (FunTy _ ty1 ty2)
+pattern PatFunTy :: AnonArgFlag -> Type -> Type -> Type
+pattern PatFunTy anonArgFlag ty1 ty2 <- (FunTy anonArgFlag ty1 ty2)
 
 pattern PatHsIf :: LHsExpr (GhcPass p) -> LHsExpr (GhcPass p) -> LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
 pattern PatHsIf pred thenCl elseCl <- (HsIf _ _ pred thenCl elseCl)
