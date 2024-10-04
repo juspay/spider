@@ -1,5 +1,13 @@
 # Revision history for sheriff
 
+## 0.2.1.4
+* Fix function level exception not working for Function Rule
+* Fix infinite recursion being detected for top level function being called in `where` clause
+* Fix infinite recursion being detected for partial function being called inside `fmap` or any other higher order function
+* Handle infinite recursion of `LambdaCase` & `Lambda` functions for partial functions
+* Add/modify test cases to check above cases
+* Refactor partial function infinite recursion detection code for better reusability 
+
 ## 0.2.1.3
 * Fix type signature check case by avoiding constraint matching (edge case for functions with constraint cases, only in GHC 9.2.8)
 

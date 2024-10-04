@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               sheriff
-version:            0.2.1.3
+version:            0.2.1.4
 synopsis:           A checker plugin to throw compilation errors based on given rules; basically what a `Sheriff` does
 license:            MIT
 license-file:       LICENSE

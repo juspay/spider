@@ -18,7 +18,7 @@ fn2 = "Fn2"
 fn3 :: String -> String
 fn3 a = a
 
-data SumType = TypeA Int | TypeB 
+data SumType = TypeA Int | TypeB | RecType SumType
 
 instance A.ToJSON SumType where
   toJSON (TypeA v) = A.toJSON v 
@@ -105,7 +105,7 @@ pattern12 _ = ""
 -- Partial function with lambda case
 pattern13 :: String -> String
 pattern13 = \case
-  "Pattern" -> pattern13 "Pattern" -- Should NOT Throw Error
+  "Pattern" -> pattern13 "Pattern" -- STE :: Should Throw Error
   _         -> ""
 
 -- Partial function with lambda case
@@ -148,7 +148,7 @@ pattern20 :: String -> String -> String
 pattern20 a b = tempFn
   where
     tempFn :: String
-    tempFn = pattern20 a b -- STE :: Should Throw Error
+    tempFn = pattern20 a b -- Should NOT Throw Error
 
 -- Partial function with let-in
 pattern21 :: String -> String
@@ -174,6 +174,64 @@ pattern24 numVal = pattern24 numVal -- STE :: Should throw error
 pattern25 :: forall a. a -> a
 pattern25 numVal = pattern25 numVal -- STE :: Should throw error
 
+-- Same function call for partial function but within some other function
+pattern26 :: [Int] -> [Int]
+pattern26 = (<>) (concat $ fmap pattern26 [[1..10]]) -- Should NOT throw error
+
+-- Indirect recursion (may or may not be infinite)
+pattern27 :: Int
+pattern27 = 10
+  where
+    whereFn :: Int
+    whereFn = pattern27 -- Should NOT throw Error
+
+-- Single argument in lambda case
+pattern28 :: Int -> Int
+pattern28 = \case
+  10     -> 20
+  lamArg -> pattern28 lamArg -- STE :: Should Throw Error
+
+-- Nested lambda case
+pattern29 :: Int -> Int -> Int
+pattern29 = \case
+  10 -> \case
+   20 -> pattern29 10 20 -- STE :: Should Throw Error
+   _  -> pattern29 50 60 -- Should NOT Throw Error
+  lamArg1 -> \case 
+    lamArg2 -> pattern29 lamArg1 lamArg2 -- STE :: Should Throw Error
+
+-- Same function call for complete function but within some other function
+pattern30 :: [Int] -> [Int]
+pattern30 inpList = concat $ fmap (: pattern30 inpList) [1..10] -- STE :: Should Throw Error
+
+-- Lambda with 1 argument
+pattern31 :: Int -> Int
+pattern31 = \lamArg -> pattern31 lamArg -- STE :: Should Throw Error
+
+-- Lambda with 2 argument
+pattern32 :: Int -> Int -> Int
+pattern32 = \lamArg1 lamArg2 -> pattern32 lamArg1 lamArg2 -- STE :: Should Throw Error
+
+-- Lambda with 2 argument but returning partial function
+pattern33 :: Int -> Int
+pattern33 = \lamArg -> pattern33 lamArg -- STE :: Should Throw Error
+
+-- Lambda with 2 argument but changed arg
+pattern34 :: Int -> Int -> Int
+pattern34 = \lamArg1 lamArg2 -> pattern34 lamArg2 lamArg1 -- Should NOT Throw Error
+
+-- Lambda with 1 argument but changed arg
+pattern35 :: Int -> Int
+pattern35 = \lamArg -> pattern35 (lamArg + 5) -- Should NOT Throw Error
+
+-- Lambda with 1 argument but in let-in statement
+pattern36 :: Int -> Int
+pattern36 = let u = 20 in \lamArg -> pattern36 lamArg -- STE :: Should Throw Error
+
+-- Lambda with 1 argument but in function chaining
+pattern37 :: Int -> Int
+pattern37 = (+ 5) . \lamArg -> pattern37 lamArg -- STE :: Should Throw Error
+
 class TypeChanger a b where
   changeType :: a -> b
 
@@ -183,8 +241,17 @@ instance TypeChanger Integer Int where
 instance TypeChanger Integer SumType where
   changeType = TypeA . changeType -- Should NOT throw Error since type is changed
 
+instance TypeChanger String SumType where
+  changeType x = RecType $ changeType x -- STE :: Should Throw Error
+
 instance TypeChanger Integer Integer where
   changeType = changeType -- STE :: Should throw Error
+
+instance TypeChanger Integer String where
+  changeType = \case
+    10  -> changeType (20 :: Integer) -- Should NOT throw Error
+    50  -> changeType (50 :: Integer) -- STE :: Should Throw Error
+    val -> changeType val -- STE :: Should throw Error
 
 main :: IO ()
 main = do
