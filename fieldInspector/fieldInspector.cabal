@@ -53,9 +53,16 @@ flag enable-lr-plugins
   default:           False
   manual:            True
 
+flag enable-api-contract-plugins
+  description:       set this flag to disable these plugins api contract
+  default:           True
+  manual:            False
+
 common common-options
     if flag(enable-lr-plugins)
         cpp-options:     -DENABLE_LR_PLUGINS
+    if flag(enable-api-contract-plugins)
+        cpp-options:     -DENABLE_API_CONTRACT_PLUGINS
     ghc-options:
         -Wall
         -Wincomplete-uni-patterns

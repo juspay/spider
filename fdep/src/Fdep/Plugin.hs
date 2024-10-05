@@ -479,7 +479,7 @@ loopOverLHsBindLR con mParentName path (L _ x@(FunBind fun_ext id matches _ _)) 
                 stmtsLNoLoc = (exprLStmtL ^? biplateRef :: [HsExpr GhcTc])
                 stmtsRNoLoc = (exprLStmtR ^? biplateRef :: [HsExpr GhcTc])
             in void $ mapM (processExpr keyFunction path) (stmtsL <> stmtsR <> (map noLoc $ (stmtsLNoLoc <> stmtsRNoLoc)))
-        processExpr keyFunction path (L _ x@(Recordexpr (L _ (iD)) rcon_flds)) =
+        processExpr keyFunction path (L _ x@(RecordCon expr (L _ (iD)) rcon_flds)) =
             let stmts = (rcon_flds ^? biplateRef :: [LHsExpr GhcTc])
                 stmtsNoLoc = (rcon_flds ^? biplateRef :: [HsExpr GhcTc])
                 stmtsNoLocexpr = (expr ^? biplateRef :: [HsExpr GhcTc])
@@ -712,12 +712,11 @@ loopOverLHsBindLR con mParentName path (L _ x@(FunBind fun_ext id matches _ _)) 
             processExpr keyFunction path (wrapXRec @(GhcTc) hsExpr)
         processXXExpr keyFunction path (ExpansionExpr (HsExpanded _ expansionExpr)) =
             mapM_ (processExpr keyFunction path . (wrapXRec @(GhcTc))) [expansionExpr]
-loopOverLHsBindLR _ _ _ (L _ VarBind{var_rhs = rhs}) = pure mempty
-loopOverLHsBindLR _ _ _ (L _ (PatSynBind _ PSB{psb_def = def})) = pure mempty
-loopOverLHsBindLR _ _ _ (L _ (PatSynBind _ (XPatSynBind _))) = pure mempty
-loopOverLHsBindLR _ _ _ (L _ (XHsBindsLR _)) = pure mempty
-loopOverLHsBindLR _ _ _ (L _ (PatBind _ _ pat_rhs _)) = pure mempty
-loopOverLHsBindLR _ _ _ _ = pure mempty
+loopOverLHsBindLR con mParentName path (L _ x) = do
+    let stmts = (x ^? biplateRef :: [HsExpr GhcTc])
+    print (mParentName,path)
+    mapM_ (\y -> print (toConstr x,toConstr y,showSDocUnsafe $ ppr y)) stmts
+    -- in void $ mapM (processExpr keyFunction path) (stmts)
 
 getLocTC' = (showSDocUnsafe . ppr . la2r . getLoc)
 getLoc'   = (showSDocUnsafe . ppr . la2r . getLoc)

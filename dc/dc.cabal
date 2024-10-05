@@ -102,5 +102,5 @@ test-suite dc-test
 
     -- Test dependencies.
     build-depends:
-        base ^>=4.16.4.0,
+        base ,
         dc
