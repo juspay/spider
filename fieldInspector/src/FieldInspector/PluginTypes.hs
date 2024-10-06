@@ -122,7 +122,7 @@ plugin = (defaultPlugin{
         pluginRecompile = (\_ -> return NoForceRecompile)
         , parsedResultAction = collectTypeInfoParser
         })
-        <> ApiContract.plugin
+        -- <> ApiContract.plugin
 #if defined(ENABLE_LR_PLUGINS)
         <> DRP.plugin
         <> DRAP.plugin
