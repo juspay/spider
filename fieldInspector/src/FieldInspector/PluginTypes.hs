@@ -113,7 +113,7 @@ import qualified Data.Record.Plugin as DRP
 import qualified Data.Record.Anon.Plugin as DRAP
 import qualified Data.Record.Plugin.HasFieldPattern as DRPH
 import qualified RecordDotPreprocessor as RDP
-import qualified ApiContract.Plugin as ApiContract
+-- import qualified ApiContract.Plugin as ApiContract
 import qualified Fdep.Plugin as Fdep
 
 plugin :: Plugin
