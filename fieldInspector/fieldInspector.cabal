@@ -110,7 +110,7 @@ common common-options
         , binary
         , references
         , uniplate
-        , api-contract
+        -- , api-contract
         , fdep
 
 library
