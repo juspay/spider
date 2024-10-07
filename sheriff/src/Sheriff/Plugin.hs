@@ -261,22 +261,26 @@ checkInfiniteRecursion _ _ _ = pure []
 -- Helper function to verify if any of the body HsExpr results in infinite recursion
 checkAndVerifyAlt :: (HasPluginOpts PluginOpts) => Bool -> InfiniteRecursionRule -> LIdP GhcTc -> Match GhcTc (LHsExpr GhcTc) -> SheriffTcM [(LHsExpr GhcTc, Violation)]
 checkAndVerifyAlt recurseForBinds rule ap@(L loc fnVar) match = do
-  let argsInFnDefn = m_pats match
-      currentFnNameWithModule = getVarNameWithModuleName fnVar
+  let currentFnNameWithModule = getVarNameWithModuleName fnVar
       ignoredFunctions = infinite_recursion_rule_ignore_functions rule
-      trfArgsInFnDefn = fmap (trfPatToSimpleTcExpr . unLoc) argsInFnDefn
-  fnVarTyp <- lift $ getHsExprTypeWithResolver False (mkLHsVar $ getLocated ap loc)
-  let finalTrfArgsInFnDefn = (SimpleFnNameVar fnVar fnVarTyp) : trfArgsInFnDefn
-      argLenByTy = length $ getHsExprTypeAsTypeDataList fnVarTyp
-  let isPartialFn = length argsInFnDefn /= argLenByTy - 1
-      (hsExprs :: [LHsExpr GhcTc]) = 
-        if isPartialFn then traverseAst (foldr getLastStmt [] $ grhssGRHSs (m_grhss match))
-        else traverseAst (m_grhss match)
-      (funApps :: [LHsExpr GhcTc]) = filter (isFunApp True) hsExprs
-      (simplifiedFnApps :: [(Located Var, (LHsExpr GhcTc, LHsExpr GhcTc, [LHsExpr GhcTc]))]) = HM.toList $ foldr (\x r -> maybe r (\(lVar, typ, args) -> HM.insertWith (\(x1, e1, newArgs) (x2, e2, oldArgs) -> if length newArgs >= length oldArgs then (x1, e1, newArgs) else (x2, e2, oldArgs)) lVar (x, typ, args) r) $ getFnNameAndTypeableExprWithAllArgs x) HM.empty funApps
-  (trfSimplifiedFunApps :: [(LHsExpr GhcTc, [SimpleTcExpr])]) <- mapM trfSimplifiedFunApp simplifiedFnApps 
-  let currentFnErrors = map (\(lhsExpr, _) -> (lhsExpr, InfiniteRecursionDetected rule)) $ filter (\x -> (any (\ignoredFnName -> matchNamesWithModuleName currentFnNameWithModule ignoredFnName AsteriskInSecond) ignoredFunctions == False) && (snd x === finalTrfArgsInFnDefn)) trfSimplifiedFunApps 
-  
+      skipCurrentFn = any (\ignoredFnName -> matchNamesWithModuleName currentFnNameWithModule ignoredFnName AsteriskInSecond) ignoredFunctions
+  currentFnErrors <- case skipCurrentFn of
+    True -> pure []
+    False -> do
+      let argsInFnDefn = m_pats match
+          trfArgsInFnDefn = fmap (trfPatToSimpleTcExpr . unLoc) argsInFnDefn
+      fnVarTyp <- lift $ getHsExprTypeWithResolver False (mkLHsVar $ getLocated ap loc)
+      let finalTrfArgsInFnDefn = (SimpleFnNameVar fnVar fnVarTyp) : trfArgsInFnDefn
+          argLenByTy = length (getHsExprTypeAsTypeDataList fnVarTyp) - 1
+          argLenByFnDefn = length argsInFnDefn
+          grhssList = grhssGRHSs (m_grhss match)
+      when (logDebugInfo . pluginOpts $ ?pluginOpts) $ 
+        liftIO $ do
+          putStrLn (showS loc <> " :: " <> showS fnVar) >> putStrLn "***"
+          print (getHsExprTypeAsTypeDataList fnVarTyp) >> putStrLn "***"
+          putStrLn "******"
+      concatMapM (checkGrhSS finalTrfArgsInFnDefn argLenByTy argLenByFnDefn) grhssList
+
   -- Process sub binds if further recursion allowed
   subBindsErrors <- 
     if recurseForBinds
@@ -285,39 +289,61 @@ checkAndVerifyAlt recurseForBinds rule ap@(L loc fnVar) match = do
         concat <$> mapM (checkInfiniteRecursion False rule) subBinds
       else pure []
   
-  when (logDebugInfo . pluginOpts $ ?pluginOpts) $ 
-    liftIO $ do
-      putStrLn (showS loc <> " :: " <> showS fnVar) >> putStrLn "***"
-      print (getHsExprTypeAsTypeDataList fnVarTyp) >> putStrLn "***"
-      let tyL = concat $ fmap (foldr (\x r -> case x of; SimpleFnNameVar v ty -> (v, ty) : r; _ -> r;) [] . snd) trfSimplifiedFunApps
-      mapM (\(v, t) -> putStrLn $ showS v <> " ::: " <> show (getHsExprTypeAsTypeDataList t)) tyL
-      putStrLn "******"
-
   pure (currentFnErrors <> subBindsErrors)
   where
+    checkGrhSS :: HasPluginOpts PluginOpts => [SimpleTcExpr] -> Int -> Int -> LGRHS GhcTc (LHsExpr GhcTc) -> SheriffTcM [(LHsExpr GhcTc, Violation)]
+    checkGrhSS finalTrfArgsInFnDefn argLenByTy argLenByFnDefn grhss = do 
+      let lenDiff = argLenByTy - argLenByFnDefn
+          isPartialFn = lenDiff > 0 
+      if isPartialFn then case getMaybeLambdaCaseOrLambdaMG grhss of
+        Just mg -> do
+          let matches = map unLoc . unLoc $ mg_alts mg
+          flip concatMapM matches $ \match -> do
+            let argsInFnDefn = m_pats match
+                trfArgsInFnDefn = fmap (trfPatToSimpleTcExpr . unLoc) argsInFnDefn
+                updatedFinalTrfArgsInFnDefn = finalTrfArgsInFnDefn <> trfArgsInFnDefn
+                updatedArgLenByFnDefn = argLenByFnDefn + length argsInFnDefn
+                grhssList = grhssGRHSs (m_grhss match)
+            concatMapM (checkGrhSS updatedFinalTrfArgsInFnDefn argLenByTy updatedArgLenByFnDefn) grhssList
+        Nothing -> processLHsExprInGrhs (getLastStmt grhss) finalTrfArgsInFnDefn
+      else processLHsExprInGrhs (traverseAst grhss) finalTrfArgsInFnDefn
+    
+    processLHsExprInGrhs :: HasPluginOpts PluginOpts => [LHsExpr GhcTc] -> [SimpleTcExpr] -> SheriffTcM [(LHsExpr GhcTc, Violation)]
+    processLHsExprInGrhs hsExprs finalTrfArgsInFnDefn = do
+      let (funApps :: [LHsExpr GhcTc]) = filter (isFunApp True) hsExprs
+          (simplifiedFnApps :: [(Located Var, (LHsExpr GhcTc, LHsExpr GhcTc, [LHsExpr GhcTc]))]) = HM.toList $ foldr (\x r -> maybe r (\(lVar, typ, args) -> HM.insertWith (\(x1, e1, newArgs) (x2, e2, oldArgs) -> if length newArgs >= length oldArgs then (x1, e1, newArgs) else (x2, e2, oldArgs)) lVar (x, typ, args) r) $ getFnNameAndTypeableExprWithAllArgs x) HM.empty funApps
+      (trfSimplifiedFunApps :: [(LHsExpr GhcTc, [SimpleTcExpr])]) <- mapM trfSimplifiedFunApp simplifiedFnApps 
+      let currentGrhssErrors = map (\(lhsExpr, _) -> (lhsExpr, InfiniteRecursionDetected rule)) $ filter (\x -> (snd x === finalTrfArgsInFnDefn)) trfSimplifiedFunApps 
+      when (logDebugInfo . pluginOpts $ ?pluginOpts) $ 
+        liftIO $ do
+          let tyL = concat $ fmap (foldr (\x r -> case x of; SimpleFnNameVar v ty -> (v, ty) : r; _ -> r;) [] . snd) trfSimplifiedFunApps
+          mapM (\(v, t) -> putStrLn $ showS v <> " ::: " <> show (getHsExprTypeAsTypeDataList t)) tyL
+          putStrLn "******"
+      pure currentGrhssErrors
+
     {-
     Assumption for infinite recursion in partial function case:
     1. Function composition , e.g. - fn a = fn1 x . fn2 y . fn a
     2. Let-in statement, and infinite recursion is inside `in` statement
     3. Do statement, infinite recursion can be in last statement
-    4. Straight HsApp case
+    4. Straight HsApp case or HsVar case
 
     TODO: 
     1. Correct the assumption and handle more possible cases
     -} 
-    getLastStmt :: LGRHS GhcTc (LHsExpr GhcTc) -> [LHsExpr GhcTc] -> [LHsExpr GhcTc]
-    getLastStmt (L _ (GRHS _ _ lExpr)) rem = checkAndGetExpr lExpr <> rem
+    getLastStmt :: LGRHS GhcTc (LHsExpr GhcTc) -> [LHsExpr GhcTc]
+    getLastStmt (L _ (GRHS _ _ lExpr)) = checkAndGetExpr lExpr
 #if __GLASGOW_HASKELL__ < 900
-    getLastStmt (L _ (XGRHS _)) rem = rem
+    getLastStmt (L _ (XGRHS _)) = []
 #endif
 
     checkAndGetExpr :: LHsExpr GhcTc -> [LHsExpr GhcTc]
     checkAndGetExpr (L loc expr) = case expr of
-      HsLet _ _ inStmt -> [inStmt]
+      HsLet _ _ inStmt -> checkAndGetExpr inStmt
       HsApp _ _ _ -> [L loc expr]
       HsVar _ _ -> [L loc expr]
-      HsDo _ _ doStmts -> foldr isLastStmt [] (traverseAst doStmts)
-      PatHsWrap wrapper wrapExpr -> [L loc expr]
+      HsDo _ _ doStmts -> concatMap checkAndGetExpr $ foldr isLastStmt [] (traverseAst doStmts)
+      PatHsWrap wrapper wrapExpr -> fmap (\(L _ trfExpr) -> L loc (PatHsWrap wrapper trfExpr)) $ checkAndGetExpr (L loc wrapExpr)
       OpApp _ lApp op rApp -> case showS op of
         "(.)" -> checkAndGetExpr rApp
         _ -> []
@@ -332,6 +358,29 @@ checkAndVerifyAlt recurseForBinds rule ap@(L loc fnVar) match = do
     isLastStmt (L _ (LastStmt _ lexpr _ _)) rem = lexpr : rem
     isLastStmt _                            rem = rem
 
+    getMaybeLambdaCaseOrLambdaMG :: LGRHS GhcTc (LHsExpr GhcTc) -> Maybe (MatchGroup GhcTc (LHsExpr GhcTc))
+    getMaybeLambdaCaseOrLambdaMG grhs = case grhs of
+      (L _ (GRHS _ _ lExpr)) -> checkAndGetMaybeLambdaCaseOrLambdaMG lExpr
+#if __GLASGOW_HASKELL__ < 900
+      (L _ (XGRHS _))        -> Nothing
+#endif
+
+    checkAndGetMaybeLambdaCaseOrLambdaMG :: LHsExpr GhcTc -> Maybe (MatchGroup GhcTc (LHsExpr GhcTc))
+    checkAndGetMaybeLambdaCaseOrLambdaMG (L loc expr) = case expr of
+      (HsLamCase _ mg)   -> Just mg -- LambdaCase
+      (HsLam _ mg)       -> Just mg -- Lambda Function
+      (HsLet _ _ inStmt) -> checkAndGetMaybeLambdaCaseOrLambdaMG inStmt
+      PatHsWrap _ wrapExpr -> checkAndGetMaybeLambdaCaseOrLambdaMG (L loc wrapExpr)
+      OpApp _ _ op rApp -> case showS op of
+        "(.)" -> checkAndGetMaybeLambdaCaseOrLambdaMG rApp
+        _ -> Nothing
+#if __GLASGOW_HASKELL__ >= 900
+      PatHsExpansion (OpApp _ _ op _) (HsApp _ _ rApp) -> case showS op of
+        "(.)" -> checkAndGetMaybeLambdaCaseOrLambdaMG rApp
+        _ -> Nothing
+#endif
+      _ -> Nothing
+
     trfSimplifiedFunApp :: (Located Var, (LHsExpr GhcTc, LHsExpr GhcTc, [LHsExpr GhcTc])) -> SheriffTcM (LHsExpr GhcTc, [SimpleTcExpr])
     trfSimplifiedFunApp (lVar, (lHsExpr, typLHsExpr, lHsExprArgsLs)) = do
       typ <- lift $ dropForAlls <$> (getHsExprTypeWithResolver False) typLHsExpr
@@ -343,7 +392,7 @@ loopOverModBinds rules (L _ ap@(FunBind{fun_id = (L _ funVar)})) = do
   -- liftIO $ print "FunBinds" >> showOutputable ap
   let currentFnNameWithModule = getVarNameWithModuleName funVar
       filteredRulesForFunction = filter (isAllowedOnCurrentFunction currentFnNameWithModule) rules
-  badCalls <- getBadFnCalls rules ap
+  badCalls <- getBadFnCalls filteredRulesForFunction ap
   pure badCalls
 loopOverModBinds _ (L _ ap@(PatBind{})) = do
   -- liftIO $ print "PatBinds" >> showOutputable ap

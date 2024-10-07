@@ -51,7 +51,7 @@ fn 10 = fn (10 :: Int)
 fn _ = -1
 ```
 
-## Pattern 6 : Infinite recursion call on partial function called as alias
+## Pattern 6 : Infinite recursion call on partial function
 for e.g. - 
 ```haskell
 fn :: Int -> Int
@@ -70,4 +70,35 @@ for e.g. -
 ```haskell
 fn :: Int -> Int
 fn = let z = "Dummy" in fn
+```
+
+## Pattern 9 : Infinite recursion in instance method based on instance type being used
+for e.g. -
+```haskell
+class TypeChanger a b where
+  changeType :: a -> b
+
+data SumType = TypeA Int | TypeB | RecType SumType
+
+instance TypeChanger String SumType where
+  changeType x = RecType $ changeType x -- Infinite recursion since types are same (TypeChanger String SumType)
+
+instance TypeChanger Integer SumType where
+  changeType = TypeA . changeType -- NOT infinite recursion since type is changed (TypeChanger Integer Int)
+```
+
+## Pattern 10 : Infinite recursion call on partial function but using lambda case (in normal function and instance methods, as first statement or let-in statement or in function composition)
+for e.g. - 
+```haskell
+fn :: String -> String
+fn = \case
+  "Pattern" -> fn "Pattern" -- Infinite recursion due to same pattern
+  b         -> fn b -- Infinite recursion due to same variable
+```
+
+## Pattern 11 : Infinite recursion call on partial function but using lambda functions (in normal function and instance methods, as first statement or let-in statement or in function composition)
+for e.g. - 
+```haskell
+fn :: String -> String
+fn = \x -> fn x -- Infinite recursion due to same variable
 ```
