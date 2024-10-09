@@ -364,11 +364,13 @@ getRuleExceptions rule = case rule of
 getRuleIgnoreModules :: Rule -> Modules
 getRuleIgnoreModules rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_ignore_modules fnRule
+  DBRuleT dbRule -> []
   _ -> []
 
 getRuleCheckModules :: Rule -> Modules
 getRuleCheckModules rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_check_modules fnRule
+  DBRuleT dbRule -> ["*"]
   _ -> []
 
 getRuleName :: Rule -> String
