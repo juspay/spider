@@ -1,6 +1,6 @@
 cabal-version:      3.0
 name:               sheriff
-version:            0.2.1.5
+version:            0.2.1.6
 synopsis:           A checker plugin to throw compilation errors based on given rules; basically what a `Sheriff` does
 license:            MIT
 license-file:       LICENSE
@@ -126,7 +126,16 @@ test-suite sheriff-log-test
     hs-source-dirs:   test
     main-is:          Main.hs
     other-modules:    SubTests.LogTest
-    
+
+-- TODO: Add Sequelize and Beam and DB Rule Test Suite    
+-- test-suite sheriff-db-rule-test
+--     import:           test-common-options
+--     default-language: Haskell2010
+--     type:             exitcode-stdio-1.0
+--     hs-source-dirs:   test
+--     main-is:          Main.hs
+--     other-modules:    SubTests.DBRuleTest
+
 test-suite sheriff-function-use-test
     import:           test-common-options
     default-language: Haskell2010

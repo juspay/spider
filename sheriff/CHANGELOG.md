@@ -1,5 +1,9 @@
 # Revision history for sheriff
 
+## 0.2.1.6
+* Fix DB rules not getting applied
+* Add information about exceptions to be added in infinite recursion rule
+
 ## 0.2.1.5
 * Resolve names to top most name to enable unique matching for name-shadowing cases of function name
 * Add test cases for name shadowing of function name

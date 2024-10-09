@@ -95,19 +95,22 @@ getRuleIgnoreModules :: Rule -> Modules
 getRuleIgnoreModules rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_ignore_modules fnRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_modules infiniteRecursionRule
+  DBRuleT dbRule -> []
   _ -> []
 
 getRuleIgnoreFunctions :: Rule -> Modules
 getRuleIgnoreFunctions rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_ignore_functions fnRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_functions infiniteRecursionRule
+  DBRuleT dbRule -> []
   _ -> []
 
 getRuleCheckModules :: Rule -> Modules
 getRuleCheckModules rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_check_modules fnRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_check_modules infiniteRecursionRule
-  _ -> []
+  DBRuleT dbRule -> ["*"] -- Always apply DB rule on all modules
+  _ -> ["*"]
 
 getRuleName :: Rule -> String
 getRuleName rule = case rule of
