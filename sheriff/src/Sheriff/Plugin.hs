@@ -175,8 +175,8 @@ sheriff opts modSummary tcEnv = do
   -- STAGE-2
   -- Get Instance declarations and add class name to module name binding in initial state
   insts <- tcg_insts . env_gbl <$> getEnv
-  let namesModTuple = fmap (\inst -> (is_dfun_name inst, getModuleName . className . is_cls $ inst)) insts
-      nameModMap = foldr (\(name, modname) r -> HM.insert (NMV_Name name) (NMV_Module modname) r) HM.empty namesModTuple
+  let namesModTuple = concatMap (\inst -> let clsName = className (is_cls inst) in (is_dfun_name inst, clsName) : fmap (\clsMethod -> (varName clsMethod, clsName)) (classMethods $ is_cls inst)) insts
+      nameModMap = foldr (\(name, clsName) r -> HM.insert (NMV_Name name) (NMV_ClassModule clsName (getModuleName clsName)) r) HM.empty namesModTuple
   
   rawErrors <- concat <$> (mapM (loopOverModBinds finalSheriffRules) $ bagToList $ tcg_binds tcEnv)
   (rawInfiniteRecursionErrors, _) <- flip runStateT nameModMap $ concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)

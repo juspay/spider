@@ -25,12 +25,12 @@ import TcRnMonad
 
 data NameModuleValue = 
     NMV_Name Name
-  | NMV_Module String -- This should be terminating
+  | NMV_ClassModule Name String -- This should be terminating for class name and module name
   deriving (Eq)
 
 instance Show NameModuleValue where
   show (NMV_Name name) = "NMV_Name " <> getOccString name <> "_" <> show (nameUnique name)
-  show (NMV_Module str) = "NMV_Module " <> str
+  show (NMV_ClassModule name modName) = "NMV_ClassModule " <> getOccString name <> "_" <> show (nameUnique name) <> modName
 
 data PluginCommonOpts a = PluginCommonOpts {
     currentModule :: String,
@@ -121,7 +121,7 @@ instance Hashable (Located Var) where
 
 instance Hashable NameModuleValue where
   hashWithSalt salt (NMV_Name name)      = hashWithSalt salt (nameStableString name)
-  hashWithSalt salt (NMV_Module modName) = hashWithSalt salt modName
+  hashWithSalt salt (NMV_ClassModule name _) = hashWithSalt salt (nameStableString name)
 
 class StrictEq a where
   (===) :: (HasPluginOpts u) => a -> a -> Bool
