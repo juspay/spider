@@ -1,6 +1,8 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 
 module Sheriff.Plugin (plugin) where
@@ -503,14 +505,19 @@ trfWhereToSOP opts (clause : ls) = do
     (fn, _) -> when (logWarnInfo opts) (liftIO $ print $ "Invalid/unknown clause in `where` clause : " <> fn <> " at " <> (showS . getLoc2 $ clause)) >> trfWhereToSOP opts ls
 
 -- Get table field name and table name for the `Se.Is` clause
+-- Patterns to match 'getField`, `recordDot`, `overloadedRecordDot` (ghc > 9), selector (duplicate record fields), rec fields (ghc 9), lens
 -- TODO: Refactor this to use HasField instance if possible
 getIsClauseData :: PluginOpts -> LHsExpr GhcTc -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM (Maybe (String, String))
 getIsClauseData opts fieldArg _comp _clause = do
   let fieldSpecType = getDBFieldSpecType fieldArg
   mbColNameAndTableName <- case fieldSpecType of
-    None     -> when (logWarnInfo opts) (liftIO $ print "Can't identify the way in which DB field is specified") >> pure Nothing
+    None     -> when (logWarnInfo opts) (liftIO $ print $ "Can't identify the way in which DB field is specified: " <> showS fieldArg) >> pure Nothing
     Selector -> do
-      case (splitOn ":" $ showS fieldArg) of
+      let modFieldArg arg = case arg of
+                              (L _ (HsRecFld _ fldOcc))   -> showS $ selectorAmbiguousFieldOcc fldOcc
+                              (L loc (PatHsWrap _ wExpr)) -> modFieldArg (L loc wExpr)
+                              (L _ expr)                  -> showS expr
+      case (splitOn ":" $ modFieldArg fieldArg) of
         ("$sel" : colName : tableName : []) -> pure $ Just (colName, tableName)
         _ -> when (logWarnInfo opts) (liftIO $ print "Invalid pattern for Selector way") >> pure Nothing
     RecordDot -> do
@@ -563,17 +570,32 @@ getIsClauseData opts fieldArg _comp _clause = do
                                   TyConApp ty1 _ -> showS ty1
                                   ty             -> showS ty
               pure $ Just (tail $ showS lens, take (length tblName' - 1) tblName')
+#if __GLASGOW_HASKELL__ >= 900
+            (PatHsExpansion orig (HsApp _ (L _ (HsApp _ _ tableVar)) fldVar)) -> do
+              let fldName = tail $ showS fldVar
+              typ <- getHsExprType (logTypeDebugging opts) tableVar
+              let tblName' = case typ of
+                              AppTy ty1 _    -> showS ty1
+                              TyConApp ty1 _ -> showS ty1
+                              ty             -> showS ty
+              pure $ Just (fldName, take (length tblName' - 1) tblName')
+#endif              
             _ -> when (logWarnInfo opts) (liftIO $ putStrLn "OpApp not present. Should never be the case as we already filtered.") >> pure Nothing
   
   pure mbColNameAndTableName
 
 -- Get how DB field is being extracted in sequelize
 getDBFieldSpecType :: LHsExpr GhcTc -> DBFieldSpecType
-getDBFieldSpecType (L _ expr)
-  | isPrefixOf "$sel" (showS expr) = Selector
-  | isInfixOf "^." (showS expr) = Lens
-  | (\x -> isInfixOf "@" x) (showS expr) = RecordDot
-  | otherwise = None
+getDBFieldSpecType (L loc expr)
+  | (PatHsWrap _ wExpr) <- expr = getDBFieldSpecType (L loc wExpr)
+  | (HsRecFld _ fldOcc) <- expr = checkExprString . showS $ selectorAmbiguousFieldOcc fldOcc
+  | otherwise                   = checkExprString $ showS expr
+  where
+    checkExprString exprStr
+      | isPrefixOf "$sel" exprStr       = Selector
+      | isInfixOf "^." exprStr          = Lens
+      | (\x -> isInfixOf "@" x) exprStr = RecordDot
+      | otherwise                       = None
 
 -- Get function name for the where clause for db rules cases
 getWhereClauseFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (String, [LHsExpr GhcTc])
@@ -593,6 +615,14 @@ getWhereClauseFnNameWithAllArgs (L loc ap@(HsPar _ expr)) = getWhereClauseFnName
 -- If condition inside the list, add dummy type
 getWhereClauseFnNameWithAllArgs (L loc ap@(PatHsIf _pred thenCl elseCl)) = Just ("Or", [L loc (PatExplicitList (LitTy (StrTyLit "Dummy")) [thenCl, elseCl])])
 getWhereClauseFnNameWithAllArgs (L loc ap@(PatHsWrap _ expr)) = getWhereClauseFnNameWithAllArgs (L loc expr)
+#if __GLASGOW_HASKELL__ >= 900
+getWhereClauseFnNameWithAllArgs (L loc ap@(PatHsExpansion orig expanded)) = 
+  case (orig, expanded) of
+    ((OpApp _ _ op _), (HsApp _ (L _ (HsApp _ op' funl)) funr)) -> case showS op of
+      "($)" -> getWhereClauseFnNameWithAllArgs (L loc (HsApp noExtFieldOrAnn funl funr))
+      _ -> getWhereClauseFnNameWithAllArgs (L loc expanded)
+    _ -> getWhereClauseFnNameWithAllArgs (L loc expanded)
+#endif
 getWhereClauseFnNameWithAllArgs (L loc ap@(ExprWithTySig _ expr _)) = getWhereClauseFnNameWithAllArgs expr
 getWhereClauseFnNameWithAllArgs _ = Nothing
 
@@ -714,6 +744,9 @@ isFunApp _ = False
 isLensOpApp :: HsExpr GhcTc -> Bool
 isLensOpApp (OpApp _ _ op _) = showS op == "(^.)"
 isLensOpApp (SectionR _ op _) = showS op == "(^.)"
+#if __GLASGOW_HASKELL__ >= 900
+isLensOpApp (PatHsExpansion (OpApp _ _ op _) expanded) = showS op == "(^.)"
+#endif
 isLensOpApp _ = False
 
 -- Get Var for the data constructor

@@ -5,6 +5,20 @@
     haskell-flake.url = "github:srid/haskell-flake";
     streamly.url = "github:composewell/streamly/12d85026291d9305f93f573d284d0d35abf40968";
     streamly.flake = false;
+    
+    # common-ghc8.url = "git+ssh://git@ssh.bitbucket.juspay.net/nix/euler-nix-common.git";
+    # sequelize-ghc8 = {
+    #   type = "git";
+    #   url = "git+ssh://git@ssh.bitbucket.juspay.net/exc/haskell-sequelize";
+    #   inputs.common.follows = "common-ghc8";
+    #   ref = "master";
+    # };
+
+    # common.url = "git+ssh://git@ssh.bitbucket.juspay.net/nix/euler-nix-common.git?ref=ghc928-additions-3";
+    # sequelize = {
+    #   url = "git+ssh://git@ssh.bitbucket.juspay.net/exc/haskell-sequelize?ref=ghc928";
+    #   inputs.common.follows = "common";
+    # };
 
     # ghc 9.2.8 packages
     nixpkgs.url = "github:nixos/nixpkgs/75a52265bda7fd25e06e3a67dee3f0354e73243c";
@@ -45,6 +59,7 @@
           basePackages = inputs.ghc8-nixpkgs.legacyPackages.${system}.haskell.packages.ghc8107;
           imports = [
             inputs.ghc8-references.haskellFlakeProjectModules.output
+            # inputs.sequelize-ghc8.haskellFlakeProjectModules.output
           ];
           packages = {
             classyplate.source = inputs.ghc8-classyplate;
@@ -56,7 +71,6 @@
             typelet.source = inputs.ghc8-large-records + /typelet;
             record-dot-preprocessor.source = inputs.ghc8-record-dot-preprocessor;
             streamly-core.source = inputs.streamly + /core;
-            beam-core.source = inputs.ghc8-beam + /beam-core;
           };
           settings = {
             beam-core.jailbreak = true;
@@ -93,22 +107,12 @@
             inputs.references.haskellFlakeProjectModules.output
             inputs.classyplate.haskellFlakeProjectModules.output
             inputs.large-records.haskellFlakeProjectModules.output
+            # inputs.sequelize.haskellFlakeProjectModules.output
           ];
           packages = {
             streamly-core.source = inputs.streamly + /core;
           };
           settings = {
-            #  aeson = {
-            #    check = false;
-            #  };
-            #  relude = {
-            #    haddock = false;
-            #    broken = false;
-            #  };
-            # primitive-checked = {
-            #     broken = false;
-            #     jailbreak = true;
-            # };
             sheriff.check = false;
           };
 
