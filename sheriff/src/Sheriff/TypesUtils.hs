@@ -95,21 +95,21 @@ getRuleIgnoreModules :: Rule -> Modules
 getRuleIgnoreModules rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_ignore_modules fnRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_modules infiniteRecursionRule
-  DBRuleT dbRule -> []
+  DBRuleT dbRule -> db_rule_ignore_modules dbRule
   _ -> []
 
 getRuleIgnoreFunctions :: Rule -> Modules
 getRuleIgnoreFunctions rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_ignore_functions fnRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_functions infiniteRecursionRule
-  DBRuleT dbRule -> []
+  DBRuleT dbRule -> db_rule_ignore_functions dbRule
   _ -> []
 
 getRuleCheckModules :: Rule -> Modules
 getRuleCheckModules rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_check_modules fnRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_check_modules infiniteRecursionRule
-  DBRuleT dbRule -> ["*"] -- Always apply DB rule on all modules
+  DBRuleT dbRule -> db_rule_check_modules dbRule
   _ -> ["*"]
 
 getRuleName :: Rule -> String
@@ -129,7 +129,16 @@ emptyLoggingError :: CompileError
 emptyLoggingError = CompileError "" "" "$NA$" noSrcSpan NoViolation noSuggestion A.Null
 
 yamlToDbRule :: YamlTable -> Rule
-yamlToDbRule table = DBRuleT $ DBRule "NonIndexedDBRule" (tableName table) (indexedKeys table) ["You might want to include an indexed column in the `where` clause of the query."] []
+yamlToDbRule table = DBRuleT $ DBRule {
+    db_rule_name             = "NonIndexedDBRule",
+    table_name               = tableName table,
+    indexed_cols_names       = indexedKeys table,
+    db_rule_fixes            = ["You might want to include an indexed column in the `where` clause of the query."],
+    db_rule_exceptions       = [],
+    db_rule_check_modules    = checkModules table,
+    db_rule_ignore_modules   = ignoredModules table,
+    db_rule_ignore_functions = ignoredFunctions table
+  }
 
 updateValInOpts :: String -> String -> PluginOpts -> PluginOpts
 updateValInOpts key val currentOpts = case key of

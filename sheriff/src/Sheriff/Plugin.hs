@@ -649,7 +649,7 @@ Part-2 Validation
 -- Function to check if given DB rules is violated or not
 -- TODO: Fix this, keep two separate options for - 1. Match All Fields in AND   2. Use 1st column matching or all columns matching for composite key 
 validateDBRule :: (HasPluginOpts PluginOpts) => DBRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
-validateDBRule rule@(DBRule ruleName ruleTableName ruleColNames _ _) tableName clauses expr = do
+validateDBRule rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName, indexed_cols_names = ruleColNames}) tableName clauses expr = do
   simplifiedExprs <- trfWhereToSOP clauses
   let checkDBViolation = case (matchAllInsideAnd . pluginOpts $ ?pluginOpts) of
                           True  -> checkDBViolationMatchAll

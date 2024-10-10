@@ -1,5 +1,8 @@
 # Revision history for sheriff
 
+## 0.2.1.8
+* Add module level & function level exceptions to DB rules
+
 ## 0.2.1.7
 * Fix DB rules not working in GHC 9
 

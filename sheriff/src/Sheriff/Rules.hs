@@ -35,12 +35,6 @@ defaultInfiniteRecursionRuleT = defaultInfiniteRecursionRule {infinite_recursion
 noKVDBRule :: Rule
 noKVDBRule = FunctionRuleT $ FunctionRule "ART KVDB Rule" ["runKVDB"] 0 [] [] [] [] ["You might want to use some other wrapper function from `EulerHS.Extra.Redis` module.", "For e.g. - rExists, rDel, rGet, rExpire, etc."] [] [] ["*"] []
 
-dbRule :: Rule
-dbRule = DBRuleT $ DBRule "NonIndexedDBRule" "TxnRiskCheck" [NonCompositeKey "partitionKey"] dbRuleSuggestions []
-
-dbRuleCustomer :: Rule
-dbRuleCustomer = DBRuleT $ DBRule "NonIndexedDBRule" "MerchantKey" [NonCompositeKey "status"] dbRuleSuggestions []
-
 updateFunctionRuleArgNo :: Rule -> ArgNo -> Rule
 updateFunctionRuleArgNo (FunctionRuleT fnRule) newArgNo = FunctionRuleT $ fnRule{arg_no = newArgNo}
 updateFunctionRuleArgNo rule _ = rule
