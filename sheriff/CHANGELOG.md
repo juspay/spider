@@ -1,5 +1,8 @@
 # Revision history for sheriff
 
+## 0.2.1.7
+* Fix DB rules not working in GHC 9
+
 ## 0.2.1.6
 * Fix DB rules not getting applied
 * Add information about exceptions to be added in infinite recursion rule
