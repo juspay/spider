@@ -10,6 +10,9 @@ tables:
       - partitionKey
       
   - name: Token
+    ignoredModules: []
+    ignoredFunctions: []
+    checkModules: []
     indexedKeys: 
       - provisionedTokenId
       - tokenReferenceId

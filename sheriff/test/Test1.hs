@@ -1,16 +1,18 @@
-{-# LANGUAGE RankNTypes #-}
-{-# LANGUAGE KindSignatures #-}
-{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DuplicateRecordFields #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module Test1 where
 
 import qualified Sheriff.Plugin ()
+import qualified TestUtils as TU
+import qualified TestUtils
 import Data.Text as T
 import qualified Data.Text.Lazy as DTL
 import qualified Data.Text.Encoding as DTE
@@ -38,8 +40,6 @@ deriving stock instance Show (DBT Identity)
 deriving anyclass instance FromJSON (DBT Identity)
 deriving anyclass instance ToJSON (DBT Identity)
 
-type P = Text
-
 data CC = C1 | C2 Text | C3 Int | C4 Bool
     deriving (Generic, Show, ToJSON, FromJSON)
 
@@ -55,20 +55,22 @@ data EnumT2 = U EnumT | V
 data EnumT3 x = M | N
     deriving (Generic, Show, ToJSON, FromJSON)
 
+type P = Text
+
 en :: EnumT
 en = Y
 
 en2 :: EnumT2
 en2 = V
 
-en3 :: EnumT3 ()
-en3 = M
-
 en21 :: P
 en21 = "Hello"
 
 en22 :: Text
 en22 = "Hello"
+
+en3 :: EnumT3 ()
+en3 = M
 
 ob :: SeqIs
 ob = SeqIs "fldName" "fldValue"
@@ -102,20 +104,29 @@ str3 :: Text
 str3 = T.pack $ show "Hello Str3"
 
 str4 :: Text
-str4 = T.pack $ show (T.pack "Hello Str3")
+str4 = T.pack $ show (T.pack "Hello Str4")
 
 db1 :: DB
-db1 = DB 20
+db1 = DB 500
 
 -- Helper function
 encodeJSON :: (ToJSON a) => a -> Text
 encodeJSON = DTE.decodeUtf8 . BSL.toStrict . A.encode
+
+runKVDB :: IO ()
+runKVDB = print "Somehow it's runKVDB"
 
 logErrorV :: (ToJSON a) => a -> IO ()
 logErrorV = print . toJSON
 
 logDebugT :: Text -> Text -> IO ()
 logDebugT _ = print
+
+logDebug :: (Show b) => a -> b -> IO ()
+logDebug _ = print
+
+forkErrorLog :: (Show b) => a -> b -> IO ()
+forkErrorLog _ = print
 
 logErrorT :: Text -> Text -> IO ()
 logErrorT _ = print
@@ -154,6 +165,12 @@ obC3T1 = T.pack $ show obC3
 obC3T2 :: Text
 obC3T2 = encodeJSON obC3
 
+num1 :: TU.Number
+num1 = TU.Number 20
+
+num2 :: TU.Number
+num2 = TU.Number 10
+
 -- Test Case 1: Text inside logErrorT (No error should be raised by plugin)
 -- Test Case 2: Text inside logErrorV (An error should be raised by plugin)
 -- Test Case 3: Object inside logErrorV (No error should be generated)
@@ -178,6 +195,15 @@ obC3T2 = encodeJSON obC3
 -- Scenario 4: Parameter sent to logger is same as some argument in the current function and that argument is of text type (mark current function as a logger function, and it needs to be checked all calls to this function, it will behave like `logErrorT`)
 -- Scenario 5: Parameter sent to logger is same as some argument in the current function and that argument is of non-text type (PASS case)
 
+addQuotes :: Text -> Text
+addQuotes t = "\"" <> t <> "\""
+
+noLogFn :: String -> String -> IO ()
+noLogFn _ _ = pure ()
+
+throwException :: ()
+throwException = ()
+
 main :: IO ()
 main = do
     putStrLn "Test suite not yet implemented."
@@ -197,6 +223,19 @@ main = do
     logErrorT "tag" $ encodeJSON (en, 20 :: Int) -- Should throw error because of encodeJSON
     logError "tag" $ obAT1 <> show Test1.obAT1
     fn $ logError "tag2" $ show obA
+    fn $ logError "tag2" $ ("Hello" <> show obA)
+    forkErrorLog "tag2" $ ("Hello" <> (show $ addQuotes "Testing forkErrorLog"))
+    forkErrorLog "tag2" $ T.pack $ show "Testing Multiple dollar"
+    noLogFn "tag2" $ ("Hello" <> (show $ addQuotes "Testing Show on text"))
+
+    logDebug ("Some Tag" :: Text) (show "This to print")
+
+    -- Test for Qualified Function Names Rules
+    print $ TU.throwException "Hello" -- should throw error
+    print throwException -- should NOT throw error
+    print $ TU.throwExceptionV2 "Hello" -- should throw error as part of combined rule "Hello"
+    print $ TU.throwExceptionV3 "Hello"
+    print $ TU.throwExceptionV4 "Hello" -- should throw error as part of combined rule "Hello"
 
     print $ show temp
     print $ show temp1
@@ -212,6 +251,22 @@ main = do
     logError "tag" $ show en <> show obB
     logError "tag" $ show temp5
     logError "tag" $ show temp6
+    
+    let (TU.Number sRes) = num1 `TU.subtractNumber` num2
+        (TU.Number aRes) = TU.addNumber num1 num2
+        (TU.Number mRes) = (TU.*?) Nothing num1 num2
+        (TU.Number n1) = TU.fstArg num1 num2
+        (TU.Number n2) = TU.sndArg num1 num2
+
+    print sRes
+    print aRes
+    print mRes
+    print n1
+    print n2
+    print (n1 * n2)
+    print ((*) 10 20)
+
+    runKVDB -- Should be error
 
     logDebugT "validateMandate" $ "effective limit is: " <> T.pack (show 10) <> ", custom limit for key: " <> " is " <> T.pack (show (Just ("Hello" :: Text)))
 
@@ -219,6 +274,9 @@ main = do
           $  "merchantId: " <> ", error: " <> T.pack (show (["A", "B"] :: [Text]))
   where
     logErrorT = Test1.logErrorT
+
+(^*^) :: Num a => a -> a -> a
+(^*^) a b = a * b
 
 logInfoT :: String -> (forall a b. (IsString b, Show a) => String -> a -> b) -> String
 logInfoT x _ = x

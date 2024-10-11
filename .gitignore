@@ -1,3 +1,5 @@
 dist-*
 result
 cabal.project.local
+tmp*
+.DS_STORE
