@@ -91,19 +91,19 @@ getModuleName name =
     Just modName -> (moduleNameString $ moduleName modName)
     Nothing -> (currentModule ?pluginOpts)
 
-getModuleNameWithNMV :: (HasPluginOpts a) => Name -> String
-getModuleNameWithNMV name = 
+getNameAndModuleNameWithNMV :: (HasPluginOpts a) => Name -> (Name, String)
+getNameAndModuleNameWithNMV name = 
   let modNameMap = nameModuleMap ?pluginOpts
-  in case getFromNMV modNameMap (NMV_Name name) of
-    Just modName -> modName
-    Nothing -> getModuleName name
-  where
-    getFromNMV :: HM.HashMap NameModuleValue NameModuleValue -> NameModuleValue -> Maybe String
-    getFromNMV mp nmv = case HM.lookup nmv mp of
-      Just val -> case val of
-        NMV_Module modName -> Just modName
-        NMV_Name nm -> getFromNMV mp (NMV_Name nm)
-      Nothing -> Nothing
+  in case getNameAndModuleFromNMV modNameMap (NMV_Name name) of
+    (nm, Just modName) -> (nm, modName)
+    (nm, Nothing) -> (nm, getModuleName nm)
+
+getNameAndModuleFromNMV :: HM.HashMap NameModuleValue NameModuleValue -> NameModuleValue -> (Name, Maybe String)
+getNameAndModuleFromNMV mp nmv = case HM.lookup nmv mp of
+  Just val -> getNameAndModuleFromNMV mp val
+  Nothing -> case nmv of
+    NMV_Name nm -> (nm, Nothing)
+    NMV_ClassModule nm modName -> (nm, Just modName)
 
 matchNamesWithModuleName :: String -> String -> AsteriskMatching -> Bool
 matchNamesWithModuleName varNameWithModule fnToMatch asteriskMatching = 
@@ -458,5 +458,9 @@ trfLHsExprToSimpleTcExpr (L loc hsExpr) = case hsExpr of
 #endif
 
 instance StrictEq SimpleTcExpr where
-  (===) (SimpleFnNameVar var1 ty1) (SimpleFnNameVar var2 ty2) = (getModuleNameWithNMV (varName var1) == getModuleNameWithNMV (varName var2)) && (getVarName var1 == getVarName var2) && (getHsExprTypeAsTypeDataList ty1 == getHsExprTypeAsTypeDataList ty2)
+  (===) (SimpleFnNameVar var1 ty1) (SimpleFnNameVar var2 ty2) = 
+    -- trace (if "sameName" `isInfixOf` getVarName var1; then show (getNameAndModuleNameWithNMV (varName var1)) <> " ::: " <> show (getNameAndModuleNameWithNMV (varName var2)); else "") $
+    (getNameAndModuleNameWithNMV (varName var1) == getNameAndModuleNameWithNMV (varName var2)) && -- match name unique and module name
+    (getVarName var1 == getVarName var2) &&  -- match function name (can be avoided)
+    (getHsExprTypeAsTypeDataList ty1 == getHsExprTypeAsTypeDataList ty2) -- Match types for instances resolution
   (===) var1                       var2                       = (var1 == var2)

@@ -175,13 +175,14 @@ rules:
     infinite_recursion_rule_ignore_functions:
       - Exceptions.pattern6
 
-  # - db_rule_name: "DBRuleTest"
-  #   table_name: "TxnRiskCheck"
-  #   indexed_cols_names: 
-  #     - partitionKey
-  #     - and:
-  #       - txnId
-  #       - customerId
-  #   db_rule_fixes: 
-  #     - "You might want to include an indexed column in the `where` clause of the query."]
-  #   db_rule_exceptions: []
+  - db_rule_name: "DBRuleTest"
+    table_name: "Table1"
+    indexed_cols_names: 
+      - partitionKey
+      - id
+      - and:
+        - customerPhone
+        - customerEmail
+    db_rule_fixes: 
+      - "You might want to include an indexed column in the `where` clause of the query."
+    db_rule_exceptions: []

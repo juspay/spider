@@ -102,3 +102,14 @@ for e.g. -
 fn :: String -> String
 fn = \x -> fn x -- Infinite recursion due to same variable
 ```
+
+Following cases are detected as infinite recursion, but these might not be infinite and it can depend on how these are written:
+1. Functions modifying state and preventing infinite recursion on the basis of that
+2. Functions using mutable variables like IORef, MVar, etc.
+3. Functions intended to be used as infinite recursion, such as loopers with threadDelay, server listeners, etc.
+4. Functions generating infinite list but used lazily in context of some limiting function like zip, take, etc.
+5. Some functions which are infinite only hypothetically, such as function having control flow based on some random number generated
+
+For such cases, it is advisable to add them to `infinite_recursion_rule_ignore_functions` cases and maintain a list of such functions for visibility.
+It is always advised to add ignore functions as fully qualified names.
+In case of any other false positive/anamoly, let us know by raising an issue.

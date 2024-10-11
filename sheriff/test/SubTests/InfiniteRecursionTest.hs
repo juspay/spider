@@ -232,6 +232,20 @@ pattern36 = let u = 20 in \lamArg -> pattern36 lamArg -- STE :: Should Throw Err
 pattern37 :: Int -> Int
 pattern37 = (+ 5) . \lamArg -> pattern37 lamArg -- STE :: Should Throw Error
 
+-- foldl case
+pattern38 :: Int
+pattern38 = 
+  let sameName = foldl (\sameName x -> x + sameName) 0 [1..10] -- Should NOT Throw Error
+  in sameName
+
+pattern39 :: Int -> Int
+pattern39 status = 
+  let status
+        | status == 0 = status -- STE :: Should Throw Error -- STE :: Should Throw Error
+        | status > 0  = 1 -- STE :: Should Throw Error
+        | otherwise   = -1
+  in status
+
 class TypeChanger a b where
   changeType :: a -> b
 
@@ -243,6 +257,9 @@ instance TypeChanger Integer SumType where
 
 instance TypeChanger String SumType where
   changeType x = RecType $ changeType x -- STE :: Should Throw Error
+
+instance TypeChanger Char SumType where
+  changeType x = let changeType = foldr (\changeType x -> x + changeType) 0 [1..10] in TypeB -- Should NOT throw error
 
 instance TypeChanger Integer Integer where
   changeType = changeType -- STE :: Should throw Error

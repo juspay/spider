@@ -1,5 +1,19 @@
 # Revision history for sheriff
 
+## 0.2.1.8
+* Add module level & function level exceptions to DB rules
+
+## 0.2.1.7
+* Fix DB rules not working in GHC 9
+
+## 0.2.1.6
+* Fix DB rules not getting applied
+* Add information about exceptions to be added in infinite recursion rule
+
+## 0.2.1.5
+* Resolve names to top most name to enable unique matching for name-shadowing cases of function name
+* Add test cases for name shadowing of function name
+
 ## 0.2.1.4
 * Fix function level exception not working for Function Rule
 * Fix infinite recursion being detected for top level function being called in `where` clause

@@ -99,15 +99,21 @@ instance FromJSON YamlTables where
     return YamlTables { tables = tableList }
 
 data YamlTable = YamlTable
-  { tableName :: String
-  , indexedKeys :: [YamlTableKeys]
+  { tableName        :: String
+  , indexedKeys      :: [YamlTableKeys]
+  , ignoredFunctions :: ModulesWithFunctions
+  , ignoredModules   :: Modules
+  , checkModules     :: Modules
   } deriving (Show, Eq)
 
 instance FromJSON YamlTable where
   parseJSON = withObject "YamlTable" $ \o -> do
-    name <- o .: "name"
-    keys <- o .: "indexedKeys"
-    return YamlTable { tableName = name, indexedKeys = keys }
+    tableName        <- o .:  "name"
+    indexedKeys      <- o .:  "indexedKeys"
+    ignoredFunctions <- o .:? "ignoredFunctions" .!= []
+    ignoredModules   <- o .:? "ignoredModules"   .!= []
+    checkModules     <- o .:? "checkModules"     .!= ["*"]
+    return YamlTable {..}
 
 data YamlTableKeys = 
     NonCompositeKey String 
@@ -220,21 +226,39 @@ instance FromJSON InfiniteRecursionRule where
 data DBRule =
   DBRule 
     {
-      db_rule_name       :: String,
-      table_name         :: String,
-      indexed_cols_names :: [YamlTableKeys],
-      db_rule_fixes      :: Suggestions,
-      db_rule_exceptions :: Rules
+      db_rule_name             :: String,
+      table_name               :: String,
+      indexed_cols_names       :: [YamlTableKeys],
+      db_rule_fixes            :: Suggestions,
+      db_rule_exceptions       :: Rules,
+      db_rule_check_modules    :: Modules,
+      db_rule_ignore_modules   :: Modules,
+      db_rule_ignore_functions :: ModulesWithFunctions
     }
   deriving (Show, Eq)  
 
+defaultDBRule :: DBRule
+defaultDBRule = DBRule {
+    db_rule_name             = "NA",
+    table_name               = "NA",
+    indexed_cols_names       = [],
+    db_rule_fixes            = [],
+    db_rule_exceptions       = [],
+    db_rule_check_modules    = ["*"],
+    db_rule_ignore_modules   = [],
+    db_rule_ignore_functions = []
+  }
+
 instance FromJSON DBRule where
   parseJSON = withObject "DBRule" $ \o -> do
-                db_rule_name       <- o .: "db_rule_name"
-                table_name         <- o .: "table_name"
-                indexed_cols_names <- o .: "indexed_cols_names"
-                db_rule_fixes      <- o .: "db_rule_fixes"
-                db_rule_exceptions <- o .: "db_rule_exceptions"
+                db_rule_name             <- o .:  "db_rule_name"
+                table_name               <- o .:  "table_name"
+                indexed_cols_names       <- o .:  "indexed_cols_names"
+                db_rule_fixes            <- o .:  "db_rule_fixes"
+                db_rule_exceptions       <- o .:  "db_rule_exceptions"
+                db_rule_check_modules    <- o .:? "db_rule_check_modules"    .!= (db_rule_check_modules defaultDBRule)
+                db_rule_ignore_modules   <- o .:? "db_rule_ignore_modules"   .!= (db_rule_ignore_modules defaultDBRule)
+                db_rule_ignore_functions <- o .:? "db_rule_ignore_functions" .!= (db_rule_ignore_functions defaultDBRule)
                 return DBRule {..}
 
 data Action = Allowed | Blocked
