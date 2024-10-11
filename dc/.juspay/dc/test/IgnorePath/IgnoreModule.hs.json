@@ -1,7 +1,7 @@
 {
     "allFailuresRecords": [],
     "commonErrorFuns": [
-        "testParentFunction"
+        "ignoredFun"
     ],
     "createdFailures": [],
     "createdRecords": [],

@@ -1,8 +1,8 @@
 {
     "allFailuresRecords": [],
     "commonErrorFuns": [
-        "temp",
-        "proxyFunction"
+        "consideredFunOutsideErr",
+        "consideredFun"
     ],
     "createdFailures": [],
     "createdRecords": [],

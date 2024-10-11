@@ -1,11 +1,8 @@
 tag: FunctionCheck
 contents:
   listOfRestrictedFuns:
-    - "defaultInvalidThrowECException"
-    - "defaultThrowECException"
     - "throwErr"
-    - "throwExceptionV2"
-    - "throwUpstreamGatewayError"
+    - "throwException"
   moduleNameToCheck: "Main"
   funNameToCheck: "testParentFunction"
   conditionToCheck: []

@@ -1,0 +1,174 @@
+{
+    "ignoredErr": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases(\"ignoredFun\",[\"ignoredFun\"])",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 24,
+            "src_span_endl": 9,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 14,
+            "src_span_startl": 9
+        }
+    ],
+    "indirectLeftCaseError": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 25,
+            "src_span_endl": 37,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 25,
+            "src_span_startl": 35
+        },
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 27,
+            "src_span_endl": 36,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 15,
+            "src_span_startl": 36
+        }
+    ],
+    "indirectRightCaseError": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 28,
+            "src_span_endl": 42,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 26,
+            "src_span_startl": 40
+        },
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 28,
+            "src_span_endl": 42,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 16,
+            "src_span_startl": 42
+        }
+    ],
+    "indirectSimpleReturn": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 36,
+            "src_span_endl": 32,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 24,
+            "src_span_startl": 32
+        }
+    ],
+    "leftCaseError": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 25,
+            "src_span_endl": 24,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 17,
+            "src_span_startl": 22
+        },
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 23,
+            "src_span_endl": 23,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 15,
+            "src_span_startl": 23
+        }
+    ],
+    "rightCaseError": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 24,
+            "src_span_endl": 29,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 18,
+            "src_span_startl": 27
+        },
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 24,
+            "src_span_endl": 29,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 16,
+            "src_span_startl": 29
+        }
+    ],
+    "simpleReturn": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 24,
+            "src_span_endl": 12,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 16,
+            "src_span_startl": 12
+        }
+    ],
+    "tempThrowErr": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 24,
+            "src_span_endl": 58,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 16,
+            "src_span_startl": 58
+        }
+    ],
+    "whereClauseCaseLeftErr": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 24,
+            "src_span_endl": 55,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 16,
+            "src_span_startl": 55
+        }
+    ],
+    "whereClauseCaseRightErr": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 24,
+            "src_span_endl": 19,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 16,
+            "src_span_startl": 19
+        }
+    ],
+    "whereClauseErr": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 24,
+            "src_span_endl": 48,
+            "src_span_name": "test/TestCases.hs",
+            "src_span_startC": 16,
+            "src_span_startl": 48
+        }
+    ]
+}

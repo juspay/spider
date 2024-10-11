@@ -25,7 +25,7 @@ defaultPluginOpts =
     failOnFileNotFound = True,
     prefixPath = "./.juspay/dc/",
     domainConfigFile = ".juspay/domainConfig.yaml",
-    pathsTobeChecked = ["euler-x/src","euler-x/src-generated","euler-x/src-extras","euler-api-decider/src", "ecPrelude/src", "ecPrelude/src-generated","ecPrelude/src-extras", "oltp/src", "oltp/src-generated","oltp/src-extras", "dbTypes/src-generated", "src/"]
+    pathsTobeChecked = ["src/", "src-generated/"]
   }
 
 instance FromJSON PluginOpts where

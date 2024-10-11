@@ -1,0 +1,26 @@
+{
+    "consideredFun": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases(\"consideredFun'\",[\"consideredFun'\"])",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 31,
+            "src_span_endl": 7,
+            "src_span_name": "test/PathsToConsider/Considered.hs",
+            "src_span_startC": 17,
+            "src_span_startl": 7
+        }
+    ],
+    "consideredFunOutsideErr": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases(\"simpleReturn\",[\"tempThrowErr\",\"whereClauseCaseLeftErr\",\"whereClauseErr\",\"rightCaseError\",\"leftCaseError\",\"whereClauseCaseRightErr\",\"simpleReturn\",\"ignoredErr\"])",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 39,
+            "src_span_endl": 10,
+            "src_span_name": "test/PathsToConsider/Considered.hs",
+            "src_span_startC": 27,
+            "src_span_startl": 10
+        }
+    ]
+}
