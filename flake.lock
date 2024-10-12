@@ -393,17 +393,17 @@
         "systems": "systems_3"
       },
       "locked": {
-        "lastModified": 1721562622,
-        "narHash": "sha256-4XivoIvlVl7UyVCyZneeLIvyKBbRIvDEOEnJBxnZp+c=",
+        "lastModified": 1728704762,
+        "narHash": "sha256-Y3Zs8nGfFQLqpkRt8l2M+wkrp8fHkblu4/qMRP1ryu8=",
         "owner": "eswar2001",
         "repo": "large-records",
-        "rev": "b60bcb312c7d55f1d638aa1a5143696e6586e76d",
+        "rev": "f7fbffd022c792cd7686bca058a51b08722091dc",
         "type": "github"
       },
       "original": {
         "owner": "eswar2001",
+        "ref": "ghc928-qualified-prelude",
         "repo": "large-records",
-        "rev": "b60bcb312c7d55f1d638aa1a5143696e6586e76d",
         "type": "github"
       }
     },
