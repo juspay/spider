@@ -262,34 +262,47 @@ transformFromNameStableString (Just str, Nothing, _type, args) =
     let parts = filter (\x -> x /= "") $ T.splitOn ("$") str
     in Just $ if length parts == 2 then FunctionInfo "" (parts !! 0) (parts !! 1) (fromMaybe "<unknown>" _type) "<no location info>" args else FunctionInfo (parts !! 0) (parts !! 1) (parts !! 2) (fromMaybe "<unknown>" _type) "<no location info>" args
 
+headMaybe :: [a] -> Maybe a
+headMaybe [] = Nothing
+headMaybe (x:xs) = Just x
+
 loopOverLHsBindLR :: WS.Connection -> (Maybe Text) -> Text -> LHsBindLR GhcTc GhcTc -> IO ()
 loopOverLHsBindLR con mParentName path (L _ AbsBinds{abs_binds = binds}) =
     mapM_ (loopOverLHsBindLR con mParentName path) $ bagToList binds
+loopOverLHsBindLR con mParentName path (L _ bind) = do
+    case bind of
 #if __GLASGOW_HASKELL__ >= 900
-loopOverLHsBindLR con mParentName path (L _ x@(FunBind fun_ext id matches _)) = do
+        x@(FunBind fun_ext id matches _) -> do
 #else
-loopOverLHsBindLR con mParentName path (L _ x@(FunBind fun_ext id matches _ _)) = do
+        x@(FunBind fun_ext id matches _ _) -> do
 #endif
-    funName <- pure $ T.pack $ getOccString $ unLoc id
-    fName <- pure $ T.pack $ nameStableString $ getName id
-    let matchList = mg_alts matches
-    if funName `elem` (unsafePerformIO $ decodeBlacklistedFunctions) || ("$_in$$" `T.isPrefixOf` fName)
-        then pure mempty
-        else do
-            when (shouldLog) $ print ("processing function: " <> fName)
+            funName <- pure $ T.pack $ getOccString $ unLoc id
+            fName <- pure $ T.pack $ nameStableString $ getName id
+            let matchList = mg_alts matches
+            if funName `elem` (unsafePerformIO $ decodeBlacklistedFunctions) || ("$_in$$" `T.isPrefixOf` fName)
+                then pure mempty
+                else do
+                    when (shouldLog) $ print ("processing function: " <> fName)
 #if __GLASGOW_HASKELL__ >= 900
-            name <- pure (fName <> "**" <> (T.pack (getLoc' id)))
+                    name <- pure (fName <> "**" <> (T.pack (getLoc' id)))
 #else
-            name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr . getLoc) id)))
+                    name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr . getLoc) id)))
 #endif
-            typeSignature <- pure $ (T.pack $ showSDocUnsafe (ppr (varType (unLoc id))))
-            nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
-            data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
-            t1 <- getCurrentTime
-            sendTextData' con path data_
-            mapM_ (processMatch (nestedNameWithParent) path) (unLoc matchList)
-            t2 <- getCurrentTime
-            when (shouldLog) $ print $ "processed function: " <> fName <> " timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1)
+                    typeSignature <- pure $ (T.pack $ showSDocUnsafe (ppr (varType (unLoc id))))
+                    nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
+                    data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
+                    t1 <- getCurrentTime
+                    sendTextData' con path data_
+                    mapM_ (processMatch (nestedNameWithParent) path) (unLoc matchList)
+                    t2 <- getCurrentTime
+                    when (shouldLog) $ print $ "processed function: " <> fName <> " timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1)
+        (VarBind{var_id = var, var_rhs = expr}) -> do
+            let stmts = (expr ^? biplateRef :: [LHsExpr GhcTc])
+            mapM_ (processExpr (T.pack $ nameStableString $ getName var) path) (stmts)
+        (PatBind{pat_lhs = pat, pat_rhs = expr}) -> do
+            let stmts = (expr ^? biplateRef :: [LHsExpr GhcTc])
+                ids = (pat ^? biplateRef :: [LIdP GhcTc])
+            mapM_ (processExpr (maybe (T.pack "") (T.pack . nameStableString . getName) $ (headMaybe ids)) path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail ids))
     where
         processMatch :: Text -> Text -> LMatch GhcTc (LHsExpr GhcTc) -> IO ()
         processMatch keyFunction path (L _ match) = do
@@ -493,7 +506,6 @@ loopOverLHsBindLR con mParentName path (L _ x@(FunBind fun_ext id matches _ _)) 
                 stmtsNoLoc = (overLitVal ^? biplateRef :: [HsExpr GhcTc])
             in void $ mapM (processExpr keyFunction path) ( (stmts <> (map (noLoc) stmtsNoLoc)))
         processExpr keyFunction path y@(L _ x@(HsOverLabel _ mIdp fs)) = do
-            print $ showSDocUnsafe $ ppr mIdp
             expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_overLabel$" <> (T.pack $ showSDocUnsafe $ ppr fs)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr x), mempty)
             sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
         processExpr keyFunction path (L _ x) =
@@ -712,11 +724,6 @@ loopOverLHsBindLR con mParentName path (L _ x@(FunBind fun_ext id matches _ _)) 
             processExpr keyFunction path (wrapXRec @(GhcTc) hsExpr)
         processXXExpr keyFunction path (ExpansionExpr (HsExpanded _ expansionExpr)) =
             mapM_ (processExpr keyFunction path . (wrapXRec @(GhcTc))) [expansionExpr]
-loopOverLHsBindLR con mParentName path (L _ x) = do
-    let stmts = (x ^? biplateRef :: [HsExpr GhcTc])
-    print (mParentName,path)
-    mapM_ (\y -> print (toConstr x,toConstr y,showSDocUnsafe $ ppr y)) stmts
-    -- in void $ mapM (processExpr keyFunction path) (stmts)
 
 getLocTC' = (showSDocUnsafe . ppr . la2r . getLoc)
 getLoc'   = (showSDocUnsafe . ppr . la2r . getLoc)
