@@ -269,7 +269,7 @@ headMaybe (x:xs) = Just x
 loopOverLHsBindLR :: WS.Connection -> (Maybe Text) -> Text -> LHsBindLR GhcTc GhcTc -> IO ()
 loopOverLHsBindLR con mParentName path (L _ AbsBinds{abs_binds = binds}) =
     mapM_ (loopOverLHsBindLR con mParentName path) $ bagToList binds
-loopOverLHsBindLR con mParentName path (L _ bind) = do
+loopOverLHsBindLR con mParentName path (L location bind) = do
     case bind of
 #if __GLASGOW_HASKELL__ >= 900
         x@(FunBind fun_ext id matches _) -> do
@@ -298,11 +298,23 @@ loopOverLHsBindLR con mParentName path (L _ bind) = do
                     when (shouldLog) $ print $ "processed function: " <> fName <> " timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1)
         (VarBind{var_id = var, var_rhs = expr}) -> do
             let stmts = (expr ^? biplateRef :: [LHsExpr GhcTc])
-            mapM_ (processExpr (T.pack $ nameStableString $ getName var) path) (stmts)
+                fName = T.pack $ nameStableString $ getName var
+#if __GLASGOW_HASKELL__ >= 900
+            name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) $ locA location)))
+#else
+            name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) location)))
+#endif
+            mapM_ (processExpr (name) path) (stmts)
         (PatBind{pat_lhs = pat, pat_rhs = expr}) -> do
             let stmts = (expr ^? biplateRef :: [LHsExpr GhcTc])
                 ids = (pat ^? biplateRef :: [LIdP GhcTc])
-            mapM_ (processExpr (maybe (T.pack "") (T.pack . nameStableString . getName) $ (headMaybe ids)) path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail ids))
+                fName = (maybe (T.pack "::") (T.pack . nameStableString . getName) $ (headMaybe ids))
+#if __GLASGOW_HASKELL__ >= 900
+            name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) $ locA location)))
+#else
+            name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) location)))
+#endif
+            mapM_ (processExpr name path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail ids))
     where
         processMatch :: Text -> Text -> LMatch GhcTc (LHsExpr GhcTc) -> IO ()
         processMatch keyFunction path (L _ match) = do
