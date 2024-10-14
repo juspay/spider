@@ -1,0 +1,14 @@
+{
+    "consideredFun'": [
+        {
+            "error_message": "Should not use exception functions for sync in default cases",
+            "module_name": "",
+            "package_name": "",
+            "src_span_endC": 26,
+            "src_span_endl": 6,
+            "src_span_name": "test/PathsToConsider/ConsideredTests.hs",
+            "src_span_startC": 18,
+            "src_span_startl": 6
+        }
+    ]
+}

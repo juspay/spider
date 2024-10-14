@@ -1,0 +1,10 @@
+{
+    "allFailuresRecords": [],
+    "commonErrorFuns": [
+        "testParentFunction"
+    ],
+    "createdFailures": [],
+    "createdRecords": [],
+    "updatedFailures": [],
+    "updatedRecords": []
+}

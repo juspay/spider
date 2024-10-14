@@ -1,0 +1,17 @@
+{
+    "allFailuresRecords": [],
+    "commonErrorFuns": [
+        "tempThrowErr",
+        "whereClauseCaseLeftErr",
+        "whereClauseErr",
+        "rightCaseError",
+        "leftCaseError",
+        "whereClauseCaseRightErr",
+        "simpleReturn",
+        "ignoredErr"
+    ],
+    "createdFailures": [],
+    "createdRecords": [],
+    "updatedFailures": [],
+    "updatedRecords": []
+}

@@ -14,6 +14,7 @@ import GhcPlugins hiding ((<>))
 
 data PluginOpts = PluginOpts {
     failOnFileNotFound :: Bool,
+    prefixPath :: String,
     domainConfigFile :: String,
     pathsTobeChecked :: [String]
   } deriving (Show, Eq)
@@ -22,16 +23,18 @@ defaultPluginOpts :: PluginOpts
 defaultPluginOpts =
   PluginOpts {
     failOnFileNotFound = True,
+    prefixPath = "./.juspay/dc/",
     domainConfigFile = ".juspay/domainConfig.yaml",
-    pathsTobeChecked = ["euler-x/src","euler-x/src-generated","euler-x/src-extras","euler-api-decider/src", "ecPrelude/src", "ecPrelude/src-generated","ecPrelude/src-extras", "oltp/src", "oltp/src-generated","oltp/src-extras", "dbTypes/src-generated", "src/"]
+    pathsTobeChecked = ["src/", "src-generated/"]
   }
 
 instance FromJSON PluginOpts where
   parseJSON = withObject "PluginOpts" $ \o -> do
     failOnFileNotFound <- o .:? "failOnFileNotFound" .!= (failOnFileNotFound defaultPluginOpts)
     domainConfigFile <- o .:? "domainConfigFile" .!= (domainConfigFile defaultPluginOpts)
+    prefixPath <- o .:? "prefixPath" .!= (prefixPath defaultPluginOpts)
     pathsTobeChecked <- o .:? "pathsTobeChecked" .!= (pathsTobeChecked defaultPluginOpts)
-    return PluginOpts {domainConfigFile = domainConfigFile, failOnFileNotFound = failOnFileNotFound, pathsTobeChecked = pathsTobeChecked }
+    return PluginOpts {domainConfigFile = domainConfigFile, failOnFileNotFound = failOnFileNotFound, prefixPath = prefixPath, pathsTobeChecked = pathsTobeChecked }
 
 data EnumCheck =
   EnumCheck
@@ -48,6 +51,10 @@ data FunctionCheckConfig =
     { listOfRestrictedFuns :: [String]
     , moduleNameToCheck :: String
     , funNameToCheck :: String
+    , conditionToCheck :: [String] -- input empty list to check all conditions
+    , pathsToConsider :: [String] -- use empty list to consider all paths
+    , pathsToIgnore :: [String] -- use empty list to ignore no path, pathsToIgnore gets prority over pathsToConsider 
+    , modulesToIgnore :: [String]
     }
   deriving (Generic, Show, Eq, Ord)
   deriving (ToJSON, FromJSON)

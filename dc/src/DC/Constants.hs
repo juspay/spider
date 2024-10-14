@@ -14,5 +14,6 @@ defaultCase = "Should not use status as success or failure in default case"
 syncError :: String 
 syncError = "Should not use exception functions for sync in default cases"
 
-prefixPath :: String
-prefixPath = "./.juspay/dc/"
+-- taking this from plugin options now
+-- prefixPath :: 
+-- prefixPath = "./.juspay/dc/test/"

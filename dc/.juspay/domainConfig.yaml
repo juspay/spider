@@ -1,0 +1,11 @@
+tag: FunctionCheck
+contents:
+  listOfRestrictedFuns:
+    - "throwErr"
+    - "throwException"
+  moduleNameToCheck: "Main"
+  funNameToCheck: "testParentFunction"
+  conditionToCheck: []
+  pathsToConsider: []
+  pathsToIgnore: []
+  modulesToIgnore: []
