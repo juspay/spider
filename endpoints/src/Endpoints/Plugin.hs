@@ -47,6 +47,12 @@ import Data.List (intercalate,isInfixOf,foldl')
 import GHC.Core.Type
 import Control.Applicative ((<|>))
 import Debug.Trace (traceShowId,trace)
+import Control.Monad (when)
+import Control.Concurrent (MVar,putMVar,takeMVar,readMVar,newMVar)
+import GHC.IO (unsafePerformIO)
+import qualified Data.Aeson.Key as Key
+import Control.Reference (biplateRef, (^?))
+import Data.Generics.Uniplate.Data ()
 #endif
 
 plugin :: Plugin
@@ -56,6 +62,9 @@ plugin =
         pluginRecompile = (\_ -> return NoForceRecompile)
         , typeCheckResultAction = collectTypesTC
         }
+
+cachedTypes :: MVar (HM.KeyMap Type)
+cachedTypes = unsafePerformIO (newMVar mempty)
 
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcg = do
@@ -74,11 +83,11 @@ collectTypesTC opts modSummary tcg = do
                                                 ATyCon tyCon -> getAPITypes tyCon
                                                 _ -> pure mempty
                                         ) (typeEnvElts typeEnv)
+                hm <- takeMVar cachedTypes
+                putMVar cachedTypes $ (foldl' (\hm (name,ty) -> HM.insert (Key.fromText $ T.pack $ showSDocUnsafe $ ppr name) ty hm) hm (concat servantAPIs))
                 parsedEndpoints <-  processServantApis $ filter (\(x,y) -> "EulerAPI" == (showSDocUnsafe $ ppr x)) $ concat servantAPIs
-                print (encode parsedEndpoints)
-                -- print $ map (\(x,y) -> (x,map showEndpoint y))  parsedEndpoints
                 createDirectoryIfMissing True path
-                -- DBS.writeFile (modulePath <> ".types.json") (DBS.toStrict $ encode $ Map.fromList $ Prelude.concat types)
+                DBS.writeFile (modulePath <> ".types.json") (DBS.toStrict $ encode $ parsedEndpoints)
     return tcg
 
 mergeEndpoints x = x
@@ -126,12 +135,11 @@ data Endpoint = Endpoint
     , queryParams :: [String]
     , headers :: [String]
     , responseStatus :: String
-    , responseBody :: String
-    , requestBody :: String
+    , responseBody :: (Maybe ResponseType)
+    , requestBody   :: (Maybe RequestType)
     } deriving (Generic,Show)
 
 deriving instance ToJSON Endpoint
-deriving instance ToJSON ApiComponent
 
 -- processServantApis :: [(Name,Type)] -> IO [(String,[Endpoint])]
 processServantApis ts = do
@@ -144,33 +152,41 @@ processServantApis ts = do
 
 mergeAllURLOptions :: [ApiComponent] -> [Endpoint]
 mergeAllURLOptions list =
-    let (headers,queryParams,verbs) = processList list
-    in map (\(Verb method status responseType responseBody) -> (Endpoint method mempty queryParams headers status responseType responseBody)) verbs
+    let (headers,queryParams,verbs,captures) = processList list
+    in map (\(Verb method status responseType responseBody) -> (Endpoint method captures queryParams headers status responseType responseBody)) verbs
     where
         processList list =
-            foldl' (\(rh,qp,verb) x ->
+            foldl' (\(rh,qp,verb,capture) x ->
                 case x of
-                    (QueryParam p) -> (rh,qp <> [p],verb)
-                    (Header p) -> (rh <> [p], qp,verb)
-                    (Verb method status responseType responseBody) -> (rh,qp,verb <> [x])
+                    (QueryParam p) -> (rh,qp <> [p],verb,capture)
+                    (Header p) -> (rh <> [p], qp,verb,capture)
+                    (Verb method status responseType responseBody) -> (rh,qp,verb <> [x],capture)
                     (Group "" l)  ->
-                        let (a,b,c) = processList l
-                        in (rh <> a,qp <> b,verb <> c)
-                    _ -> (rh,qp,verb)
-                ) ([],[],[]) list
+                        let (a,b,c,cc) = processList l
+                        in (rh <> a,qp <> b,verb <> c,capture <>cc)
+                    (Group p [])  -> (rh,qp,verb,capture <> [p])
+                    (Group x l)  ->
+                        let (a,b,c,cc) = processList l
+                        in (rh <> a,qp <> b,verb <> c,capture <> cc <> [x])
+                    (Tag p) -> (rh,qp,verb,capture)
+                    _ -> (rh,qp,verb,capture)
+                ) ([],[],[],([] :: [String])) list
 
 parseApiDefinition :: ApiComponent -> IO [Endpoint]
-parseApiDefinition (Path p) = pure [Endpoint mempty [p] [] mempty "" "" ""]
-parseApiDefinition (Verb method status responseType _) = pure [Endpoint (method) [] [] mempty status (responseType) mempty]
-parseApiDefinition (Group p []) = pure [Endpoint mempty [p] [] mempty mempty mempty mempty]
+parseApiDefinition (Path p) = pure [Endpoint mempty [p] [] mempty "" Nothing Nothing]
+parseApiDefinition (Verb method status responseType _) = pure [Endpoint (method) [] [] mempty status (responseType) Nothing]
+parseApiDefinition (Group p []) = pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing]
 parseApiDefinition (Group "" [Verb method status responseType responseBody]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody]
-parseApiDefinition (Group "" (x:xs)) = pure $ mergeAllURLOptions (x:xs)
+-- parseApiDefinition (Group "" [Verb method status responseType responseBody]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody]
+parseApiDefinition (Group "" (x:xs)) = do
+    pure $ mergeAllURLOptions (x:xs)
 parseApiDefinition (Group p [Verb method status responseType responseBody]) = pure [Endpoint (method) [p] [] mempty status (responseType) responseBody]
-parseApiDefinition (Group p comps) = do
+parseApiDefinition x@(Group p comps) = do
     endpointsList <- mapM parseApiDefinition comps
     let filteredList = concat $ filter (not . null) endpointsList
     case filteredList of
-        [] -> pure [Endpoint mempty [p] [] mempty mempty mempty mempty]
+        [] -> do
+            pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing]
         [(endpoint)] -> pure [(\(Endpoint method path qp h rs rt rb) -> Endpoint method ([p] <> path) qp h rs rt rb) endpoint]
         _ -> pure $ (map (\endpoint -> endpoint { path = [p] <> (path endpoint) })) filteredList
 parseApiDefinition (Alternative comps) = concat <$> mapM parseApiDefinition comps
@@ -218,11 +234,17 @@ data ApiComponent
   | Header String
   | AddArgs String
   | ReqBody String
-  | Verb String String String String
+  | Verb String String (Maybe ResponseType) (Maybe RequestType)
   | Group String [ApiComponent]
   | Alternative [ApiComponent]
   | Tag String
-  deriving (Generic,Show,Data)
+  deriving (Generic,Show,Data,ToJSON)
+
+data ResponseType = ResponseType {resHeaders :: [String], responseType :: [String] , resRawStr :: String}
+    deriving (Generic,Show,Data,ToJSON)
+
+data RequestType = RequestType {requestType :: [String] , reqRawStr :: String}
+    deriving (Generic,Show,Data,ToJSON)
 
 headMaybe :: [a] -> Maybe a
 headMaybe [] = Nothing
@@ -233,61 +255,94 @@ tailMaybe [] = Nothing
 tailMaybe [x] = Nothing
 tailMaybe (x:xs) = Just xs
 
+extractResponseTypeToLink :: Type  -> String -> IO (Maybe ResponseType)
+extractResponseTypeToLink (TyConApp tyCon args) rawStr =
+    case showSDocUnsafe $ ppr $ (tyCon) of
+        "Headers" ->
+            case args of
+                [(TyConApp tyConh headers),resp] -> do
+                    pure $ Just $ ResponseType (map (showSDocUnsafe . ppr) headers) [((showSDocUnsafe . ppr) resp)] rawStr
+                _ -> pure $ Just $ ResponseType mempty mempty rawStr
+        _ -> pure $ Just $ ResponseType mempty mempty rawStr
+
+extractRequestTypeToLink x@(TyConApp tyCon args) raw = pure $ Just $ RequestType [showSDocUnsafe $ ppr x] (raw)
+
 parseApiType :: Type -> IO (Maybe ApiComponent)
-parseApiType ty = case splitTyConApp_maybe ty of
-  Just (tyCon, args) ->
-    let tyConName' = getOccString (tyConName tyCon)
-    in case tyConName' of
-        ":>" -> do
-            res <- catMaybes <$> mapM parseApiType args
-            case res of
-                (Path p : rest) -> pure $ Just $ Group p rest
-                (Capture p : rest) -> pure $ Just $ Group ("{" ++ p ++ "}") rest
-                -- (QueryParam p : rest) -> pure $ Just $ Group ("?" ++ p ++ "={" ++ p ++ "}") rest
-                -- (Tag t : rest) -> pure $ Just $ Group ("<" ++ t ++ ">") rest
-                -- (TypeApp "ReqBody" [_, _] : rest) -> pure $ Just $ Group "" (ReqBody : rest)
-                -- (TypeApp "Get" _ : rest) -> pure $ Just $ Group "" (Verb "'GET" "" "" "" : rest)
-                -- (TypeApp "Post" _ : rest) -> pure $ Just $ Group "" (Verb "'POST" "" "" "" : rest)
-                -- (TypeApp "Put" _ : rest) -> pure $ Just $ Group "" (Verb "'PUT" "" "" "" : rest)
-                -- (TypeApp "Delete" _ : rest) -> pure $ Just $ Group "" (Verb "'DELETE" "" "" "" : rest)
-                _ -> pure $ Just $ Group "" res
-        ":<|>" -> do
-            res <- mapM parseApiType args
-            pure $ Just $ Alternative (catMaybes res)
-        "Header'" -> do
-            res <- mapM parseApiType args
-            case catMaybes res of
-                [Path p] -> pure $ Just $ Header p
-                _ -> pure Nothing
-        "Capture'" -> do
-            res <- mapM parseApiType args
-            case catMaybes res of
-                [Path p] -> pure $ Just $ Capture p
-                _ -> pure Nothing
-        "QueryParam'" -> do
-            res <- mapM parseApiType args
-            case catMaybes res of
-                [Path p] -> pure $ Just $ QueryParam p
-                _ -> pure Nothing
-        "AddArgs" -> do
-            res <- mapM parseApiType args
-            case catMaybes res of
-                [Path p] -> pure $ Just $ AddArgs p
-                _ -> pure Nothing
-        "Verb" -> do
-            res <- mapM (\x -> pure $ (showSDocUnsafe $ ppr x)) args
-            case res of
-                ["StdMethod",method,statusCode,encodeType,responseTypeName] -> pure $ Just $ Verb method statusCode encodeType (showSDocUnsafe $ ppr $ last $ args)
-                _ -> pure Nothing
-        -- "ReqBody'" -> pure $ Just $ ReqBody (showSDocUnsafe $ ppr ty)
-        -- "Get" -> pure $ Just (Verb "'GET" "" "" "")
-        -- "Post" -> pure $ Just (Verb "'POST" "" "" "")
-        -- "Put" -> pure $ Just (Verb "'PUT" "" "" "")
-        -- "Delete" -> pure $ Just (Verb "'DELETE" "" "" "")
-        "Tag" -> pure $ Just $ Tag (showSDocUnsafe $ ppr args)
-        _ -> do 
-            -- print (tyConName',(map (\x -> (toConstr x,showSDocUnsafe $ ppr x)) args))
-            pure Nothing
-  Nothing -> case isStrLitTy ty of
-    Just fs -> pure $ Just $ Path (unpackFS fs)
-    Nothing -> pure Nothing
+parseApiType ty = do
+    case splitTyConApp_maybe ty of
+        Just (tyCon, args) -> do
+            let tyConName' = getOccString (tyConName tyCon)
+            case tyConName' of
+                ":>" -> do
+                    res <- catMaybes <$> mapM parseApiType args
+                    case res of
+                        (Path p : rest) -> pure $ Just $ Group p rest
+                        (Capture p : rest) -> pure $ Just $ Group ("{" ++ p ++ "}") rest
+                        _ -> do
+                            if null res
+                                then pure Nothing
+                                else pure $ Just $ Group "" res
+                ":<|>" -> do
+                    res <- mapM parseApiType args
+                    pure $ Just $ Alternative (catMaybes res)
+                "Header'" -> do
+                    res <- mapM parseApiType args
+                    case catMaybes res of
+                        [Path p] -> pure $ Just $ Header p
+                        _ -> pure Nothing
+                "Capture'" -> do
+                    res <- mapM parseApiType args
+                    -- print $ (tyConName',showSDocUnsafe $ ppr $ ty,map (\x -> (showSDocUnsafe $ ppr x,toConstr x)) args,res)
+                    case catMaybes res of
+                        [Path p] -> pure $ Just $ Group ("{" ++ p ++ "}") mempty
+                        _ -> pure Nothing
+                "QueryParam'" -> do
+                    res <- mapM parseApiType args
+                    case catMaybes res of
+                        [Path p] -> pure $ Just $ QueryParam p
+                        _ -> pure Nothing
+                "QueryFlag" -> do
+                    res <- mapM parseApiType args
+                    case catMaybes res of
+                        [Path p] -> pure $ Just $ QueryParam p
+                        _ -> pure Nothing
+                "AddArgs" -> do
+                    res <- mapM parseApiType args
+                    -- print ("----AddArgs",null (catMaybes res),catMaybes res,map (\x -> (showSDocUnsafe $ ppr x,toConstr x)) args)
+                    if null (catMaybes res)
+                        then pure Nothing
+                        else pure $ Just $ Group "" $ catMaybes res
+                "Verb" -> do
+                    res <- mapM (\x -> pure $ (showSDocUnsafe $ ppr x)) args
+                    case res of
+                        ["StdMethod",method,statusCode,encodeType,responseTypeName] -> do
+                            let revArgs = (reverse args)
+                                response = revArgs !! 0
+                                request = revArgs !! 1
+                            res <- extractResponseTypeToLink response (showSDocUnsafe $ ppr $ last args)
+                            req <- extractRequestTypeToLink request (encodeType)
+                            pure $ Just $ Verb method statusCode (res) (req)
+                        _ -> pure Nothing
+                -- "ReqBody'" -> pure $ Just $ ReqBody (showSDocUnsafe $ ppr ty)
+                "Tag" -> pure $ Just $ Tag (showSDocUnsafe $ ppr args)
+                "TYPE" -> do
+                    res <- mapM parseApiType args
+                    if null (catMaybes res)
+                        then pure Nothing
+                        else pure $ Just $ Group "" $ catMaybes res
+                ":" -> do
+                    res <- mapM parseApiType args
+                    if null (catMaybes res)
+                        then pure Nothing
+                        else pure $ Just $ Group "" $ catMaybes res
+                _ -> do
+                    -- print ("------",tyConName',showSDocUnsafe $ ppr tyCon,map (\x -> (showSDocUnsafe $ ppr x,toConstr x)) args)
+                    pure Nothing
+        Nothing -> do
+            case isStrLitTy ty of
+                Just fs -> pure $ Just $ Path (unpackFS fs)
+                Nothing -> pure Nothing
+
+isTyConApp :: Type -> Bool
+isTyConApp (TyConApp _ _) = True
+isTyConApp _              = False
