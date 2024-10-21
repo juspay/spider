@@ -98,6 +98,8 @@
             streamly-core.source = inputs.streamly + /core;
           };
           settings = {
+            servant.jailbreak = true;
+            servant-server.jailbreak = true;
             #  aeson = {
             #    check = false;
             #  };
@@ -110,6 +112,7 @@
             #     jailbreak = true;
             # };
             sheriff.check = false;
+            http2.check = false;
           };
 
           devShell = {

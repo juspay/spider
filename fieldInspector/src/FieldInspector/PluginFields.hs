@@ -14,8 +14,8 @@ import GHC
 import GHC.Driver.Plugins (Plugin(..),CommandLineOption,defaultPlugin,PluginRecompile(..))
 import GHC as GhcPlugins
 import GHC.Core.DataCon as GhcPlugins
-import GHC.Core.TyCo.Rep
 import GHC.Core.TyCon as GhcPlugins
+import GHC.Core.TyCo.Rep
 import GHC.Driver.Env
 import GHC.Tc.Types
 import GHC.Unit.Module.ModSummary
