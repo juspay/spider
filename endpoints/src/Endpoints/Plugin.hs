@@ -135,8 +135,10 @@ data Endpoint = Endpoint
     , queryParams :: [String]
     , headers :: [String]
     , responseStatus :: String
-    , responseBody :: (Maybe ResponseType)
-    , requestBody   :: (Maybe RequestType)
+    , responseContentType :: Maybe String
+    , responseBody :: Maybe String
+    , requestBody  :: Maybe String
+    , requestContentType  :: Maybe String
     } deriving (Generic,Show)
 
 deriving instance ToJSON Endpoint
@@ -152,42 +154,49 @@ processServantApis ts = do
 
 mergeAllURLOptions :: [ApiComponent] -> [Endpoint]
 mergeAllURLOptions list =
-    let (headers,queryParams,verbs,captures) = processList list
-    in map (\(Verb method status responseType responseBody) -> (Endpoint method captures queryParams headers status responseType responseBody)) verbs
+    let (headers,queryParams,verbs,captures,reqBodyList,contentTypeList) = processList list
+    in concatMap (\x ->
+        case x of
+            (Verb method status responseType responseBody) -> [(Endpoint method captures queryParams headers status responseType responseBody (if null $ concat reqBodyList then Nothing else Just $ concat reqBodyList) (if null $ concat contentTypeList then Nothing else Just $ concat contentTypeList))]
+            _ -> mempty
+    ) verbs
     where
         processList list =
-            foldl' (\(rh,qp,verb,capture) x ->
+            foldl' (\(rh,qp,verb,capture,reqBodyList,contentTypeList) x ->
                 case x of
-                    (QueryParam p) -> (rh,qp <> [p],verb,capture)
-                    (Header p) -> (rh <> [p], qp,verb,capture)
-                    (Verb method status responseType responseBody) -> (rh,qp,verb <> [x],capture)
+                    (QueryParam p) -> (rh,qp <> [p],verb,capture,reqBodyList,contentTypeList)
+                    (Header p) -> (rh <> [p], qp,verb,capture,reqBodyList,contentTypeList)
+                    (Verb method status responseType responseBody) -> (rh,qp,verb <> [x],capture,reqBodyList,contentTypeList)
+                    (ReqBody contentType reqBody) -> (rh,qp,verb,capture,(reqBodyList <> [reqBody]),contentTypeList <> [contentType])
                     (Group "" l)  ->
-                        let (a,b,c,cc) = processList l
-                        in (rh <> a,qp <> b,verb <> c,capture <>cc)
-                    (Group p [])  -> (rh,qp,verb,capture <> [p])
+                        let (a,b,c,cc,reqBodyL,contentTypeL) = processList l
+                        in (rh <> a,qp <> b,verb <> c,capture <>cc,(reqBodyList <> reqBodyL),(contentTypeList <> contentTypeL))
+                    (Group p [])  -> (rh,qp,verb,capture <> [p],reqBodyList,contentTypeList)
                     (Group x l)  ->
-                        let (a,b,c,cc) = processList l
-                        in (rh <> a,qp <> b,verb <> c,capture <> cc <> [x])
-                    (Tag p) -> (rh,qp,verb,capture)
-                    _ -> (rh,qp,verb,capture)
-                ) ([],[],[],([] :: [String])) list
+                        let (a,b,c,cc,reqBodyL,contentTypeL) = processList l
+                        in (rh <> a,qp <> b,verb <> c,capture <> cc <> [x],(reqBodyList <> reqBodyL),contentTypeList<>contentTypeL)
+                    (Tag p) -> (rh,qp,verb,capture,reqBodyList,contentTypeList)
+                    _ -> (rh,qp,verb,capture,reqBodyList,contentTypeList)
+                ) ([],[],[],([] :: [String]),[],[]) list
 
 parseApiDefinition :: ApiComponent -> IO [Endpoint]
-parseApiDefinition (Path p) = pure [Endpoint mempty [p] [] mempty "" Nothing Nothing]
-parseApiDefinition (Verb method status responseType _) = pure [Endpoint (method) [] [] mempty status (responseType) Nothing]
-parseApiDefinition (Group p []) = pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing]
-parseApiDefinition (Group "" [Verb method status responseType responseBody]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody]
--- parseApiDefinition (Group "" [Verb method status responseType responseBody]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody]
+parseApiDefinition (Path p) = pure [Endpoint mempty [p] [] mempty "" Nothing Nothing Nothing Nothing]
+parseApiDefinition (Verb method status responseType _) = pure [Endpoint (method) [] [] mempty status (responseType) Nothing Nothing Nothing]
+parseApiDefinition (Group p []) = pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing Nothing Nothing]
+parseApiDefinition (Group "" [(Verb method status responseType responseBody)]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody Nothing Nothing]
+parseApiDefinition (Group "" [(ReqBody contentType reqBody),(Verb method status responseType responseBody)]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody (Just reqBody) (Just contentType)]
+-- parseApiDefinition (Group "" [(Verb method status responseType responseBody)]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody]
 parseApiDefinition (Group "" (x:xs)) = do
     pure $ mergeAllURLOptions (x:xs)
-parseApiDefinition (Group p [Verb method status responseType responseBody]) = pure [Endpoint (method) [p] [] mempty status (responseType) responseBody]
+parseApiDefinition (Group p [(ReqBody contentType reqBody),(Verb method status responseType responseBody)]) = pure [Endpoint (method) [p] [] mempty status (responseType) responseBody (Just reqBody) (Just contentType)]
+parseApiDefinition (Group p [(Verb method status responseType responseBody)]) = pure [Endpoint (method) [p] [] mempty status (responseType) responseBody Nothing Nothing]
 parseApiDefinition x@(Group p comps) = do
     endpointsList <- mapM parseApiDefinition comps
     let filteredList = concat $ filter (not . null) endpointsList
     case filteredList of
         [] -> do
-            pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing]
-        [(endpoint)] -> pure [(\(Endpoint method path qp h rs rt rb) -> Endpoint method ([p] <> path) qp h rs rt rb) endpoint]
+            pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing Nothing Nothing]
+        [(endpoint)] -> pure [(\(Endpoint method path qp h rs rt rb reqBody contentType) -> Endpoint method ([p] <> path) qp h rs rt rb reqBody contentType) endpoint]
         _ -> pure $ (map (\endpoint -> endpoint { path = [p] <> (path endpoint) })) filteredList
 parseApiDefinition (Alternative comps) = concat <$> mapM parseApiDefinition comps
 parseApiDefinition _ = pure []
@@ -233,18 +242,12 @@ data ApiComponent
   | QueryParam String
   | Header String
   | AddArgs String
-  | ReqBody String
-  | Verb String String (Maybe ResponseType) (Maybe RequestType)
+  | ReqBody String String
+  | Verb String String (Maybe String) (Maybe String)
   | Group String [ApiComponent]
   | Alternative [ApiComponent]
   | Tag String
   deriving (Generic,Show,Data,ToJSON)
-
-data ResponseType = ResponseType {resHeaders :: [String], responseType :: [String] , resRawStr :: String}
-    deriving (Generic,Show,Data,ToJSON)
-
-data RequestType = RequestType {requestType :: [String] , reqRawStr :: String}
-    deriving (Generic,Show,Data,ToJSON)
 
 headMaybe :: [a] -> Maybe a
 headMaybe [] = Nothing
@@ -255,17 +258,17 @@ tailMaybe [] = Nothing
 tailMaybe [x] = Nothing
 tailMaybe (x:xs) = Just xs
 
-extractResponseTypeToLink :: Type  -> String -> IO (Maybe ResponseType)
-extractResponseTypeToLink (TyConApp tyCon args) rawStr =
-    case showSDocUnsafe $ ppr $ (tyCon) of
-        "Headers" ->
-            case args of
-                [(TyConApp tyConh headers),resp] -> do
-                    pure $ Just $ ResponseType (map (showSDocUnsafe . ppr) headers) [((showSDocUnsafe . ppr) resp)] rawStr
-                _ -> pure $ Just $ ResponseType mempty mempty rawStr
-        _ -> pure $ Just $ ResponseType mempty mempty rawStr
+-- extractResponseTypeToLink :: Type  -> String -> IO (Maybe ResponseType)
+-- extractResponseTypeToLink (TyConApp tyCon args) rawStr =
+--     case showSDocUnsafe $ ppr $ (tyCon) of
+--         "Headers" ->
+--             case args of
+--                 [(TyConApp tyConh headers),resp] -> do
+--                     pure $ Just $ ResponseType (map (showSDocUnsafe . ppr) headers) [((showSDocUnsafe . ppr) resp)] rawStr
+--                 _ -> pure $ Just $ ResponseType mempty mempty rawStr
+--         _ -> pure $ Just $ ResponseType mempty mempty rawStr
 
-extractRequestTypeToLink x@(TyConApp tyCon args) raw = pure $ Just $ RequestType [showSDocUnsafe $ ppr x] (raw)
+-- extractRequestTypeToLink x@(TyConApp tyCon args) raw = pure $ Just $ RequestType [showSDocUnsafe $ ppr x] (raw)
 
 parseApiType :: Type -> IO (Maybe ApiComponent)
 parseApiType ty = do
@@ -315,15 +318,13 @@ parseApiType ty = do
                 "Verb" -> do
                     res <- mapM (\x -> pure $ (showSDocUnsafe $ ppr x)) args
                     case res of
-                        ["StdMethod",method,statusCode,encodeType,responseTypeName] -> do
-                            let revArgs = (reverse args)
-                                response = revArgs !! 0
-                                request = revArgs !! 1
-                            res <- extractResponseTypeToLink response (showSDocUnsafe $ ppr $ last args)
-                            req <- extractRequestTypeToLink request (encodeType)
-                            pure $ Just $ Verb method statusCode (res) (req)
+                        ["StdMethod",method,statusCode,encodeType,responseTypeName] -> pure $ Just $ Verb method statusCode (Just encodeType) (Just $ showSDocUnsafe $ ppr $ last $ args)
                         _ -> pure Nothing
-                -- "ReqBody'" -> pure $ Just $ ReqBody (showSDocUnsafe $ ppr ty)
+                "ReqBody'" -> do
+                    res <- mapM (\x -> pure $ (showSDocUnsafe $ ppr x)) args
+                    case res of
+                        [("'[Required, Strict]"),reqContentType,reqBody] -> pure $ Just $ ReqBody (reqContentType) reqBody
+                        _ -> pure Nothing
                 "Tag" -> pure $ Just $ Tag (showSDocUnsafe $ ppr args)
                 "TYPE" -> do
                     res <- mapM parseApiType args
