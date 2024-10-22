@@ -63,8 +63,8 @@ plugin =
         , typeCheckResultAction = collectTypesTC
         }
 
-cachedTypes :: MVar (HM.KeyMap Type)
-cachedTypes = unsafePerformIO (newMVar mempty)
+-- cachedTypes :: MVar (HM.KeyMap Type)
+-- cachedTypes = unsafePerformIO (newMVar mempty)
 
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcg = do
@@ -72,7 +72,7 @@ collectTypesTC opts modSummary tcg = do
     _ <- liftIO $
             do
                 let prefixPath = case opts of
-                        [] -> "./tmp/endpoints/"
+                        [] -> "/tmp/endpoints/"
                         local : _ -> local
                     moduleName' = moduleNameString $ GhcPlugins.moduleName $ ms_mod modSummary
                     modulePath = prefixPath <> msHsFilePath modSummary
@@ -83,11 +83,11 @@ collectTypesTC opts modSummary tcg = do
                                                 ATyCon tyCon -> getAPITypes tyCon
                                                 _ -> pure mempty
                                         ) (typeEnvElts typeEnv)
-                hm <- takeMVar cachedTypes
-                putMVar cachedTypes $ (foldl' (\hm (name,ty) -> HM.insert (Key.fromText $ T.pack $ showSDocUnsafe $ ppr name) ty hm) hm (concat servantAPIs))
-                parsedEndpoints <-  processServantApis $ filter (\(x,y) -> "EulerAPI" == (showSDocUnsafe $ ppr x)) $ concat servantAPIs
+                -- hm <- takeMVar cachedTypes
+                -- putMVar cachedTypes $ (foldl' (\hm (name,ty) -> HM.insert (Key.fromText $ T.pack $ showSDocUnsafe $ ppr name) ty hm) hm (concat servantAPIs))
+                parsedEndpoints <-  processServantApis $ concat servantAPIs
                 createDirectoryIfMissing True path
-                DBS.writeFile (modulePath <> ".types.json") (DBS.toStrict $ encode $ parsedEndpoints)
+                DBS.writeFile (modulePath <> ".api-spec.json") (DBS.toStrict $ encode $ parsedEndpoints)
     return tcg
 
 mergeEndpoints x = x
@@ -150,7 +150,7 @@ processServantApis ts = do
                         endpoints <- (maybe mempty parseApiDefinition) res
                         pure (showSDocUnsafe $ ppr name',endpoints)
                     ) ts
-    pure res
+    pure $ Map.fromList res
 
 mergeAllURLOptions :: [ApiComponent] -> [Endpoint]
 mergeAllURLOptions list =
