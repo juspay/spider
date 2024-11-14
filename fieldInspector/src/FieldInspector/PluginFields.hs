@@ -285,7 +285,9 @@ buildCfgPass opts guts = do
         createDirectoryIfMissing True ((intercalate "/" . init . splitOn "/") moduleLoc)
         removeIfExists (moduleLoc Prelude.<> ".fieldUsage.json")
         l <- toList $ mapM (liftIO . toLBind) (fromList binds)
-        DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ Prelude.filter (\(x,y) -> (Prelude.not $ Prelude.null y) && (Prelude.not $ ("$$" :: Text) `T.isInfixOf` x)) $ groupByFunction $ Prelude.concat l)
+        res <- pure $ Prelude.filter (\(x,y) -> (Prelude.not $ Prelude.null y) && (Prelude.not $ ("$$" :: Text) `T.isInfixOf` x)) $ groupByFunction $ Prelude.concat l
+        when (Prelude.not $ Prelude.null res) $
+            DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ res)
     return guts
 
 getAllTypeManipulations :: [LHsBindLR GhcTc GhcTc] -> IO [DataTypeUC]
