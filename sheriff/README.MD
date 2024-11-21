@@ -11,6 +11,8 @@ It supports the following rules as of now
 4. Blocking all or particular functions with given type signature
 5. Applying rules to all or particular set of modules
 6. Blocking querying in DB on non-indexed columns (indexed columns are provided in a yaml file)
+7. Detecting deterministic infinite recursion in the code
+8. Blocking use of functions with given signature
 
 This tool is useful for developers to enforce better coding practices and prevent use of some specific unsafe function in the code.
 

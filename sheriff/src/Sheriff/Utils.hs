@@ -1,5 +1,6 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE KindSignatures #-}
@@ -12,8 +13,10 @@ import Control.Exception
 import Control.Monad (when)
 import Control.Monad.IO.Class (MonadIO (..))
 import Data.Aeson
+import Data.Bool
 import Data.Data (Data)
 import Data.Generics.Uniplate.Data
+import qualified Data.HashMap.Strict as HM
 import Data.List.Extra (splitOn, trim, isInfixOf)
 import Data.Maybe (maybe)
 import qualified Data.Text as T
@@ -23,8 +26,10 @@ import GHC.Hs.Dump
 import GHC.Hs.Extension
 import Language.Haskell.GHC.ExactPrint (exactPrint)
 import Sheriff.Patterns
+import Sheriff.CommonTypes
 
 #if __GLASGOW_HASKELL__ >= 900
+import GHC.Core.ConLike
 import GHC.Core.TyCo.Rep
 import GHC.Data.IOEnv
 import GHC.Driver.Main
@@ -37,6 +42,7 @@ import GHC.Tc.Types
 import GHC.Tc.Utils.TcType
 import Language.Haskell.GHC.ExactPrint (ExactPrint)
 #else
+import ConLike
 import DsMonad
 import DsExpr
 import GhcPlugins hiding ((<>), getHscEnv)
@@ -55,29 +61,49 @@ import TyCoRep
   Mainly it has generic functions for all - parse, rename and typecheck plugin.
 -}
 
--- Recursive data type for simpler type representation
-data TypeData = TextTy String | NestedTy [TypeData]
-  deriving (Show, Eq)
-
-data AsteriskMatching = AsteriskInFirst | AsteriskInSecond | AsteriskInBoth
-  deriving (Show, Eq)
-
 -- Debug Show any haskell internal representation type
 showS :: (Outputable a) => a -> String
 showS = showSDocUnsafe . ppr
 
-getLocatedVarNameWithModuleName :: Located Var -> String
+matchLocatedVarNamesWithModuleName :: (HasPluginOpts a) => Located Var -> Located Var -> AsteriskMatching -> Bool
+matchLocatedVarNamesWithModuleName v1 v2 asteriskMatching = matchVarNamesWithModuleName (unLoc v1) (unLoc v2) asteriskMatching
+
+matchVarNamesWithModuleName :: (HasPluginOpts a) => Var -> Var -> AsteriskMatching -> Bool
+matchVarNamesWithModuleName v1 v2 asteriskMatching = 
+  let var1nameWithModule = getVarNameWithModuleName v1
+      var2nameWithModule = getVarNameWithModuleName v2
+  in matchNamesWithModuleName var1nameWithModule var2nameWithModule asteriskMatching
+
+getLocatedVarNameWithModuleName :: (HasPluginOpts a) => Located Var -> String
 getLocatedVarNameWithModuleName lvar = getVarNameWithModuleName $ unLoc lvar
 
-getVarNameWithModuleName :: Var -> String
+getVarNameWithModuleName :: (HasPluginOpts a) => Var -> String
 getVarNameWithModuleName var = getNameWithModuleName $ varName var
 
-getNameWithModuleName :: Name -> String
+getNameWithModuleName :: (HasPluginOpts a) => Name -> String
 getNameWithModuleName name = 
   let occName = getOccString name
-  in case nameModule_maybe name of
-        Just modName -> (moduleNameString $ moduleName modName) <> "." <> occName
-        Nothing -> "NO_MODULE" <> "." <> occName
+  in getModuleName name <> "." <> occName
+
+getModuleName :: (HasPluginOpts a) => Name -> String
+getModuleName name = 
+  case nameModule_maybe name of
+    Just modName -> (moduleNameString $ moduleName modName)
+    Nothing -> (currentModule ?pluginOpts)
+
+getNameAndModuleNameWithNMV :: (HasPluginOpts a) => Name -> (Name, String)
+getNameAndModuleNameWithNMV name = 
+  let modNameMap = nameModuleMap ?pluginOpts
+  in case getNameAndModuleFromNMV modNameMap (NMV_Name name) of
+    (nm, Just modName) -> (nm, modName)
+    (nm, Nothing) -> (nm, getModuleName nm)
+
+getNameAndModuleFromNMV :: HM.HashMap NameModuleValue NameModuleValue -> NameModuleValue -> (Name, Maybe String)
+getNameAndModuleFromNMV mp nmv = case HM.lookup nmv mp of
+  Just val -> getNameAndModuleFromNMV mp val
+  Nothing -> case nmv of
+    NMV_Name nm -> (nm, Nothing)
+    NMV_ClassModule nm modName -> (nm, Just modName)
 
 matchNamesWithModuleName :: String -> String -> AsteriskMatching -> Bool
 matchNamesWithModuleName varNameWithModule fnToMatch asteriskMatching = 
@@ -162,7 +188,7 @@ debugPrintType (TyVarTy v) = "(TyVarTy " <> showS v <> ")"
 debugPrintType (AppTy ty1 ty2) = "(AppTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
 debugPrintType (TyConApp tycon tys) = "(TyConApp (" <> showS tycon <> ") [" <> foldr (\x r -> debugPrintType x <> ", " <> r) "" tys <> "]"
 debugPrintType (ForAllTy _ ty) = "(ForAllTy " <> debugPrintType ty <> ")"
-debugPrintType (PatFunTy ty1 ty2) = "(FunTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
+debugPrintType (PatFunTy _ ty1 ty2) = "(FunTy " <> debugPrintType ty1 <> " " <> debugPrintType ty2 <> ")"
 debugPrintType (LitTy litTy) = "(LitTy " <> showS litTy <> ")"
 debugPrintType _ = ""
 
@@ -290,15 +316,23 @@ getHsExprTypeWithResolver logTypeDebugging expr = deNoteType <$> getHsExprType l
 
 -- TODO: Add support for matching constraints
 -- Get Qualified Types as List
-getHsExprTypeAsTypeDataList :: Type -> [TypeData]
-getHsExprTypeAsTypeDataList typ = case typ of
+getHsExprTypeAsTypeDataListWithConstraintCheck :: (HasPluginOpts a) => Bool -> Type -> [TypeData]
+getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg typ = case typ of
   LitTy ty -> [TextTy $ showS ty]
   TyVarTy var -> [TextTy $ getVarNameWithModuleName var]
-  TyConApp tycon tys -> [NestedTy $ [TextTy $ getNameWithModuleName (tyConName tycon)] <> (concat $ fmap getHsExprTypeAsTypeDataList tys)]
-  AppTy ty1 ty2 -> getHsExprTypeAsTypeDataList ty1 <> getHsExprTypeAsTypeDataList ty2
-  ForAllTy _ ty -> getHsExprTypeAsTypeDataList ty
-  PatFunTy ty1 ty2 -> getHsExprTypeAsTypeDataList ty1 <> getHsExprTypeAsTypeDataList ty2
+  TyConApp tycon tys -> [NestedTy $ [TextTy $ getNameWithModuleName (tyConName tycon)] <> (concat $ fmap (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg) tys)]
+  AppTy ty1 ty2 -> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty1 <> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2
+  ForAllTy _ ty -> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty
+  PatFunTy anonArgFlag ty1 ty2 -> bool (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty1 <> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2) (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2) (ignoreConstraintArg && anonArgFlag == InvisArg)
   _ -> []
+
+-- Get Qualified Types as List Ignoring constraint checks
+getHsExprTypeAsTypeDataList :: (HasPluginOpts a) => Type -> [TypeData]
+getHsExprTypeAsTypeDataList = getHsExprTypeAsTypeDataListWithConstraintCheck True
+
+-- Get Qualified Types as List
+getHsExprTypeAsTypeDataListKeepConstraints :: (HasPluginOpts a) => Type -> [TypeData]
+getHsExprTypeAsTypeDataListKeepConstraints = getHsExprTypeAsTypeDataListWithConstraintCheck False
 
 parseParenData :: String -> ([TypeData], String)
 parseParenData [] = ([], [])
@@ -338,35 +372,6 @@ matchFnSignatures exprSig ruleSig =
 getVarName :: IdP GhcTc -> String
 getVarName var = occNameString . occName $ var
 
-#if __GLASGOW_HASKELL__ >= 900
-type family PassMonad (p :: Pass) a
-type instance PassMonad 'Parsed a = Hsc a
-type instance PassMonad 'Renamed a = TcRn a
-type instance PassMonad 'Typechecked a = TcM a
-#else
-data MyGhcPass (p :: Pass) where
-  GhcPs :: MyGhcPass 'Parsed 
-  GhcRn :: MyGhcPass 'Renamed
-  GhcTc :: MyGhcPass 'Typechecked
-
-class IsPass (p :: Pass) where
-  ghcPass :: MyGhcPass p
-
-instance IsPass 'Parsed where
-  ghcPass = GhcPs
-
-instance IsPass 'Renamed where
-  ghcPass = GhcRn
-
-instance IsPass 'Typechecked where
-  ghcPass = GhcTc
-
-type family PassMonad (p :: Pass) a
-type instance PassMonad 'Parsed a = Hsc a
-type instance PassMonad 'Renamed a = TcRn a
-type instance PassMonad 'Typechecked a = TcM a
-#endif
-
 -- Generic function to get type for a LHsExpr (GhcPass p) at any compilation phase p
 getHsExprTypeGeneric :: forall p m. (IsPass p) => Bool -> LHsExpr (GhcPass p) -> PassMonad p (Maybe Type)
 getHsExprTypeGeneric logTypeDebugging expr = case ghcPass @p of
@@ -388,3 +393,74 @@ getHsExprTypeGeneric logTypeDebugging expr = case ghcPass @p of
 
 parseAsListOrString :: Value -> Parser [String]
 parseAsListOrString v = parseJSON v <|> fmap (:[]) (parseJSON v)
+
+-- Get Var for the data constructor
+conLikeWrapId :: ConLike -> Maybe Var
+conLikeWrapId (RealDataCon dc) = Just (dataConWrapId dc)
+conLikeWrapId _ = Nothing
+
+-- TODO: Verify the correctness of this function
+-- Get Pattern Match as SimpleTcExpr 
+trfPatToSimpleTcExpr :: Pat GhcTc -> SimpleTcExpr
+trfPatToSimpleTcExpr pat = case pat of
+  VarPat _ (L _ var)           -> SimpleVar var
+  LazyPat _ (L _ lPat)         -> trfPatToSimpleTcExpr lPat
+  AsPat _ (L _ var) (L _ sPat) -> SimpleAliasPat (SimpleVar var) (trfPatToSimpleTcExpr sPat)
+  ParPat _ (L _ sPat)          -> trfPatToSimpleTcExpr sPat
+  BangPat _ (L _ sPat)         -> trfPatToSimpleTcExpr sPat
+  SigPat _ (L _ sPat) _        -> trfPatToSimpleTcExpr sPat
+  ListPat _ lPatList           -> SimpleList (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
+  TuplePat _ lPatList _        -> SimpleTuple (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
+  LitPat _ lit                 -> SimpleLit lit
+  NPat _ (L _ (OverLit{ol_val = overloadedLit})) _ _ -> SimpleOverloadedLit overloadedLit
+#if __GLASGOW_HASKELL__ >= 900
+  ConPat _ (L _ con) (PrefixCon [] lPatList) -> SimpleDataCon (conLikeWrapId con) (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
+#else
+  ConPatIn (L _ con) (PrefixCon lPatList)            -> SimpleDataCon (Just con) (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
+  ConPatOut (L _ con) _ _ _ _ (PrefixCon lPatList) _ -> SimpleDataCon (conLikeWrapId con) (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
+#endif
+  _                            -> SimpleUnhandledTcExpr
+
+-- TODO: Verify the correctness of this function
+-- Get LHsExpr as SimpleTcExpr
+trfLHsExprToSimpleTcExpr :: LHsExpr GhcTc -> SimpleTcExpr
+trfLHsExprToSimpleTcExpr (L loc hsExpr) = case hsExpr of
+  HsVar _ (L _ var)            -> SimpleVar var
+  HsConLikeOut _ cl            -> SimpleDataCon (conLikeWrapId cl) []
+  HsLit _ lit                  -> SimpleLit lit
+  HsPar _ expr                 -> trfLHsExprToSimpleTcExpr expr
+  HsAppType _ expr _           -> trfLHsExprToSimpleTcExpr expr
+  PatHsWrap _ expr             -> trfLHsExprToSimpleTcExpr (L loc expr)
+  ExplicitTuple _ ls _         -> SimpleTuple (fmap trfTupleArg ls)
+  PatExplicitList _ ls         -> SimpleList (fmap trfLHsExprToSimpleTcExpr ls)
+  ExprWithTySig _ expr _       -> trfLHsExprToSimpleTcExpr expr
+#if __GLASGOW_HASKELL__ >= 900
+  PatHsExpansion _ expanded    -> trfLHsExprToSimpleTcExpr (L loc expanded)
+#endif
+  HsOverLit _ (OverLit{ol_val = overloadedLit}) -> SimpleOverloadedLit overloadedLit
+  HsApp _ (L _ (HsConLikeOut _ cl)) funr -> SimpleDataCon (conLikeWrapId cl) [trfLHsExprToSimpleTcExpr funr]
+  HsApp _ funl funr -> 
+    case trfLHsExprToSimpleTcExpr funl of
+      SimpleDataCon mbVar ls -> SimpleDataCon mbVar (ls ++ [trfLHsExprToSimpleTcExpr funr])
+      _ -> SimpleUnhandledTcExpr
+  _                            -> SimpleUnhandledTcExpr
+  where
+#if __GLASGOW_HASKELL__ >= 900
+    trfTupleArg :: HsTupArg GhcTc -> SimpleTcExpr
+    trfTupleArg hsTupleArg = case hsTupleArg of
+      Present _ lhsExpr -> trfLHsExprToSimpleTcExpr lhsExpr
+      _                 -> SimpleUnhandledTcExpr
+#else
+    trfTupleArg :: LHsTupArg GhcTc -> SimpleTcExpr
+    trfTupleArg (L _ hsTupleArg) = case hsTupleArg of
+      Present _ lhsExpr -> trfLHsExprToSimpleTcExpr lhsExpr
+      _                 -> SimpleUnhandledTcExpr
+#endif
+
+instance StrictEq SimpleTcExpr where
+  (===) (SimpleFnNameVar var1 ty1) (SimpleFnNameVar var2 ty2) = 
+    -- trace (if "sameName" `isInfixOf` getVarName var1; then show (getNameAndModuleNameWithNMV (varName var1)) <> " ::: " <> show (getNameAndModuleNameWithNMV (varName var2)); else "") $
+    (getNameAndModuleNameWithNMV (varName var1) == getNameAndModuleNameWithNMV (varName var2)) && -- match name unique and module name
+    (getVarName var1 == getVarName var2) &&  -- match function name (can be avoided)
+    (getHsExprTypeAsTypeDataList ty1 == getHsExprTypeAsTypeDataList ty2) -- Match types for instances resolution
+  (===) var1                       var2                       = (var1 == var2)
