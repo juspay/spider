@@ -5,3 +5,4 @@ packages:
   ./paymentFlow
   ./api-contract
   ./dc
+  ./variable-trace
