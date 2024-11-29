@@ -205,7 +205,7 @@ shouldLog = readBool $ unsafePerformIO $ lookupEnv "ENABLE_LOGS"
     readBool _ = False
 
 websocketPort :: Int
-websocketPort = maybe 8000 (fromMaybe 8000 . readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
+websocketPort = maybe 9898 (fromMaybe 9898 . readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
 
 websocketHost :: String
 websocketHost = fromMaybe "localhost" $ unsafePerformIO $ lookupEnv "SERVER_HOST"
