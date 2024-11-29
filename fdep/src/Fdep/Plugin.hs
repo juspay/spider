@@ -285,7 +285,7 @@ getDecls' x = case x of
     getInstDecl _ = mempty
 
 shouldForkPerFile :: Bool
-shouldForkPerFile = False--readBool $ unsafePerformIO $ lookupEnv "SHOULD_FORK"
+shouldForkPerFile = readBool $ unsafePerformIO $ lookupEnv "SHOULD_FORK"
   where
     readBool :: (Maybe String) -> Bool
     readBool (Just "true") = True
@@ -302,7 +302,7 @@ shouldGenerateFdep = readBool $ unsafePerformIO $ lookupEnv "GENERATE_FDEP"
     readBool :: (Maybe String) -> Bool
     readBool (Just "true") = True
     readBool (Just "True") = True
-    readBool (Just "TRUE") = True
+    readBool (Just "TRUE") = True   
     readBool (Just "False") = False
     readBool (Just "false") = False
     readBool (Just "FALSE") = False
