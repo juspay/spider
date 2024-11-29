@@ -12,7 +12,7 @@
     references.url = "github:eswar2001/references/120ae7826a7af01a527817952ad0c3f5ef08efd0";
     beam.url = "github:juspay/beam/c4f86057db76640245c3d1fde040176c53e9b9a3";
     beam.flake = false;
-    large-records.url = "github:eswar2001/large-records/b60bcb312c7d55f1d638aa1a5143696e6586e76d";
+    large-records.url = "github:eswar2001/large-records/ghc928-qualified-prelude";
     large-records.inputs.beam.follows = "beam";
 
     # ghc 8.10.7 packages
@@ -98,6 +98,8 @@
             streamly-core.source = inputs.streamly + /core;
           };
           settings = {
+            servant.jailbreak = true;
+            servant-server.jailbreak = true;
             #  aeson = {
             #    check = false;
             #  };
@@ -110,6 +112,7 @@
             #     jailbreak = true;
             # };
             sheriff.check = false;
+            http2.check = false;
           };
 
           devShell = {

@@ -14,8 +14,8 @@ import GHC
 import GHC.Driver.Plugins (Plugin(..),CommandLineOption,defaultPlugin,PluginRecompile(..))
 import GHC as GhcPlugins
 import GHC.Core.DataCon as GhcPlugins
-import GHC.Core.TyCo.Rep
 import GHC.Core.TyCon as GhcPlugins
+import GHC.Core.TyCo.Rep
 import GHC.Driver.Env
 import GHC.Tc.Types
 import GHC.Unit.Module.ModSummary
@@ -285,7 +285,9 @@ buildCfgPass opts guts = do
         createDirectoryIfMissing True ((intercalate "/" . init . splitOn "/") moduleLoc)
         removeIfExists (moduleLoc Prelude.<> ".fieldUsage.json")
         l <- toList $ mapM (liftIO . toLBind) (fromList binds)
-        DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ groupByFunction $ Prelude.concat l)
+        res <- pure $ Prelude.filter (\(x,y) -> (Prelude.not $ Prelude.null y) && (Prelude.not $ ("$$" :: Text) `T.isInfixOf` x)) $ groupByFunction $ Prelude.concat l
+        when (Prelude.not $ Prelude.null res) $
+            DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ res)
     return guts
 
 getAllTypeManipulations :: [LHsBindLR GhcTc GhcTc] -> IO [DataTypeUC]
@@ -424,38 +426,38 @@ processHasField functionName (Var x) (Var hasField) = do
             let y = map (\(zz) -> (pack $ showSDocUnsafe $ ppr zz, pack $ extractVarFromType zz)) z
             if length y == 4
                 then
-                    pure $
-                        res
-                            <> [
-                                   ( functionName
-                                   ,
-                                       [ FieldUsage
-                                            (T.strip $ fst $ y Prelude.!! 2)
-                                            (T.strip $ fst $ y Prelude.!! 1)
-                                            (T.strip $ fst $ y Prelude.!! 3)
-                                            (T.strip $ snd $ y Prelude.!! 2)
-                                            lensString
-                                       ]
-                                   )
-                               ]
-                else
-                    if length y == 3
-                        then
                             pure $
                                 res
                                     <> [
-                                           ( functionName
-                                           ,
-                                               [ FieldUsage
-                                                    (T.strip $ fst $ y Prelude.!! 1)
-                                                    (T.strip $ fst $ y Prelude.!! 0)
+                                        ( functionName
+                                        ,
+                                            [ FieldUsage
                                                     (T.strip $ fst $ y Prelude.!! 2)
-                                                    (T.strip $ snd $ y Prelude.!! 1)
+                                                    (T.strip $ fst $ y Prelude.!! 1)
+                                                    (T.strip $ fst $ y Prelude.!! 3)
+                                                    (T.strip $ snd $ y Prelude.!! 2)
                                                     lensString
-                                               ]
-                                           )
-                                       ]
-                        else do
+                                            ]
+                                        )
+                                    ]
+                else
+                    if length y == 3
+                        then
+                                    pure $
+                                        res
+                                            <> [
+                                                ( functionName
+                                                ,
+                                                    [ FieldUsage
+                                                            (T.strip $ fst $ y Prelude.!! 1)
+                                                            (T.strip $ fst $ y Prelude.!! 0)
+                                                            (T.strip $ fst $ y Prelude.!! 2)
+                                                            (T.strip $ snd $ y Prelude.!! 1)
+                                                            lensString
+                                                    ]
+                                                )
+                                            ]
+                                else do
                             pure res
 #if __GLASGOW_HASKELL__ >= 900
         (FunTy _ _ a _) -> do
@@ -609,15 +611,26 @@ processHasField functionName x (Var hasField) = do
                     pure res
 
 groupByFunction :: [(Text, [FieldUsage])] -> [(Text, [FieldUsage])]
-groupByFunction = map mergeGroups . groupBy ((==) `on` fst) . sortBy (compare `on` fst)
+groupByFunction = filter' . map mergeGroups . groupBy ((==) `on` fst) . sortBy (compare `on` fst)
   where
     mergeGroups :: [(Text, [FieldUsage])] -> (Text, [FieldUsage])
     mergeGroups xs = (fst (Prelude.head xs), concatMap snd xs)
 
+primitivePackages = ["aeson","aeson-better-errors","aeson-casing","aeson-diff","aeson-pretty","amazonka","amazonka-kms","async","attoparsec","authenticate-oauth","base","base16","base16-bytestring","base64-bytestring","basement","beam-core","beam-mysql","binary","blaze-builder","byteable","bytestring","case-insensitive","cassava","cipher-aes","containers","country","cryptohash","cryptonite","cryptonite-openssl","cryptostore","currency-codes","data-default","digest","dns","double-conversion","errors","extra","generic-arbitrary","generic-random","hedis","HsOpenSSL","HTTP","http-api-data","http-client","http-client-tls","http-media","http-types","iso8601-time","jose-jwt","json","jwt","lucid","memory","mtl","mysql","neat-interpolation","network-uri","newtype-generics","optics-core","QuickCheck","quickcheck-text","random","record-dot-preprocessor","record-hasfield","reflection","regex-compat","regex-pcre","regex-pcre","relude","resource-pool","RSA","safe","safe-exceptions","scientific","sequelize","servant","servant-client","servant-client-core","servant-server","split","streamly-core","streamly-serialize-instances","string-conversions","tagsoup","text","time","transformers","unix","unix-time","unordered-containers","utf8-string","uuid","vector","wai","wai-extra","warp","x509","x509-store","xeno","xml-conduit","xmlbf","xmlbf-xeno","ghc-prim","reflection","time","base","servant-client-core","reflection","servant-server","http-types","containers","unordered-containers"]
+
+filter' :: [(Text, [FieldUsage])] -> [(Text, [FieldUsage])]
+filter' [] = []
+filter' li =
+    map (\(funName,fieldsList) ->
+            (funName,Prelude.filter (\(FieldUsage typeName fieldName fieldType typeSrcLoc beautifiedCode) ->
+                (Prelude.not (Prelude.any (\x -> x `T.isInfixOf` typeSrcLoc) primitivePackages) && (typeName /= fieldName) && (fieldName /= fieldType))
+                ) fieldsList)
+        ) li
+
 toLBind :: CoreBind -> IO [(Text, [FieldUsage])]
 toLBind (NonRec binder expr) = do
     res <- toLexpr (pack $ nameStableString $ idName binder) expr
-    pure $ groupByFunction res
+    pure $ filter' $ groupByFunction res
 toLBind (Rec binds) = do
     r <-
         toList $
@@ -626,7 +639,7 @@ toLBind (Rec binds) = do
                         toLexpr (pack $ nameStableString (idName b)) e
                     )
                     (fromList binds)
-    pure $ groupByFunction $ Prelude.concat r
+    pure $ filter' $ groupByFunction $ Prelude.concat r
 
 processFieldExtraction :: Text -> Var -> Var -> Text -> IO [(Text, [FieldUsage])]
 processFieldExtraction functionName _field _type b = do
