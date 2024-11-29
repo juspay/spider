@@ -79,4 +79,5 @@ test-suite fdep-test
     build-depends:
         fdep
         , text
+        , record-hasfield
     ghc-options: -fplugin=Fdep.Plugin -fplugin-opt Fdep.Plugin:./tmp/fdep/
