@@ -1,7 +1,7 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE NamedFieldPuns,PartialTypeSignatures #-}
 {-# LANGUAGE CPP #-}
 
 module Fdep.Plugin (plugin,collectDecls) where
@@ -58,6 +58,8 @@ import GHC.Hs.Expr
 import Language.Haskell.Syntax.Pat
 import GHC.Data.FastString (unpackFS)
 #else
+import GhcMake
+import DataCon
 import qualified Data.HashMap.Strict as HM
 import Bag (bagToList)
 import DynFlags ()
@@ -70,9 +72,10 @@ import GHC.Hs.Binds
       HsLocalBindsLR(HsValBinds),
       NHsValBindsLR(NValBinds),
       PatSynBind(XPatSynBind, PSB, psb_def) )
+import BasicTypes
 import GHC.Hs.Decls
     ( HsDecl(SigD, TyClD, InstD, DerivD, ValD), LHsDecl )
-import GhcPlugins (unpackFS,RdrName (Exact, Orig, Qual, Unqual),HsParsedModule, Hsc, Plugin (..), PluginRecompile (..), Var (..), getOccString, hpm_module, ppr, showSDocUnsafe)
+import GhcPlugins (rdrNameOcc,occNameString,unpackFS,RdrName (Exact, Orig, Qual, Unqual),HsParsedModule, Hsc, Plugin (..), PluginRecompile (..), Var (..), getOccString, hpm_module, ppr, showSDocUnsafe)
 import HscTypes (ModSummary (..),msHsFilePath)
 import Name (nameStableString)
 import Outputable ()
@@ -173,9 +176,13 @@ fromGHCImportDecl :: ImportDecl GhcPs -> [SimpleImportDecl]
 fromGHCImportDecl ImportDecl{..} = [SimpleImportDecl {
     moduleName' = moduleNameToText (unLoc ideclName),
     packageName = fmap stringLiteralToText ideclPkgQual,
+#if __GLASGOW_HASKELL__ >= 900
     isBootSource = case ideclSource of
-        IsBoot -> True
-        NotBoot -> False,
+            IsBoot -> True
+            NotBoot -> False,
+#else
+    isBootSource = ideclSource,
+#endif
     isSafe = ideclSafe,
     qualifiedStyle = convertQualifiedStyle ideclQualified,
     isImplicit = ideclImplicit,
@@ -203,19 +210,29 @@ convertQualifiedStyle GHC.NotQualified     = Fdep.Types.NotQualified
 convertQualifiedStyle QualifiedPre     = Fdep.Types.Qualified
 convertQualifiedStyle QualifiedPost    = Fdep.Types.Qualified
 
-convertLIEsToText :: (GenLocated (Anno [GenLocated l (IE GhcPs)]) [GenLocated l (IE GhcPs)]) -> [T.Text]
-convertLIEsToText lies = concatMap (ieNameToText . unLoc) (unXRec @(GhcPs) lies)
+-- (GenLocated (Anno [GenLocated l (IE GhcPs)]) [GenLocated l (IE GhcPs)])
+convertLIEsToText :: _ -> [T.Text]
+convertLIEsToText lies = 
+#if __GLASGOW_HASKELL__ >= 900
+    concatMap (ieNameToText . unLoc) (unXRec @(GhcPs) lies)
+#else
+    concatMap (ieNameToText . unLoc) (unLoc lies)
+#endif
   where
     ieNameToText :: IE GhcPs -> [T.Text]
     ieNameToText x = map rdrNameToText $ ieNames x
 
     rdrNameToText = T.pack . occNameString . rdrNameOcc
 
-    getModuleName x@(IEVar _ name) = rdrNameToText $ ieName x 
-    getModuleName x@(IEThingAbs _ name) = rdrNameToText $ ieName x 
-    getModuleName x@(IEThingAll _ name) = rdrNameToText $ ieName x 
-    getModuleName x@(IEThingWith _ name _ withs) = rdrNameToText $ ieName x 
-    getModuleName _ = ""
+--     getModuleName x@(IEVar _ name) = rdrNameToText $ ieName x 
+--     getModuleName x@(IEThingAbs _ name) = rdrNameToText $ ieName x 
+--     getModuleName x@(IEThingAll _ name) = rdrNameToText $ ieName x 
+-- #if __GLASGOW_HASKELL__ >= 900
+--     getModuleName x@(IEThingWith _ name _ withs) = rdrNameToText $ ieName x 
+-- #else
+--     getModuleName x@(IEThingWith _ name _ withs) = rdrNameToText $ ieName x 
+-- #endif
+--     getModuleName _ = ""
 
 processDecls :: [LHsDecl GhcPs] -> IO ([(Text, PFunction)], [PType], [PClass], [PInstance])
 processDecls decls = do
@@ -254,13 +271,21 @@ getDecls' x = case x of
         [PType 
             (T.pack $ showSDocUnsafe $ ppr name)
             (T.pack $ showSDocUnsafe $ ppr decl)
+#if __GLASGOW_HASKELL__ >= 900
             (T.pack ((showSDocUnsafe . ppr) $ locA l))
+#else
+            (T.pack ((showSDocUnsafe . ppr) $ l))
+#endif
         ]
     getTypeDecl decl@SynDecl{tcdLName = L l name} =
         [PType
             (T.pack $ showSDocUnsafe $ ppr name)
             (T.pack $ showSDocUnsafe $ ppr decl)
+#if __GLASGOW_HASKELL__ >= 900
             (T.pack ((showSDocUnsafe . ppr) $ locA l))
+#else
+            (T.pack ((showSDocUnsafe . ppr) $ l))
+#endif
         ]
     getTypeDecl _ = mempty
 
@@ -270,7 +295,11 @@ getDecls' x = case x of
         [PClass
             (T.pack $ showSDocUnsafe $ ppr name)
             (T.pack $ showSDocUnsafe $ ppr decl)
+#if __GLASGOW_HASKELL__ >= 900
             (T.pack ((showSDocUnsafe . ppr) $ locA l))
+#else
+            (T.pack ((showSDocUnsafe . ppr) l))
+#endif
         ]
     getClassDecl _ = mempty
 
@@ -426,11 +455,13 @@ loopOverLHsBindLR con mParentName path (L location bind) = do
                 fName = (maybe (T.pack "::") (T.pack . nameStableString . getName) $ (headMaybe ids))
 #if __GLASGOW_HASKELL__ >= 900
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) $ locA location)))
-#else
-            name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) location)))
-#endif
             when True $ do--(not $ "$$" `T.isInfixOf` name) $
                 mapM_ (processExpr name path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail ids))
+#else
+            name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) location)))
+            when True $ do--(not $ "$$" `T.isInfixOf` name) $
+                mapM_ (processExpr name path) (stmts <> map (\v -> noLoc $ HsVar noExtField v) (tail ids))
+#endif
     where
         processMatch :: Text -> Text -> LMatch GhcTc (LHsExpr GhcTc) -> IO ()
         processMatch keyFunction path (L _ match) = do
@@ -636,7 +667,7 @@ loopOverLHsBindLR con mParentName path (L location bind) = do
         getDataTypeDetails keyFunction path (L _ (RecordCon _ (iD) rcon_flds)) = 
             (extractRecordBinds keyFunction path (T.pack $ nameStableString $ getName (GHC.unXRec @(GhcTc) iD)) (rcon_flds))
 #else
-        getDataTypeDetails keyFunction path (L _ (RecordCon _ (iD) rcon_flds)) = (extractRecordBinds keyFunction path (T.pack $ nameStableString $ getName (GHC.unXRec @(GhcTc) iD)) (rcon_flds))
+        getDataTypeDetails keyFunction path (L _ (RecordCon _ (iD) rcon_flds)) = (extractRecordBinds keyFunction path (T.pack $ nameStableString $ getName (GHC.unLoc iD)) (rcon_flds))
 #endif
         getDataTypeDetails keyFunction path y@(L _ (RecordUpd x@(RecordUpdTc rupd_cons rupd_in_tys rupd_out_tys rupd_wrap) rupd_expr rupd_flds)) = do
             let names = (x ^? biplateRef :: [DataCon])
@@ -717,15 +748,15 @@ loopOverLHsBindLR con mParentName path (L location bind) = do
             sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
         processHsFieldLabel keyFunction path (L _ (XHsFieldLabel _)) = pure ()
 #else
-        getFieldUpdates :: Text -> Text -> Text -> [LHsRecUpdField GhcTc]-> IO ()
-        getFieldUpdates keyFunction path type_ fields = mapM_ extractField fields
+        getFieldUpdates :: _ -> Text -> Text -> Text -> [LHsRecUpdField GhcTc]-> IO ()
+        getFieldUpdates y keyFunction path type_ fields = mapM_ extractField fields
             where
-            extractField :: LHsRecUpdField GhcTc -> FieldRep
-            extractField (L _ (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun})) =do
+            extractField :: LHsRecUpdField GhcTc -> IO ()
+            extractField (L l x@(HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun})) =do
                 let fieldName = (T.pack $ showSDocUnsafe $ ppr lbl)
                     fieldType = (T.pack $ inferFieldTypeAFieldOcc lbl)
                 processExpr keyFunction path expr
-                expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_fieldName$" <> fieldName), (Just $ T.pack $ getLocTC' $ y), (Just $ fieldType), mempty)
+                expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_fieldName$" <> fieldName), (Just $ T.pack $ getLocTC' y), (Just $ fieldType), mempty)
                 sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
 #endif
 
@@ -734,11 +765,11 @@ loopOverLHsBindLR con mParentName path (L location bind) = do
             mapM_ extractField fields
             where
             extractField :: LHsRecField GhcTc (LHsExpr GhcTc) -> IO ()
-            extractField y@(L _ x@(HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun})) = do
+            extractField (L l x@(HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun})) = do
                 let fieldName = (T.pack $ showSDocUnsafe $ ppr lbl)
                     fieldType = (T.pack $ inferFieldTypeFieldOcc lbl)
                 processExpr keyFunction path expr
-                expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_fieldName$" <> fieldName), (Just $ T.pack $ getLocTC' $ y), (Just $ fieldType), mempty)
+                expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_fieldName$" <> fieldName), (Just $ T.pack $ showSDocUnsafe $ ppr $ l), (Just $ fieldType), mempty)
                 sendTextData' con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
 
 #if __GLASGOW_HASKELL__ > 900
