@@ -78,6 +78,6 @@ test-suite fdep-test
     main-is:          Main.hs
     build-depends:
         fdep
-        , text
         , record-hasfield
-    ghc-options: -fplugin=Fdep.Plugin -fplugin-opt Fdep.Plugin:./tmp/fdep/
+        , text
+    ghc-options: -fplugin=Fdep.Plugin -fplugin-opt Fdep.Plugin:{"path":"./tmp/fdep/","port":9898,"host":"localhost","log":true}

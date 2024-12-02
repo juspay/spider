@@ -6,6 +6,13 @@ import Data.Text
 import Data.Binary
 import Control.DeepSeq
 
+data CliOptions = CliOptions {
+    path :: FilePath,
+    port :: Int,
+    host :: String,
+    log :: Bool
+} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
 data FunctionInfo = FunctionInfo
   { package_name :: Text
   , module_name :: Text
