@@ -102,7 +102,7 @@ test-suite endpoints-test
 
     -- Test dependencies.
     build-depends:
-        base ^>=4.16.4.0
+        base
         , endpoints
         , servant
         , servant-server

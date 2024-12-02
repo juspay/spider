@@ -6,6 +6,13 @@ import Data.Text
 import Data.Binary
 import Control.DeepSeq
 
+data CliOptions = CliOptions {
+    path :: FilePath,
+    port :: Int,
+    host :: String,
+    log :: Bool
+} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
 data FunctionInfo = FunctionInfo
   { package_name :: Text
   , module_name :: Text
@@ -35,3 +42,44 @@ data PFunction = PFunction {
     , parser_src_loc :: Text
 }
     deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+data PType = PType {
+    typeName :: Text,
+    typeDefinition :: Text,
+    typeLocation :: Text
+} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+data PClass = PClass {
+    className :: Text,
+    classDefinition :: Text,
+    classLocation :: Text
+} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+data PInstance = PInstance {
+    instanceType :: Text,
+    instanceDefinition :: Text,
+    instanceLocation :: Text
+} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+
+data QualifiedStyle = 
+    NotQualified 
+  | Qualified 
+  | QualifiedWith Text
+  deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+data HidingSpec = HidingSpec {
+    isHiding :: Bool,
+    names :: [Text]
+} deriving (Show, Eq, Generic,ToJSON,FromJSON)
+
+data SimpleImportDecl = SimpleImportDecl {
+    moduleName'      :: Text,          -- ^ Module being imported
+    packageName     :: Maybe Text,    -- ^ Optional package qualifier
+    isBootSource    :: Bool,            -- ^ Whether this is a SOURCE import
+    isSafe         :: Bool,            -- ^ Whether this is a safe import
+    qualifiedStyle  :: QualifiedStyle,  -- ^ How the import is qualified
+    isImplicit     :: Bool,            -- ^ Whether this is an implicit import
+    asModuleName   :: Maybe Text,    -- ^ Optional module rename
+    hidingSpec     :: Maybe HidingSpec  -- ^ Optional hiding specification
+} deriving (Show, Eq, Generic,ToJSON,FromJSON)

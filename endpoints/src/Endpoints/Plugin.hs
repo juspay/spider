@@ -53,7 +53,6 @@ import GHC.IO (unsafePerformIO)
 import qualified Data.Aeson.Key as Key
 import Control.Reference (biplateRef, (^?))
 import Data.Generics.Uniplate.Data ()
-#endif
 
 plugin :: Plugin
 plugin =
@@ -347,3 +346,4 @@ parseApiType ty = do
 isTyConApp :: Type -> Bool
 isTyConApp (TyConApp _ _) = True
 isTyConApp _              = False
+#endif
