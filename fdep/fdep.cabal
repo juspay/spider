@@ -80,4 +80,4 @@ test-suite fdep-test
         fdep
         , record-hasfield
         , text
-    ghc-options: -fplugin=Fdep.Plugin -fplugin-opt Fdep.Plugin:{"path":"./tmp/fdep/","port":9898,"host":"localhost","log":true}
+    ghc-options: -fplugin=Fdep.Plugin -fplugin-opt Fdep.Plugin:{"path":"./tmp/fdep/","port":9988,"host":"localhost","log":true}
