@@ -2,7 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NamedFieldPuns,PartialTypeSignatures #-}
-{-# OPTIONS_GHC -Werror=incomplete-patterns #-}
+{-# OPTIONS_GHC -Werror=unused-imports -Werror=incomplete-patterns -Werror=name-shadowing #-}
 {-# LANGUAGE CPP #-}
 
 module Fdep.Plugin (plugin,collectDecls) where
@@ -23,10 +23,10 @@ import Data.Data (toConstr)
 import Data.Generics.Uniplate.Data ()
 import Data.List.Extra (splitOn)
 import qualified Data.Map as Map
-import Data.Maybe (fromJust, fromMaybe, isJust)
+import Data.Maybe
 import Data.Text (Text)
 import qualified Data.Text as T
-import qualified Data.ByteString.Lazy as BSL
+-- import qualified Data.ByteString.Lazy as BSL
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Time ( diffUTCTime, getCurrentTime )
 import Fdep.Types
@@ -55,9 +55,9 @@ import GHC.Data.Bag (bagToList)
 import GHC.Types.Name hiding (varName)
 import GHC.Types.Var
 import qualified Data.Aeson.KeyMap as HM
-import GHC.Hs.Expr
-import Language.Haskell.Syntax.Pat
-import GHC.Data.FastString (unpackFS)
+-- import GHC.Hs.Expr
+-- import Language.Haskell.Syntax.Pat
+-- import GHC.Data.FastString (unpackFS)
 #else
 import GhcMake
 import DataCon
@@ -370,7 +370,7 @@ decodeBlacklistedFunctions = do
 
 sendTextData' :: CliOptions -> WS.Connection -> Text -> Text -> IO ()
 sendTextData' cliOptions conn path data_ = do
-    t1 <- getCurrentTime
+    -- t1 <- getCurrentTime
     res <- try $ WS.sendTextData conn data_
     case res of
         Left (err :: SomeException) -> do
@@ -383,6 +383,7 @@ sendTextData' cliOptions conn path data_ = do
 
 -- default options
 -- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
+defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions {path="/tmp/fdep/",port=9898,host="localhost",log=False}
 
 
@@ -425,17 +426,21 @@ transformFromNameStableString (_,_,_,_) = Nothing
 
 headMaybe :: [a] -> Maybe a
 headMaybe [] = Nothing
-headMaybe (x:xs) = Just x
+headMaybe (x:_) = Just x
+
+tail' [] = []
+tail' [x] = []
+tail' (x:xs) = xs
 
 loopOverLHsBindLR :: CliOptions -> WS.Connection -> (Maybe Text) -> Text -> LHsBindLR GhcTc GhcTc -> IO ()
 loopOverLHsBindLR cliOptions con mParentName path (L _ AbsBinds{abs_binds = binds}) =
     mapM_ (loopOverLHsBindLR cliOptions con mParentName path) $ bagToList binds
-loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
+loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
     case bind of
 #if __GLASGOW_HASKELL__ >= 900
-        x@(FunBind fun_ext id matches _) -> do
+        (FunBind _ id matches _) -> do
 #else
-        x@(FunBind fun_ext id matches _ _) -> do
+        (FunBind _ id matches _ _) -> do
 #endif
             funName <- pure $ T.pack $ getOccString $ unLoc id
             fName <- pure $ T.pack $ nameStableString $ getName id
@@ -453,9 +458,9 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
                     nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
                     data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
                     t1 <- getCurrentTime
-                    sendTextData' cliOptions con path data_
+                    sendTextData' cliOptions con _path data_
                     mapM_ (\x -> do
-                                eres :: Either SomeException () <- try $ processMatch (nestedNameWithParent) path x
+                                eres :: Either SomeException () <- try $ processMatch (nestedNameWithParent) _path x
                                 case eres of
                                     Left err -> appendFile "error.log" (show (err,funName) <> "\n")
                                     Right _ -> pure ()
@@ -471,7 +476,7 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) location)))
 #endif
             when True $ do--(not $ "$$" `T.isInfixOf` name) $
-                mapM_ (processExpr (name) path) (stmts)
+                mapM_ (processExpr (name) _path) (stmts)
         (PatBind{pat_lhs = pat, pat_rhs = expr}) -> do
             let stmts = (expr ^? biplateRef :: [LHsExpr GhcTc])
                 ids = (pat ^? biplateRef :: [LIdP GhcTc])
@@ -479,11 +484,11 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
 #if __GLASGOW_HASKELL__ >= 900
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) $ locA location)))
             when True $ do--(not $ "$$" `T.isInfixOf` name) $
-                mapM_ (processExpr name path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail ids))
+                mapM_ (processExpr name _path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail' ids))
 #else
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) location)))
             when True $ do--(not $ "$$" `T.isInfixOf` name) $
-                mapM_ (processExpr name path) (stmts <> map (\v -> noLoc $ HsVar noExtField v) (tail ids))
+                mapM_ (processExpr name _path) (stmts <> map (\v -> noLoc $ HsVar noExtField v) (tail' ids))
 #endif
         _ -> pure ()
     where
@@ -696,14 +701,14 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
         getDataTypeDetails keyFunction path y@(L _ (RecordUpd x@(RecordUpdTc rupd_cons rupd_in_tys rupd_out_tys rupd_wrap) rupd_expr rupd_flds)) = do
             let names = (x ^? biplateRef :: [DataCon])
                 types = (x ^? biplateRef :: [Type])
-            mapM_ (\x -> do
-                let name = T.pack $ nameStableString $ dataConName $ x
-                    _type = T.pack $ showSDocUnsafe $ ppr $ dataConRepType x
+            mapM_ (\xx -> do
+                let name = T.pack $ nameStableString $ dataConName $ xx
+                    _type = T.pack $ showSDocUnsafe $ ppr $ dataConRepType xx
                 expr <- pure $ transformFromNameStableString (Just name, Just $ T.pack $ getLocTC' $ y, Just _type, mempty)
                 sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
                 ) names
-            mapM_ (\x -> do
-                expr <- pure $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr x)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr x), mempty)
+            mapM_ (\xx -> do
+                expr <- pure $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr xx)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr xx), mempty)
                 sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
                 ) types
             (getFieldUpdates y keyFunction path (T.pack $ showSDocUnsafe $ ppr rupd_expr) rupd_flds)
@@ -734,9 +739,9 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
         handleRdrName :: RdrName -> String
         handleRdrName rdrName = case rdrName of
                 Exact name -> nameStableString name  -- For exact names
-                Qual mod occ -> moduleNameString mod ++ "." ++ occNameString occ  -- For qualified names
+                Qual mod' occ -> moduleNameString mod' ++ "." ++ occNameString occ  -- For qualified names
                 Unqual occ -> occNameString occ  -- For unqualified names
-                Orig mod occ -> moduleNameString (moduleName mod) ++ "." ++ occNameString occ  -- For original names
+                Orig mod' occ -> moduleNameString (moduleName mod') ++ "." ++ occNameString occ  -- For original names
         -- handleRdrName :: RdrName -> String
         -- handleRdrName x =
         --     case x of
@@ -747,7 +752,7 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
 
 #if __GLASGOW_HASKELL__ >= 900
         getFieldUpdates :: GenLocated (SrcSpanAnn' a) e -> Text -> Text -> Text -> Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> IO ()
-        getFieldUpdates y keyFunction path type_ fields =
+        getFieldUpdates _ keyFunction path type_ fields =
             case fields of
                 Left x -> (mapM_ (extractField)) x
                 Right x -> (mapM_ (processRecordProj) x)
@@ -765,8 +770,8 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
                 let fieldName = (T.pack $ showSDocUnsafe $ ppr lbl)
                     fieldType = (T.pack $ inferFieldTypeAFieldOcc lbl)
                 processExpr keyFunction path expr
-                expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_fieldName$" <> fieldName), (Just $ T.pack $ getLocTC' $ y), (Just $ fieldType), mempty)
-                sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
+                expr' <- evaluate $ force $ transformFromNameStableString (Just $ ("$_fieldName$" <> fieldName), (Just $ T.pack $ getLocTC' $ y), (Just $ fieldType), mempty)
+                sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr')])
 
         processHsFieldLabel :: Text -> Text -> Located (HsFieldLabel GhcTc) -> IO ()
         processHsFieldLabel keyFunction path y@(L l x@(HsFieldLabel _ (L _ hflLabel))) = do
@@ -795,8 +800,8 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
                 let fieldName = (T.pack $ showSDocUnsafe $ ppr lbl)
                     fieldType = (T.pack $ inferFieldTypeFieldOcc lbl)
                 processExpr keyFunction path expr
-                expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_fieldName$" <> fieldName), (Just $ T.pack $ showSDocUnsafe $ ppr $ l), (Just $ fieldType), mempty)
-                sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
+                expr' <- evaluate $ force $ transformFromNameStableString (Just $ ("$_fieldName$" <> fieldName), (Just $ T.pack $ showSDocUnsafe $ ppr $ l), (Just $ fieldType), mempty)
+                sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr')])
 
 #if __GLASGOW_HASKELL__ > 900
 
@@ -957,7 +962,7 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
                                 sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
                             ) hsTypes
                     (extractExprsFromPat keyFunction path) p
-                ConPat {pat_args = args} -> (extractExprsFromHsConPatDetails args)
+                ConPat {pat_args = args} -> (extractExprsFromHsConPatDetails keyFunction path args)
                 ViewPat hsType expr p -> do
                     expr' <- pure $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr hsType)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr hsType), mempty)
                     sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr')])
@@ -977,14 +982,13 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
             extractExprsFromOverLit :: HsOverLit GhcTc -> IO ()
             extractExprsFromOverLit (OverLit _ _ e) = processExpr keyFunction path $ wrapXRec @(GhcTc) e
 
-            extractExprsFromHsConPatDetails :: HsConPatDetails GhcTc -> IO ()
-            extractExprsFromHsConPatDetails (PrefixCon _ args) = mapM_ (extractExprsFromPat keyFunction path) args
-            extractExprsFromHsConPatDetails x@(RecCon (HsRecFields {rec_flds = flds})) =
-                let stmtsLNoLoc = (x ^? biplateRef :: [HsExpr GhcTc])
-                in mapM_ (processExpr keyFunction path) $ map (wrapXRec @(GhcTc)) stmtsLNoLoc
-            extractExprsFromHsConPatDetails (InfixCon p1 p2) = do
-                (extractExprsFromPat keyFunction path) p1
-                (extractExprsFromPat keyFunction path) p2
+            extractExprsFromHsConPatDetails :: Text -> Text -> HsConPatDetails GhcTc -> IO ()
+            extractExprsFromHsConPatDetails keyFunction' path' (PrefixCon _ args) = mapM_ (extractExprsFromPat keyFunction' path') args
+            extractExprsFromHsConPatDetails keyFunction' path' z@(RecCon (HsRecFields {rec_flds = flds})) =
+                mapM_ (extractExprsFromPat keyFunction' path') $ hsConPatArgs z
+            extractExprsFromHsConPatDetails keyFunction' path' (InfixCon p1 p2) = do
+                (extractExprsFromPat keyFunction' path') p1
+                (extractExprsFromPat keyFunction' path') p2
 
         extractExprFromApplicativeArg :: Text -> Text -> ApplicativeArg GhcTc -> IO ()
         extractExprFromApplicativeArg keyFunction path (ApplicativeArgOne _ lpat expr _) = do 
@@ -995,8 +999,8 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
             mapM_ (extractExprsFromStmtLRHsExpr keyFunction path) (map (unLoc) exprLStmt)
             extractExprsFromPat keyFunction path lpat
 
-        extractLStmt :: Text -> Text -> GenLocated l (StmtLR GhcTc GhcTc (GenLocated SrcSpanAnnA (HsCmd GhcTc))) -> IO ()
-        extractLStmt keyFunction path (L _ smtlr) = extractExprsFromStmtLR keyFunction path smtlr
+        -- extractLStmt :: Text -> Text -> GenLocated l (StmtLR GhcTc GhcTc (GenLocated SrcSpanAnnA (HsCmd GhcTc))) -> IO ()
+        -- extractLStmt keyFunction path (L _ smtlr) = extractExprsFromStmtLR keyFunction path smtlr
 
         extractExprsFromSplice :: HsSplice GhcTc -> [LHsExpr GhcTc]
         extractExprsFromSplice (HsTypedSplice _ _ _ e) = [e]
@@ -1011,7 +1015,10 @@ loopOverLHsBindLR cliOptions con mParentName path (L location bind) = do
         processXXExpr keyFunction path (ExpansionExpr (HsExpanded _ expansionExpr)) =
             mapM_ (processExpr keyFunction path . (wrapXRec @(GhcTc))) [expansionExpr]
 
+getLocTC' :: GenLocated (SrcSpanAnn' a) e -> String
 getLocTC' = (showSDocUnsafe . ppr . la2r . getLoc)
+
+getLoc' :: GenLocated (SrcSpanAnn' a) e -> String
 getLoc'   = (showSDocUnsafe . ppr . la2r . getLoc)
 #else
 getLocTC' = (showSDocUnsafe . ppr . getLoc)
