@@ -166,29 +166,29 @@ instance Sizeable (Tree a) where
 
 main :: IO ()
 main = pure ()
---   putStrLn "What's your name?"
---   name <- getLine
---   putStrLn $ greet name
---   let person = Person name 30
---   print person
---   when (age person > 18) $
---     putStrLn "You are an adult."
---   let shapes = [Circle 5, Rectangle 3 4, Triangle 3 4 5]
---   mapM_ print shapes
---   let someShapes = [SomeShape (Circle 1), SomeShape (Rectangle 2 3)]
---   mapM_ (\(SomeShape s) -> print s) someShapes
+  -- putStrLn "What's your name?"
+  -- name <- getLine
+  -- putStrLn $ greet name
+  -- let person = Person name 30
+  -- print person
+  -- when (age person > 18) $
+  --   putStrLn "You are an adult."
+  -- let shapes = [Circle 5, Rectangle 3 4, Triangle 3 4 5]
+  -- mapM_ print shapes
+  -- let someShapes = [SomeShape (Circle 1), SomeShape (Rectangle 2 3)]
+  -- mapM_ (\(SomeShape s) -> print s) someShapes
   
---   -- Fixed safeDivide calls
---   result1 <- safeDivide 10 2
---   print result1
---   result2 <- safeDivide 10 0
---   print result2
+  -- -- Fixed safeDivide calls
+  -- result1 <- safeDivide 10 2
+  -- print result1
+  -- result2 <- safeDivide 10 0
+  -- print result2
   
---   -- Fixed createPerson call
---   print $ createPerson (Just "John") (Just 25) (Just "john@example.com")
+  -- -- Fixed createPerson call
+  -- print $ createPerson (Just "John") (Just 25) (Just "john@example.com")
   
---   let tree = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3)
---   print $ treeDepth tree
---   print $ size tree
---   print evenSquares
---   print $ cartesianProduct [1,2] ['a','b']
+  -- let tree = Node (Node (Leaf 1) (Leaf 2)) (Leaf 3)
+  -- print $ treeDepth tree
+  -- print $ size tree
+  -- print evenSquares
+  -- print $ cartesianProduct [1,2] ['a','b']

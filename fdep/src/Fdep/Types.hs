@@ -10,7 +10,8 @@ data CliOptions = CliOptions {
     path :: FilePath,
     port :: Int,
     host :: String,
-    log :: Bool
+    log :: Bool,
+    tc_funcs :: Maybe Bool
 } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
 data FunctionInfo = FunctionInfo

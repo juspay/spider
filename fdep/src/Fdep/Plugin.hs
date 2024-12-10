@@ -21,7 +21,7 @@ import Data.ByteString.Lazy (toStrict, writeFile)
 import qualified Data.ByteString.Lazy as BL
 import Data.Data (toConstr)
 import Data.Generics.Uniplate.Data ()
-import Data.List.Extra (splitOn)
+import Data.List.Extra (splitOn,nub)
 import qualified Data.Map as Map
 import Data.Maybe
 import Data.Text (Text)
@@ -40,6 +40,8 @@ import System.Directory ( createDirectoryIfMissing )
 import System.Environment (lookupEnv)
 import GHC.IO (unsafePerformIO)
 #if __GLASGOW_HASKELL__ >= 900
+import GHC.Core.TyCo.Rep
+import GHC.Core.TyCon
 import GHC.Core.DataCon
 import GHC.Hs.Pat
 import GHC.Unit.Types
@@ -93,65 +95,6 @@ plugin =
         , pluginRecompile = (\_ -> return NoForceRecompile)
         , parsedResultAction = collectDecls
         }
-
-filterList :: [Text]
-filterList =
-    [ "show"
-    , "showsPrec"
-    , "from"
-    , "to"
-    , "showList"
-    , "toConstr"
-    , "toDomResAcc"
-    , "toEncoding"
-    , "toEncodingList"
-    , "toEnum"
-    , "toForm"
-    , "toHaskellString"
-    , "toInt"
-    , "toJSON"
-    , "toJSONList"
-    , "toJSONWithOptions"
-    , "encodeJSON"
-    , "gfoldl"
-    , "ghmParser"
-    , "gmapM"
-    , "gmapMo"
-    , "gmapMp"
-    , "gmapQ"
-    , "gmapQi"
-    , "gmapQl"
-    , "gmapQr"
-    , "gmapT"
-    , "parseField"
-    , "parseJSON"
-    , "parseJSONList"
-    , "parseJSONWithOptions"
-    , "hasField"
-    , "gunfold"
-    , "getField"
-    , "_mapObjectDeep'"
-    , "_mapObjectDeep"
-    , "_mapObjectDeepForSnakeCase"
-    , "!!"
-    , "/="
-    , "<"
-    , "<="
-    , "<>"
-    , "<$"
-    , "=="
-    , ">"
-    , ">="
-    , "readsPrec"
-    , "readPrec"
-    , "toDyn"
-    , "fromDyn"
-    , "fromDynamic"
-    , "compare"
-    , "readListPrec"
-    , "toXml"
-    , "fromXml"
-    ]
 
 collectDecls :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectDecls opts modSummary hsParsedModule = do
@@ -228,16 +171,6 @@ convertLIEsToText lies =
     ieNameToText x = map rdrNameToText $ ieNames x
 
     rdrNameToText = T.pack . occNameString . rdrNameOcc
-
---     getModuleName x@(IEVar _ name) = rdrNameToText $ ieName x 
---     getModuleName x@(IEThingAbs _ name) = rdrNameToText $ ieName x 
---     getModuleName x@(IEThingAll _ name) = rdrNameToText $ ieName x 
--- #if __GLASGOW_HASKELL__ >= 900
---     getModuleName x@(IEThingWith _ name _ withs) = rdrNameToText $ ieName x 
--- #else
---     getModuleName x@(IEThingWith _ name _ withs) = rdrNameToText $ ieName x 
--- #endif
---     getModuleName _ = ""
 
 processDecls :: [LHsDecl GhcPs] -> IO ([(Text, PFunction)], [PType], [PClass], [PInstance])
 processDecls decls = do
@@ -354,19 +287,8 @@ shouldLog = readBool $ unsafePerformIO $ lookupEnv "ENABLE_LOGS"
 websocketPort :: Maybe Int
 websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
 
-
 websocketHost :: Maybe String
 websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
-
-decodeBlacklistedFunctions :: IO [Text]
-decodeBlacklistedFunctions = do
-    mBlackListedFunctions <- lookupEnv "BLACKLIST_FUNCTIONS_FDEP"
-    pure $ case mBlackListedFunctions of
-        Just val' ->
-            case A.decode $ BL.fromStrict $ encodeUtf8 (T.pack val') of
-                Just val -> filterList <> val
-                _ -> filterList
-        _ -> filterList
 
 sendTextData' :: CliOptions -> WS.Connection -> Text -> Text -> IO ()
 sendTextData' cliOptions conn path data_ = do
@@ -384,14 +306,13 @@ sendTextData' cliOptions conn path data_ = do
 -- default options
 -- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="/tmp/fdep/",port=9898,host="localhost",log=False}
-
+defaultCliOptions = CliOptions {path="/tmp/fdep/",port=9898,host="localhost",log=False,tc_funcs=Just False}
 
 fDep :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 fDep opts modSummary tcEnv = do
     let cliOptions = case opts of
                     [] ->  defaultCliOptions
-                    (local : _) -> 
+                    (local : _) ->
                                 case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
                                     Just (val :: CliOptions) -> val
                                     Nothing -> defaultCliOptions
@@ -405,11 +326,20 @@ fDep opts modSummary tcEnv = do
             createDirectoryIfMissing True path
             t1 <- getCurrentTime
             withSocketsDo $ do
-                eres <- try $ WS.runClient (fromMaybe (host cliOptions) websocketHost) (fromMaybe (port cliOptions) websocketPort) ("/" <> modulePath <> ".json") (\conn -> do mapM_ (loopOverLHsBindLR cliOptions conn Nothing (T.pack ("/" <> modulePath <> ".json"))) ((bagToList $ tcg_binds tcEnv)))
+                eres <- try $
+                    WS.runClient
+                        (fromMaybe (host cliOptions) websocketHost)
+                        (fromMaybe (port cliOptions) websocketPort)
+                        ("/" <> modulePath <> ".json")
+                        (\conn ->
+                            mapM_
+                                (loopOverLHsBindLR cliOptions conn Nothing (T.pack ("/" <> modulePath <> ".json")))
+                                (bagToList $ tcg_binds tcEnv)
+                        )
                 case eres of
-                    Left (err :: SomeException) -> do
+                    Left (err :: SomeException) ->
                         when (shouldLog || Fdep.Types.log cliOptions) $ print err
-                        appendFile "error.log" (show err <> "\n")
+                        --appendFile "error.log" (show err <> "\n")
                     Right _ -> pure ()
             t2 <- getCurrentTime
             when (shouldLog || Fdep.Types.log cliOptions) $ print ("generated dependancy for module: " <> moduleName' <> " at path: " <> path <> " total-timetaken: " <> show (diffUTCTime t2 t1))
@@ -432,10 +362,34 @@ tail' [] = []
 tail' [x] = []
 tail' (x:xs) = xs
 
+maybeBool (Just v) = v
+maybeBool _ = False
+
+processAndSendTypeDetails :: CliOptions -> WS.Connection -> Text -> Text -> [(Type)] -> IO ()
+processAndSendTypeDetails cliOptions con path keyFunction typesUsed =
+    let details = concat $ map getTypeDetails typesUsed
+        functionInfoList = nub $ map (\(name,_type) -> transformFromNameStableString ((Just $ T.pack $ name) ,Nothing ,(Just $ T.pack $ show $ toConstr _type),[])) details
+    in mapM_ (\expr -> sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])) functionInfoList
+
+getTypeDetails :: Type -> [(String,Type)]
+getTypeDetails ty = map (\x -> (nameStableString $ tyConName x,ty)) $ tyConsOfType ty
+
+tyConsOfType :: Type -> [TyCon]
+tyConsOfType ty = case ty of
+    TyConApp tc tys -> tc : concatMap tyConsOfType tys
+    AppTy t1 t2     -> tyConsOfType t1 ++ tyConsOfType t2
+    FunTy _ _ t1 t2 -> tyConsOfType t1 ++ tyConsOfType t2
+    ForAllTy _ t    -> tyConsOfType t
+    CastTy t _      -> tyConsOfType t
+    CoercionTy _    -> []
+    LitTy _         -> []
+    TyVarTy _       -> []
+
 loopOverLHsBindLR :: CliOptions -> WS.Connection -> (Maybe Text) -> Text -> LHsBindLR GhcTc GhcTc -> IO ()
 loopOverLHsBindLR cliOptions con mParentName path (L _ AbsBinds{abs_binds = binds}) =
     mapM_ (loopOverLHsBindLR cliOptions con mParentName path) $ bagToList binds
 loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
+    let typesUsed = (map varType $ (bind ^? biplateRef :: [Var])) <> (map idType $ (bind ^? biplateRef :: [Id])) <> (bind ^? biplateRef :: [Type])
     case bind of
 #if __GLASGOW_HASKELL__ >= 900
         (FunBind _ id matches _) -> do
@@ -444,25 +398,46 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
 #endif
             funName <- pure $ T.pack $ getOccString $ unLoc id
             fName <- pure $ T.pack $ nameStableString $ getName id
+#if __GLASGOW_HASKELL__ >= 900
+            name <- pure (fName <> "**" <> (T.pack (getLoc' id)))
+#else
+            name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr . getLoc) id)))
+#endif
             let matchList = mg_alts matches
-            if funName `elem` (unsafePerformIO $ decodeBlacklistedFunctions) || ("$_in$$" `T.isPrefixOf` fName)
-                then pure mempty
+            if not $ (maybeBool $ tc_funcs cliOptions)
+                then
+                    when (not $ "$$" `T.isInfixOf` name) $ do
+                        when (shouldLog || Fdep.Types.log cliOptions) $ print ("processing function: " <> fName)
+                        typeSignature <- pure $ (T.pack $ showSDocUnsafe (ppr (varType (unLoc id))))
+                        nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
+                        data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
+                        t1 <- getCurrentTime
+                        sendTextData' cliOptions con _path data_
+                        processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
+                        mapM_ (\x -> do
+                                    eres :: Either SomeException () <- try $ processMatch (nestedNameWithParent) _path x
+                                    case eres of
+                                        Left err -> do
+                                            when (shouldLog || Fdep.Types.log cliOptions) $ print (err,name)
+                                            pure ()--appendFile "error.log" (show (err,funName) <> "\n")
+                                        Right _ -> pure ()
+                                ) (unLoc matchList)
+                        t2 <- getCurrentTime
+                        when (shouldLog || Fdep.Types.log cliOptions) $ print $ "processed function: " <> fName <> " timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1)
                 else do
                     when (shouldLog || Fdep.Types.log cliOptions) $ print ("processing function: " <> fName)
-#if __GLASGOW_HASKELL__ >= 900
-                    name <- pure (fName <> "**" <> (T.pack (getLoc' id)))
-#else
-                    name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr . getLoc) id)))
-#endif
                     typeSignature <- pure $ (T.pack $ showSDocUnsafe (ppr (varType (unLoc id))))
                     nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
                     data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
                     t1 <- getCurrentTime
                     sendTextData' cliOptions con _path data_
+                    processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
                     mapM_ (\x -> do
                                 eres :: Either SomeException () <- try $ processMatch (nestedNameWithParent) _path x
                                 case eres of
-                                    Left err -> appendFile "error.log" (show (err,funName) <> "\n")
+                                    Left err -> do
+                                        when (shouldLog || Fdep.Types.log cliOptions) $ print (err,name)
+                                        pure ()--appendFile "error.log" (show (err,funName) <> "\n")
                                     Right _ -> pure ()
                             ) (unLoc matchList)
                     t2 <- getCurrentTime
@@ -475,20 +450,32 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
 #else
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) location)))
 #endif
-            when True $ do--(not $ "$$" `T.isInfixOf` name) $
-                mapM_ (processExpr (name) _path) (stmts)
+            nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
+            processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
+            if (maybeBool $ tc_funcs cliOptions)
+                then mapM_ (processExpr (name) _path) (stmts)
+                else when (not $ "$$" `T.isInfixOf` name) $
+                        mapM_ (processExpr (name) _path) (stmts)
         (PatBind{pat_lhs = pat, pat_rhs = expr}) -> do
             let stmts = (expr ^? biplateRef :: [LHsExpr GhcTc])
                 ids = (pat ^? biplateRef :: [LIdP GhcTc])
                 fName = (maybe (T.pack "::") (T.pack . nameStableString . getName) $ (headMaybe ids))
 #if __GLASGOW_HASKELL__ >= 900
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) $ locA location)))
-            when True $ do--(not $ "$$" `T.isInfixOf` name) $
-                mapM_ (processExpr name _path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail' ids))
+            nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
+            processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
+            if (maybeBool $ tc_funcs cliOptions)
+                then mapM_ (processExpr name _path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail' ids))
+                else when (not $ "$$" `T.isInfixOf` name) $
+                        mapM_ (processExpr name _path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail' ids))
 #else
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) location)))
-            when True $ do--(not $ "$$" `T.isInfixOf` name) $
-                mapM_ (processExpr name _path) (stmts <> map (\v -> noLoc $ HsVar noExtField v) (tail' ids))
+            nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
+            processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
+            if (maybeBool $ tc_funcs cliOptions)
+                then mapM_ (processExpr name _path) (stmts <> map (\v -> noLoc $ HsVar noExtField v) (tail' ids))
+                else when (not $ "$$" `T.isInfixOf` name) $
+                        mapM_ (processExpr name _path) (stmts <> map (\v -> noLoc $ HsVar noExtField v) (tail' ids))
 #endif
         _ -> pure ()
     where
@@ -984,7 +971,7 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
 
             extractExprsFromHsConPatDetails :: Text -> Text -> HsConPatDetails GhcTc -> IO ()
             extractExprsFromHsConPatDetails keyFunction' path' (PrefixCon _ args) = mapM_ (extractExprsFromPat keyFunction' path') args
-            extractExprsFromHsConPatDetails keyFunction' path' z@(RecCon (HsRecFields {rec_flds = flds})) =
+            extractExprsFromHsConPatDetails keyFunction' path' z@(RecCon (HsRecFields {})) =
                 mapM_ (extractExprsFromPat keyFunction' path') $ hsConPatArgs z
             extractExprsFromHsConPatDetails keyFunction' path' (InfixCon p1 p2) = do
                 (extractExprsFromPat keyFunction' path') p1
