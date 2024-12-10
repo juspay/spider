@@ -444,7 +444,7 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                     when (shouldLog || Fdep.Types.log cliOptions) $ print $ "processed function: " <> fName <> " timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1)
         (VarBind{var_id = var, var_rhs = expr}) -> do
             let stmts = (expr ^? biplateRef :: [LHsExpr GhcTc])
-                fName = T.pack $ nameStableString $ getName var
+                fName = T.pack $ nameStableString $ getName var 
 #if __GLASGOW_HASKELL__ >= 900
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) $ locA location)))
 #else
@@ -453,9 +453,9 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
             processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
             if (maybeBool $ tc_funcs cliOptions)
-                then mapM_ (processExpr (name) _path) (stmts)
+                then mapM_ (processExpr (nestedNameWithParent) _path) (stmts)
                 else when (not $ "$$" `T.isInfixOf` name) $
-                        mapM_ (processExpr (name) _path) (stmts)
+                        mapM_ (processExpr (nestedNameWithParent) _path) (stmts)
         (PatBind{pat_lhs = pat, pat_rhs = expr}) -> do
             let stmts = (expr ^? biplateRef :: [LHsExpr GhcTc])
                 ids = (pat ^? biplateRef :: [LIdP GhcTc])
@@ -465,17 +465,17 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
             processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
             if (maybeBool $ tc_funcs cliOptions)
-                then mapM_ (processExpr name _path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail' ids))
+                then mapM_ (processExpr nestedNameWithParent _path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail' ids))
                 else when (not $ "$$" `T.isInfixOf` name) $
-                        mapM_ (processExpr name _path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail' ids))
+                        mapM_ (processExpr nestedNameWithParent _path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail' ids))
 #else
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) location)))
             nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
             processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
             if (maybeBool $ tc_funcs cliOptions)
-                then mapM_ (processExpr name _path) (stmts <> map (\v -> noLoc $ HsVar noExtField v) (tail' ids))
+                then mapM_ (processExpr nestedNameWithParent _path) (stmts <> map (\v -> noLoc $ HsVar noExtField v) (tail' ids))
                 else when (not $ "$$" `T.isInfixOf` name) $
-                        mapM_ (processExpr name _path) (stmts <> map (\v -> noLoc $ HsVar noExtField v) (tail' ids))
+                        mapM_ (processExpr nestedNameWithParent _path) (stmts <> map (\v -> noLoc $ HsVar noExtField v) (tail' ids))
 #endif
         _ -> pure ()
     where

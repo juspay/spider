@@ -8,6 +8,7 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
+{-# OPTIONS_GHC -ddump-tc-ast #-}
 
 module Main where
 
@@ -192,3 +193,14 @@ main = pure ()
   -- print $ size tree
   -- print evenSquares
   -- print $ cartesianProduct [1,2] ['a','b']
+
+demo :: Person -> Person-> Person
+demo (a@Person {}) c = Person {
+  name = name,age = 10
+}
+  where
+    Person {..} = f a c
+
+
+f :: Person -> Person-> Person
+f a b = a
