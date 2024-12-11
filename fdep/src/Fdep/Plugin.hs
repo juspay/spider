@@ -36,7 +36,7 @@ import qualified Prelude as P
 import qualified Data.List.Extra as Data.List
 import Network.Socket (withSocketsDo)
 import qualified Network.WebSockets as WS
-import System.Directory ( createDirectoryIfMissing )
+-- import System.Directory ( createDirectoryIfMissing )
 import System.Environment (lookupEnv)
 import GHC.IO (unsafePerformIO)
 #if __GLASGOW_HASKELL__ >= 900
