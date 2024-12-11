@@ -14,14 +14,35 @@ data = dict()
 
 async def handler(websocket, path):
     try:
+        file_dump = False
+        for i in [
+            "module_imports",
+            "function_code",
+            "types_code",
+            "class_code",
+            "instance_code",
+            "fieldUsage",
+            "typeUpdates"
+        ]:
+            if i in path:
+                file_dump = True
+
         async for message in websocket:
             try:
-                obj = json.loads(message)
-                if data.get(path) == None:
-                    data[path] = dict()
-                if data[path].get(obj.get("key")) == None:
-                    data[path][obj.get("key")] = []
-                data[path][obj.get("key")].append(obj)
+                if file_dump:
+                    os.makedirs(
+                        path[1:].rsplit("/", 1)[0], exist_ok=True
+                    )
+                    with open(path[1:], "w") as f:
+                        f.write(message)
+                        f.close()
+                else:
+                    obj = json.loads(message)
+                    if data.get(path) == None:
+                        data[path] = dict()
+                    if data[path].get(obj.get("key")) == None:
+                        data[path][obj.get("key")] = []
+                    data[path][obj.get("key")].append(obj)
             except Exception as e:
                 print(e)
     except websockets.exceptions.ConnectionClosed as e:
@@ -47,7 +68,7 @@ def drain_for_module(path):
 
 def process_fdep_output(k, v):
     if not os.path.isfile(k[1:]):
-        os.makedirs(k[1:].replace(".json", ""), exist_ok=True)
+        os.makedirs(k[1:].rsplit("/", 1)[0], exist_ok=True)
         with open(k[1:], "w") as f:
             json.dump(v, f, indent=4)
     else:

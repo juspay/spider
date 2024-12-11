@@ -15,6 +15,15 @@ import qualified Data.Map as Map
 import Data.Binary
 import Control.DeepSeq
 
+data CliOptions = CliOptions {
+    path :: FilePath,
+    port :: Int,
+    host :: String,
+    log :: Bool,
+    tc_funcs :: Maybe Bool
+} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+
 data FieldUsage = FieldUsage {
     typeName :: Text
     , fieldName :: Text

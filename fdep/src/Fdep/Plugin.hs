@@ -17,7 +17,7 @@ import Data.Aeson ( encode, Value(String, Object), ToJSON(toJSON) )
 import qualified Data.Aeson as A
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.Bool (bool)
-import Data.ByteString.Lazy (toStrict, writeFile)
+import Data.ByteString.Lazy (toStrict)
 import qualified Data.ByteString.Lazy as BL
 import Data.Data (toConstr)
 import Data.Generics.Uniplate.Data ()
@@ -96,6 +96,26 @@ plugin =
         , parsedResultAction = collectDecls
         }
 
+sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
+sendFileToWebSocketServer cliOptions path data_ =
+    withSocketsDo $ do
+        eres <- try $
+            WS.runClient
+                (fromMaybe (host cliOptions) websocketHost)
+                (fromMaybe (port cliOptions) websocketPort)
+                (T.unpack path)
+                (\conn -> do
+                    res <- try $ WS.sendTextData conn data_
+                    case res of
+                        Left (err :: SomeException) ->
+                            when (shouldLog || Fdep.Types.log cliOptions) $ print err
+                        Right _ -> pure ()
+                )
+        case eres of
+            Left (err :: SomeException) ->
+                when (shouldLog || Fdep.Types.log cliOptions) $ print err
+            Right _ -> pure ()
+
 collectDecls :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectDecls opts modSummary hsParsedModule = do
     let cliOptions = case opts of
@@ -110,14 +130,19 @@ collectDecls opts modSummary hsParsedModule = do
                 modulePath = prefixPath <> msHsFilePath modSummary
             let path = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
                 declsList = hsmodDecls $ unLoc $ hpm_module hsParsedModule
-            createDirectoryIfMissing True path
+            -- createDirectoryIfMissing True path
             (functionsVsCodeString,typesCodeString,classCodeString,instanceCodeString) <- processDecls declsList
             let importsList = concatMap (fromGHCImportDecl . unLoc) (hsmodImports $ unLoc $ hpm_module hsParsedModule)
-            writeFile (modulePath <> ".module_imports.json") (encodePretty $ importsList)
-            writeFile (modulePath <> ".function_code.json") (encodePretty $ Map.fromList functionsVsCodeString)
-            writeFile (modulePath <> ".types_code.json") (encodePretty $ typesCodeString)
-            writeFile (modulePath <> ".class_code.json") (encodePretty $ classCodeString)
-            writeFile (modulePath <> ".instance_code.json") (encodePretty $ instanceCodeString)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".module_imports.json") (decodeUtf8 $ toStrict $ encodePretty $ importsList)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".function_code.json") (decodeUtf8 $ toStrict $ encodePretty $ Map.fromList functionsVsCodeString)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types_code.json") (decodeUtf8 $ toStrict $ encodePretty $ typesCodeString)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".class_code.json") (decodeUtf8 $ toStrict $ encodePretty $ classCodeString)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".instance_code.json") (decodeUtf8 $ toStrict $ encodePretty $ instanceCodeString)
+            -- writeFile (modulePath <> ".module_imports.json") (encodePretty $ importsList)
+            -- writeFile (modulePath <> ".function_code.json") (encodePretty $ Map.fromList functionsVsCodeString)
+            -- writeFile (modulePath <> ".types_code.json") (encodePretty $ typesCodeString)
+            -- writeFile (modulePath <> ".class_code.json") (encodePretty $ classCodeString)
+            -- writeFile (modulePath <> ".instance_code.json") (encodePretty $ instanceCodeString)
     pure hsParsedModule
 
 fromGHCImportDecl :: ImportDecl GhcPs -> [SimpleImportDecl]
@@ -323,7 +348,7 @@ fDep opts modSummary tcEnv = do
                 modulePath = prefixPath <> msHsFilePath modSummary
             let path = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
             when (shouldLog || Fdep.Types.log cliOptions) $ print ("generating dependancy for module: " <> moduleName' <> " at path: " <> path)
-            createDirectoryIfMissing True path
+            -- createDirectoryIfMissing True path
             t1 <- getCurrentTime
             withSocketsDo $ do
                 eres <- try $

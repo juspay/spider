@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE CPP #-}
 
 module FieldInspector.PluginFields (plugin) where
@@ -198,12 +199,12 @@ import Data.Map (Map)
 import Data.Data
 import Data.Maybe (catMaybes)
 import Control.Monad.IO.Class (liftIO)
-import System.IO (writeFile)
+-- import System.IO (writeFile)
 import Control.Monad (forM)
 import Streamly.Internal.Data.Stream hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
 import System.Directory (createDirectoryIfMissing, removeFile)
-import System.Directory.Internal.Prelude hiding (mapM, mapM_)
-import Prelude hiding (id, mapM, mapM_)
+import System.Directory.Internal.Prelude hiding (mapM, mapM_,log)
+import Prelude hiding (id, mapM, mapM_,log)
 import Control.Exception (evaluate)
 import Control.Exception (evaluate)
 import Control.Reference (biplateRef, (^?))
@@ -238,7 +239,15 @@ import System.Directory.Internal.Prelude (
     on,
     throwIO,
  )
-import Prelude hiding (id, mapM, mapM_)
+import Prelude hiding (id, mapM, mapM_,log)
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.Aeson as A
+import qualified Network.WebSockets as WS
+import Network.Socket (withSocketsDo)
+import Text.Read (readMaybe)
+import GHC.IO (unsafePerformIO)
+
+
 
 plugin :: Plugin
 plugin =
@@ -257,37 +266,76 @@ removeIfExists fileName = removeFile fileName `catch` handleExists
         | isDoesNotExistError e = return ()
         | otherwise = throwIO e
 
+websocketPort :: Maybe Int
+websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
+
+websocketHost :: Maybe String
+websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
+
+
+sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
+sendFileToWebSocketServer cliOptions path data_ =
+    withSocketsDo $ do
+        eres <- try $
+            WS.runClient
+                (fromMaybe (host cliOptions) websocketHost)
+                (fromMaybe (port cliOptions) websocketPort)
+                (T.unpack path)
+                (\conn -> do
+                    res <- try $ WS.sendTextData conn data_
+                    case res of
+                        Left (err :: SomeException) ->
+                            when (log cliOptions) $ print err
+                        Right _ -> pure ()
+                )
+        case eres of
+            Left (err :: SomeException) ->
+                when (log cliOptions) $ print err
+            Right _ -> pure ()
+
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcEnv = do
     _ <- liftIO $
             forkIO $
                 do
-                    let prefixPath = case opts of
-                            [] -> "/tmp/fieldInspector/"
-                            local : _ -> local
-                        modulePath = prefixPath <> msHsFilePath modSummary
-                        path = (intercalate "/" . init . splitOn "/") modulePath
+                    let cliOptions = case opts of
+                                        [] ->  defaultCliOptions
+                                        (local : _) ->
+                                                    case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                                        Just (val :: CliOptions) -> val
+                                                        Nothing -> defaultCliOptions
+                        modulePath = (path cliOptions) <> msHsFilePath modSummary
+                        -- path = (intercalate "/" . init . splitOn "/") modulePath
                         binds = bagToList $ tcg_binds tcEnv
-                    createDirectoryIfMissing True path
+                    -- createDirectoryIfMissing True path
                     functionVsUpdates <- getAllTypeManipulations binds
-                    DBS.writeFile ((modulePath) <> ".typeUpdates.json") (toStrict $ encodePretty functionVsUpdates)
+                    sendFileToWebSocketServer cliOptions (T.pack $ "/" <> (modulePath) <> ".typeUpdates.json") (decodeUtf8 $ toStrict $ encodePretty functionVsUpdates)
+                    -- DBS.writeFile ((modulePath) <> ".typeUpdates.json") (toStrict $ encodePretty functionVsUpdates)
     return tcEnv
+
+-- default options
+-- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
+defaultCliOptions :: CliOptions
+defaultCliOptions = CliOptions {path="/tmp/fieldInspector/",port=9898,host="localhost",log=False,tc_funcs=Just False}
 
 buildCfgPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 buildCfgPass opts guts = do
-    let prefixPath = case opts of
-            [] -> "./tmp/fieldInspector/"
-            [local] -> local
-            _ -> error "unexpected no of arguments"
+    let cliOptions = case opts of
+                    [] ->  defaultCliOptions
+                    (local : _) ->
+                                case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                    Just (val :: CliOptions) -> val
+                                    Nothing -> defaultCliOptions
     _ <- liftIO $ do
         let binds = mg_binds guts
-            moduleLoc = prefixPath Prelude.<> getFilePath (mg_loc guts)
-        createDirectoryIfMissing True ((intercalate "/" . init . splitOn "/") moduleLoc)
-        removeIfExists (moduleLoc Prelude.<> ".fieldUsage.json")
+            moduleLoc = (path cliOptions) Prelude.<> getFilePath (mg_loc guts)
+        -- createDirectoryIfMissing True ((intercalate "/" . init . splitOn "/") moduleLoc)
+        -- removeIfExists (moduleLoc Prelude.<> ".fieldUsage.json")
         l <- toList $ mapM (liftIO . toLBind) (fromList binds)
         res <- pure $ Prelude.filter (\(x,y) -> (Prelude.not $ Prelude.null y) && (Prelude.not $ ("$$" :: Text) `T.isInfixOf` x)) $ groupByFunction $ Prelude.concat l
         when (Prelude.not $ Prelude.null res) $
-            DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ res)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> moduleLoc Prelude.<> ".fieldUsage.json") (decodeUtf8 $ toStrict $ encodePretty $ Map.fromList $ res)
+            -- DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ res)
     return guts
 
 getAllTypeManipulations :: [LHsBindLR GhcTc GhcTc] -> IO [DataTypeUC]
