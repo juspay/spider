@@ -57,35 +57,20 @@ import GHC.Data.Bag (bagToList)
 import GHC.Types.Name hiding (varName)
 import GHC.Types.Var
 import qualified Data.Aeson.KeyMap as HM
--- import GHC.Hs.Expr
--- import Language.Haskell.Syntax.Pat
--- import GHC.Data.FastString (unpackFS)
 #else
-import GhcMake
+import TyCoRep
 import DataCon
 import qualified Data.HashMap.Strict as HM
 import Bag (bagToList)
 import DynFlags ()
 import GHC
-import GHC.Hs.Binds
-    ( HsBindLR(PatBind, FunBind, AbsBinds, VarBind, PatSynBind,
-               XHsBindsLR, fun_id, abs_binds, var_rhs),
-      LHsBindLR,
-      HsValBindsLR(XValBindsLR, ValBinds),
-      HsLocalBindsLR(HsValBinds),
-      NHsValBindsLR(NValBinds),
-      PatSynBind(XPatSynBind, PSB, psb_def) )
 import BasicTypes
-import GHC.Hs.Decls
-    ( HsDecl(SigD, TyClD, InstD, DerivD, ValD), LHsDecl )
-import GhcPlugins (rdrNameOcc,occNameString,unpackFS,RdrName (Exact, Orig, Qual, Unqual),HsParsedModule, Hsc, Plugin (..), PluginRecompile (..), Var (..), getOccString, hpm_module, ppr, showSDocUnsafe)
-import HscTypes (ModSummary (..),msHsFilePath)
+import GhcPlugins (tyConName,rdrNameOcc,occNameString,RdrName (..),HsParsedModule, Hsc, Plugin (..), PluginRecompile (..), Var (..), getOccString, hpm_module, ppr, showSDocUnsafe)
+import HscTypes (msHsFilePath)
 import Name (nameStableString)
 import Outputable ()
 import Plugins (CommandLineOption, defaultPlugin)
-import SrcLoc ( GenLocated(L), getLoc, noLoc, unLoc )
 import TcRnTypes (TcGblEnv (..), TcM)
-import StringBuffer
 #endif
 
 plugin :: Plugin
@@ -207,11 +192,16 @@ processDecls decls = do
          , concatMap (\(_,_,_,i) -> i) results
          )
 
-spanToLine :: _ -> (Int,Int)
 #if __GLASGOW_HASKELL__ >= 900
+spanToLine :: _ -> (Int,Int)
 spanToLine s = (srcSpanStartLine $ la2r s,srcSpanEndLine $ la2r s)
 #else
-spanToLine s = (srcSpanStartLine s,srcSpanEndLine s)
+spanToLine :: SrcSpan -> (Int,Int)
+spanToLine (UnhelpfulSpan _) = (-1,-1)
+spanToLine (RealSrcSpan s) = (srcSpanStartLine s,srcSpanEndLine s)
+-- srcLocSpan :: SrcLoc -> SrcSpan
+-- srcLocSpan (UnhelpfulLoc str) = UnhelpfulSpan str
+-- srcLocSpan (RealSrcLoc l) = RealSrcSpan (realSrcLocSpan l)
 #endif
 
 
@@ -421,7 +411,11 @@ tyConsOfType :: Type -> [TyCon]
 tyConsOfType ty = case ty of
     TyConApp tc tys -> tc : concatMap tyConsOfType tys
     AppTy t1 t2     -> tyConsOfType t1 ++ tyConsOfType t2
+#if __GLASGOW_HASKELL__ >= 900
     FunTy _ _ t1 t2 -> tyConsOfType t1 ++ tyConsOfType t2
+#else
+    FunTy _ t1 t2 -> tyConsOfType t1 ++ tyConsOfType t2
+#endif
     ForAllTy _ t    -> tyConsOfType t
     CastTy t _      -> tyConsOfType t
     CoercionTy _    -> []
@@ -813,10 +807,10 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
         getFieldUpdates y keyFunction path type_ fields = mapM_ extractField fields
             where
             extractField :: LHsRecUpdField GhcTc -> IO ()
-            extractField (L l x@(HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun})) =do
+            extractField (L l x@(HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr', hsRecPun = pun})) =do
                 let fieldName = (T.pack $ showSDocUnsafe $ ppr lbl)
                     fieldType = (T.pack $ inferFieldTypeAFieldOcc lbl)
-                processExpr keyFunction path expr
+                processExpr keyFunction path expr'
                 expr <- evaluate $ force $ transformFromNameStableString (Just $ ("$_fieldName$" <> fieldName), (Just $ T.pack $ getLocTC' y), (Just $ fieldType), mempty)
                 sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
 #endif

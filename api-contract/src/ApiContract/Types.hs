@@ -12,33 +12,33 @@ module ApiContract.Types where
 import Data.Aeson (ToJSON,FromJSON)
 import GHC.Generics (Generic)
 import qualified Data.Map as Map
-import GHC.Hs (SrcSpanAnnA)
+-- import GHC.Hs (SrcSpanAnnA)
 import GHC (SrcSpan(..), RealSrcSpan(..))
 
 data TypeOfInstance =
       Derived
       | Custom
-   deriving (Eq,Show, Generic,FromJSON,ToJSON)
+   deriving (Eq,Show, Ord,Generic,FromJSON,ToJSON)
 
 data CaseType =
        SnakeCase
        | CamelCase
        | PascalCase
        | KebabCase
-   deriving (Eq,Show, Generic,FromJSON,ToJSON)
+   deriving (Eq,Show,Ord,Generic,FromJSON,ToJSON)
 
 data InstancePresence =
        ToJSON
        | ParseJSON
        | ToEncoding
-   deriving (Eq,Show, Generic,FromJSON,ToJSON)
+   deriving (Eq,Show, Ord,Generic,FromJSON,ToJSON)
 
 data TypeRule = TypeRule
    { caseType  :: Maybe CaseType
    , dataConstructors :: Map.Map String DataConInfo
    , instances :: Map.Map String InstanceFromTC
    , typeKind :: String
-   } deriving (Show, Generic,FromJSON,ToJSON)
+   } deriving (Show,Eq,Ord ,Generic,FromJSON,ToJSON)
 
 data Types = Types
    { types :: Map.Map String TypeRule
@@ -54,7 +54,7 @@ data InstanceFromTC = InstanceFromTC
       fieldsList :: [String]
       , typeOfInstance :: TypeOfInstance
    }
-   deriving (Show, Generic,FromJSON,ToJSON)
+   deriving (Show, Eq, Ord,Generic,FromJSON,ToJSON)
 
 
 data ApiContractError =
