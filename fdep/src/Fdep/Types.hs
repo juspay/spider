@@ -1,4 +1,4 @@
-{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveAnyClass,DuplicateRecordFields #-}
 module Fdep.Types where
 import Data.Aeson
 import GHC.Generics (Generic)
@@ -10,7 +10,8 @@ data CliOptions = CliOptions {
     path :: FilePath,
     port :: Int,
     host :: String,
-    log :: Bool
+    log :: Bool,
+    tc_funcs :: Maybe Bool
 } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
 data FunctionInfo = FunctionInfo
@@ -40,6 +41,7 @@ data PFunction = PFunction {
     parser_name :: Text
     , parser_stringified_code :: Text
     , parser_src_loc :: Text
+    , line_number    :: (Int,Int)
 }
     deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
@@ -47,18 +49,21 @@ data PType = PType {
     typeName :: Text,
     typeDefinition :: Text,
     typeLocation :: Text
+    ,line_number    :: (Int,Int)
 } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
 data PClass = PClass {
     className :: Text,
     classDefinition :: Text,
     classLocation :: Text
+    ,line_number    :: (Int,Int)
 } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
 data PInstance = PInstance {
     instanceType :: Text,
     instanceDefinition :: Text,
     instanceLocation :: Text
+    ,line_number    :: (Int,Int)
 } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
 
@@ -82,4 +87,5 @@ data SimpleImportDecl = SimpleImportDecl {
     isImplicit     :: Bool,            -- ^ Whether this is an implicit import
     asModuleName   :: Maybe Text,    -- ^ Optional module rename
     hidingSpec     :: Maybe HidingSpec  -- ^ Optional hiding specification
+    ,line_number    :: (Int,Int)
 } deriving (Show, Eq, Generic,ToJSON,FromJSON)
