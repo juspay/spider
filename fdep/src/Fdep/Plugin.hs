@@ -31,7 +31,7 @@ import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Time ( diffUTCTime, getCurrentTime )
 import Fdep.Types
 import Text.Read (readMaybe)
-import Prelude hiding (id, writeFile)
+import Prelude hiding (id, writeFile,span)
 import qualified Prelude as P
 import qualified Data.List.Extra as Data.List
 import Network.Socket (withSocketsDo)
@@ -132,7 +132,7 @@ collectDecls opts modSummary hsParsedModule = do
                 declsList = hsmodDecls $ unLoc $ hpm_module hsParsedModule
             -- createDirectoryIfMissing True path
             (functionsVsCodeString,typesCodeString,classCodeString,instanceCodeString) <- processDecls declsList
-            let importsList = concatMap (fromGHCImportDecl . unLoc) (hsmodImports $ unLoc $ hpm_module hsParsedModule)
+            let importsList = concatMap (fromGHCImportDecl) (hsmodImports $ unLoc $ hpm_module hsParsedModule)
             sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".module_imports.json") (decodeUtf8 $ toStrict $ encodePretty $ importsList)
             sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".function_code.json") (decodeUtf8 $ toStrict $ encodePretty $ Map.fromList functionsVsCodeString)
             sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types_code.json") (decodeUtf8 $ toStrict $ encodePretty $ typesCodeString)
@@ -145,8 +145,8 @@ collectDecls opts modSummary hsParsedModule = do
             -- writeFile (modulePath <> ".instance_code.json") (encodePretty $ instanceCodeString)
     pure hsParsedModule
 
-fromGHCImportDecl :: ImportDecl GhcPs -> [SimpleImportDecl]
-fromGHCImportDecl ImportDecl{..} = [SimpleImportDecl {
+fromGHCImportDecl :: LImportDecl GhcPs -> [SimpleImportDecl]
+fromGHCImportDecl (L _span ImportDecl{..}) = [SimpleImportDecl {
     moduleName' = moduleNameToText (unLoc ideclName),
     packageName = fmap stringLiteralToText ideclPkgQual,
 #if __GLASGOW_HASKELL__ >= 900
@@ -165,9 +165,10 @@ fromGHCImportDecl ImportDecl{..} = [SimpleImportDecl {
         Just (isHiding, names) -> Just $ HidingSpec {
             isHiding = isHiding,
             names = convertLIEsToText names
-        }
+        },
+    line_number = spanToLine _span
 }]
-fromGHCImportDecl (XImportDecl _) = []
+fromGHCImportDecl (L span (XImportDecl _)) = []
 
 moduleNameToText :: ModuleName -> T.Text
 moduleNameToText = T.pack . moduleNameString
@@ -206,31 +207,40 @@ processDecls decls = do
          , concatMap (\(_,_,_,i) -> i) results
          )
 
+spanToLine :: _ -> (Int,Int)
+#if __GLASGOW_HASKELL__ >= 900
+spanToLine s = (srcSpanStartLine $ la2r s,srcSpanEndLine $ la2r s)
+#else
+spanToLine s = (srcSpanStartLine s,srcSpanEndLine s)
+#endif
+
+
 -- Modified function to extract all declarations
 getDecls' :: LHsDecl GhcPs -> IO ([(Text, PFunction)], [PType], [PClass], [PInstance])
 getDecls' x = case x of
-    (L _ (TyClD _ decl)) -> pure (mempty, getTypeDecl decl, getClassDecl decl, mempty)
-    (L _ (InstD _ inst)) -> pure (mempty, mempty, mempty, getInstDecl inst)
-    (L _ (DerivD _ _)) -> pure mempty4
-    (L _ (ValD _ bind)) -> pure (getFunBind bind, mempty, mempty, mempty)
-    (L _ (SigD _ _)) -> pure mempty4
+    (L span (TyClD _ decl)) -> pure (mempty, getTypeDecl span decl, getClassDecl span decl, mempty)
+    (L span (InstD _ inst)) -> pure (mempty, mempty, mempty, getInstDecl span inst)
+    (L span (DerivD _ _)) -> pure mempty4
+    (L span (ValD _ bind)) -> pure (getFunBind span bind, mempty, mempty, mempty)
+    (L span (SigD _ _)) -> pure mempty4
     _ -> pure mempty4
   where
     mempty4 = (mempty, mempty, mempty, mempty)
 
     -- Extract function bindings (original code)
-    getFunBind f@FunBind{fun_id = funId} = 
+    getFunBind _span f@FunBind{fun_id = funId} = 
         [( T.pack (showSDocUnsafe $ ppr $ unLoc funId) <> "**" <> T.pack (getLoc' funId)
          , PFunction 
              (T.pack (showSDocUnsafe $ ppr $ unLoc funId) <> "**" <> T.pack (getLoc' funId))
              (T.pack $ showSDocUnsafe $ ppr f)
              (T.pack $ getLoc' funId)
+             (spanToLine _span)
          )]
-    getFunBind _ = mempty
+    getFunBind _ _ = mempty
 
     -- Extract type and newtype declarations
-    getTypeDecl :: TyClDecl GhcPs -> [PType]
-    getTypeDecl decl@DataDecl{tcdLName = L l name} =
+    getTypeDecl :: _ -> TyClDecl GhcPs -> [PType]
+    getTypeDecl _span decl@DataDecl{tcdLName = L l name} =
         [PType 
             (T.pack $ showSDocUnsafe $ ppr name)
             (T.pack $ showSDocUnsafe $ ppr decl)
@@ -239,8 +249,9 @@ getDecls' x = case x of
 #else
             (T.pack ((showSDocUnsafe . ppr) $ l))
 #endif
+            (spanToLine _span)
         ]
-    getTypeDecl decl@SynDecl{tcdLName = L l name} =
+    getTypeDecl _span decl@SynDecl{tcdLName = L l name} =
         [PType
             (T.pack $ showSDocUnsafe $ ppr name)
             (T.pack $ showSDocUnsafe $ ppr decl)
@@ -249,12 +260,13 @@ getDecls' x = case x of
 #else
             (T.pack ((showSDocUnsafe . ppr) $ l))
 #endif
+            (spanToLine _span)
         ]
-    getTypeDecl _ = mempty
+    getTypeDecl _ _ = mempty
 
     -- Extract class declarations
-    getClassDecl :: TyClDecl GhcPs -> [PClass]
-    getClassDecl decl@ClassDecl{tcdLName = L l name} =
+    getClassDecl :: _ -> TyClDecl GhcPs -> [PClass]
+    getClassDecl _span decl@ClassDecl{tcdLName = L l name} =
         [PClass
             (T.pack $ showSDocUnsafe $ ppr name)
             (T.pack $ showSDocUnsafe $ ppr decl)
@@ -263,18 +275,24 @@ getDecls' x = case x of
 #else
             (T.pack ((showSDocUnsafe . ppr) l))
 #endif
+            (spanToLine _span)
         ]
-    getClassDecl _ = mempty
+    getClassDecl _ _ = mempty
 
     -- Extract instance declarations
-    getInstDecl :: InstDecl GhcPs -> [PInstance]
-    getInstDecl decl@(ClsInstD _ ClsInstDecl{cid_poly_ty = ty}) =
+    getInstDecl :: _ -> InstDecl GhcPs -> [PInstance]
+    getInstDecl _span decl@(ClsInstD _ ClsInstDecl{cid_poly_ty = ty}) =
         [PInstance
             (T.pack $ showSDocUnsafe $ ppr ty)
             (T.pack $ showSDocUnsafe $ ppr decl)
-            (T.pack mempty)-- $ getInstDeclLoc decl)
+#if __GLASGOW_HASKELL__ >= 900
+            (T.pack ((showSDocUnsafe . ppr) $ locA _span))
+#else
+            (T.pack ((showSDocUnsafe . ppr) _span))
+#endif
+            (spanToLine _span)
         ]
-    getInstDecl _ = mempty
+    getInstDecl _ _ = mempty
 
 shouldForkPerFile :: Bool
 shouldForkPerFile = readBool $ unsafePerformIO $ lookupEnv "SHOULD_FORK"
@@ -331,7 +349,7 @@ sendTextData' cliOptions conn path data_ = do
 -- default options
 -- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="/tmp/fdep/",port=9898,host="localhost",log=False,tc_funcs=Just False}
+defaultCliOptions = CliOptions {path="/tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False}
 
 fDep :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 fDep opts modSummary tcEnv = do

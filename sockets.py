@@ -22,7 +22,8 @@ async def handler(websocket, path):
             "class_code",
             "instance_code",
             "fieldUsage",
-            "typeUpdates"
+            "typeUpdates",
+            ".types.parser.",
         ]:
             if i in path:
                 file_dump = True
@@ -30,11 +31,10 @@ async def handler(websocket, path):
         async for message in websocket:
             try:
                 if file_dump:
-                    os.makedirs(
-                        path[1:].rsplit("/", 1)[0], exist_ok=True
-                    )
+                    obj = json.loads(message)
+                    os.makedirs(path[1:].rsplit("/", 1)[0], exist_ok=True)
                     with open(path[1:], "w") as f:
-                        f.write(message)
+                        f.write(json.dumps(obj, indent=4))
                         f.close()
                 else:
                     obj = json.loads(message)
@@ -101,14 +101,14 @@ async def drain_data(request):
 async def start_websocket_server():
     async with websockets.serve(
         handler,
-        "localhost",
-        9898,
+        "::1",
+        4444,
         ping_interval=None,
         ping_timeout=None,
         close_timeout=None,
         max_queue=1000,
     ):
-        print("WebSocket server started on ws://localhost:9898")
+        print("WebSocket server started on ws://::1:4444")
         await asyncio.Future()
 
 
