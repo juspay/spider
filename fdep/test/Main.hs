@@ -8,7 +8,6 @@
 {-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeOperators #-}
-{-# OPTIONS_GHC -ddump-tc-ast #-}
 
 module Main where
 

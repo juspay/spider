@@ -235,13 +235,13 @@ instanceToAdd :: [String]
 instanceToAdd = ["deriveJSON","FromMultipart Mem","FromHttpApiData","ToHttpApiData","MimeRender JSON","FromForm","ToJSON","FromJSON","toJSON","fromJSON","toEncoding","toXML","ToXml","toXml","fromXml","FromXml","ToCybsXml","toCybsXml"]
 
 #if __GLASGOW_HASKELL__ >= 900
-type HashMapL a = HashMapL a
+type HashMapL a = HM.KeyMap a
 toString' = HM.toString
 fromString' = HM.fromString
 locA' = locA
-unLoc' = unLoc'
-hsSigType' = sig_body . unLoc'
-showSDocUnsafe' = showSDocUnsafe . ppr . GHC.unLoc'
+unLoc' = GHC.unXRec @(GhcTc)
+hsSigType' = sig_body . GHC.unXRec @(GhcPs)
+showSDocUnsafe' = showSDocUnsafe . ppr . GHC.unLoc
 #else
 type HashMapL a = HM.HashMap String a
 toString' a = a
@@ -317,12 +317,15 @@ collectTypeInfoParser opts modSummary hpm = do
 
 #if __GLASGOW_HASKELL__ >= 900
 instance (YAML.ToJSON v) => YAML.ToJSON (OMap.OMap HM.Key v) where
+    toJSON m = YAML.object $
+        sortBy (\(k1,_) (k2,_) -> compare (k1) (k2)) $
+        map (\(k,v) -> ((k), YAML.toJSON v)) $ OMap.toAscList m
 #else
 instance (YAML.ToJSON v) => YAML.ToJSON (OMap.OMap String v) where
-#endif
     toJSON m = YAML.object $
         sortBy (\(k1,_) (k2,_) -> compare (k1) (k2)) $
         map (\(k,v) -> ((T.pack k), YAML.toJSON v)) $ OMap.toAscList m
+#endif
 
 sortKeyMap km = OMap.fromList $ sortBy (compare) $ HM.toList km
 -- sortKeyMap km = HMOrder.fromList $ traceShowId $ sortBy (compare) $ HM.toList km
@@ -433,12 +436,23 @@ processInstance (L _ (AbsBinds{abs_binds = binds})) = do
   pure $ Prelude.concat res
 processInstance _ = pure mempty
 
+#if __GLASGOW_HASKELL__ >= 900
+getLit = getLit' . GHC.unXRec @(GhcTc)
+    where
+    getLit' :: HsExpr p -> [Char]
+    getLit' ((HsLit _ (HsChar _  char))) = [char]
+    getLit' ((HsLit _ (HsCharPrim _  char))) = [char]
+    getLit' ((HsLit _ (HsString _  fs))) = unpackFS  fs
+    getLit' ((HsLit _ (HsStringPrim _  bs))) = unpack $ decodeUtf8 bs
+    getLit' _ = mempty
+#else
 getLit :: LHsExpr p -> [Char]
 getLit (L _ (HsLit _ (HsChar _  char))) = [char]
 getLit (L _ (HsLit _ (HsCharPrim _  char))) = [char]
 getLit (L _ (HsLit _ (HsString _  fs))) = unpackFS  fs
 getLit (L _ (HsLit _ (HsStringPrim _  bs))) = unpack $ decodeUtf8 bs
 getLit _ = mempty
+#endif
 
 #if __GLASGOW_HASKELL__ >= 900
 getAppliedOnTypeName :: String -> Type -> Maybe String
