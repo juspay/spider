@@ -1,0 +1,127 @@
+# Servant API Parser Plugin
+
+A GHC plugin that automatically parses Servant API types and generates API specifications. This plugin analyzes both client and server-side Servant type declarations and converts them into a structured API specification format.
+
+## Features
+
+- Automatically extracts API endpoints from Servant type declarations
+- Supports full REST API operations (GET, POST, PUT, DELETE)
+- Parses path parameters, query parameters, and headers
+- Handles request and response bodies with content type information
+- Generates JSON output compatible with API documentation tools
+
+## Output Format
+
+The plugin generates a JSON structure that describes each endpoint with the following information:
+
+```typescript
+interface Endpoint {
+    method: string;              // HTTP method
+    path: string[];             // URL path segments
+    queryParams: string[];      // Query parameters
+    headers: string[];          // Required headers
+    responseStatus: string;     // HTTP response status
+    responseContentType: string | null;  // Response content type
+    responseBody: string | null;         // Response body type
+    requestBody: string | null;          // Request body type
+    requestContentType: string | null;   // Request content type
+}
+```
+
+### Example Output
+
+```json
+{
+  "API": [
+    {
+      "headers": [],
+      "method": "'GET",
+      "path": ["v1", "api", "users"],
+      "queryParams": [],
+      "requestBody": null,
+      "requestContentType": null,
+      "responseBody": null,
+      "responseContentType": "'[JSON]",
+      "responseStatus": "200"
+    },
+    // ... more endpoints
+  ]
+}
+```
+
+## Implementation Details
+
+The plugin parses Servant types using GHC's Type system and supports the following Servant combinators:
+
+- `:>` - Path concatenation
+- `:<|>` - API alternatives
+- `Capture'` - URL path parameters
+- `QueryParam'` - URL query parameters
+- `Header'` - HTTP headers
+- `ReqBody'` - Request body
+- `Verb` - HTTP methods
+- `AddArgs` - Additional arguments
+- `Tag` - API grouping tags
+
+### Core Data Types
+
+```haskell
+data Endpoint = Endpoint
+    { method :: String
+    , path :: [String]
+    , queryParams :: [String]
+    , headers :: [String]
+    , responseStatus :: String
+    , responseContentType :: Maybe String
+    , responseBody :: Maybe String
+    , requestBody  :: Maybe String
+    , requestContentType  :: Maybe String
+    } deriving (Generic, Show)
+
+data ApiComponent
+  = Path String
+  | Capture String
+  | QueryParam String
+  | Header String
+  | AddArgs String
+  | ReqBody String String
+  | Verb String String (Maybe String) (Maybe String)
+  | Group String [ApiComponent]
+  | Alternative [ApiComponent]
+  | Tag String
+  deriving (Generic, Show, Data, ToJSON)
+```
+
+## Usage
+
+1. Add the plugin to your project dependencies
+2. Enable the plugin in your Cabal file:
+   ```yaml
+   ghc-options: -fplugin=ServantApiParser
+   ```
+3. The plugin will automatically process your Servant API types during compilation
+4. Access the generated API specification through the plugin's output
+
+## Example API Definition
+
+```haskell
+type UserAPI = 
+    "v1" :> "api" :> "users" :> Get '[JSON] [User]
+    :<|> "v1" :> "api" :> "users" :> Capture "userId" UserId :> Get '[JSON] User
+    :<|> "v1" :> "api" :> "users" :> ReqBody '[JSON] User :> Post '[JSON] User
+```
+
+## Supported Servant Components
+
+| Component | Description | Example |
+|-----------|-------------|---------|
+| Path | Static path segments | `"v1" :> "api"` |
+| Capture | URL parameters | `Capture "userId" UserId` |
+| QueryParam | URL query parameters | `QueryParam "sort" SortOrder` |
+| Header | HTTP headers | `Header "Authorization" Token` |
+| ReqBody | Request body | `ReqBody '[JSON] User` |
+| Verb | HTTP methods | `Get '[JSON] User` |
+
+## Contributing
+
+Feel free to open issues or submit pull requests if you find bugs or have suggestions for improvements. The plugin is designed to be extensible for supporting additional Servant combinators and output formats.

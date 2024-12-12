@@ -59,6 +59,7 @@ library
                 , websockets
                 , network
                 , primitive
+                , sqlite-simple
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -77,5 +78,6 @@ test-suite fdep-test
     main-is:          Main.hs
     build-depends:
         fdep
+        , record-hasfield
         , text
-    ghc-options: -fplugin=Fdep.Plugin -fplugin-opt Fdep.Plugin:./tmp/fdep/
+    ghc-options: -fplugin=Fdep.Plugin -fplugin-opt=Fdep.Plugin:{"path":"./tmp/fdep/","port":9898,"host":"localhost","log":true,"tc_funcs":false}

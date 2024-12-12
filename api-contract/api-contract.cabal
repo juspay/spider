@@ -37,6 +37,8 @@ library
         , filepath
         , ghc
         , unordered-containers
+        , ordered-containers
+        , insert-ordered-containers
         , aeson
         , directory
         , extra

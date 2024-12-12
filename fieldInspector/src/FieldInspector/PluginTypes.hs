@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
+{-# LANGUAGE PartialTypeSignatures #-}
 {-# LANGUAGE CPP #-}
 
 module FieldInspector.PluginTypes (plugin) where
@@ -106,15 +107,21 @@ import System.IO (writeFile)
 import Control.Monad (forM)
 import Streamly.Internal.Data.Stream hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
 import System.Directory (createDirectoryIfMissing, removeFile)
-import System.Directory.Internal.Prelude hiding (mapM, mapM_)
-import Prelude hiding (id, mapM, mapM_)
+import System.Directory.Internal.Prelude hiding (mapM, mapM_,log)
+import Prelude hiding (id, mapM, mapM_,log)
 import Control.Exception (evaluate)
 import qualified Data.Record.Plugin as DRP
 import qualified Data.Record.Anon.Plugin as DRAP
 import qualified Data.Record.Plugin.HasFieldPattern as DRPH
 import qualified RecordDotPreprocessor as RDP
 import qualified ApiContract.Plugin as ApiContract
-import qualified Fdep.Plugin as Fdep
+-- import qualified Fdep.Plugin as Fdep
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.Aeson as A
+import qualified Network.WebSockets as WS
+import Network.Socket (withSocketsDo)
+import Text.Read (readMaybe)
+import GHC.IO (unsafePerformIO)
 
 plugin :: Plugin
 plugin = (defaultPlugin{
@@ -122,7 +129,9 @@ plugin = (defaultPlugin{
         pluginRecompile = (\_ -> return NoForceRecompile)
         , parsedResultAction = collectTypeInfoParser
         })
+#if defined(ENABLE_API_CONTRACT_PLUGINS)
         <> ApiContract.plugin
+#endif
 #if defined(ENABLE_LR_PLUGINS)
         <> DRP.plugin
         <> DRAP.plugin
@@ -187,22 +196,58 @@ pprTyCon = ppr
 pprDataCon :: Name -> SDoc
 pprDataCon = ppr
 
+websocketPort :: Maybe Int
+websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
+
+websocketHost :: Maybe String
+websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
+
+sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
+sendFileToWebSocketServer cliOptions path data_ =
+    withSocketsDo $ do
+        eres <- try $
+            WS.runClient
+                (fromMaybe (host cliOptions) websocketHost)
+                (fromMaybe (port cliOptions) websocketPort)
+                (T.unpack path)
+                (\conn -> do
+                    res <- try $ WS.sendTextData conn data_
+                    case res of
+                        Left (err :: SomeException) ->
+                            when (log cliOptions) $ print err
+                        Right _ -> pure ()
+                )
+        case eres of
+            Left (err :: SomeException) ->
+                when (log cliOptions) $ print err
+            Right _ -> pure ()
+
+defaultCliOptions :: CliOptions
+defaultCliOptions = CliOptions {path="/tmp/fieldInspector/",port=4444,host="::1",log=False,tc_funcs=Just False}
+
 collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectTypeInfoParser opts modSummary hpm = do
-    _ <- Fdep.collectDecls opts modSummary hpm
+    -- _ <- Fdep.collectDecls opts modSummary hpm
     _ <- liftIO $ forkIO $
             do
-                let prefixPath = case opts of
-                        [] -> "/tmp/fieldInspector/"
-                        local : _ -> local
-                    moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
-                    modulePath = prefixPath <> msHsFilePath modSummary
+                -- let prefixPath = case opts of
+                --         [] -> "/tmp/fieldInspector/"
+                --         local : _ -> local
+                let cliOptions = case opts of
+                                [] ->  defaultCliOptions
+                                (local : _) ->
+                                            case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                                Just (val :: CliOptions) -> val
+                                                Nothing -> defaultCliOptions
+                let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
+                    modulePath = (path cliOptions) <> msHsFilePath modSummary
                     hm_module = unLoc $ hpm_module hpm
-                    path = (intercalate "/" . init . splitOn "/") modulePath
+                    -- path = (intercalate "/" . init . splitOn "/") modulePath
                 -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
                 types <- toList $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
-                createDirectoryIfMissing True path
-                DBS.writeFile (modulePath <> ".types.parser.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
+                -- createDirectoryIfMissing True path
+                sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types.parser.json") (decodeUtf8 $ toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
+                -- DBS.writeFile (modulePath <> ".types.parser.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
                 -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
     pure hpm
 

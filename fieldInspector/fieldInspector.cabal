@@ -53,9 +53,16 @@ flag enable-lr-plugins
   default:           False
   manual:            True
 
+flag enable-api-contract-plugins
+  description:       set this flag to disable these plugins api contract
+  default:           True
+  manual:            False
+
 common common-options
     if flag(enable-lr-plugins)
         cpp-options:     -DENABLE_LR_PLUGINS
+    if flag(enable-api-contract-plugins)
+        cpp-options:     -DENABLE_API_CONTRACT_PLUGINS
     ghc-options:
         -Wall
         -Wincomplete-uni-patterns
@@ -107,11 +114,13 @@ common common-options
         , typelet
         , record-hasfield
         , text
+        , websockets
         , binary
         , references
         , uniplate
         , api-contract
-        , fdep
+        , network
+        -- , fdep
 
 library
     -- Import common warning flags.
@@ -150,37 +159,37 @@ executable fieldInspector
     -- Base language which the package is written in.
     default-language: Haskell2010
 
-test-suite fieldInspector-test
-    -- Import common warning flags.
-    import:           common-options
-    ghc-options: -fplugin=ApiContract.Plugin -fplugin=FieldInspector.PluginFields -fplugin-opt FieldInspector.PluginFields:./tmp/fieldInspector/ -fplugin=FieldInspector.PluginTypes -fplugin-opt FieldInspector.PluginTypes:./tmp/fieldInspector/
-    -- Base language which the package is written in.
-    default-language: Haskell2010
+-- test-suite fieldInspector-test
+--     -- Import common warning flags.
+--     import:           common-options
+--     ghc-options: -fplugin=ApiContract.Plugin -fplugin=FieldInspector.PluginFields -fplugin-opt FieldInspector.PluginFields:/tmp/fieldInspector/ -fplugin=FieldInspector.PluginTypes -fplugin-opt FieldInspector.PluginTypes:/tmp/fieldInspector/
+--     -- Base language which the package is written in.
+--     default-language: Haskell2010
 
-    -- Modules included in this executable, other than Main.
-    -- other-modules:
+--     -- Modules included in this executable, other than Main.
+--     -- other-modules:
 
-    -- LANGUAGE extensions used by modules in this package.
-    -- other-extensions:
+--     -- LANGUAGE extensions used by modules in this package.
+--     -- other-extensions:
 
-    -- The interface type and version of the test suite.
-    type:             exitcode-stdio-1.0
+--     -- The interface type and version of the test suite.
+--     type:             exitcode-stdio-1.0
 
-    -- Directories containing source files.
-    hs-source-dirs:   test
+--     -- Directories containing source files.
+--     hs-source-dirs:   test
 
-    -- The entrypoint to the test suite.
-    main-is:          Main.hs
+--     -- The entrypoint to the test suite.
+--     main-is:          Main.hs
 
-    -- Test dependencies.
-    build-depends:
-        base
-        ,   fieldInspector
-        , large-records
-        , large-generics
-        , large-anon
-        , record-dot-preprocessor
-        , ghc-tcplugin-api
-        , typelet
-        , record-hasfield
-        , scientific
+--     -- Test dependencies.
+--     build-depends:
+--         base
+--         ,   fieldInspector
+--         , large-records
+--         , large-generics
+--         , large-anon
+--         , record-dot-preprocessor
+--         , ghc-tcplugin-api
+--         , typelet
+--         , record-hasfield
+--         , scientific

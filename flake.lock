@@ -62,11 +62,11 @@
         "nixpkgs-lib": "nixpkgs-lib_2"
       },
       "locked": {
-        "lastModified": 1726153070,
-        "narHash": "sha256-HO4zgY0ekfwO5bX0QH/3kJ/h4KvUDFZg8YpkNwIbg1U=",
+        "lastModified": 1733312601,
+        "narHash": "sha256-4pDvzqnegAfRkPwO3wmwBhVi/Sye1mzps0zHWYnP88c=",
         "owner": "hercules-ci",
         "repo": "flake-parts",
-        "rev": "bcef6817a8b2aa20a5a6dbb19b43e63c5bf8619a",
+        "rev": "205b12d8b7cd4802fbcb8e8ef6a0f1408781a4f9",
         "type": "github"
       },
       "original": {
@@ -323,11 +323,11 @@
     },
     "haskell-flake_3": {
       "locked": {
-        "lastModified": 1726441645,
-        "narHash": "sha256-mXVvqtBqgcDnT2MTJP8eJeQtajKbNrYevPHpoDqKnVQ=",
+        "lastModified": 1733672669,
+        "narHash": "sha256-cJa3mhmWLj1+DLmb3Bkq+5cCkeBAsbTkSKf0XvlMo9w=",
         "owner": "srid",
         "repo": "haskell-flake",
-        "rev": "96aad3a08f30333fead66da396dbf7a21ac4adb6",
+        "rev": "b13eb3f9b8f4666e2d7c9641d1f914e45afe575c",
         "type": "github"
       },
       "original": {
@@ -393,17 +393,17 @@
         "systems": "systems_3"
       },
       "locked": {
-        "lastModified": 1721562622,
-        "narHash": "sha256-4XivoIvlVl7UyVCyZneeLIvyKBbRIvDEOEnJBxnZp+c=",
+        "lastModified": 1728704762,
+        "narHash": "sha256-Y3Zs8nGfFQLqpkRt8l2M+wkrp8fHkblu4/qMRP1ryu8=",
         "owner": "eswar2001",
         "repo": "large-records",
-        "rev": "b60bcb312c7d55f1d638aa1a5143696e6586e76d",
+        "rev": "f7fbffd022c792cd7686bca058a51b08722091dc",
         "type": "github"
       },
       "original": {
         "owner": "eswar2001",
+        "ref": "ghc928-qualified-prelude",
         "repo": "large-records",
-        "rev": "b60bcb312c7d55f1d638aa1a5143696e6586e76d",
         "type": "github"
       }
     },
@@ -437,14 +437,14 @@
     },
     "nixpkgs-lib_2": {
       "locked": {
-        "lastModified": 1725233747,
-        "narHash": "sha256-Ss8QWLXdr2JCBPcYChJhz4xJm+h/xjl4G0c0XlP6a74=",
+        "lastModified": 1733096140,
+        "narHash": "sha256-1qRH7uAUsyQI7R1Uwl4T+XvdNv778H0Nb5njNrqvylY=",
         "type": "tarball",
-        "url": "https://github.com/NixOS/nixpkgs/archive/356624c12086a18f2ea2825fed34523d60ccc4e3.tar.gz"
+        "url": "https://github.com/NixOS/nixpkgs/archive/5487e69da40cbd611ab2cadee0b4637225f7cfae.tar.gz"
       },
       "original": {
         "type": "tarball",
-        "url": "https://github.com/NixOS/nixpkgs/archive/356624c12086a18f2ea2825fed34523d60ccc4e3.tar.gz"
+        "url": "https://github.com/NixOS/nixpkgs/archive/5487e69da40cbd611ab2cadee0b4637225f7cfae.tar.gz"
       }
     },
     "nixpkgs-lib_3": {

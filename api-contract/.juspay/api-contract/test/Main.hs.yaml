@@ -1,3 +1,39 @@
+A:
+  caseType: null
+  dataConstructors:
+    A:
+      fields':
+        id'''': Maybe Text
+      sumTypes: []
+  instances:
+    parseJSON:
+      fieldsList: []
+      typeOfInstance: Derived
+    toEncoding:
+      fieldsList: []
+      typeOfInstance: Derived
+    toJSON:
+      fieldsList: []
+      typeOfInstance: Derived
+  typeKind: data
+B:
+  caseType: null
+  dataConstructors:
+    B:
+      fields':
+        id''': Maybe Text
+      sumTypes: []
+  instances:
+    parseJSON:
+      fieldsList: []
+      typeOfInstance: Derived
+    toEncoding:
+      fieldsList: []
+      typeOfInstance: Derived
+    toJSON:
+      fieldsList: []
+      typeOfInstance: Derived
+  typeKind: data
 RefundAttempt:
   caseType: null
   dataConstructors:
@@ -33,7 +69,6 @@ RefundAttempt:
       fieldsList: []
       typeOfInstance: Derived
   typeKind: data
-
 RefundAttempt':
   caseType: null
   dataConstructors:
