@@ -32,9 +32,9 @@ data RefundAttempt' = RefundAttempt'
  }
  deriving (Show, Eq, Generic)
 
-deriving instance Data RefundAttempt'
-deriving instance ToJSON RefundAttempt'
-deriving instance FromJSON RefundAttempt'
+data B = B
+ { id'''                :: Maybe Text}
+  deriving (Show, Eq, Generic)
 
 data RefundAttempt = RefundAttempt
  { id'                :: Maybe Text
@@ -84,3 +84,17 @@ instance FromJSON RefundAttempt where
    last_modified <- o .:? "last_modified"
    pure $ RefundAttempt {..}
 
+
+deriving instance Data RefundAttempt'
+deriving instance ToJSON RefundAttempt'
+deriving instance FromJSON RefundAttempt'
+
+deriving instance ToJSON B
+deriving instance FromJSON B
+
+data A = A
+ { id''''                :: Maybe Text}
+  deriving (Show, Eq, Generic)
+
+deriving instance ToJSON A
+deriving instance FromJSON A
