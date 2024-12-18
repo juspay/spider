@@ -40,6 +40,10 @@ import qualified Network.WebSockets as WS
 import System.Environment (lookupEnv)
 import GHC.IO (unsafePerformIO)
 #if __GLASGOW_HASKELL__ >= 900
+import GHC.Driver.Errors
+import GHC.Driver.Session
+import GHC.Data.Bag
+import GHC.Types.Error
 import GHC.Core.TyCo.Rep
 import GHC.Core.TyCon
 import GHC.Core.DataCon
@@ -53,10 +57,10 @@ import GHC.Driver.Env
 import GHC.Tc.Types
 import GHC.Unit.Module.ModSummary
 import GHC.Utils.Outputable (showSDocUnsafe,ppr)
-import GHC.Data.Bag (bagToList)
 import GHC.Types.Name hiding (varName)
 import GHC.Types.Var
 import qualified Data.Aeson.KeyMap as HM
+import GHC.Unit.Module.ModGuts
 #else
 import TyCoRep
 import DataCon
@@ -79,17 +83,21 @@ plugin =
         { typeCheckResultAction = fDep
         , pluginRecompile = (\_ -> return NoForceRecompile)
         , parsedResultAction = collectDecls
+#if __GLASGOW_HASKELL__ >= 900
         , desugarResultAction = handleWarns
+#endif
         }
 
+#if __GLASGOW_HASKELL__ >= 900
 handleWarns :: [CommandLineOption] -> (Maybe ModSummary) -> TcGblEnv -> ModGuts -> Hsc ModGuts
 handleWarns _ _ _ x =do
     dflags <- getDynFlags
     logger <- getLogger
     warnings <- getWarnings
+    liftIO $ print $ map (errMsgReason) $ bagToList warnings 
     liftIO $ printOrThrowWarnings logger dflags warnings
     clearWarnings
-    x
+    return x
 
     where
         getWarnings :: Hsc WarningMessages
@@ -97,7 +105,7 @@ handleWarns _ _ _ x =do
 
         clearWarnings :: Hsc ()
         clearWarnings = Hsc $ \_ _ -> return ((), emptyBag)
-
+#endif
 
 sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
 sendFileToWebSocketServer cliOptions path data_ =
