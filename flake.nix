@@ -37,17 +37,17 @@
       systems = import inputs.systems;
       imports = [ inputs.haskell-flake.flakeModule ];
       perSystem = { self', pkgs, system, ... }: 
-      let ghc-perf-tools-overlay-ghc9 = self: super: {
+      let ghc-desugar-plugin-overlay-ghc9 = self: super: {
         haskell = super.haskell // {
           compiler = super.haskell.compiler // {
-            ghc928-perf-events = (super.haskell.compiler.ghc928.overrideAttrs (drv: {
+            ghc928-desugar-plugin = (super.haskell.compiler.ghc928.overrideAttrs (drv: {
               patches = drv.patches ++ [ ./ghc-patches/desugar_plugin_support.patch ];
             }));
           };
           packages = super.haskell.packages // {
-            ghc928-perf-events = super.haskell.packages.ghc928.override {
-              buildHaskellPackages = self.buildPackages.haskell.packages.ghc928-perf-events;
-              ghc = self.buildPackages.haskell.compiler.ghc928-perf-events;
+            ghc928-desugar-plugin = super.haskell.packages.ghc928.override {
+              buildHaskellPackages = self.buildPackages.haskell.packages.ghc928-desugar-plugin;
+              ghc = self.buildPackages.haskell.compiler.ghc928-desugar-plugin;
             };
           };
         };
@@ -55,7 +55,7 @@
       in {
         _module.args.pkgs = import inputs.nixpkgs {
           overlays = [
-            ghc-perf-tools-overlay-ghc9
+            ghc-desugar-plugin-overlay-ghc9
           ];
           inherit system;
         };
@@ -112,7 +112,7 @@
           # basePackages = pkgs.haskell.packages.ghc8107;
           # basePackages = pkgs.haskell.packages.ghc92;
           # ghc-patches/desugar_plugin_support.patch
-          basePackages = pkgs.haskell.packages.ghc928-perf-events;
+          basePackages = pkgs.haskell.packages.ghc928-desugar-plugin;
           imports = [
             inputs.references.haskellFlakeProjectModules.output
             inputs.classyplate.haskellFlakeProjectModules.output
