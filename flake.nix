@@ -14,6 +14,8 @@
     beam.flake = false;
     large-records.url = "github:eswar2001/large-records/ghc928-qualified-prelude";
     large-records.inputs.beam.follows = "beam";
+    ghc928.url = "github:eswar2001/ghc/de_sugar_plugin_support";
+    ghc928.flake = false;
 
     # ghc 8.10.7 packages
     ghc8-nixpkgs.url = "github:nixos/nixpkgs/43e3b6af08f29c4447a6073e3d5b86a4f45dd420";
@@ -88,7 +90,55 @@
           # };
           projectFlakeName = "spider";
           # basePackages = pkgs.haskell.packages.ghc8107;
-          basePackages = pkgs.haskell.packages.ghc92;
+          # basePackages = pkgs.haskell.packages.ghc92;
+          basePackages =
+              let
+                ghc928drv = pkgs.haskell.compiler.ghc928.override {
+                  enableDocs = false;
+                  # enableProfiledLibs = false;
+                  # enableHaddockProgram = false;
+                  # pkgs = import <nixpkgs> {}
+                  # builtins.attrNames pkgs.haskell.compiler.ghc928
+                  # "autoSignDarwinBinariesHook"
+                  # "autoconf"
+                  # "automake"
+                  # "bash"
+                  # "bootPkgs"
+                  # "buildPackages"
+                  # "buildTargetLlvmPackages"
+                  # "coreutils"
+                  # "disableLargeAddressSpace"
+                  # "enableHaddockProgram"
+                  # "enableNativeBignum"
+                  # "enableRelocatedStaticLibs"
+                  # "enableShared"
+                  # "enableTerminfo"
+                  # "enableUnregisterised"
+                  # "fetchpatch"
+                  # "fetchurl"
+                  # "ghcFlavour"
+                  # "glibcLocales"
+                  # "gmp"
+                  # "lib"
+                  # "libffi"
+                  # "libiconv"
+                  # "llvmPackages"
+                  # "m4"
+                  # "ncurses"
+                  # "perl"
+                  # "pkgsBuildTarget"
+                  # "pkgsHostTarget"
+                  # "python3"
+                  # "sphinx"
+                  # "stdenv"
+                  # "targetPackages"
+                  # "useLLVM"
+                  # "xattr"
+                };
+              in pkgs.haskell.packages.ghc928.override {
+                  ghc = ghc928drv;
+                  buildHaskellPackages = pkgs.buildPackages.haskell.packages.ghc928;
+                };
           imports = [
             inputs.references.haskellFlakeProjectModules.output
             inputs.classyplate.haskellFlakeProjectModules.output
