@@ -47,7 +47,7 @@ import GHC.Hs.Pat
 import GHC.Unit.Types
 import GHC
 import GHC.Types.SourceText
-import GHC.Driver.Plugins (Plugin(..),CommandLineOption,defaultPlugin,PluginRecompile(..))
+import GHC.Driver.Plugins
 import GHC.Types.Name.Reader
 import GHC.Driver.Env
 import GHC.Tc.Types
@@ -79,7 +79,25 @@ plugin =
         { typeCheckResultAction = fDep
         , pluginRecompile = (\_ -> return NoForceRecompile)
         , parsedResultAction = collectDecls
+        , desugarResultAction = handleWarns
         }
+
+handleWarns :: [CommandLineOption] -> (Maybe ModSummary) -> TcGblEnv -> ModGuts -> Hsc ModGuts
+handleWarns _ _ _ x =do
+    dflags <- getDynFlags
+    logger <- getLogger
+    warnings <- getWarnings
+    liftIO $ printOrThrowWarnings logger dflags warnings
+    clearWarnings
+    x
+
+    where
+        getWarnings :: Hsc WarningMessages
+        getWarnings = Hsc $ \_ w -> return (w, w)
+
+        clearWarnings :: Hsc ()
+        clearWarnings = Hsc $ \_ _ -> return ((), emptyBag)
+
 
 sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
 sendFileToWebSocketServer cliOptions path data_ =

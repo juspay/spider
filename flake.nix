@@ -36,11 +36,31 @@
     flake-parts.lib.mkFlake { inherit inputs; } ({ withSystem, ...}: {
       systems = import inputs.systems;
       imports = [ inputs.haskell-flake.flakeModule ];
-
-      perSystem = { self', pkgs, system, ... }: {
+      perSystem = { self', pkgs, system, ... }: 
+      let ghc-perf-tools-overlay-ghc9 = self: super: {
+        haskell = super.haskell // {
+          compiler = super.haskell.compiler // {
+            ghc928-perf-events = (super.haskell.compiler.ghc928.overrideAttrs (drv: {
+              patches = drv.patches ++ [ ./ghc-patches/desugar_plugin_support.patch ];
+            }));
+          };
+          packages = super.haskell.packages // {
+            ghc928-perf-events = super.haskell.packages.ghc928.override {
+              buildHaskellPackages = self.buildPackages.haskell.packages.ghc928-perf-events;
+              ghc = self.buildPackages.haskell.compiler.ghc928-perf-events;
+            };
+          };
+        };
+      };
+      in {
+        _module.args.pkgs = import inputs.nixpkgs {
+          overlays = [
+            ghc-perf-tools-overlay-ghc9
+          ];
+          inherit system;
+        };
         # Typically, you just want a single project named "default". But
         # multiple projects are also possible, each using different GHC version.
-
         # GHC 8 support
         haskellProjects.ghc8 = {
           projectFlakeName = "spider";
@@ -91,54 +111,8 @@
           projectFlakeName = "spider";
           # basePackages = pkgs.haskell.packages.ghc8107;
           # basePackages = pkgs.haskell.packages.ghc92;
-          basePackages =
-              let
-                ghc928drv = pkgs.haskell.compiler.ghc928.override {
-                  enableDocs = false;
-                  # enableProfiledLibs = false;
-                  # enableHaddockProgram = false;
-                  # pkgs = import <nixpkgs> {}
-                  # builtins.attrNames pkgs.haskell.compiler.ghc928
-                  # "autoSignDarwinBinariesHook"
-                  # "autoconf"
-                  # "automake"
-                  # "bash"
-                  # "bootPkgs"
-                  # "buildPackages"
-                  # "buildTargetLlvmPackages"
-                  # "coreutils"
-                  # "disableLargeAddressSpace"
-                  # "enableHaddockProgram"
-                  # "enableNativeBignum"
-                  # "enableRelocatedStaticLibs"
-                  # "enableShared"
-                  # "enableTerminfo"
-                  # "enableUnregisterised"
-                  # "fetchpatch"
-                  # "fetchurl"
-                  # "ghcFlavour"
-                  # "glibcLocales"
-                  # "gmp"
-                  # "lib"
-                  # "libffi"
-                  # "libiconv"
-                  # "llvmPackages"
-                  # "m4"
-                  # "ncurses"
-                  # "perl"
-                  # "pkgsBuildTarget"
-                  # "pkgsHostTarget"
-                  # "python3"
-                  # "sphinx"
-                  # "stdenv"
-                  # "targetPackages"
-                  # "useLLVM"
-                  # "xattr"
-                };
-              in pkgs.haskell.packages.ghc928.override {
-                  ghc = ghc928drv;
-                  buildHaskellPackages = pkgs.buildPackages.haskell.packages.ghc928;
-                };
+          # ghc-patches/desugar_plugin_support.patch
+          basePackages = pkgs.haskell.packages.ghc928-perf-events;
           imports = [
             inputs.references.haskellFlakeProjectModules.output
             inputs.classyplate.haskellFlakeProjectModules.output
