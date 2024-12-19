@@ -6,3 +6,4 @@ packages:
   ./api-contract
   ./dc
   ./endpoints
+  ./warner

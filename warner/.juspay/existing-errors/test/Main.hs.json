@@ -1,0 +1,11 @@
+[
+    {
+        "diagnostic": "Pattern match(es) are non-exhaustive\nIn an equation for ‘test’: Patterns of type ‘A’ not matched: C",
+        "reason": {
+            "flag": "Opt_WarnIncompletePatterns",
+            "type": "Reason"
+        },
+        "severity": "SevWarning",
+        "srcSpan": "test/Main.hs:8:1-13"
+    }
+]
