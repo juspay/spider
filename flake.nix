@@ -14,6 +14,8 @@
     beam.flake = false;
     large-records.url = "github:eswar2001/large-records/ghc928-qualified-prelude";
     large-records.inputs.beam.follows = "beam";
+    ghc928.url = "github:eswar2001/ghc/de_sugar_plugin_support";
+    ghc928.flake = false;
 
     # ghc 8.10.7 packages
     ghc8-nixpkgs.url = "github:nixos/nixpkgs/43e3b6af08f29c4447a6073e3d5b86a4f45dd420";
@@ -34,11 +36,31 @@
     flake-parts.lib.mkFlake { inherit inputs; } ({ withSystem, ...}: {
       systems = import inputs.systems;
       imports = [ inputs.haskell-flake.flakeModule ];
-
-      perSystem = { self', pkgs, system, ... }: {
+      perSystem = { self', pkgs, system, ... }: 
+      let ghc-desugar-plugin-overlay-ghc9 = self: super: {
+        haskell = super.haskell // {
+          compiler = super.haskell.compiler // {
+            ghc928-desugar-plugin = (super.haskell.compiler.ghc928.overrideAttrs (drv: {
+              patches = drv.patches ++ [ ./ghc-patches/desugar_plugin_support.patch ];
+            }));
+          };
+          packages = super.haskell.packages // {
+            ghc928-desugar-plugin = super.haskell.packages.ghc928.override {
+              buildHaskellPackages = self.buildPackages.haskell.packages.ghc928-desugar-plugin;
+              ghc = self.buildPackages.haskell.compiler.ghc928-desugar-plugin;
+            };
+          };
+        };
+      };
+      in {
+        _module.args.pkgs = import inputs.nixpkgs {
+          overlays = [
+            ghc-desugar-plugin-overlay-ghc9
+          ];
+          inherit system;
+        };
         # Typically, you just want a single project named "default". But
         # multiple projects are also possible, each using different GHC version.
-
         # GHC 8 support
         haskellProjects.ghc8 = {
           projectFlakeName = "spider";
@@ -88,7 +110,9 @@
           # };
           projectFlakeName = "spider";
           # basePackages = pkgs.haskell.packages.ghc8107;
-          basePackages = pkgs.haskell.packages.ghc92;
+          # basePackages = pkgs.haskell.packages.ghc92;
+          # ghc-patches/desugar_plugin_support.patch
+          basePackages = pkgs.haskell.packages.ghc928-desugar-plugin;
           imports = [
             inputs.references.haskellFlakeProjectModules.output
             inputs.classyplate.haskellFlakeProjectModules.output

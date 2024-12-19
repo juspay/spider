@@ -1,0 +1,77 @@
+diff --git a/compiler/GHC/Driver/Main.hs b/compiler/GHC/Driver/Main.hs
+index 4dde0700535..708a511cb36 100644
+--- a/compiler/GHC/Driver/Main.hs
++++ b/compiler/GHC/Driver/Main.hs
+@@ -657,19 +657,22 @@ tcRnModule' sum save_rn_syntax mod = do
+ -- | Convert a typechecked module to Core
+ hscDesugar :: HscEnv -> ModSummary -> TcGblEnv -> IO ModGuts
+ hscDesugar hsc_env mod_summary tc_result =
+-    runHsc hsc_env $ hscDesugar' (ms_location mod_summary) tc_result
++    runHsc hsc_env $ hscDesugar' (Just mod_summary) (ms_location mod_summary) tc_result
+ 
+-hscDesugar' :: ModLocation -> TcGblEnv -> Hsc ModGuts
+-hscDesugar' mod_location tc_result = do
++hscDesugar' :: Maybe ModSummary -> ModLocation -> TcGblEnv -> Hsc ModGuts
++hscDesugar' mod_summary mod_location tc_result = do
+     hsc_env <- getHscEnv
+     r <- ioMsgMaybe $
+       {-# SCC "deSugar" #-}
+       deSugar hsc_env mod_location tc_result
+ 
++    -- Run plugins' desugar actions
++    r' <- withPlugins hsc_env (\p opts mod_guts -> desugarResultAction p opts mod_summary tc_result mod_guts) r
++
+     -- always check -Werror after desugaring, this is the last opportunity for
+     -- warnings to arise before the backend.
+     handleWarnings
+-    return r
++    return r'
+ 
+ -- | Make a 'ModDetails' from the results of typechecking. Used when
+ -- typechecking only, as opposed to full compilation.
+@@ -949,7 +952,7 @@ finish summary tc_result mb_old_hash = do
+   -- HsSrcFile Module.
+   mb_desugar <-
+       if ms_mod summary /= gHC_PRIM && hsc_src == HsSrcFile
+-      then Just <$> hscDesugar' (ms_location summary) tc_result
++      then Just <$> hscDesugar' (Just summary) (ms_location summary) tc_result
+       else pure Nothing
+ 
+   -- Simplify, if appropriate, and (whether we simplified or not) generate an
+@@ -2003,7 +2006,7 @@ hscParsedDecls hsc_env decls = runInteractiveHsc hsc_env $ do
+                                       ml_hi_file   = panic "hsDeclsWithLocation:ml_hi_file",
+                                       ml_obj_file  = panic "hsDeclsWithLocation:ml_obj_file",
+                                       ml_hie_file  = panic "hsDeclsWithLocation:ml_hie_file" }
+-    ds_result <- hscDesugar' iNTERACTIVELoc tc_gblenv
++    ds_result <- hscDesugar' Nothing iNTERACTIVELoc tc_gblenv
+ 
+     {- Simplify -}
+     simpl_mg <- liftIO $ do
+diff --git a/compiler/GHC/Driver/Plugins.hs b/compiler/GHC/Driver/Plugins.hs
+index 2d8bc0ad856..b6eb3405e53 100644
+--- a/compiler/GHC/Driver/Plugins.hs
++++ b/compiler/GHC/Driver/Plugins.hs
+@@ -56,6 +56,7 @@ import GHC.Driver.Phases
+ import GHC.Unit.Module
+ import GHC.Unit.Module.ModIface
+ import GHC.Unit.Module.ModSummary
++import GHC.Unit.Module.ModGuts
+ 
+ import qualified GHC.Tc.Types
+ import GHC.Tc.Types ( TcGblEnv, IfM, TcM, tcg_rn_decls, tcg_rn_exports  )
+@@ -129,6 +130,7 @@ data Plugin = Plugin {
+     -- the loading of the plugin interface. Tools that rely on information from
+     -- modules other than the currently compiled one should implement this
+     -- function.
++  , desugarResultAction :: [CommandLineOption] -> (Maybe ModSummary) -> TcGblEnv -> ModGuts -> Hsc ModGuts
+   }
+ 
+ -- Note [Source plugins]
+@@ -221,6 +223,7 @@ defaultPlugin = Plugin {
+       , typeCheckResultAction = \_ _ -> return
+       , spliceRunAction       = \_ -> return
+       , interfaceLoadAction   = \_ -> return
++      , desugarResultAction   = \_ _ _ guts -> return guts
+     }
+ 
+ 
