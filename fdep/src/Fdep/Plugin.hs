@@ -40,11 +40,14 @@ import qualified Network.WebSockets as WS
 import System.Environment (lookupEnv)
 import GHC.IO (unsafePerformIO)
 #if __GLASGOW_HASKELL__ >= 900
-import GHC.Driver.Errors
-import GHC.Driver.Session
-import GHC.Data.Bag
-import GHC.Types.Error
+-- import GHC.Driver.Errors
+-- import GHC.Driver.Session
+import GHC.Tc.Utils.TcType
+import GHC.Core.Type hiding (tyConsOfType)
 import GHC.Core.TyCo.Rep
+import GHC.Data.Bag
+-- import GHC.Types.Error
+-- import GHC.Core.TyCo.Rep
 import GHC.Core.TyCon
 import GHC.Core.DataCon
 import GHC.Hs.Pat
@@ -60,7 +63,7 @@ import GHC.Utils.Outputable (showSDocUnsafe,ppr)
 import GHC.Types.Name hiding (varName)
 import GHC.Types.Var
 import qualified Data.Aeson.KeyMap as HM
-import GHC.Unit.Module.ModGuts
+-- import GHC.Unit.Module.ModGuts
 #else
 import TyCoRep
 import DataCon
@@ -83,29 +86,7 @@ plugin =
         { typeCheckResultAction = fDep
         , pluginRecompile = (\_ -> return NoForceRecompile)
         , parsedResultAction = collectDecls
-#if __GLASGOW_HASKELL__ >= 900
-        , desugarResultAction = handleWarns
-#endif
         }
-
-#if __GLASGOW_HASKELL__ >= 900
-handleWarns :: [CommandLineOption] -> (Maybe ModSummary) -> TcGblEnv -> ModGuts -> Hsc ModGuts
-handleWarns _ _ _ x =do
-    dflags <- getDynFlags
-    logger <- getLogger
-    warnings <- getWarnings
-    liftIO $ print $ map (errMsgReason) $ bagToList warnings 
-    liftIO $ printOrThrowWarnings logger dflags warnings
-    clearWarnings
-    return x
-
-    where
-        getWarnings :: Hsc WarningMessages
-        getWarnings = Hsc $ \_ w -> return (w, w)
-
-        clearWarnings :: Hsc ()
-        clearWarnings = Hsc $ \_ _ -> return ((), emptyBag)
-#endif
 
 sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
 sendFileToWebSocketServer cliOptions path data_ =
@@ -433,7 +414,7 @@ processAndSendTypeDetails cliOptions con path keyFunction typesUsed =
 getTypeDetails :: Type -> [(String,Type)]
 getTypeDetails ty = map (\x -> (nameStableString $ tyConName x,ty)) $ tyConsOfType ty
 
-tyConsOfType :: Type -> [TyCon]
+tyConsOfType :: Type -> [(TyCon)]
 tyConsOfType ty = case ty of
     TyConApp tc tys -> tc : concatMap tyConsOfType tys
     AppTy t1 t2     -> tyConsOfType t1 ++ tyConsOfType t2
@@ -447,6 +428,34 @@ tyConsOfType ty = case ty of
     CoercionTy _    -> []
     LitTy _         -> []
     TyVarTy _       -> []
+
+
+processFunctionInputOutput :: Type -> CliOptions -> WS.Connection -> Text -> Text -> IO ()
+processFunctionInputOutput type_ cliOptions con _path nestedNameWithParent = do
+    let info = HM.fromList $ extractDetailsFromBind (type_)
+    data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("functionIO", toJSON info)])
+    sendTextData' cliOptions con _path data_
+
+extractDetailsFromBind :: Type -> [(HM.Key,A.Value)]
+extractDetailsFromBind ty =
+    let -- Split the type into quantified variables, constraints, and the core function type
+        (tyVars, constraints, coreTy) = tcSplitSigmaTy ty
+        -- Process each type
+        processType ty' =
+            let (headTy, argTys) = splitAppTys ty'
+            in (showSDocUnsafe $ ppr headTy, map (showSDocUnsafe . ppr) argTys)
+        -- Process arguments and result
+        (argTys', resTy) = splitFunTys coreTy
+        processedArgs = map (processType . scaledThing) argTys'
+        processedRes = processType resTy
+        -- Convert quantified variables and constraints to strings
+        tyVarStrs = map (showSDocUnsafe . ppr) tyVars
+        constraintStrs = map (showSDocUnsafe . ppr) constraints
+        -- Combine the type's metadata into a human-readable format
+        quantifiedPart = if null tyVarStrs then "" else "forall " ++ unwords tyVarStrs ++ ". "
+        constraintPart = if null constraintStrs then "" else Data.List.intercalate ", " constraintStrs ++ " => "
+    in [("inputs",toJSON processedArgs), ("outputs",toJSON (quantifiedPart ++ constraintPart ++ fst processedRes, snd processedRes))]
+
 
 loopOverLHsBindLR :: CliOptions -> WS.Connection -> (Maybe Text) -> Text -> LHsBindLR GhcTc GhcTc -> IO ()
 loopOverLHsBindLR cliOptions con mParentName path (L _ AbsBinds{abs_binds = binds}) =
@@ -475,6 +484,7 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                         nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
                         data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
                         t1 <- getCurrentTime
+                        processFunctionInputOutput (varType (unLoc id)) cliOptions con _path nestedNameWithParent
                         sendTextData' cliOptions con _path data_
                         processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
                         mapM_ (\x -> do
@@ -494,6 +504,7 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                     data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
                     t1 <- getCurrentTime
                     sendTextData' cliOptions con _path data_
+                    processFunctionInputOutput (varType (unLoc id)) cliOptions con _path nestedNameWithParent
                     processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
                     mapM_ (\x -> do
                                 eres :: Either SomeException () <- try $ processMatch (nestedNameWithParent) _path x
@@ -515,11 +526,12 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
 #endif
             nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
             processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
+            processFunctionInputOutput (varType (var)) cliOptions con _path nestedNameWithParent
             if (maybeBool $ tc_funcs cliOptions)
                 then mapM_ (processExpr (nestedNameWithParent) _path) (stmts)
                 else when (not $ "$$" `T.isInfixOf` name) $
                         mapM_ (processExpr (nestedNameWithParent) _path) (stmts)
-        (PatBind{pat_lhs = pat, pat_rhs = expr}) -> do
+        (PatBind{pat_lhs = pat, pat_rhs = expr,pat_ext=pat_ext}) -> do
             let stmts = (expr ^? biplateRef :: [LHsExpr GhcTc])
                 ids = (pat ^? biplateRef :: [LIdP GhcTc])
                 fName = (maybe (T.pack "::") (T.pack . nameStableString . getName) $ (headMaybe ids))
@@ -527,6 +539,7 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) $ locA location)))
             nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
             processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
+            processFunctionInputOutput (pat_ext) cliOptions con _path nestedNameWithParent
             if (maybeBool $ tc_funcs cliOptions)
                 then mapM_ (processExpr nestedNameWithParent _path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail' ids))
                 else when (not $ "$$" `T.isInfixOf` name) $
