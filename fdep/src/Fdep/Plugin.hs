@@ -71,8 +71,9 @@ import qualified Data.HashMap.Strict as HM
 import Bag (bagToList)
 import DynFlags ()
 import GHC
+import TcType
 import BasicTypes
-import GhcPlugins (tyConName,rdrNameOcc,occNameString,RdrName (..),HsParsedModule, Hsc, Plugin (..), PluginRecompile (..), Var (..), getOccString, hpm_module, ppr, showSDocUnsafe)
+import GhcPlugins (splitAppTys,splitFunTys,tyConName,rdrNameOcc,occNameString,RdrName (..),HsParsedModule, Hsc, Plugin (..), PluginRecompile (..), Var (..), getOccString, hpm_module, ppr, showSDocUnsafe)
 import HscTypes (msHsFilePath)
 import Name (nameStableString)
 import Outputable ()
@@ -436,7 +437,13 @@ processFunctionInputOutput type_ cliOptions con _path nestedNameWithParent = do
     data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("functionIO", toJSON info)])
     sendTextData' cliOptions con _path data_
 
+#if __GLASGOW_HASKELL__ >= 900
+scaledThing' = scaledThing
 extractDetailsFromBind :: Type -> [(HM.Key,A.Value)]
+#else
+scaledThing' a = a
+extractDetailsFromBind :: Type -> [(Text,A.Value)]
+#endif
 extractDetailsFromBind ty =
     let -- Split the type into quantified variables, constraints, and the core function type
         (tyVars, constraints, coreTy) = tcSplitSigmaTy ty
@@ -446,7 +453,7 @@ extractDetailsFromBind ty =
             in (showSDocUnsafe $ ppr headTy, map (showSDocUnsafe . ppr) argTys)
         -- Process arguments and result
         (argTys', resTy) = splitFunTys coreTy
-        processedArgs = map (processType . scaledThing) argTys'
+        processedArgs = map (processType . scaledThing') argTys'
         processedRes = processType resTy
         -- Convert quantified variables and constraints to strings
         tyVarStrs = map (showSDocUnsafe . ppr) tyVars
