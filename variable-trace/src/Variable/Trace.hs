@@ -83,55 +83,57 @@ variableCollect opts modSummary tcEnv = do
     allVars <- mapM (loopOverLHsBindLR moduleName') (bagToList $ tcg_binds tcEnv)
     -- print 
     -- liftIO $ print ("Complete Before",HM.unions allVars)
-    let completeH = lookUpAndConcat $ HM.unions allVars
-    let completeHM = HM.map (\(WrapperFunInfo fun x) -> WrapperFunInfo fun $ filter (\funVal -> not (module_name funVal == "WhereClause")) x) completeH
+    let completeH = HM.unions allVars
+    liftIO $ print ("Complete Before", completeH)
+    let completeHM = HM.map (\(WrapperFunInfo fun x) -> WrapperFunInfoFile fun $ HM.map (\val -> transformFromNameStableString (funName val) (args val) ([]) moduleName') x) completeH -- HM.map (\(WrapperFunInfo fun x) -> WrapperFunInfo fun $ filter (\funVal -> not (module_name funVal == "WhereClause")) x) completeH
     -- liftIO $ print ("Complete",completeHM)
-    filteredHM :: [(String, WrapperFunInfo)]  <- 
-             mapM (\(functionName',functionValueList) -> do
-                            res <- concat <$> (mapM (\functionValue -> 
-                                        if ((any (\y -> (y `isInfixOf` package_name functionValue && package_name functionValue /= "")) pkg_names ) ||  mainPackage `isInfixOf` package_name functionValue) 
-                                            then pure ([functionValue])
-                                            -- else if mainPackage `isInfixOf` package_name functionValue
-                                            --     then do
-                                            --         val <- readDump (module_name functionValue) (functionName functionValue)
-                                            --         let args = HM.fromList $ zip (arguments val) (arguments functionValueList)
-                                            --         -- liftIO $ print ("ARGUE", functionName functionValue, args)
-                                            --         pure $ map (\x -> x{mainArgs = map (\(_,y) -> maybe (trace ("NOTFOUND " ++ y ++ show args )( ("NOTFOUND " ++ show args,y))) (\found -> (found,y)) $ HM.lookup y args) $ mainArgs x}) (funDep val)
-                                                    -- pure (funDep val)
-                                            else do
-                                              -- liftIO $ print ("ARGUE 2",functionValue)
-                                              pure mempty
+    -- filteredHM :: [(String, WrapperFunInfo)]  <- 
+    --          mapM (\(functionName',functionValueList) -> do
+    --                         res <- concat <$> (mapM (\functionValue -> 
+    --                                     if ((any (\y -> (y `isInfixOf` package_name functionValue && package_name functionValue /= "")) pkg_names ) ||  mainPackage `isInfixOf` package_name functionValue) 
+    --                                         then pure ([functionValue])
+    --                                         -- else if mainPackage `isInfixOf` package_name functionValue
+    --                                         --     then do
+    --                                         --         val <- readDump (module_name functionValue) (functionName functionValue)
+    --                                         --         let args = HM.fromList $ zip (arguments val) (arguments functionValueList)
+    --                                         --         -- liftIO $ print ("ARGUE", functionName functionValue, args)
+    --                                         --         pure $ map (\x -> x{mainArgs = map (\(_,y) -> maybe (trace ("NOTFOUND " ++ y ++ show args )( ("NOTFOUND " ++ show args,y))) (\found -> (found,y)) $ HM.lookup y args) $ mainArgs x}) (funDep val)
+    --                                                 -- pure (funDep val)
+    --                                         else do
+    --                                           -- liftIO $ print ("ARGUE 2",functionValue)
+    --                                           pure mempty
 
-                                         ) $ funDep functionValueList)
-                            pure (functionName', WrapperFunInfo (arguments functionValueList) res)
-                    ) $ HM.toList completeHM
+    --                                      ) $ funDep functionValueList)
+    --                         pure (functionName', WrapperFunInfo (arguments functionValueList) res)
+    --                 ) $ HM.toList completeHM
 -- package_name :: String
 --   , module_name :: String
 --   , functionName    :: String
 --   , funArgs :: [String]
-    liftIO $ B.writeFile (modulePath <> ".json") $ (encode $ HM.fromList filteredHM)
+    liftIO $ B.writeFile (modulePath <> ".json") $ (encode completeHM)
     pure tcEnv
 
-lookUpAndConcat :: HM.HashMap String WrapperFunInfo -> HM.HashMap String WrapperFunInfo
-lookUpAndConcat hm = HM.map (\val -> WrapperFunInfo (arguments val) $ nub $ foldl (\acc x -> nub $ acc ++ lookupEachKey (arguments val) hm [] x) [] (funDep val) ) hm
+-- lookUpAndConcat :: HM.HashMap String WrapperFunInfo -> HM.HashMap String WrapperFunInfo
+-- lookUpAndConcat hm = HM.map (\val -> WrapperFunInfo (arguments val) $ nub $ foldl (\acc x -> nub $ acc ++ lookupEachKey (arguments val) hm [] x) [] (funDep val) ) hm
 
-lookupEachKey :: [String] -> HM.HashMap String WrapperFunInfo -> [String] -> FunctionDetailsInfo -> [FunctionDetailsInfo]
-lookupEachKey argList hm alreadyVisited x = case HM.lookup (functionName x) hm of
-  Just val -> [x] ++ if functionName x `elem` (alreadyVisited) then [] else (nub $ concat $ (lookupEachKey argList hm (alreadyVisited ++ ([functionName x])) <$> (nub (funDep val))))
-  Nothing ->
-    let allArgs = HM.fromList $ zip (snd <$> mainArgs x) argList
-    in [x{mainArgs = map (\(val, y) -> maybe (val,y) (\found -> (val, found)) $ HM.lookup y allArgs) $ mainArgs x}]
+-- lookupEachKey :: [String] -> HM.HashMap String WrapperFunInfo -> [String] -> FunctionDetailsInfo -> [FunctionDetailsInfo]
+-- lookupEachKey argList hm alreadyVisited x = case HM.lookup (functionName x) hm of
+--   Just val -> [x] ++ if functionName x `elem` (alreadyVisited) then [] else (nub $ concat $ (lookupEachKey argList hm (alreadyVisited ++ ([functionName x])) <$> (nub (funDep val))))
+--   Nothing ->
+--     let allArgs = HM.fromList $ zip (snd <$> mainArgs x) argList
+--     in [x{mainArgs = map (\(val, y) -> maybe (val,y) (\found -> (val, found)) $ HM.lookup y allArgs) $ mainArgs x}]
 
 
 resolveArgs :: HM.HashMap String FunctionInfo -> String -> [String] -> [FunctionDetailsInfo] -> String -> [FunctionDetailsInfo]
 resolveArgs hm key argsInput acc modName =
     case HM.lookup key hm of
         Just val ->
-          let argsIn = filter (\x -> x `elem` (args val ++ [funName val])) argsInput
-          in if not $ null argsIn then
-              nub $ acc ++ [transformFromNameStableString (funName val) (args val) (nub $ zip (args val ++ [funName val]) argsIn) modName] else 
-               let resil = foldl' (\inAcc inArgs -> inAcc ++ resolveArgs hm inArgs argsInput acc modName) acc (args val ++ [funName val]) 
-               in if length resil == 0 then acc else acc ++ [transformFromNameStableString (funName val) (args val) ((nub $ concat $ mainArgs <$> resil)) modName]
+          -- let argsIn = filter (\x -> x `elem` (args val ++ [funName val])) argsInput
+          -- in if not $ null argsIn then
+              nub $ acc ++ [transformFromNameStableString (funName val) (args val) (nub $ zip (args val ++ [funName val]) argsInput) modName] 
+              -- else 
+              --  let resil = foldl' (\inAcc inArgs -> inAcc ++ resolveArgs hm inArgs argsInput acc modName) acc (args val ++ [funName val]) 
+              --  in if length resil == 0 then acc else acc ++ [transformFromNameStableString (funName val) (args val) ([]) modName]
         Nothing -> acc
 
 resolveArgs2 :: HM.HashMap String FunctionInfo -> String -> [String] -> [FunctionInfo] -> [FunctionInfo]
@@ -149,14 +151,14 @@ resolveArgs2 hm key argsInput acc =
 moduleNameToLocalPath :: String -> String
 moduleNameToLocalPath x = ("./tmp/varTrace/" <> "src/" <> (intercalate "/" . splitOn "." $ x) ++ ".hs.json")
 
-readDump :: String -> String -> TcM WrapperFunInfo
-readDump moduleName funName = do
-    eitherRes <- liftIO $ (try $ B.readFile (moduleNameToLocalPath moduleName) :: IO (Either SomeException B.ByteString))
-    either (\x -> do
-          -- liftIO $ print $ "ERROR: " ++ show x
-          pure $ WrapperFunInfo [] []) (\res -> case decode res of
-        Just (val :: HM.HashMap String WrapperFunInfo) -> pure $ fromMaybe (WrapperFunInfo [] []) $ HM.lookup funName val
-        Nothing -> pure $ WrapperFunInfo [] []) eitherRes
+-- readDump :: String -> String -> TcM WrapperFunInfo
+-- readDump moduleName funName = do
+--     eitherRes <- liftIO $ (try $ B.readFile (moduleNameToLocalPath moduleName) :: IO (Either SomeException B.ByteString))
+--     either (\x -> do
+--           -- liftIO $ print $ "ERROR: " ++ show x
+--           pure $ WrapperFunInfo [] []) (\res -> case decode res of
+--         Just (val :: HM.HashMap String WrapperFunInfo) -> pure $ fromMaybe (WrapperFunInfo [] []) $ HM.lookup funName val
+--         Nothing -> pure $ WrapperFunInfo [] []) eitherRes
 
 -- ([("$_in$list","")],["num_a12Q","num2_a12R"]
 -- ,fromList [("y_a12V",FunctionInfo {name = "$_in$y", funName = "SomeType", args = ["num_a12Q"]}),("lastStatmentPlugin0",FunctionInfo {name = "lastStatmentPlugin", funName = "$_in$a", args = []}),("a_a12S",FunctionInfo {name = "$_in$a", funName = "getval", args = ["num_a12Q"]}),("x_a12U",FunctionInfo {name = "lastStatmentPlugin", funName = "$main$Sample$getValueIn", args = ["a_a12S"]}),("lastStatmentPlugin1",FunctionInfo {name = "lastStatmentPlugin", funName = "$main$Sample$getValueIn", args = ["a_a12S"]}),("c_a12T",FunctionInfo {name = "$_in$c", funName = "show", args = ["num_a12Q"]})])
@@ -170,13 +172,13 @@ loopOverLHsBindLR modName x@(L _ AbsBinds {abs_binds = binds}) = do
    let listArgs :: [FunctionDetailsInfo] = nub $ HM.foldlWithKey (\acc key val -> (resolveArgs allLetPats key allArgs acc modName)) ([] ::[FunctionDetailsInfo] ) allLetPats
   --  liftIO $ print (funName', allArgs, allLetPats)
   --  liftIO $ print ("ALL arges", allLetPats)
-  --  liftIO $ print ("ALL arge", nub listArgs)
+   liftIO $ print ("ALL arge", funName', allArgs, allLetPats, nub listArgs)
    let argsHm = HM.fromList allArgs1
    let mapped = listArgs -- nub $ map (\x -> transformFromNameStableString (funName x) (args x) (map (\orgi -> ("",orgi)) $ orgArgs x) modName) listArgs
    let mappedARgs =  map (\x -> functionName $ transformFromNameStableString (x) [] [] modName) $ snd <$> allArgs1
   --  liftIO $ print ("ALL argesss", nub mapped)
    let finalResult = nub $ filter (\x -> any (\y -> y `isInfixOf` package_name x && package_name x /= "") (pkg_names ++ [mainPackage])) mapped
-   let finalResultMapped = nub $ map (\x -> x{mainArgs = filter (not . null) $ map (\(val,y) -> (val,functionName $ transformFromNameStableString (fromMaybe y $ HM.lookup y argsHm) [] [] modName)) (mainArgs x) }) finalResult
+   let finalResultMapped = finalResult -- nub $ map (\x -> x{mainArgs = filter (not . null) $ map (\(val,y) -> (val,functionName $ transformFromNameStableString (fromMaybe y $ HM.lookup y argsHm) [] [] modName)) (mainArgs x) }) finalResult
 
     --    allResult = foldl' (\acc ())
 --     name :: String
@@ -195,7 +197,7 @@ loopOverLHsBindLR modName x@(L _ AbsBinds {abs_binds = binds}) = do
 --             ) listArgs
   --  liftIO $ print ("Final", nub finalResultMapped, finalResult )
   --  liftIO $ print ("Final", map (\x -> x{funArgs = [], mainArgs =[]})(finalResultMapped))
-   pure $ HM.singleton (if null funName' then "" else replace "$_in$" "" $ fst $ head funName') $ WrapperFunInfo (mappedARgs) (nub finalResultMapped)--HM.empty -- HM.insert (funName) (allArgs, HM.empty
+   pure $ HM.singleton (if null funName' then "" else replace "$_in$" "" $ fst $ head funName') (WrapperFunInfo mappedARgs allLetPats) -- $ WrapperFunInfo (mappedARgs) (nub finalResultMapped)--HM.empty -- HM.insert (funName) (allArgs, HM.empty
 -- loopOverLHsBindLR (L _ x@(FunBind _ _ matches _)) = 
 loopOverLHsBindLR _ _ = pure HM.empty
 
@@ -590,9 +592,9 @@ processExprCases orgNameNeeded (L _ (HsRecField {hsRecFieldArg = fun})) = proces
 transformFromNameStableString :: (String) -> [String] -> [(String, String)] -> String -> FunctionDetailsInfo
 transformFromNameStableString ( str) isF orgArgs modName =
   let parts = filter (\x -> x /= "") $ splitOn ("$") str
-  in if length parts == 2 then  FunctionDetailsInfo "" (parts !! 0) (parts !! 1) isF orgArgs
-     else if length parts == 3 then FunctionDetailsInfo (parts !! 0) (parts !! 1) (parts !! 2) isF orgArgs
-     else FunctionDetailsInfo mainPackage "WhereClause" str isF orgArgs
+  in if length parts == 2 then  FunctionDetailsInfo "" (parts !! 0) (parts !! 1) isF
+     else if length parts == 3 then FunctionDetailsInfo (parts !! 0) (parts !! 1) (parts !! 2) isF
+     else FunctionDetailsInfo mainPackage "WhereClause" str isF
 
 data FunctionInfo = FunctionInfo
     { name :: String
@@ -603,9 +605,23 @@ data FunctionInfo = FunctionInfo
   deriving (Generic, Show, Eq, Ord)
   deriving (ToJSON, FromJSON)
 
+data FunctionInfoFile = FunctionInfoFile
+    { function :: String
+    , arguments :: [String]
+    }
+  deriving (Generic, Show, Eq, Ord)
+  deriving (ToJSON, FromJSON)
+
+data WrapperFunInfoFile = WrapperFunInfoFile
+  { argumentsFile :: [String]
+  , funDepFile :: HM.HashMap String FunctionDetailsInfo
+  }
+  deriving (Generic, Show, Eq, Ord)
+  deriving (ToJSON, FromJSON)
+
 data WrapperFunInfo = WrapperFunInfo
-  { arguments :: [String]
-  , funDep :: [FunctionDetailsInfo]
+  { arguments' :: [String]
+  , funDep :: HM.HashMap String FunctionInfo
   }
   deriving (Generic, Show, Eq, Ord)
   deriving (ToJSON, FromJSON)
@@ -615,7 +631,6 @@ data FunctionDetailsInfo = FunctionDetailsInfo
   , module_name :: String
   , functionName    :: String
   , funArgs :: [String]
-  , mainArgs :: [(String, String)]
   } deriving (Generic, Show, Eq, Ord)
   deriving (ToJSON, FromJSON)
 

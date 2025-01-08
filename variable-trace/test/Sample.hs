@@ -10,7 +10,8 @@ sample2 :: String -> String -> String
 sample2 a b = do
     let h = a
         j = b
-    mappend h j
+        k = mappend h j
+    k
 
 getValueIn :: String -> IO String
 getValueIn x = do
