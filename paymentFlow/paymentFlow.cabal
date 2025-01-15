@@ -12,7 +12,7 @@ extra-doc-files:    CHANGELOG.md
 
 Flag Dev
   Description: Use ghc options to dump ASTs in dev mode
-  Default:     True
+  Default:     False
   Manual:      True
 
 common common-options
