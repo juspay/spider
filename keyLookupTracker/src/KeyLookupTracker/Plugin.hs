@@ -8,7 +8,10 @@ module KeyLookupTracker.Plugin (plugin) where
 
 import Control.Reference (biplateRef, (^?))
 import Data.Aeson as A
+import qualified Data.ByteString.Lazy.Char8 as Char8
 import Data.List (nub, isInfixOf)
+import Data.Maybe (fromMaybe)
+import Data.Yaml
 import GHC hiding (exprType)
 import Prelude hiding (id)
 import Data.Generics.Uniplate.Data
@@ -16,6 +19,8 @@ import qualified Data.ByteString as DBS
 import Data.List.Extra (intercalate, splitOn)
 import System.Directory (createDirectoryIfMissing)
 import Data.ByteString.Lazy (toStrict)
+import KeyLookupTracker.Types (KeyLookupRules(..), Rules(..), PluginOpts(..), defaultPluginOpts)
+import GHC.Tc.Utils.Monad
 
 #if __GLASGOW_HASKELL__ >= 900
 import GHC.Data.Bag
@@ -40,41 +45,53 @@ plugin = defaultPlugin {
     , pluginRecompile       = purePlugin
     }
 
+parseYAMLFile :: (FromJSON a) => FilePath -> IO (Either ParseException a)
+parseYAMLFile file = decodeFileEither file
+
 purePlugin :: [CommandLineOption] -> IO PluginRecompile
 purePlugin _ = return NoForceRecompile
 
 keyLookupTracker :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
-keyLookupTracker _ modSummary tcEnv = do
+keyLookupTracker opts modSummary tcEnv = do
   let binds = tcg_binds tcEnv
       prefixPath = "./.juspay/lookup-finder/"
       modulePath = prefixPath <> msHsFilePath modSummary
       path = (intercalate "/" . init . splitOn "/") modulePath
+      pluginOpts = case opts of
+          [] -> defaultPluginOpts
+          (x : _) -> 
+            fromMaybe defaultPluginOpts $ A.decode (Char8.pack x)
+      paymentFlowRulesConfigPath = rulesConfigPath pluginOpts
+  parsedPaymentFlowRules <- liftIO $ parseYAMLFile paymentFlowRulesConfigPath
+  rule <- case parsedPaymentFlowRules of
+                Left _ -> pure $ Rules {additionalEligibleLookupFns=[]}
+                Right (rule :: KeyLookupRules) -> pure $ rules rule
   liftIO $ createDirectoryIfMissing True path
-  lookupInfo <- concat <$> mapM checkBind (bagToList binds)
+  lookupInfo <- concat <$> mapM (checkBind rule) (bagToList binds)
   liftIO $ DBS.writeFile (modulePath <> ".json") (toStrict $ A.encode lookupInfo)
   return tcEnv
 
-checkBind :: LHsBindLR GhcTc GhcTc -> TcM [(String, [String])]
-checkBind (L _ (FunBind{..} )) = do
+checkBind :: Rules ->  LHsBindLR GhcTc GhcTc -> TcM [(String, [String])]
+checkBind rule (L _ (FunBind{..} )) = do
   let funMatches = unLoc $ mg_alts fun_matches
-  concat <$> mapM (checkMatch (getVarNameFromIDP $ unLoc fun_id)) funMatches
-checkBind (L _ (AbsBinds {abs_binds = binds})) =
-  concat <$> (mapM checkBind $ bagToList binds)
-checkBind _ = pure []
+  concat <$> mapM (checkMatch rule (getVarNameFromIDP $ unLoc fun_id)) funMatches
+checkBind rule (L _ (AbsBinds {abs_binds = binds})) =
+  concat <$> (mapM (checkBind rule) $ bagToList binds)
+checkBind _ _ = pure []
 
-checkMatch :: String -> LMatch GhcTc (LHsExpr GhcTc) -> TcM [(String, [String])]
-checkMatch coreFn (L _ (Match _ _ _ grhss)) = do
+checkMatch :: Rules -> String -> LMatch GhcTc (LHsExpr GhcTc) -> TcM [(String, [String])]
+checkMatch rule coreFn (L _ (Match _ _ _ grhss)) = do
   let whereBinds = (grhssLocalBinds grhss) ^? biplateRef :: [HsExpr GhcTc]
       nonWhereBinds = (grhssGRHSs grhss) ^? biplateRef :: [HsExpr GhcTc]
-  list <- nub <$> concat <$> mapM loopOverExpr (nonWhereBinds <> whereBinds)
+  list <- nub <$> concat <$> mapM (loopOverExpr rule) (nonWhereBinds <> whereBinds)
   pure [(coreFn ,list)]
 
-loopOverExpr :: HsExpr GhcTc -> TcM [String]
-loopOverExpr expr =
-  pure $ if "lookup" `isInfixOf` (showS expr)
+loopOverExpr :: Rules -> HsExpr GhcTc -> TcM [String]
+loopOverExpr rule expr =
+  pure $ if any (`isInfixOf` (showS expr)) (["lookup"] <> (additionalEligibleLookupFns rule))
     then
       case expr of
-        (HsApp _ a (L _ (HsOverLit _ (OverLit _ _ (HsApp _ _ (L _ (HsLit _ lit))))))) -> [showS lit]
+        (HsApp _ _ (L _ (HsOverLit _ (OverLit _ _ (HsApp _ _ (L _ (HsLit _ lit))))))) -> [showS lit]
         _ -> []
     else []
 
