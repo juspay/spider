@@ -12,7 +12,7 @@ extra-doc-files:    CHANGELOG.md
 
 Flag Dev
   Description: Use ghc options to dump ASTs in dev mode
-  Default:     True
+  Default:     False
   Manual:      True
 
 common common-options
@@ -41,8 +41,9 @@ common common-options
 library
     import:              common-options
     exposed-modules:    
-        KeyLookupTracker.Plugin
+       KeyLookupTracker.Plugin
     other-modules:
+       KeyLookupTracker.Types
     build-depends:
                 bytestring
                 , containers
@@ -87,7 +88,7 @@ test-suite keyLookupTracker-test
         , unordered-containers
     if flag(Dev)
         ghc-options: 
-            -fplugin=KeyLookupTracker.Plugin 
+            -fplugin=KeyLookupTracker.Plugin -fplugin-opt=KeyLookupTracker.Plugin:{"rulesConfigPath":".juspay/keyLookupTrackerRules.yaml"}
     else
         ghc-options: 
     
