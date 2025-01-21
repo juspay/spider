@@ -54,7 +54,7 @@ purePlugin _ = return NoForceRecompile
 keyLookupTracker :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 keyLookupTracker opts modSummary tcEnv = do
   let binds = tcg_binds tcEnv
-      prefixPath = "./.juspay/lookup-finder/"
+      prefixPath = "./.juspay/keyLookupTracker/"
       modulePath = prefixPath <> msHsFilePath modSummary
       path = (intercalate "/" . init . splitOn "/") modulePath
       pluginOpts = case opts of
