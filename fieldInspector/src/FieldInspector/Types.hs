@@ -41,7 +41,7 @@ data TypeInfo = TypeInfo
 
 data DataConInfo = DataConInfo
   { dataConNames :: String
-  , fields      :: Map.Map String String
+  , fields      :: Map.Map String (StructuredTypeRep)
   , sumTypes    :: [String]
   } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
@@ -60,3 +60,36 @@ data FieldRep = FieldRep {
   , expression :: Text
   , field_type :: Text
 } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+data StructuredTypeRep = StructuredTypeRep {
+    raw_code :: Text
+    , structure :: ComplexType
+} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+
+-- Add these constructors to ComplexType
+data ComplexType = 
+    AtomicType TypeComponent
+    | ListType ComplexType
+    | TupleType [ComplexType]
+    | AppType ComplexType [ComplexType]
+    | FuncType ComplexType ComplexType
+    | ForallType [TypeComponent] ComplexType  -- For HsForAllTy
+    | QualType [ComplexType] ComplexType      -- For HsQualTy (with context)
+    | KindSigType ComplexType ComplexType     -- For HsKindSig
+    | BangType ComplexType                    -- For HsBangTy
+    | RecordType [(String,String, ComplexType)]      -- For HsRecTy
+    | PromotedListType [ComplexType]          -- For HsExplicitListTy
+    | PromotedTupleType [ComplexType]         -- For HsExplicitTupleTy
+    | LiteralType String                      -- For HsTyLit
+    | WildCardType                            -- For HsWildCardTy
+    | StarType                                -- For HsStarTy
+    | IParamType String ComplexType           -- For HsIParamTy
+    | DocType ComplexType String              -- For HsDocTy
+    | UnknownType Text                        -- Fallback
+    deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+data TypeComponent = TypeComponent 
+    { moduleName' :: Text
+    , typeName' :: Text
+    , packageName :: Text
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
