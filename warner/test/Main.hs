@@ -6,3 +6,4 @@ main :: IO ()
 main = putStrLn "Test suite not yet implemented."
 
 test (B) = ""
+test (C) = ""
