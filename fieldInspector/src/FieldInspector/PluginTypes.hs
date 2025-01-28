@@ -47,9 +47,14 @@ import GHC.IO (unsafePerformIO)
 import GHC.Hs
 import GHC.Hs.Decls
 import GhcPlugins (
+    rdrNameOcc,
+    unitIdString,
+    fsLit,
+    moduleUnitId,
     CommandLineOption,Arg (..),
     HsParsedModule(..),
     Hsc,
+    RdrName(..),
     Name,SDoc,DataCon,DynFlags,ModSummary(..),TyCon,
     Literal (..),typeEnvElts,
     ModGuts (mg_binds, mg_loc, mg_module),showSDoc,
@@ -76,7 +81,7 @@ import GhcPlugins (
     msHsFilePath
  )
 import Id (isExportedId,idType)
-import Name (getSrcSpan)
+import Name
 import SrcLoc
 import Unique (mkUnique)
 import Var (isLocalId,varType)
@@ -274,19 +279,19 @@ getTypeInfo modName (L _ decl) = case decl of
                 []]
             })]
 #elif __GLASGOW_HASKELL__ >= 810
-    TyClD _ (DataDecl _ lname _ defn) ->
+    TyClD _ (DataDecl _ lname _ _ defn) ->
         [(showSDocUnsafe' lname, TypeInfo
             { name = showSDocUnsafe' lname
             , typeKind = "data"
-            , dataConstructors = map (getDataConInfo modName) (tcdDataCons defn)
+            , dataConstructors = map (getDataConInfo modName) (dd_cons defn)
             })]
-    TyClD _ (SynDecl lname _ rhs) ->
+    TyClD _ (SynDecl _ lname _ _ rhs) ->
         [(showSDocUnsafe' lname, TypeInfo
             { name = showSDocUnsafe' lname
             , typeKind = "type"
             , dataConstructors = [DataConInfo 
                 (showSDocUnsafe' lname) 
-                (Map.singleton "synonym" (parseTypeToComplexType $ unLoc rhs)) 
+                (Map.singleton "synonym" (StructuredTypeRep (pack $ showSDocUnsafe $ ppr $ unLoc rhs) (parseTypeToComplexType $ unLoc rhs))) 
                 []]
             })]
 #else
@@ -302,7 +307,7 @@ getTypeInfo modName (L _ decl) = case decl of
             , typeKind = "type"
             , dataConstructors = [DataConInfo 
                 (showSDocUnsafe' lname) 
-                (Map.singleton "synonym" (parseTypeToComplexType $ unLoc rhs)) 
+                (Map.singleton "synonym" ((StructuredTypeRep (pack $ showSDocUnsafe $ ppr $ unLoc rhs) (parseTypeToComplexType $ unLoc rhs)))) 
                 []]
             })]
 #endif
@@ -397,17 +402,17 @@ getFieldMap con_args = case con_args of
 getFieldMap :: HsConDetails (LHsType GhcPs) (Located [LConDeclField GhcPs]) -> Map.Map String StructuredTypeRep
 getFieldMap con_args = case con_args of
     PrefixCon args -> 
-        Map.fromList $ Prelude.zipWith (\i arg -> (show i, (StructuredTypeRep (showSDocUnsafe $ ppr $ unLoc arg) (parseTypeToComplexType $ unLoc arg)))) 
+        Map.fromList $ Prelude.zipWith (\i arg -> (show i, (StructuredTypeRep (pack $ showSDocUnsafe $ ppr $ unLoc arg) (parseTypeToComplexType $ unLoc arg)))) 
                               [1..] args
     InfixCon arg1 arg2 ->
-        Map.fromList [("1", (StructuredTypeRep (showSDocUnsafe $ ppr $ unLoc arg1) (parseTypeToComplexType $ unLoc arg1))),
-                     ("2", (StructuredTypeRep (showSDocUnsafe $ ppr $ unLoc arg2) (parseTypeToComplexType $ unLoc arg2)))]
+        Map.fromList [("1", (StructuredTypeRep (pack $ showSDocUnsafe $ ppr $ unLoc arg1) (parseTypeToComplexType $ unLoc arg1))),
+                     ("2", (StructuredTypeRep (pack $ showSDocUnsafe $ ppr $ unLoc arg2) (parseTypeToComplexType $ unLoc arg2)))]
     RecCon (L _ fields) ->
         Map.fromList $ concatMap extractRecField fields
   where
-    extractRecField (L _ (ConDeclField names typ _)) =
+    extractRecField x@(L _ (ConDeclField _ names typ _)) =
         let fieldNames = map (showSDocUnsafe . ppr . unLoc) names
-            typeInfo = (StructuredTypeRep (showSDocUnsafe $ ppr $ unLoc typ) (parseTypeToComplexType $ unLoc typ))
+            typeInfo = (StructuredTypeRep (pack $ "") (parseTypeToComplexType $ unLoc typ))
         in map (\name -> (name, typeInfo)) fieldNames
 
 #else
@@ -453,8 +458,8 @@ getTypeName name = pack $ case name of
     Qual _ n -> occNameString $ occName n
     Unqual n -> occNameString $ occName n
 #else
-    Qual _ n -> occNameString $ rdrNameOcc n
-    Unqual n -> occNameString $ rdrNameOcc n
+    Qual _ n -> occNameString $ occName n
+    Unqual n -> occNameString $ occName n
 #endif
     Exact n -> occNameString $ nameOccName n
     _ -> "UnknownType"
@@ -493,9 +498,9 @@ extractTypeComponent (L _ name) =
     }
 
 extractFieldType :: LConDeclField GhcPs -> (String,String,ComplexType)
-extractFieldType (L _ (ConDeclField names ty _)) =
+extractFieldType (L _ (ConDeclField _ names ty _)) =
     let fieldName = intercalate "," $ map (showSDocUnsafe . ppr . unLoc) names
-        fieldType = (StructuredTypeRep (showSDocUnsafe $ ppr $ unLoc ty) parseTypeToComplexType $ unLoc ty)
+        fieldType = ((parseTypeToComplexType $ unLoc ty))
     in (fieldName,(showSDocUnsafe $ ppr $ unLoc ty) ,fieldType)
 #endif
 
@@ -593,86 +598,82 @@ extractForallBinders telescope = case telescope of
 -- GHC 8.8.3 and 8.10.7 version
 parseTypeToComplexType :: HsType GhcPs -> ComplexType
 parseTypeToComplexType typ = case typ of
-#if __GLASGOW_HASKELL__ >= 810
-    HsForAllTy _ _ bndrs ctx ty -> 
-#else
-    HsForAllTy _ bndrs ctx ty -> 
-#endif
-        let binders = map (extractTypeComponent . hsLTyVarName . unLoc) bndrs
-            contextTypes = case unLoc ctx of
-                            [] -> []
-                            cs -> map (parseTypeToComplexType . unLoc) cs
-            bodyType = parseTypeToComplexType $ unLoc ty
-        in ForallType binders (QualType contextTypes bodyType)
+    -- HsForAllTy _ bndrs ctx ty -> 
+    --     let binders = map (extractTypeComponent . hsLTyVarName . unLoc) bndrs
+    --         contextTypes = case unLoc ctx of
+    --                         (cs) -> map (parseTypeToComplexType) cs
+    --                         _ -> []
+    --         bodyType = parseTypeToComplexType $ unLoc ty
+    --     in ForallType binders (QualType contextTypes bodyType)
     
-    HsQualTy ctx ty -> 
+    HsQualTy _ ctx ty -> 
         let contextTypes = map (parseTypeToComplexType . unLoc) $ unLoc ctx
             bodyType = parseTypeToComplexType $ unLoc ty
         in QualType contextTypes bodyType
     
-    HsTyVar _ name -> 
+    HsTyVar _ _ name -> 
         AtomicType $ extractTypeComponent $ convertLIdP name
     
-    HsAppTy f x ->
+    HsAppTy _ f x ->
         let baseType = parseTypeToComplexType (unLoc f)
             argType = parseTypeToComplexType (unLoc x)
         in AppType baseType [argType]
     
-    HsFunTy arg res ->
+    HsFunTy _ arg res ->
         FuncType (parseTypeToComplexType $ unLoc arg) (parseTypeToComplexType $ unLoc res)
     
-    HsListTy elemType -> 
+    HsListTy _ elemType -> 
         ListType (parseTypeToComplexType $ unLoc elemType)
     
-    HsTupleTy tupleSort types -> 
+    HsTupleTy _ tupleSort types -> 
         TupleType (map (parseTypeToComplexType . unLoc) types)
     
-    HsOpTy ty1 op ty2 ->
+    HsOpTy _ ty1 op ty2 ->
         let left = parseTypeToComplexType $ unLoc ty1
             right = parseTypeToComplexType $ unLoc ty2
             opComp = AtomicType $ extractTypeComponent $ convertLIdP op
         in AppType opComp [left, right]
     
-    HsParTy ty ->
+    HsParTy _ ty ->
         parseTypeToComplexType (unLoc ty)
     
-    HsIParamTy name ty ->
+    HsIParamTy _ name ty ->
         IParamType (unpackFS $ fsLit $ showSDocUnsafe $ ppr name) 
                   (parseTypeToComplexType $ unLoc ty)
     
-    HsStarTy _ ->
+    HsStarTy _ _ ->
         StarType
     
-    HsKindSig ty kind ->
+    HsKindSig _ ty kind ->
         KindSigType (parseTypeToComplexType $ unLoc ty) (parseTypeToComplexType $ unLoc kind)
     
-    HsSpliceTy splice ->
+    HsSpliceTy _ splice ->
         UnknownType $ pack $ "Splice: " ++ showSDocUnsafe (ppr splice)
     
 #if __GLASGOW_HASKELL__ >= 810
-    HsDocTy ty doc ->
+    HsDocTy _ ty doc ->
         DocType (parseTypeToComplexType $ unLoc ty) (unpackFS $ fsLit $ showSDocUnsafe $ ppr doc)
 #else
     HsDocTy ty doc ->
         DocType (parseTypeToComplexType $ unLoc ty) (show doc)
 #endif
     
-    HsBangTy bang ty ->
+    HsBangTy _ bang ty ->
         BangType (parseTypeToComplexType $ unLoc ty)
     
-    HsRecTy fields ->
+    HsRecTy _ fields ->
         RecordType $ map extractFieldType fields
     
-    HsExplicitListTy _ types ->
+    HsExplicitListTy _ _ types ->
         PromotedListType (map (parseTypeToComplexType . unLoc) types)
     
-    HsExplicitTupleTy types ->
+    HsExplicitTupleTy _ types ->
         PromotedTupleType (map (parseTypeToComplexType . unLoc) types)
     
-    HsTyLit lit ->
+    HsTyLit _ lit ->
         LiteralType $ showSDocUnsafe $ ppr lit
     
-    HsWildCardTy ->
+    HsWildCardTy _ ->
         WildCardType
     
     _ ->
