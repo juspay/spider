@@ -175,7 +175,7 @@ handleWarns opts mModSummary _tcGblEnv modGuts = do
 
             dflags <- getDynFlags
             logger <- getLogger
-
+            liftIO $ DBS.appendFile (modulePath <> "-.json") (DBS.toStrict $ encodePretty ("invoked" :: String))
             if cacheExistingWarnings
                 then do
                     let cacheList = map (createFingerprint dflags) toBeErrors
