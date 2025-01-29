@@ -175,7 +175,7 @@ handleWarns opts mModSummary _tcGblEnv modGuts = do
 
             dflags <- getDynFlags
             logger <- getLogger
-            liftIO $ DBS.appendFile (modulePath <> "-.json") (DBS.toStrict $ encodePretty ("invoked" :: String))
+            -- liftIO $ DBS.appendFile (modulePath <> "-.json") (DBS.toStrict $ encodePretty ("invoked" :: String))
             if cacheExistingWarnings
                 then do
                     let cacheList = map (createFingerprint dflags) toBeErrors
@@ -196,7 +196,9 @@ handleWarns opts mModSummary _tcGblEnv modGuts = do
                     if (any isErrorMessage (bagToList updatedWarningsBag))
                         then throwErrors updatedWarningsBag
                         else liftIO $ printOrThrowWarnings logger dflags updatedWarningsBag
-        Nothing -> pure ()
+        Nothing -> do
+            liftIO $ print ("Warner : MOD summary is Nothing")
+            pure ()
     return modGuts
     where
         getWarnings :: Hsc WarningMessages
