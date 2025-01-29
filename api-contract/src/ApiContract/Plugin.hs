@@ -296,7 +296,7 @@ collectTypeInfoParser opts modSummary hpm = do
                                                     pure $ map (\x -> (srcSpan,x)) $ errorList
                                                 Nothing -> pure [(moduleSrcSpan,(MISSING_TYPE_CODE (toString' typeName)))]
                                     ) (fromList $ HM.toList typeRules)
-                    let missingTypesInRulesWithAeson = mempty--map (\x -> if HM.member (fromString' x) typeRules then mempty else [(moduleSrcSpan,(MISSING_TYPE_IN_RULE (x) (maybe (mempty) (\y -> (unpack . decodeUtf8 . YAML.encode) $ Map.fromList [(x,y)]) $ HM.lookup (fromString' x) typeVsFields)))] ) shouldAddTypes
+                    let missingTypesInRulesWithAeson = map (\x -> if HM.member (fromString' x) typeRules then mempty else [(moduleSrcSpan,(MISSING_TYPE_IN_RULE (x) (maybe (mempty) (\y -> (unpack . decodeUtf8 . YAML.encode) $ Map.fromList [(x,y)]) $ HM.lookup (fromString' x) typeVsFields)))] ) shouldAddTypes
                     errorsNubbed :: [(SrcSpan,ApiContractError)] <- pure $ Data.List.nub $ Prelude.concat (errors <> missingTypesInRulesWithAeson)
                     if (not $ Prelude.null $ errorsNubbed)
                         then do
