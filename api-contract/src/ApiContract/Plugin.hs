@@ -145,7 +145,7 @@ import Control.Concurrent (MVar,putMVar,takeMVar,readMVar,newMVar)
 import Data.ByteString (elem)
 import qualified Data.HashMap.Strict.InsOrd as HMOrder
 import qualified Data.Map.Ordered as OMap
-import Debug.Trace(traceShowId)
+-- import Debug.Trace(traceShowId,trace)
 import Data.Ord (comparing)
 -- ENABLE_ISOLATION
 #if defined(ENABLE_LR_PLUGINS)
@@ -267,7 +267,9 @@ collectTypeInfoParser opts modSummary hpm = do
     when (generateTypesRules) $ liftIO $ print $ Data.List.nub $ Prelude.concat typesToInstancesPresent
     (shouldAddTypes :: [String]) <- foldM (\acc (inst,type_) -> if inst `Prelude.elem` instanceToAdd then pure $ acc <> [type_] else pure $ acc) [] (Data.List.nub $ Prelude.concat typesToInstancesPresent)
     let (srcSpansHM :: HashMapL SrcSpan) = HM.fromList $ map (\(srcSpan,a,_) -> (fromString' a, srcSpan)) $ Prelude.concat typesInThisModule
-        (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,_) -> (toString' typeName) `Prelude.elem` shouldAddTypes) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
+        (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,y) -> Prelude.any (Data.Text.isInfixOf (Data.Text.pack $ toString' typeName)) (map Data.Text.pack shouldAddTypes)) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
+    -- liftIO $ print $ typeVsFields
+    -- liftIO $ print $ ("HIIIII",shouldAddTypes,srcSpansHM)
     isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
     dynFlag <- getDynFlags
     if generateTypesRules || (not $ isOldFile)
@@ -497,8 +499,9 @@ processHsSplice (HsSpliced _ _ expr) = do
     pure mempty
 
 getInstancesInfo :: LHsDecl GhcPs -> IO [(String,String)]
-getInstancesInfo (L l (TyClD _ (DataDecl _ lname _ _ defn))) = do
+getInstancesInfo (L l (TyClD _ (DataDecl _ (L _ lname) _ _ defn))) = do
     let types = defn ^? biplateRef :: [HsType GhcPs]
+    -- print $ ("HII",showSDocUnsafe $ ppr lname,Data.List.nub $ map (\x -> (showSDocUnsafe $ ppr x,showSDocUnsafe $ ppr lname)) types)
     pure $ Data.List.nub $ map (\x -> (showSDocUnsafe $ ppr x,showSDocUnsafe $ ppr lname)) types
 getInstancesInfo (L l (SpliceD _ (SpliceDecl _ (L _ decl) _))) = do
     let types = decl ^? biplateRef :: [HsType GhcPs]
@@ -514,16 +517,23 @@ getInstancesInfo (L l (DerivD _ x@(DerivDecl{deriv_type=derivType}))) = do
             let types = x ^? biplateRef :: [HsType GhcPs]
             when (generateTypesRules) $ print $ showSDocUnsafe $ ppr types
             pure mempty
-getInstancesInfo (L l (InstD _ (ClsInstD _ (ClsInstDecl{cid_poly_ty=cidPolyTy})))) =
-        case hsSigType' $ cidPolyTy of
-            (L _ (HsAppTy _ ty1 ty2)) -> pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
-            (L _ (HsQualTy _ mContext (L _ (HsAppTy _ ty1 ty2)))) -> do
-                pure [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
-            (L _ x) -> do
-                when (generateTypesRules) $ print $ (toConstr x,showSDocUnsafe $ ppr x)
-                let types = x ^? biplateRef :: [HsType GhcPs]
-                when (generateTypesRules) $ print $ showSDocUnsafe $ ppr types
-                pure mempty
+getInstancesInfo z@(L l x@(InstD _ (ClsInstD _ (ClsInstDecl{cid_poly_ty=cidPolyTy})))) = do
+        -- res' <- getInstancesFromType' cidPolyTy (hsSigType' $ cidPolyTy)
+        res <- case hsSigType' $ cidPolyTy of
+                (L _ (HsAppTy _ ty1 (L _ (HsParTy _ (L _ ty2))))) -> do
+                    -- print (toConstr ty2,[(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)])
+                    pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
+                (L _ (HsAppTy _ ty1 (L _ ty2))) -> do
+                    print (toConstr ty2,[(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)])
+                    pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
+                (L _ (HsQualTy _ mContext (L _ (HsAppTy _ ty1 ty2)))) -> do
+                    pure [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
+                (L _ x) -> do
+                    when (generateTypesRules) $ print $ (toConstr x,showSDocUnsafe $ ppr x)
+                    let types = x ^? biplateRef :: [HsType GhcPs]
+                    when (generateTypesRules) $ print $ showSDocUnsafe $ ppr types
+                    pure mempty
+        pure $ res -- <> (Prelude.concat $ map (\(x,y) -> map (\z -> (x,z)) y ) $ Map.toList res')
 -- getInstancesInfo (L l (InstD _ (DataFamInstD _ dfidInst))) = dfidInst ^? biplateRef :: [HsSigType GhcPs]
 -- getInstancesInfo (L l (InstD _ (TyFamInstD _ tfidInst))) = tfidInst ^? biplateRef :: [HsSigType GhcPs]
 getInstancesInfo (L l x) = do
@@ -532,7 +542,7 @@ getInstancesInfo (L l x) = do
 
 getTypeInfo :: LHsDecl GhcPs -> [(SrcSpan,String,TypeRule)]
 getTypeInfo (L l (TyClD _ (DataDecl _ lname _ _ defn))) =
-  [(locA' l ,showSDocUnsafe' lname ,TypeRule
+  [(locA' l ,(showSDocUnsafe' (lname)) ,TypeRule
     { typeKind = "data"
     , caseType = Nothing
     , instances = mempty

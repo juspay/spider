@@ -34,6 +34,15 @@ B:
       fieldsList: []
       typeOfInstance: Derived
   typeKind: data
+IgnoredInJson:
+  caseType: null
+  dataConstructors:
+    IgnoredInJson:
+      fields':
+        value: a
+      sumTypes: []
+  instances: {}
+  typeKind: data
 RefundAttempt:
   caseType: null
   dataConstructors:

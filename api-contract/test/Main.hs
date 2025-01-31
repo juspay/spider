@@ -98,3 +98,11 @@ data A = A
 
 deriving instance ToJSON A
 deriving instance FromJSON A
+
+newtype IgnoredInJson a = IgnoredInJson { value :: a }
+
+instance FromJSON (IgnoredInJson a) where
+  parseJSON _ = mempty
+
+instance ToJSON (IgnoredInJson a) where
+  toJSON _ = Null
