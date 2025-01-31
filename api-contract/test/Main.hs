@@ -8,7 +8,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE StandaloneDeriving,DeriveDataTypeable #-}
+{-# LANGUAGE StandaloneDeriving,DeriveDataTypeable,DerivingVia #-}
 
 module Main (main) where
 
@@ -17,6 +17,8 @@ import Data.Text
 import GHC.Generics (Generic)
 import Data.Aeson.KeyMap
 import Data.Data
+import qualified Data.Aeson.Key as AK
+import qualified Data.Aeson.KeyMap as KM
 
 
 main :: IO ()
@@ -106,3 +108,31 @@ instance FromJSON (IgnoredInJson a) where
 
 instance ToJSON (IgnoredInJson a) where
   toJSON _ = Null
+
+data NonEmpty a = NonEmpty a
+  deriving stock (Show)
+instance FromJSON (NonEmpty a) where
+  parseJSON _ = mempty
+
+instance ToJSON (NonEmpty a) where
+  toJSON _ = Null
+
+newtype Stringly a = Stringly
+    { unStringly :: a }
+    deriving ( ToJSON
+             ) via a
+instance FromJSON a => FromJSON (Stringly a) where
+    parseJSON v = mempty
+newtype OneOrMany a = OneOrMany
+    { unOneOrMany :: NonEmpty a }
+    deriving ( ToJSON
+             ) via (NonEmpty a)
+instance FromJSON a => FromJSON (OneOrMany a) where
+    parseJSON _ = mempty
+
+newtype NormalizeKeys a = NormalizeKeys
+    { unwrapNormalizeKeys :: a }
+    deriving ( ToJSON
+             ) via a
+instance FromJSON a => FromJSON (NormalizeKeys a) where
+    parseJSON _ = mempty

@@ -265,16 +265,16 @@ collectTypeInfoParser opts modSummary hpm = do
     liftIO $ createDirectoryIfMissing True path
     typesInThisModule <- liftIO $ toList $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
     typesToInstancesPresent <- liftIO $ toList $ mapM (getInstancesInfo) (fromList $ hsmodDecls hm_module)
-    when (generateTypesRules) $ liftIO $ print $ Data.List.nub $ Prelude.concat typesToInstancesPresent
-    (shouldAddTypes :: [String]) <- foldM (\acc (inst,type_) -> if inst `Prelude.elem` instanceToAdd then pure $ acc <> [type_] else pure $ acc) [] (Data.List.nub $ Prelude.concat typesToInstancesPresent)
+    -- when (generateTypesRules) $ liftIO $ print $ (typesInThisModule,Data.List.nub $ Prelude.concat typesToInstancesPresent)
+    (shouldAddTypes :: [String]) <- foldM (\acc (inst,type_) -> if (inst `Prelude.elem` instanceToAdd && not ((T.pack "(") `T.isPrefixOf` (T.pack type_))) then pure $ (acc <> [type_]) else pure $ acc) [] (Data.List.nub $ Prelude.concat typesToInstancesPresent)
     let (srcSpansHM :: HashMapL SrcSpan) = HM.fromList $ map (\(srcSpan,a,_) -> (fromString' a, srcSpan)) $ Prelude.concat typesInThisModule
         -- (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,y) -> Prelude.any (Data.Text.isInfixOf (Data.Text.pack $ toString' typeName)) (map Data.Text.pack shouldAddTypes)) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
         (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,_) -> (toString' typeName) `Prelude.elem` shouldAddTypes) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
 
     -- liftIO $ print $ typeVsFields
-    liftIO $ print $ typesInThisModule
-    liftIO $ print $ typesToInstancesPresent
-    -- liftIO $ print $ ("HIIIII",shouldAddTypes,srcSpansHM)
+    -- liftIO $ print $ typesInThisModule
+    -- liftIO $ print $ typesToInstancesPresent
+    -- liftIO $ print $ ("HIIIII",shouldAddTypes,typeVsFields)
     isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
     dynFlag <- getDynFlags
     if generateTypesRules || (not $ isOldFile)
@@ -303,7 +303,15 @@ collectTypeInfoParser opts modSummary hpm = do
                                                     pure $ map (\x -> (srcSpan,x)) $ errorList
                                                 Nothing -> pure [(moduleSrcSpan,(MISSING_TYPE_CODE (toString' typeName)))]
                                     ) (fromList $ HM.toList typeRules)
-                    let missingTypesInRulesWithAeson = map (\x -> if HM.member (fromString' x) typeRules then mempty else [(moduleSrcSpan,(MISSING_TYPE_IN_RULE (x) (maybe (mempty) (\y -> (unpack . decodeUtf8 . YAML.encode) $ Map.fromList [(x,y)]) $ HM.lookup (fromString' x) typeVsFields)))] ) shouldAddTypes
+                    -- liftIO $ print ("III",shouldAddTypes)
+                    -- liftIO $ print ("IIIH",typeRules,typeVsFields)
+                    missingTypesInRulesWithAeson <- toList $ mapM (\x -> do
+                        if HM.member (fromString' x) typeRules
+                            then pure []
+                            else case HM.lookup (fromString' x) typeVsFields of
+                                Just y -> pure [(moduleSrcSpan, MISSING_TYPE_IN_RULE x (unpack . decodeUtf8 . YAML.encode $ Map.fromList [(x,y)]))]
+                                Nothing -> pure [] -- Skip if type not defined in this module
+                        ) $ fromList shouldAddTypes
                     errorsNubbed :: [(SrcSpan,ApiContractError)] <- pure $ Data.List.nub $ Prelude.concat (errors <> missingTypesInRulesWithAeson)
                     if (not $ Prelude.null $ errorsNubbed)
                         then do
@@ -368,7 +376,7 @@ collectInstanceInfo opts modSummary tcEnv = do
             isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
             if generateTypesRules || (not $ isOldFile) || (modulePath `Prelude.elem` newModuleList)
                 then do
-                    when (generateTypesRules) $ liftIO $ print "dumping rules"
+                    -- when (generateTypesRules) $ liftIO $ print "dumping rules"
                     liftIO $ DBS.writeFile (modulePath <> ".yaml") (YAML.encode $ sortKeyMap updatedTypesRules)
                 else do
                     errors :: [[(SrcSpan,ApiContractError)]] <- liftIO $ toList $ mapM (\(typeName,rules) ->
@@ -510,7 +518,7 @@ getInstancesInfo (L l (TyClD _ (DataDecl _ (L _ lname) _ _ defn))) = do
     pure $ Data.List.nub $ map (\x -> (showSDocUnsafe $ ppr x,showSDocUnsafe $ ppr lname)) types
 getInstancesInfo (L l (SpliceD _ (SpliceDecl _ (L _ decl) _))) = do
     let types = decl ^? biplateRef :: [HsType GhcPs]
-    when (generateTypesRules) $ print $ map (\x -> (showSDocUnsafe $ ppr x)) types
+    -- when (generateTypesRules) $ print $ map (\x -> (showSDocUnsafe $ ppr x)) types
     processHsSplice decl
 getInstancesInfo (L l (DerivD _ x@(DerivDecl{deriv_type=derivType}))) = do
     case hsSigType' $ hswc_body $ derivType of
@@ -518,30 +526,29 @@ getInstancesInfo (L l (DerivD _ x@(DerivDecl{deriv_type=derivType}))) = do
         (L _ (HsQualTy _ mContext (L _ (HsAppTy _ ty1 ty2)))) -> do
             pure [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
         (L _ x) -> do
-            when (generateTypesRules) $ print $ (toConstr x,showSDocUnsafe $ ppr x)
+            -- when (generateTypesRules) $ print $ (toConstr x,showSDocUnsafe $ ppr x)
             let types = x ^? biplateRef :: [HsType GhcPs]
-            when (generateTypesRules) $ print $ showSDocUnsafe $ ppr types
+            -- when (generateTypesRules) $ print $ showSDocUnsafe $ ppr types
             pure mempty
 getInstancesInfo z@(L l x@(InstD _ (ClsInstD _ (ClsInstDecl{cid_poly_ty=cidPolyTy})))) = do
         -- res' <- getInstancesFromType' cidPolyTy (hsSigType' $ cidPolyTy)
         res <- case hsSigType' $ cidPolyTy of
                 (L _ (HsAppTy _ ty1 (L _ (HsParTy _ (L _ ty2@(HsAppTy _ tty1 tty2)))))) -> do
-                    -- print (toConstr ty2,[(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)])
                     -- print $ (showSDocUnsafe $ ppr ty1,toConstr ty2,showSDocUnsafe $ ppr tty1,showSDocUnsafe $ ppr tty2)
                     pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr tty1)]
                 (L _ (HsAppTy _ ty1 (L _ (HsParTy _ (L _ ty2))))) -> do
-                    -- print (toConstr ty2,[(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)])
                     pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
                 (L _ (HsAppTy _ ty1 (L _ ty2))) -> do
-                    print (toConstr ty2,[(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)])
                     pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
                 (L _ (HsQualTy _ mContext (L _ (HsAppTy _ ty1 ty2)))) -> do
                     pure [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
                 (L _ x) -> do
-                    when (generateTypesRules) $ print $ (toConstr x,showSDocUnsafe $ ppr x)
+                    print (toConstr x)
+                    -- when (generateTypesRules) $ print $ (toConstr x,showSDocUnsafe $ ppr x)
                     let types = x ^? biplateRef :: [HsType GhcPs]
-                    when (generateTypesRules) $ print $ showSDocUnsafe $ ppr types
+                    -- when (generateTypesRules) $ print $ showSDocUnsafe $ ppr types
                     pure mempty
+        -- print (res,showSDocUnsafe $ ppr $ hsSigType' $ cidPolyTy)
         pure $ res -- <> (Prelude.concat $ map (\(x,y) -> map (\z -> (x,z)) y ) $ Map.toList res')
 -- getInstancesInfo (L l (InstD _ (DataFamInstD _ dfidInst))) = dfidInst ^? biplateRef :: [HsSigType GhcPs]
 -- getInstancesInfo (L l (InstD _ (TyFamInstD _ tfidInst))) = tfidInst ^? biplateRef :: [HsSigType GhcPs]

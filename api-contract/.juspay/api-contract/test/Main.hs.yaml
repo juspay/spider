@@ -43,6 +43,33 @@ IgnoredInJson:
       sumTypes: []
   instances: {}
   typeKind: data
+NonEmpty:
+  caseType: null
+  dataConstructors:
+    NonEmpty:
+      fields':
+        '0': a
+      sumTypes: []
+  instances: {}
+  typeKind: data
+NormalizeKeys:
+  caseType: null
+  dataConstructors:
+    NormalizeKeys:
+      fields':
+        unwrapNormalizeKeys: a
+      sumTypes: []
+  instances: {}
+  typeKind: data
+OneOrMany:
+  caseType: null
+  dataConstructors:
+    OneOrMany:
+      fields':
+        unOneOrMany: NonEmpty a
+      sumTypes: []
+  instances: {}
+  typeKind: data
 RefundAttempt:
   caseType: null
   dataConstructors:
@@ -100,4 +127,13 @@ RefundAttempt':
     toJSON:
       fieldsList: []
       typeOfInstance: Derived
+  typeKind: data
+Stringly:
+  caseType: null
+  dataConstructors:
+    Stringly:
+      fields':
+        unStringly: a
+      sumTypes: []
+  instances: {}
   typeKind: data
