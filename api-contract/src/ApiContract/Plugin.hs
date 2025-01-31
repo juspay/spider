@@ -147,6 +147,7 @@ import qualified Data.HashMap.Strict.InsOrd as HMOrder
 import qualified Data.Map.Ordered as OMap
 -- import Debug.Trace(traceShowId,trace)
 import Data.Ord (comparing)
+
 -- ENABLE_ISOLATION
 #if defined(ENABLE_LR_PLUGINS)
 plugin :: Plugin
@@ -267,8 +268,12 @@ collectTypeInfoParser opts modSummary hpm = do
     when (generateTypesRules) $ liftIO $ print $ Data.List.nub $ Prelude.concat typesToInstancesPresent
     (shouldAddTypes :: [String]) <- foldM (\acc (inst,type_) -> if inst `Prelude.elem` instanceToAdd then pure $ acc <> [type_] else pure $ acc) [] (Data.List.nub $ Prelude.concat typesToInstancesPresent)
     let (srcSpansHM :: HashMapL SrcSpan) = HM.fromList $ map (\(srcSpan,a,_) -> (fromString' a, srcSpan)) $ Prelude.concat typesInThisModule
-        (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,y) -> Prelude.any (Data.Text.isInfixOf (Data.Text.pack $ toString' typeName)) (map Data.Text.pack shouldAddTypes)) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
+        -- (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,y) -> Prelude.any (Data.Text.isInfixOf (Data.Text.pack $ toString' typeName)) (map Data.Text.pack shouldAddTypes)) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
+        (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,_) -> (toString' typeName) `Prelude.elem` shouldAddTypes) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
+
     -- liftIO $ print $ typeVsFields
+    liftIO $ print $ typesInThisModule
+    liftIO $ print $ typesToInstancesPresent
     -- liftIO $ print $ ("HIIIII",shouldAddTypes,srcSpansHM)
     isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
     dynFlag <- getDynFlags
@@ -520,6 +525,10 @@ getInstancesInfo (L l (DerivD _ x@(DerivDecl{deriv_type=derivType}))) = do
 getInstancesInfo z@(L l x@(InstD _ (ClsInstD _ (ClsInstDecl{cid_poly_ty=cidPolyTy})))) = do
         -- res' <- getInstancesFromType' cidPolyTy (hsSigType' $ cidPolyTy)
         res <- case hsSigType' $ cidPolyTy of
+                (L _ (HsAppTy _ ty1 (L _ (HsParTy _ (L _ ty2@(HsAppTy _ tty1 tty2)))))) -> do
+                    -- print (toConstr ty2,[(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)])
+                    -- print $ (showSDocUnsafe $ ppr ty1,toConstr ty2,showSDocUnsafe $ ppr tty1,showSDocUnsafe $ ppr tty2)
+                    pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr tty1)]
                 (L _ (HsAppTy _ ty1 (L _ (HsParTy _ (L _ ty2))))) -> do
                     -- print (toConstr ty2,[(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)])
                     pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
