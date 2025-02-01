@@ -507,7 +507,7 @@ processHsSplice (HsQuasiQuote _ id1 id2 srcSpan fs) = do
     -- when (generateTypesRules) $ print ("HsQuasiQuote",showSDocUnsafe $ ppr id1 , showSDocUnsafe $ ppr id2)
     pure mempty
 processHsSplice (HsSpliced _ _ expr) = do
-    case expr of
+    -- case expr of
         -- (HsSplicedExpr expr' ) -> when (generateTypesRules) $ print (showSDocUnsafe $ ppr expr')
         -- (HsSplicedTy   type_ ) -> when (generateTypesRules) $ print (showSDocUnsafe $ ppr type_)
         -- (HsSplicedPat  pat)    -> when (generateTypesRules) $ print (showSDocUnsafe $ ppr pat)
