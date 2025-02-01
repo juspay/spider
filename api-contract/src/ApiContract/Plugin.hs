@@ -41,7 +41,7 @@ import GHC.Rename.HsType
 import qualified GHC.Tc.Utils.Monad as TCError
 import qualified GHC.Types.SourceError as ParseError
 import qualified GHC.Types.Error as ParseError
-import GHC.Types.Name.Reader ( rdrNameOcc ,rdrNameSpace)
+import GHC.Types.Name.Reader (rdrNameOcc ,rdrNameSpace,RdrName(..))
 import GHC.Core.TyCo.Rep
 import GHC.Data.FastString
 import GHC.IO (unsafePerformIO)
@@ -266,7 +266,8 @@ collectTypeInfoParser opts modSummary hpm = do
     typesInThisModule <- liftIO $ toList $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
     typesToInstancesPresent <- liftIO $ toList $ mapM (getInstancesInfo) (fromList $ hsmodDecls hm_module)
     -- when (generateTypesRules) $ liftIO $ print $ (typesInThisModule,Data.List.nub $ Prelude.concat typesToInstancesPresent)
-    (shouldAddTypes :: [String]) <- foldM (\acc (inst,type_) -> if (inst `Prelude.elem` instanceToAdd && not ((T.pack "(") `T.isPrefixOf` (T.pack type_))) then pure $ (acc <> [type_]) else pure $ acc) [] (Data.List.nub $ Prelude.concat typesToInstancesPresent)
+    -- && not ((T.pack "(") `T.isPrefixOf` (T.pack type_))
+    (shouldAddTypes :: [String]) <- foldM (\acc (inst,type_) -> if (inst `Prelude.elem` instanceToAdd ) then pure $ (acc <> [type_]) else pure $ acc) [] (Data.List.nub $ Prelude.concat typesToInstancesPresent)
     let (srcSpansHM :: HashMapL SrcSpan) = HM.fromList $ map (\(srcSpan,a,_) -> (fromString' a, srcSpan)) $ Prelude.concat typesInThisModule
         -- (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,y) -> Prelude.any (Data.Text.isInfixOf (Data.Text.pack $ toString' typeName)) (map Data.Text.pack shouldAddTypes)) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
         (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,_) -> (toString' typeName) `Prelude.elem` shouldAddTypes) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
@@ -295,6 +296,7 @@ collectTypeInfoParser opts modSummary hpm = do
                                 $ [mkErrMsg dynFlag moduleSrcSpan reallyAlwaysQualify (docToSDoc $ Pretty.text $ (modulePath <> ".yaml") <> " is missing for this module : " <> show err)]
 #endif
                 Right typeRules -> do
+                    -- liftIO $ print (typeRules)
                     errors :: [[(SrcSpan,ApiContractError)]] <- liftIO $ toList $ mapM (\(typeName,rules) -> do
                                             case HM.lookup typeName typeVsFields of
                                                 Just typeRule -> do
@@ -494,7 +496,7 @@ getAppliedOnTypeName _ _ = Nothing
 #endif
 
 processHsSplice (HsTypedSplice _ _ name expr) = do
-    when (generateTypesRules) $ print ("HsTypedSplice",showSDocUnsafe $ ppr name , showSDocUnsafe $ ppr expr)
+    -- when (generateTypesRules) $ print ("HsTypedSplice",showSDocUnsafe $ ppr name , showSDocUnsafe $ ppr expr)
     pure mempty
 processHsSplice (HsUntypedSplice _ _ name expr) = do
     let types = expr ^? biplateRef :: [HsExpr GhcPs]
@@ -502,14 +504,33 @@ processHsSplice (HsUntypedSplice _ _ name expr) = do
         possibleInstances = map (\(_,y) -> y) $ Prelude.filter (\(const,_) -> const `Prelude.elem` ["HsVar"]) $ map (\x -> (show $ toConstr x,showSDocUnsafe $ ppr x)) types
     pure $ Prelude.concat $ map (\x -> map (\y -> (y,x)) possibleInstances) typeName
 processHsSplice (HsQuasiQuote _ id1 id2 srcSpan fs) = do
-    when (generateTypesRules) $ print ("HsQuasiQuote",showSDocUnsafe $ ppr id1 , showSDocUnsafe $ ppr id2)
+    -- when (generateTypesRules) $ print ("HsQuasiQuote",showSDocUnsafe $ ppr id1 , showSDocUnsafe $ ppr id2)
     pure mempty
 processHsSplice (HsSpliced _ _ expr) = do
     case expr of
-        (HsSplicedExpr expr' ) -> when (generateTypesRules) $ print (showSDocUnsafe $ ppr expr')
-        (HsSplicedTy   type_ ) -> when (generateTypesRules) $ print (showSDocUnsafe $ ppr type_)
-        (HsSplicedPat  pat)    -> when (generateTypesRules) $ print (showSDocUnsafe $ ppr pat)
+        -- (HsSplicedExpr expr' ) -> when (generateTypesRules) $ print (showSDocUnsafe $ ppr expr')
+        -- (HsSplicedTy   type_ ) -> when (generateTypesRules) $ print (showSDocUnsafe $ ppr type_)
+        -- (HsSplicedPat  pat)    -> when (generateTypesRules) $ print (showSDocUnsafe $ ppr pat)
     pure mempty
+
+#if __GLASGOW_HASKELL__ >= 900
+convertLIdP :: LIdP GhcPs -> Located RdrName
+convertLIdP x = noLoc (GHC.unXRec @(GhcPs) x)
+#else
+-- convertLIdP :: LIdP GhcPs -> Located RdrName
+convertLIdP = id
+#endif
+
+
+getRdrName :: HsType GhcPs -> String
+getRdrName (HsTyVar _ _ (n)) = getTypeName $ convertLIdP n
+    where
+        -- getTypeName :: RdrName -> Text
+        getTypeName ((L _ name)) = case name of
+            Qual _ n -> occNameString $ occName n
+            Unqual n -> occNameString $ occName n
+            Exact n -> occNameString $ nameOccName n
+            _ -> "UnknownType"
 
 getInstancesInfo :: LHsDecl GhcPs -> IO [(String,String)]
 getInstancesInfo (L l (TyClD _ (DataDecl _ (L _ lname) _ _ defn))) = do
@@ -533,15 +554,25 @@ getInstancesInfo (L l (DerivD _ x@(DerivDecl{deriv_type=derivType}))) = do
 getInstancesInfo z@(L l x@(InstD _ (ClsInstD _ (ClsInstDecl{cid_poly_ty=cidPolyTy})))) = do
         -- res' <- getInstancesFromType' cidPolyTy (hsSigType' $ cidPolyTy)
         res <- case hsSigType' $ cidPolyTy of
-                (L _ (HsAppTy _ ty1 (L _ (HsParTy _ (L _ ty2@(HsAppTy _ tty1 tty2)))))) -> do
+                (L _ (HsAppTy _ (L _ ty1) (L _ (HsParTy _ (L _ ty2@(HsAppTy _ tty1 tty2)))))) -> do
                     -- print $ (showSDocUnsafe $ ppr ty1,toConstr ty2,showSDocUnsafe $ ppr tty1,showSDocUnsafe $ ppr tty2)
-                    pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr tty1)]
-                (L _ (HsAppTy _ ty1 (L _ (HsParTy _ (L _ ty2))))) -> do
-                    pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
-                (L _ (HsAppTy _ ty1 (L _ ty2))) -> do
-                    pure $ [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
-                (L _ (HsQualTy _ mContext (L _ (HsAppTy _ ty1 ty2)))) -> do
-                    pure [(showSDocUnsafe $ ppr ty1,showSDocUnsafe $ ppr ty2)]
+                    -- print ("1",toConstr ty1,showSDocUnsafe $ ppr $ tty1)
+                    pure $ [(getRdrName ty1,showSDocUnsafe $ ppr tty1)]
+                (L _ (HsAppTy _ (L _ ty1) (L _ (HsParTy _ (L _ ty2))))) -> do
+                    -- print ("2",toConstr ty1,showSDocUnsafe $ ppr $ x)
+                    pure $ [(getRdrName ty1,showSDocUnsafe $ ppr ty2)]
+                (L _ (HsAppTy _ (L _ ty1) (L _ ty2))) -> do
+                    -- print ("3",toConstr ty1,showSDocUnsafe $ ppr $ x)
+                    pure $ [(getRdrName ty1,showSDocUnsafe $ ppr ty2)]
+                (L _ (HsQualTy _ mContext (L _ (HsAppTy _ (L _ ty1) (L _ (HsParTy _ (L _ ty2@(HsAppTy _ (L _ (HsQualTy _ mContext_ tty1)) tty2)))))))) -> do
+                    -- print ("4",toConstr ty1,showSDocUnsafe $ ppr $ x)
+                    pure [(getRdrName ty1,showSDocUnsafe $ ppr tty1)]
+                (L _ (HsQualTy _ mContext (L _ (HsAppTy _ (L _ ty1) (L _ (HsParTy _ (L _ ty2@(HsAppTy _ tty1 tty2)))))))) -> do
+                    -- print ("5",toConstr ty1,getRdrName $ ty1)
+                    pure [(getRdrName ty1,showSDocUnsafe $ ppr tty1)]
+                (L _ (HsQualTy _ mContext (L _ (HsAppTy _ (L _ ty1) ty2)))) -> do
+                    -- print ("6",toConstr ty1,showSDocUnsafe $ ppr $ x)
+                    pure [(getRdrName ty1,showSDocUnsafe $ ppr ty2)]
                 (L _ x) -> do
                     print (toConstr x)
                     -- when (generateTypesRules) $ print $ (toConstr x,showSDocUnsafe $ ppr x)

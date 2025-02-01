@@ -19,7 +19,8 @@ import Data.Aeson.KeyMap
 import Data.Data
 import qualified Data.Aeson.Key as AK
 import qualified Data.Aeson.KeyMap as KM
-
+import  Control.Newtype ( Newtype(..), over, pack, unpack )
+import qualified Data.Aeson as A
 
 main :: IO ()
 main = putStrLn "Test suite not yet implemented."
@@ -136,3 +137,29 @@ newtype NormalizeKeys a = NormalizeKeys
              ) via a
 instance FromJSON a => FromJSON (NormalizeKeys a) where
     parseJSON _ = mempty
+  
+data CacheModelsMap a = CacheModelsMap {keys :: KM.KeyMap Int, values :: [a]}
+  deriving anyclass (Newtype (CacheModelsMap a))
+
+instance FromJSON a => FromJSON (CacheModelsMap a) where
+  parseJSON _ = mempty
+
+instance ToJSON a => ToJSON (CacheModelsMap a) where
+  toJSON _ = Null
+
+data DCacheModelsMap a = DCacheModelsMap {keyss :: KM.KeyMap Int, valuess :: [a]}
+  deriving anyclass (Newtype (DCacheModelsMap a))
+
+instance A.FromJSON a => FromJSON (DCacheModelsMap a) where
+  parseJSON _ = mempty
+
+instance A.ToJSON a => ToJSON (DCacheModelsMap a) where
+  toJSON _ = Null
+
+newtype ViaGenericEncodeDecode a = ViaGenericEncodeDecode a
+
+instance (A.FromJSON a) => A.FromJSON (ViaGenericEncodeDecode a) where
+  parseJSON a = mempty
+
+instance (A.ToJSON a) => A.ToJSON (ViaGenericEncodeDecode a) where
+  toJSON (ViaGenericEncodeDecode a) = Null

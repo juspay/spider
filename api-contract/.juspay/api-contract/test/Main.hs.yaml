@@ -34,6 +34,26 @@ B:
       fieldsList: []
       typeOfInstance: Derived
   typeKind: data
+CacheModelsMap:
+  caseType: null
+  dataConstructors:
+    CacheModelsMap:
+      fields':
+        keys: KM.KeyMap Int
+        values: '[a]'
+      sumTypes: []
+  instances: {}
+  typeKind: data
+DCacheModelsMap:
+  caseType: null
+  dataConstructors:
+    DCacheModelsMap:
+      fields':
+        keyss: KM.KeyMap Int
+        valuess: '[a]'
+      sumTypes: []
+  instances: {}
+  typeKind: data
 IgnoredInJson:
   caseType: null
   dataConstructors:
@@ -134,6 +154,15 @@ Stringly:
     Stringly:
       fields':
         unStringly: a
+      sumTypes: []
+  instances: {}
+  typeKind: data
+ViaGenericEncodeDecode:
+  caseType: null
+  dataConstructors:
+    ViaGenericEncodeDecode:
+      fields':
+        '0': a
       sumTypes: []
   instances: {}
   typeKind: data
