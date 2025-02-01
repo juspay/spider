@@ -531,6 +531,7 @@ getRdrName (HsTyVar _ _ (n)) = getTypeName $ convertLIdP n
             Unqual n -> occNameString $ occName n
             Exact n -> occNameString $ nameOccName n
             _ -> "UnknownType"
+getRdrName n = showSDocUnsafe $ ppr $ n
 
 getInstancesInfo :: LHsDecl GhcPs -> IO [(String,String)]
 getInstancesInfo (L l (TyClD _ (DataDecl _ (L _ lname) _ _ defn))) = do
