@@ -86,3 +86,4 @@ test-suite api-contract-test
         , aeson
         , record-hasfield
         , text
+        , newtype

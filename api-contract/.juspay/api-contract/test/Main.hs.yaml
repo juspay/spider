@@ -34,6 +34,62 @@ B:
       fieldsList: []
       typeOfInstance: Derived
   typeKind: data
+CacheModelsMap:
+  caseType: null
+  dataConstructors:
+    CacheModelsMap:
+      fields':
+        keys: KM.KeyMap Int
+        values: '[a]'
+      sumTypes: []
+  instances: {}
+  typeKind: data
+DCacheModelsMap:
+  caseType: null
+  dataConstructors:
+    DCacheModelsMap:
+      fields':
+        keyss: KM.KeyMap Int
+        valuess: '[a]'
+      sumTypes: []
+  instances: {}
+  typeKind: data
+IgnoredInJson:
+  caseType: null
+  dataConstructors:
+    IgnoredInJson:
+      fields':
+        value: a
+      sumTypes: []
+  instances: {}
+  typeKind: data
+NonEmpty:
+  caseType: null
+  dataConstructors:
+    NonEmpty:
+      fields':
+        '0': a
+      sumTypes: []
+  instances: {}
+  typeKind: data
+NormalizeKeys:
+  caseType: null
+  dataConstructors:
+    NormalizeKeys:
+      fields':
+        unwrapNormalizeKeys: a
+      sumTypes: []
+  instances: {}
+  typeKind: data
+OneOrMany:
+  caseType: null
+  dataConstructors:
+    OneOrMany:
+      fields':
+        unOneOrMany: NonEmpty a
+      sumTypes: []
+  instances: {}
+  typeKind: data
 RefundAttempt:
   caseType: null
   dataConstructors:
@@ -91,4 +147,22 @@ RefundAttempt':
     toJSON:
       fieldsList: []
       typeOfInstance: Derived
+  typeKind: data
+Stringly:
+  caseType: null
+  dataConstructors:
+    Stringly:
+      fields':
+        unStringly: a
+      sumTypes: []
+  instances: {}
+  typeKind: data
+ViaGenericEncodeDecode:
+  caseType: null
+  dataConstructors:
+    ViaGenericEncodeDecode:
+      fields':
+        '0': a
+      sumTypes: []
+  instances: {}
   typeKind: data
