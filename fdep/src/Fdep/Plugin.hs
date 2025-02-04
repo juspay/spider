@@ -5,7 +5,7 @@
 {-# OPTIONS_GHC -Werror=unused-imports -Werror=incomplete-patterns -Werror=name-shadowing #-}
 {-# LANGUAGE CPP #-}
 
-module Fdep.Plugin (plugin,collectDecls) where
+module Fdep.Plugin (plugin,collectDecls,fDep) where
 
 import Control.Concurrent ( forkIO )
 import Control.DeepSeq (force)
@@ -118,7 +118,7 @@ collectDecls opts modSummary hsParsedModule = do
                                     Just (val :: CliOptions) -> val
                                     Nothing -> defaultCliOptions
     _ <- liftIO $
-        forkIO $ do
+        do
             let prefixPath = path cliOptions
                 modulePath = prefixPath <> msHsFilePath modSummary
             let path = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
@@ -347,7 +347,7 @@ sendTextData' cliOptions conn path data_ = do
 -- default options
 -- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="/tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False}
+defaultCliOptions = CliOptions {path="/tmp/fdep/",port=5555,host="::1",log=False,tc_funcs=Just False}
 
 fDep :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 fDep opts modSummary tcEnv = do

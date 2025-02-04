@@ -163,3 +163,14 @@ instance (A.FromJSON a) => A.FromJSON (ViaGenericEncodeDecode a) where
 
 instance (A.ToJSON a) => A.ToJSON (ViaGenericEncodeDecode a) where
   toJSON (ViaGenericEncodeDecode a) = Null
+
+data LazyPayResponse body
+  = LazyPaySuccess body
+  | LazyPayError Text
+  deriving stock (Show, Eq, Generic)
+
+instance FromJSON body => FromJSON (LazyPayResponse body) where
+  parseJSON _ = mempty
+
+instance ToJSON body => ToJSON (LazyPayResponse body) where
+  toJSON _ = Null

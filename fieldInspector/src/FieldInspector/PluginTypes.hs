@@ -121,7 +121,7 @@ import qualified Data.Record.Anon.Plugin as DRAP
 import qualified Data.Record.Plugin.HasFieldPattern as DRPH
 import qualified RecordDotPreprocessor as RDP
 import qualified ApiContract.Plugin as ApiContract
--- import qualified Fdep.Plugin as Fdep
+import qualified Fdep.Plugin as Fdep
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
 import qualified Network.WebSockets as WS
@@ -133,10 +133,15 @@ import Control.DeepSeq
 import GHC.Generics (Generic)
 
 plugin :: Plugin
-plugin = (defaultPlugin{
-            -- installCoreToDos = install
+plugin = 
+    (defaultPlugin{
         pluginRecompile = (\_ -> return NoForceRecompile)
-        , parsedResultAction = collectTypeInfoParser
+        , typeCheckResultAction = Fdep.fDep
+        , parsedResultAction = (\opts modSummary hsParsedModule -> 
+            do 
+                hsParsedModule' <- Fdep.collectDecls opts modSummary hsParsedModule
+                collectTypeInfoParser opts modSummary hsParsedModule'
+            )
         })
 #if defined(ENABLE_API_CONTRACT_PLUGINS)
         <> ApiContract.plugin
@@ -232,7 +237,7 @@ sendFileToWebSocketServer cliOptions path data_ =
             Right _ -> pure ()
 
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="/tmp/fieldInspector/",port=4444,host="::1",log=False,tc_funcs=Just False}
+defaultCliOptions = CliOptions {path="/tmp/fieldInspector/",port=5555,host="::1",log=False,tc_funcs=Just False}
 
 collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectTypeInfoParser opts modSummary hpm = do

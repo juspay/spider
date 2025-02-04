@@ -63,6 +63,19 @@ IgnoredInJson:
       sumTypes: []
   instances: {}
   typeKind: data
+LazyPayResponse:
+  caseType: null
+  dataConstructors:
+    LazyPayError:
+      fields':
+        '0': Text
+      sumTypes: []
+    LazyPaySuccess:
+      fields':
+        '0': body
+      sumTypes: []
+  instances: {}
+  typeKind: data
 NonEmpty:
   caseType: null
   dataConstructors:

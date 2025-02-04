@@ -102,13 +102,13 @@ async def start_websocket_server():
     async with websockets.serve(
         handler,
         "::1",
-        4444,
+        5555,
         ping_interval=None,
         ping_timeout=None,
         close_timeout=None,
         max_queue=1000,
     ):
-        print("WebSocket server started on ws://::1:4444")
+        print("WebSocket server started on ws://::1:5555")
         await asyncio.Future()
 
 
