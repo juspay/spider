@@ -24,6 +24,7 @@ async def handler(websocket, path):
             "fieldUsage",
             "typeUpdates",
             ".types.parser.",
+            "module_apis"
         ]:
             if i in path:
                 file_dump = True

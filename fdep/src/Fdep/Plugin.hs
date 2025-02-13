@@ -347,7 +347,7 @@ sendTextData' cliOptions conn path data_ = do
 -- default options
 -- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="/tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False}
+defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False}
 
 fDep :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 fDep opts modSummary tcEnv = do
