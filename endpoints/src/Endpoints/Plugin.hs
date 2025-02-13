@@ -3,7 +3,8 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE CPP #-}
-{-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DeriveAnyClass,ScopedTypeVariables #-}
+{-# LANGUAGE NamedFieldPuns,PartialTypeSignatures #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveDataTypeable #-}
@@ -53,6 +54,18 @@ import GHC.IO (unsafePerformIO)
 import qualified Data.Aeson.Key as Key
 import Control.Reference (biplateRef, (^?))
 import Data.Generics.Uniplate.Data ()
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.Aeson as A
+import Prelude hiding (log)
+import qualified Network.WebSockets as WS
+import Control.Exception
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
+import qualified Data.List.Extra as Data.List
+import Network.Socket (withSocketsDo)
+import Data.Maybe
+import System.Environment (lookupEnv)
+import Text.Read (readMaybe)
+import Data.List.Extra (intercalate, isSuffixOf, replace, splitOn,groupBy)
 
 plugin :: Plugin
 plugin =
@@ -62,21 +75,64 @@ plugin =
         , typeCheckResultAction = collectTypesTC
         }
 
+websocketPort :: Maybe Int
+websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
+
+shouldLog :: Bool
+shouldLog = readBool $ unsafePerformIO $ lookupEnv "ENABLE_LOGS"
+  where
+    readBool :: (Maybe String) -> Bool
+    readBool (Just "true") = True
+    readBool (Just "True") = True
+    readBool (Just "TRUE") = True
+    readBool _ = False
+
+
+websocketHost :: Maybe String
+websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
+
 -- cachedTypes :: MVar (HM.KeyMap Type)
 -- cachedTypes = unsafePerformIO (newMVar mempty)
 
+sendFileToWebSocketServer :: (WS.WebSocketsData a) => CliOptions -> T.Text -> a -> IO ()
+sendFileToWebSocketServer cliOptions path data_ =
+    withSocketsDo $ do
+        eres <- try $
+            WS.runClient
+                (fromMaybe (host cliOptions) websocketHost)
+                (fromMaybe (port cliOptions) websocketPort)
+                (T.unpack path)
+                (\conn -> do
+                    res <- try $ WS.sendTextData conn data_
+                    case res of
+                        Left (err :: SomeException) ->
+                            when (shouldLog || log cliOptions) $ print err
+                        Right _ -> pure ()
+                )
+        case eres of
+            Left (err :: SomeException) ->
+                when (shouldLog || log cliOptions) $ print err
+            Right _ -> pure ()
+
+defaultCliOptions :: CliOptions
+defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False}
+
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcg = do
+    let cliOptions = case opts of
+                    [] ->  defaultCliOptions
+                    (local : _) -> 
+                                case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                    Just (val :: CliOptions) -> val
+                                    Nothing -> defaultCliOptions
     dflags <- getDynFlags
     _ <- liftIO $
             do
-                let prefixPath = case opts of
-                        [] -> "/tmp/endpoints/"
-                        local : _ -> local
+                let prefixPath = (path $ cliOptions)
                     moduleName' = moduleNameString $ GhcPlugins.moduleName $ ms_mod modSummary
                     modulePath = prefixPath <> msHsFilePath modSummary
                     typeEnv = tcg_type_env tcg
-                    path = (intercalate "/" . init . splitOn "/") modulePath
+                let path = (intercalate "/" . init . splitOn "/") modulePath
                 servantAPIs <- mapM (\x ->
                                             case x of
                                                 ATyCon tyCon -> getAPITypes tyCon
@@ -85,8 +141,9 @@ collectTypesTC opts modSummary tcg = do
                 -- hm <- takeMVar cachedTypes
                 -- putMVar cachedTypes $ (foldl' (\hm (name,ty) -> HM.insert (Key.fromText $ T.pack $ showSDocUnsafe $ ppr name) ty hm) hm (concat servantAPIs))
                 parsedEndpoints <-  processServantApis $ concat servantAPIs
-                createDirectoryIfMissing True path
-                DBS.writeFile (modulePath <> ".api-spec.json") (DBS.toStrict $ encode $ parsedEndpoints)
+                -- createDirectoryIfMissing True path
+                -- DBS.writeFile (modulePath <> ".api-spec.json") (DBS.toStrict $ encode $ parsedEndpoints)
+                sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".module_apis.json") (decodeUtf8 $ (DBS.toStrict $ encode $ parsedEndpoints))
     return tcg
 
 mergeEndpoints x = x
@@ -130,7 +187,7 @@ data HttpMethod = Get | Post | Put | Delete | Patch
 
 data Endpoint = Endpoint
     { method :: String
-    , path :: [String]
+    , path' :: [String]
     , queryParams :: [String]
     , headers :: [String]
     , responseStatus :: String
@@ -196,7 +253,7 @@ parseApiDefinition x@(Group p comps) = do
         [] -> do
             pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing Nothing Nothing]
         [(endpoint)] -> pure [(\(Endpoint method path qp h rs rt rb reqBody contentType) -> Endpoint method ([p] <> path) qp h rs rt rb reqBody contentType) endpoint]
-        _ -> pure $ (map (\endpoint -> endpoint { path = [p] <> (path endpoint) })) filteredList
+        _ -> pure $ (map (\endpoint -> endpoint { path' = [p] <> (path' endpoint) })) filteredList
 parseApiDefinition (Alternative comps) = concat <$> mapM parseApiDefinition comps
 parseApiDefinition _ = pure []
 
@@ -347,3 +404,11 @@ isTyConApp :: Type -> Bool
 isTyConApp (TyConApp _ _) = True
 isTyConApp _              = False
 #endif
+
+data CliOptions = CliOptions {
+    path :: FilePath,
+    port :: Int,
+    host :: String,
+    log :: Bool,
+    tc_funcs :: Maybe Bool
+} deriving (Show,Generic,ToJSON,FromJSON)
