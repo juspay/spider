@@ -15,6 +15,15 @@ import qualified Data.Map as Map
 -- import GHC.Hs (SrcSpanAnnA)
 import GHC (SrcSpan(..), RealSrcSpan(..))
 
+data CliOptions = CliOptions {
+    path :: FilePath,
+    port :: Int,
+    host :: String,
+    log :: Bool,
+    tc_funcs :: Maybe Bool,
+    api_contract :: Maybe Bool
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
+
 data TypeOfInstance =
       Derived
       | Custom

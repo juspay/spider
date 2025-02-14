@@ -147,6 +147,8 @@ import qualified Data.HashMap.Strict.InsOrd as HMOrder
 import qualified Data.Map.Ordered as OMap
 -- import Debug.Trace(traceShowId,trace)
 import Data.Ord (comparing)
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.Aeson as A
 
 -- ENABLE_ISOLATION
 #if defined(ENABLE_LR_PLUGINS)
@@ -254,8 +256,17 @@ hsSigType' = hsSigType
 showSDocUnsafe' = showSDocUnsafe . ppr
 #endif
 
+defaultCliOptions :: CliOptions
+defaultCliOptions = CliOptions {path="./.juspay/api-contract/",port=4444,host="::1",log=False,tc_funcs=Just False,api_contract=Just True}
+
 collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectTypeInfoParser opts modSummary hpm = do
+    let cliOptions = case opts of
+                    [] ->  defaultCliOptions
+                    (local : _) ->
+                                case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                    Just (val :: CliOptions) -> val
+                                    Nothing -> defaultCliOptions
     let prefixPath = "./.juspay/api-contract/"
         moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
         modulePath = prefixPath <> msHsFilePath modSummary
@@ -353,6 +364,12 @@ newModuleListMvar = unsafePerformIO (newMVar mempty)
 
 collectInstanceInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectInstanceInfo opts modSummary tcEnv = do
+    let cliOptions = case opts of
+                    [] ->  defaultCliOptions
+                    (local : _) ->
+                                case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                    Just (val :: CliOptions) -> val
+                                    Nothing -> defaultCliOptions
     let prefixPath = "./.juspay/api-contract/"
         moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
         modulePath = prefixPath <> msHsFilePath modSummary
