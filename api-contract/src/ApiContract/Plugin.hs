@@ -147,6 +147,8 @@ import qualified Data.HashMap.Strict.InsOrd as HMOrder
 import qualified Data.Map.Ordered as OMap
 -- import Debug.Trace(traceShowId,trace)
 import Data.Ord (comparing)
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.Aeson as A
 
 -- ENABLE_ISOLATION
 #if defined(ENABLE_LR_PLUGINS)
@@ -254,82 +256,92 @@ hsSigType' = hsSigType
 showSDocUnsafe' = showSDocUnsafe . ppr
 #endif
 
+defaultCliOptions :: CliOptions
+defaultCliOptions = CliOptions {path="./.juspay/api-contract/",port=4444,host="::1",log=False,tc_funcs=Just False,api_contract=Just True}
+
 collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectTypeInfoParser opts modSummary hpm = do
+    let cliOptions = case opts of
+                    [] ->  defaultCliOptions
+                    (local : _) ->
+                                case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                    Just (val :: CliOptions) -> val
+                                    Nothing -> defaultCliOptions
     let prefixPath = "./.juspay/api-contract/"
         moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
         modulePath = prefixPath <> msHsFilePath modSummary
         moduleSrcSpan = mkFileSrcSpan $ ms_location modSummary
         hm_module = unLoc $ hpm_module hpm
         path = (intercalate "/" . init . splitOn "/") modulePath
-    liftIO $ createDirectoryIfMissing True path
-    typesInThisModule <- liftIO $ toList $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
-    typesToInstancesPresent <- liftIO $ toList $ mapM (getInstancesInfo) (fromList $ hsmodDecls hm_module)
-    -- when (generateTypesRules) $ liftIO $ print $ (typesInThisModule,Data.List.nub $ Prelude.concat typesToInstancesPresent)
-    -- && not ((T.pack "(") `T.isPrefixOf` (T.pack type_))
-    (shouldAddTypes :: [String]) <- foldM (\acc (inst,type_) -> if (inst `Prelude.elem` instanceToAdd ) then pure $ (acc <> [type_]) else pure $ acc) [] (Data.List.nub $ Prelude.concat typesToInstancesPresent)
-    let (srcSpansHM :: HashMapL SrcSpan) = HM.fromList $ map (\(srcSpan,a,_) -> (fromString' a, srcSpan)) $ Prelude.concat typesInThisModule
-        -- (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,y) -> Prelude.any (Data.Text.isInfixOf (Data.Text.pack $ toString' typeName)) (map Data.Text.pack shouldAddTypes)) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
-        (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,_) -> (toString' typeName) `Prelude.elem` shouldAddTypes) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
+    when (fromMaybe True $ api_contract cliOptions) $ do
+        liftIO $ createDirectoryIfMissing True path
+        typesInThisModule <- liftIO $ toList $ mapM (pure . getTypeInfo) (fromList $ hsmodDecls hm_module)
+        typesToInstancesPresent <- liftIO $ toList $ mapM (getInstancesInfo) (fromList $ hsmodDecls hm_module)
+        -- when (generateTypesRules) $ liftIO $ print $ (typesInThisModule,Data.List.nub $ Prelude.concat typesToInstancesPresent)
+        -- && not ((T.pack "(") `T.isPrefixOf` (T.pack type_))
+        (shouldAddTypes :: [String]) <- foldM (\acc (inst,type_) -> if (inst `Prelude.elem` instanceToAdd ) then pure $ (acc <> [type_]) else pure $ acc) [] (Data.List.nub $ Prelude.concat typesToInstancesPresent)
+        let (srcSpansHM :: HashMapL SrcSpan) = HM.fromList $ map (\(srcSpan,a,_) -> (fromString' a, srcSpan)) $ Prelude.concat typesInThisModule
+            -- (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,y) -> Prelude.any (Data.Text.isInfixOf (Data.Text.pack $ toString' typeName)) (map Data.Text.pack shouldAddTypes)) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
+            (typeVsFields :: HashMapL TypeRule) = HM.fromList $ Prelude.filter (\(typeName,_) -> (toString' typeName) `Prelude.elem` shouldAddTypes) $ map (\(_,a,b) -> (fromString' a, b)) $ Prelude.concat typesInThisModule
 
-    -- liftIO $ print $ typeVsFields
-    -- liftIO $ print $ typesInThisModule
-    -- liftIO $ print $ typesToInstancesPresent
-    -- liftIO $ print $ ("HIIIII",shouldAddTypes,typeVsFields)
-    isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
-    dynFlag <- getDynFlags
-    if generateTypesRules || (not $ isOldFile)
-        then do
-            newModuleList <- liftIO $ takeMVar newModuleListMvar
-            liftIO $ putMVar newModuleListMvar (newModuleList <> [modulePath])
-            liftIO $ DBS.writeFile (modulePath <> ".yaml") (YAML.encode $ sortKeyMap typeVsFields)
-        else do
-            (eitherTypeRules :: Either (YAML.ParseException) (HashMapL TypeRule)) <- liftIO $ fetchRules (modulePath <> ".yaml")
-            case eitherTypeRules of
+        -- liftIO $ print $ typeVsFields
+        -- liftIO $ print $ typesInThisModule
+        -- liftIO $ print $ typesToInstancesPresent
+        -- liftIO $ print $ ("HIIIII",shouldAddTypes,typeVsFields)
+        isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
+        dynFlag <- getDynFlags
+        if generateTypesRules || (not isOldFile && not isNixBuild)
+            then do
+                newModuleList <- liftIO $ takeMVar newModuleListMvar
+                liftIO $ putMVar newModuleListMvar (newModuleList <> [modulePath])
+                liftIO $ DBS.writeFile (modulePath <> ".yaml") (YAML.encode $ sortKeyMap typeVsFields)
+            else do
+                (eitherTypeRules :: Either (YAML.ParseException) (HashMapL TypeRule)) <- liftIO $ fetchRules (modulePath <> ".yaml")
+                case eitherTypeRules of
 #if __GLASGOW_HASKELL__ >= 900
-                Left err -> ParseError.throwErrors
-                            $ listToBag
-                                $ [ParseError.mkErr moduleSrcSpan reallyAlwaysQualify (ParseError.mkDecorated [docToSDoc $ Pretty.text $ (modulePath <> ".yaml") <> " is missing for this module : " <> show err])]
+                    Left err -> ParseError.throwErrors
+                                $ listToBag
+                                    $ [ParseError.mkErr moduleSrcSpan reallyAlwaysQualify (ParseError.mkDecorated [docToSDoc $ Pretty.text $ (modulePath <> ".yaml") <> " is missing for this module : " <> show err])]
 #else
-                Left err -> ParseError.throwErrors
-                            $ listToBag
-                                $ [mkErrMsg dynFlag moduleSrcSpan reallyAlwaysQualify (docToSDoc $ Pretty.text $ (modulePath <> ".yaml") <> " is missing for this module : " <> show err)]
+                    Left err -> ParseError.throwErrors
+                                $ listToBag
+                                    $ [mkErrMsg dynFlag moduleSrcSpan reallyAlwaysQualify (docToSDoc $ Pretty.text $ (modulePath <> ".yaml") <> " is missing for this module : " <> show err)]
 #endif
-                Right typeRules -> do
-                    -- liftIO $ print (typeRules)
-                    errors :: [[(SrcSpan,ApiContractError)]] <- liftIO $ toList $ mapM (\(typeName,rules) -> do
-                                            case HM.lookup typeName typeVsFields of
-                                                Just typeRule -> do
-                                                    let srcSpan = fromJust $ HM.lookup typeName srcSpansHM
-                                                    errorList <- runFieldNameAndTypeRule (toString' typeName) (caseType rules) (dataConstructors rules) (dataConstructors typeRule)
-                                                    pure $ map (\x -> (srcSpan,x)) $ errorList
-                                                Nothing -> pure [(moduleSrcSpan,(MISSING_TYPE_CODE (toString' typeName)))]
-                                    ) (fromList $ HM.toList typeRules)
-                    -- liftIO $ print ("III",shouldAddTypes)
-                    -- liftIO $ print ("IIIH",typeRules,typeVsFields)
-                    missingTypesInRulesWithAeson <- toList $ mapM (\x -> do
-                        if HM.member (fromString' x) typeRules
-                            then pure []
-                            else case HM.lookup (fromString' x) typeVsFields of
-                                Just y -> pure [(moduleSrcSpan, MISSING_TYPE_IN_RULE x (unpack . decodeUtf8 . YAML.encode $ Map.fromList [(x,y)]))]
-                                Nothing -> pure [] -- Skip if type not defined in this module
-                        ) $ fromList shouldAddTypes
-                    errorsNubbed :: [(SrcSpan,ApiContractError)] <- pure $ Data.List.nub $ Prelude.concat (errors <> missingTypesInRulesWithAeson)
-                    if (not $ Prelude.null $ errorsNubbed)
-                        then do
+                    Right typeRules -> do
+                        -- liftIO $ print (typeRules)
+                        errors :: [[(SrcSpan,ApiContractError)]] <- liftIO $ toList $ mapM (\(typeName,rules) -> do
+                                                case HM.lookup typeName typeVsFields of
+                                                    Just typeRule -> do
+                                                        let srcSpan = fromJust $ HM.lookup typeName srcSpansHM
+                                                        errorList <- runFieldNameAndTypeRule (toString' typeName) (caseType rules) (dataConstructors rules) (dataConstructors typeRule)
+                                                        pure $ map (\x -> (srcSpan,x)) $ errorList
+                                                    Nothing -> pure [(moduleSrcSpan,(MISSING_TYPE_CODE (toString' typeName)))]
+                                        ) (fromList $ HM.toList typeRules)
+                        -- liftIO $ print ("III",shouldAddTypes)
+                        -- liftIO $ print ("IIIH",typeRules,typeVsFields)
+                        missingTypesInRulesWithAeson <- toList $ mapM (\x -> do
+                            if HM.member (fromString' x) typeRules
+                                then pure []
+                                else case HM.lookup (fromString' x) typeVsFields of
+                                    Just y -> pure [(moduleSrcSpan, MISSING_TYPE_IN_RULE x (unpack . decodeUtf8 . YAML.encode $ Map.fromList [(x,y)]))]
+                                    Nothing -> pure [] -- Skip if type not defined in this module
+                            ) $ fromList shouldAddTypes
+                        errorsNubbed :: [(SrcSpan,ApiContractError)] <- pure $ Data.List.nub $ Prelude.concat (errors <> missingTypesInRulesWithAeson)
+                        if (not $ Prelude.null $ errorsNubbed)
+                            then do
 #if __GLASGOW_HASKELL__ >= 900
-                            errorMessages <- pure $ listToBag $ map (\(srcSpan,errorMessage) -> ParseError.mkErr srcSpan reallyAlwaysQualify (ParseError.mkDecorated [docToSDoc $ Pretty.text $ generateErrorMessage (modulePath <> ".yaml") errorMessage])) errorsNubbed
-                            ParseError.throwErrors errorMessages
+                                errorMessages <- pure $ listToBag $ map (\(srcSpan,errorMessage) -> ParseError.mkErr srcSpan reallyAlwaysQualify (ParseError.mkDecorated [docToSDoc $ Pretty.text $ generateErrorMessage (modulePath <> ".yaml") errorMessage])) errorsNubbed
+                                ParseError.throwErrors errorMessages
 #else
-                            errorMessages <- 
-                                pure $ 
-                                    listToBag $ 
-                                        map (\(srcSpan,errorMessage) -> 
-                                                mkErrMsg dynFlag srcSpan reallyAlwaysQualify (docToSDoc $ Pretty.text $ generateErrorMessage (modulePath <> ".yaml") errorMessage)
-                                            ) errorsNubbed
-                            ParseError.throwErrors errorMessages
+                                errorMessages <- 
+                                    pure $ 
+                                        listToBag $ 
+                                            map (\(srcSpan,errorMessage) -> 
+                                                    mkErrMsg dynFlag srcSpan reallyAlwaysQualify (docToSDoc $ Pretty.text $ generateErrorMessage (modulePath <> ".yaml") errorMessage)
+                                                ) errorsNubbed
+                                ParseError.throwErrors errorMessages
 #endif
-                        else pure ()
+                            else pure ()
     pure hpm
 
 #if __GLASGOW_HASKELL__ >= 900
@@ -353,80 +365,87 @@ newModuleListMvar = unsafePerformIO (newMVar mempty)
 
 collectInstanceInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectInstanceInfo opts modSummary tcEnv = do
+    let cliOptions = case opts of
+                    [] ->  defaultCliOptions
+                    (local : _) ->
+                                case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                    Just (val :: CliOptions) -> val
+                                    Nothing -> defaultCliOptions
     let prefixPath = "./.juspay/api-contract/"
         moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
         modulePath = prefixPath <> msHsFilePath modSummary
         moduleSrcSpan = mkFileSrcSpan $ ms_location modSummary
         path = (intercalate "/" . init . splitOn "/") modulePath
-    typeInstances <- liftIO $ toList $ mapM processInstance (fromList $ bagToList $ tcg_binds tcEnv)
-    (instanceSrcSpansHM :: HashMapL SrcSpan) <- pure $ HM.fromList $ map (\(srcSpan,typeName,instanceName,_) -> (fromString' (typeName <> "--" <> instanceName), srcSpan)) $ Prelude.concat typeInstances
-    (instanceTypeHM :: HashMapL InstanceFromTC) <- pure $ HM.fromList $ map (\(_,typeName,instanceName,x) -> (fromString' (typeName <> "--" <> instanceName), x)) $ Prelude.concat typeInstances
-    (eitherTypeRules :: Either (YAML.ParseException) (HashMapL TypeRule)) <- liftIO $ fetchRules (modulePath <> ".yaml")
-    newModuleList <- liftIO $ readMVar newModuleListMvar
-    case eitherTypeRules of
+    when (fromMaybe True $ api_contract cliOptions) $ do
+        typeInstances <- liftIO $ toList $ mapM processInstance (fromList $ bagToList $ tcg_binds tcEnv)
+        (instanceSrcSpansHM :: HashMapL SrcSpan) <- pure $ HM.fromList $ map (\(srcSpan,typeName,instanceName,_) -> (fromString' (typeName <> "--" <> instanceName), srcSpan)) $ Prelude.concat typeInstances
+        (instanceTypeHM :: HashMapL InstanceFromTC) <- pure $ HM.fromList $ map (\(_,typeName,instanceName,x) -> (fromString' (typeName <> "--" <> instanceName), x)) $ Prelude.concat typeInstances
+        (eitherTypeRules :: Either (YAML.ParseException) (HashMapL TypeRule)) <- liftIO $ fetchRules (modulePath <> ".yaml")
+        newModuleList <- liftIO $ readMVar newModuleListMvar
+        case eitherTypeRules of
 #if __GLASGOW_HASKELL__ >= 900
-        Left err -> TCError.addErrs $ [(moduleSrcSpan,docToSDoc $ Pretty.text $ (modulePath <> ".yaml") <> " " <> "is missing for this module :" <> show err)]
+            Left err -> TCError.addErrs $ [(moduleSrcSpan,docToSDoc $ Pretty.text $ (modulePath <> ".yaml") <> " " <> "is missing for this module :" <> show err)]
 #else
-        Left err -> TCError.addErrs $ [(moduleSrcSpan,docToSDoc $ Pretty.text $ (modulePath <> ".yaml") <> " " <> "is missing for this module :" <> show err)]
+            Left err -> TCError.addErrs $ [(moduleSrcSpan,docToSDoc $ Pretty.text $ (modulePath <> ".yaml") <> " " <> "is missing for this module :" <> show err)]
 #endif
-        Right typeRules -> do
-            let updatedTypesRules = foldl' (\hm (_,typeName,instanceName,x) ->
-                                        case HM.lookup (fromString' typeName) hm of
-                                            Just v  -> HM.insert (fromString' typeName) (v{instances = Map.insert instanceName x (instances v)}) hm
-                                            Nothing -> hm
-                                    ) typeRules $ Prelude.concat typeInstances
-            isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
-            if generateTypesRules || (not $ isOldFile) || (modulePath `Prelude.elem` newModuleList)
-                then do
-                    -- when (generateTypesRules) $ liftIO $ print "dumping rules"
-                    liftIO $ DBS.writeFile (modulePath <> ".yaml") (YAML.encode $ sortKeyMap updatedTypesRules)
-                else do
-                    errors :: [[(SrcSpan,ApiContractError)]] <- liftIO $ toList $ mapM (\(typeName,rules) ->
-                                            let (instancesMap :: Map.Map String InstanceFromTC) = instances rules
-                                                errors = map (\(x,ruleInst) ->
-                                                            case HM.lookup (typeName <> (fromString' "--") <> (fromString' x)) instanceTypeHM of
-                                                                Just inst ->
-                                                                    let instanceSpan = fromJust $ HM.lookup (typeName <> (fromString' "--") <> (fromString' x)) instanceSrcSpansHM
-                                                                        typeOfInstanceCheck =
-                                                                                    if (typeOfInstance inst) == (typeOfInstance ruleInst)
-                                                                                        then mempty
-                                                                                        else [(instanceSpan,(TYPE_OF_INSTANCE_CHANGED (toString' typeName) x (typeOfInstance ruleInst)))]
-                                                                        fieldListCheck =
-                                                                                map (\y ->
-                                                                                            if y `Prelude.elem` fieldsList inst
-                                                                                                then mempty
-                                                                                                else [(instanceSpan,(MISSING_FIELD_IN_INSTANCE_CODE (toString' typeName) x y))]
-                                                                                    ) (fieldsList ruleInst)
-                                                                        fieldListCheckInverse =
-                                                                                map (\y ->
-                                                                                            if y `Prelude.elem` fieldsList ruleInst
-                                                                                                then mempty
-                                                                                                else [(instanceSpan,(MISSING_FIELD_IN_INSTANCE_RULES (toString' typeName) x y))]
-                                                                                    ) (fieldsList inst)
-                                                                    in typeOfInstanceCheck <> (Prelude.concat $ fieldListCheck <> fieldListCheckInverse)
-                                                                Nothing -> [(moduleSrcSpan, (MISSING_INSTANCE_IN_CODE (toString' typeName) x))]
-                                                        ) $ Map.toList instancesMap
-                                            in pure $ Prelude.concat errors
-                                    ) (fromList $ HM.toList typeRules)
-                    let missingInstanceConstraintsInRules = map (\(k,v) ->
-                                                                let typeName = fromString' $ Prelude.head $ splitOn "--" $ toString' k
-                                                                    instanceName = Prelude.last $ splitOn "--" $ toString' k
-                                                                in case HM.lookup typeName typeRules of
-                                                                    Just rules ->
-                                                                        case Map.lookup instanceName $ instances rules of
-                                                                            Just val -> mempty
-                                                                            Nothing -> [(moduleSrcSpan, (MISSING_INSTANCE_IN_RULES (toString' typeName) (instanceName) (maybe (mempty) (\y -> (unpack . decodeUtf8 . YAML.encode) $ Map.fromList [((toString' typeName),y)]) $ HM.lookup typeName updatedTypesRules)))]
-                                                                    Nothing -> mempty
-                                                            ) $ HM.toList instanceTypeHM
-                    errorsNubbed :: [(SrcSpan,ApiContractError)] <- pure $ Data.List.nub $ Prelude.concat (errors <> missingInstanceConstraintsInRules)
-                    if (not $ Prelude.null $ errorsNubbed)
-                        then do
+            Right typeRules -> do
+                let updatedTypesRules = foldl' (\hm (_,typeName,instanceName,x) ->
+                                            case HM.lookup (fromString' typeName) hm of
+                                                Just v  -> HM.insert (fromString' typeName) (v{instances = Map.insert instanceName x (instances v)}) hm
+                                                Nothing -> hm
+                                        ) typeRules $ Prelude.concat typeInstances
+                isOldFile <- liftIO $ doesFileExist (modulePath <> ".yaml")
+                if generateTypesRules || (not $ isOldFile && not isNixBuild) || (modulePath `Prelude.elem` newModuleList)
+                    then do
+                        -- when (generateTypesRules) $ liftIO $ print "dumping rules"
+                        liftIO $ DBS.writeFile (modulePath <> ".yaml") (YAML.encode $ sortKeyMap updatedTypesRules)
+                    else do
+                        errors :: [[(SrcSpan,ApiContractError)]] <- liftIO $ toList $ mapM (\(typeName,rules) ->
+                                                let (instancesMap :: Map.Map String InstanceFromTC) = instances rules
+                                                    errors = map (\(x,ruleInst) ->
+                                                                case HM.lookup (typeName <> (fromString' "--") <> (fromString' x)) instanceTypeHM of
+                                                                    Just inst ->
+                                                                        let instanceSpan = fromJust $ HM.lookup (typeName <> (fromString' "--") <> (fromString' x)) instanceSrcSpansHM
+                                                                            typeOfInstanceCheck =
+                                                                                        if (typeOfInstance inst) == (typeOfInstance ruleInst)
+                                                                                            then mempty
+                                                                                            else [(instanceSpan,(TYPE_OF_INSTANCE_CHANGED (toString' typeName) x (typeOfInstance ruleInst)))]
+                                                                            fieldListCheck =
+                                                                                    map (\y ->
+                                                                                                if y `Prelude.elem` fieldsList inst
+                                                                                                    then mempty
+                                                                                                    else [(instanceSpan,(MISSING_FIELD_IN_INSTANCE_CODE (toString' typeName) x y))]
+                                                                                        ) (fieldsList ruleInst)
+                                                                            fieldListCheckInverse =
+                                                                                    map (\y ->
+                                                                                                if y `Prelude.elem` fieldsList ruleInst
+                                                                                                    then mempty
+                                                                                                    else [(instanceSpan,(MISSING_FIELD_IN_INSTANCE_RULES (toString' typeName) x y))]
+                                                                                        ) (fieldsList inst)
+                                                                        in typeOfInstanceCheck <> (Prelude.concat $ fieldListCheck <> fieldListCheckInverse)
+                                                                    Nothing -> [(moduleSrcSpan, (MISSING_INSTANCE_IN_CODE (toString' typeName) x))]
+                                                            ) $ Map.toList instancesMap
+                                                in pure $ Prelude.concat errors
+                                        ) (fromList $ HM.toList typeRules)
+                        let missingInstanceConstraintsInRules = map (\(k,v) ->
+                                                                    let typeName = fromString' $ Prelude.head $ splitOn "--" $ toString' k
+                                                                        instanceName = Prelude.last $ splitOn "--" $ toString' k
+                                                                    in case HM.lookup typeName typeRules of
+                                                                        Just rules ->
+                                                                            case Map.lookup instanceName $ instances rules of
+                                                                                Just val -> mempty
+                                                                                Nothing -> [(moduleSrcSpan, (MISSING_INSTANCE_IN_RULES (toString' typeName) (instanceName) (maybe (mempty) (\y -> (unpack . decodeUtf8 . YAML.encode) $ Map.fromList [((toString' typeName),y)]) $ HM.lookup typeName updatedTypesRules)))]
+                                                                        Nothing -> mempty
+                                                                ) $ HM.toList instanceTypeHM
+                        errorsNubbed :: [(SrcSpan,ApiContractError)] <- pure $ Data.List.nub $ Prelude.concat (errors <> missingInstanceConstraintsInRules)
+                        if (not $ Prelude.null $ errorsNubbed)
+                            then do
 #if __GLASGOW_HASKELL__ >= 900
-                            TCError.addErrs $ map (\(srcSpan,errorMessage) -> (srcSpan,docToSDoc $ Pretty.text $ generateErrorMessage (modulePath <> ".yaml") errorMessage)) errorsNubbed
+                                TCError.addErrs $ map (\(srcSpan,errorMessage) -> (srcSpan,docToSDoc $ Pretty.text $ generateErrorMessage (modulePath <> ".yaml") errorMessage)) errorsNubbed
 #else
-                            TCError.addErrs $ map (\(srcSpan,errorMessage) -> (srcSpan,docToSDoc $ Pretty.text $ generateErrorMessage (modulePath <> ".yaml") errorMessage)) errorsNubbed
+                                TCError.addErrs $ map (\(srcSpan,errorMessage) -> (srcSpan,docToSDoc $ Pretty.text $ generateErrorMessage (modulePath <> ".yaml") errorMessage)) errorsNubbed
 #endif
-                        else pure ()
+                            else pure ()
     pure tcEnv
 
 
@@ -732,6 +751,15 @@ runFieldNameAndTypeRule typeName caseType rules codeExtract = do
 
 generateTypesRules :: Bool
 generateTypesRules = readBool $ unsafePerformIO $ lookupEnv "DUMP_TYPE_RULES"
+    where
+        readBool :: Maybe String -> Bool
+        readBool (Just "true") = True
+        readBool (Just "True") = True
+        readBool (Just "TRUE") = True
+        readBool _ = False
+
+isNixBuild :: Bool
+isNixBuild = readBool $ unsafePerformIO $ lookupEnv "NIX_BUILD_API_CONTRACT"
     where
         readBool :: Maybe String -> Bool
         readBool (Just "true") = True

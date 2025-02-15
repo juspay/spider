@@ -20,7 +20,8 @@ data CliOptions = CliOptions {
     port :: Int,
     host :: String,
     log :: Bool,
-    tc_funcs :: Maybe Bool
+    tc_funcs :: Maybe Bool,
+    api_conteact :: Maybe Bool
 } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
 
 
