@@ -349,6 +349,65 @@ sendTextData' cliOptions conn path data_ = do
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False}
 
+filterList :: [Text]
+filterList =
+    [ "show"
+    , "showsPrec"
+    , "from"
+    , "to"
+    , "showList"
+    , "toConstr"
+    , "toDomResAcc"
+    , "toEncoding"
+    , "toEncodingList"
+    , "toEnum"
+    , "toForm"
+    , "toHaskellString"
+    , "toInt"
+    , "toJSON"
+    , "toJSONList"
+    , "toJSONWithOptions"
+    , "encodeJSON"
+    , "gfoldl"
+    , "ghmParser"
+    , "gmapM"
+    , "gmapMo"
+    , "gmapMp"
+    , "gmapQ"
+    , "gmapQi"
+    , "gmapQl"
+    , "gmapQr"
+    , "gmapT"
+    , "parseField"
+    , "parseJSON"
+    , "parseJSONList"
+    , "parseJSONWithOptions"
+    , "hasField"
+    , "gunfold"
+    , "getField"
+    , "_mapObjectDeep'"
+    , "_mapObjectDeep"
+    , "_mapObjectDeepForSnakeCase"
+    , "!!"
+    , "/="
+    , "<"
+    , "<="
+    , "<>"
+    , "<$"
+    , "=="
+    , ">"
+    , ">="
+    , "readsPrec"
+    , "readPrec"
+    , "toDyn"
+    , "fromDyn"
+    , "fromDynamic"
+    , "compare"
+    , "readListPrec"
+    , "toXml"
+    , "fromXml"
+    ]
+
 fDep :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 fDep opts modSummary tcEnv = do
     let cliOptions = case opts of
@@ -483,46 +542,49 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr . getLoc) id)))
 #endif
             let matchList = mg_alts matches
-            if not $ (maybeBool $ tc_funcs cliOptions)
-                then
-                    when (not $ "$$" `T.isInfixOf` name) $ do
-                        when (shouldLog || Fdep.Types.log cliOptions) $ print ("processing function: " <> fName)
-                        typeSignature <- pure $ (T.pack $ showSDocUnsafe (ppr (varType (unLoc id))))
-                        nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
-                        data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
-                        t1 <- getCurrentTime
-                        processFunctionInputOutput (varType (unLoc id)) cliOptions con _path nestedNameWithParent
-                        sendTextData' cliOptions con _path data_
-                        processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
-                        mapM_ (\x -> do
-                                    eres :: Either SomeException () <- try $ processMatch (nestedNameWithParent) _path x
-                                    case eres of
-                                        Left err -> do
-                                            when (shouldLog || Fdep.Types.log cliOptions) $ print (err,name)
-                                            pure ()--appendFile "error.log" (show (err,funName) <> "\n")
-                                        Right _ -> pure ()
-                                ) (unLoc matchList)
-                        t2 <- getCurrentTime
-                        when (shouldLog || Fdep.Types.log cliOptions) $ print $ "processed function: " <> fName <> " timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1)
-                else do
-                    when (shouldLog || Fdep.Types.log cliOptions) $ print ("processing function: " <> fName)
-                    typeSignature <- pure $ (T.pack $ showSDocUnsafe (ppr (varType (unLoc id))))
-                    nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
-                    data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
-                    t1 <- getCurrentTime
-                    sendTextData' cliOptions con _path data_
-                    processFunctionInputOutput (varType (unLoc id)) cliOptions con _path nestedNameWithParent
-                    processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
-                    mapM_ (\x -> do
-                                eres :: Either SomeException () <- try $ processMatch (nestedNameWithParent) _path x
-                                case eres of
-                                    Left err -> do
-                                        when (shouldLog || Fdep.Types.log cliOptions) $ print (err,name)
-                                        pure ()--appendFile "error.log" (show (err,funName) <> "\n")
-                                    Right _ -> pure ()
-                            ) (unLoc matchList)
-                    t2 <- getCurrentTime
-                    when (shouldLog || Fdep.Types.log cliOptions) $ print $ "processed function: " <> fName <> " timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1)
+            if funName `elem` (filterList)
+                then pure mempty
+                else
+                    if not $ (maybeBool $ tc_funcs cliOptions)
+                        then
+                            when (not $ "$$" `T.isInfixOf` name) $ do
+                                when (shouldLog || Fdep.Types.log cliOptions) $ print ("processing function: " <> fName)
+                                typeSignature <- pure $ (T.pack $ showSDocUnsafe (ppr (varType (unLoc id))))
+                                nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
+                                data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
+                                t1 <- getCurrentTime
+                                processFunctionInputOutput (varType (unLoc id)) cliOptions con _path nestedNameWithParent
+                                sendTextData' cliOptions con _path data_
+                                processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
+                                mapM_ (\x -> do
+                                            eres :: Either SomeException () <- try $ processMatch (nestedNameWithParent) _path x
+                                            case eres of
+                                                Left err -> do
+                                                    when (shouldLog || Fdep.Types.log cliOptions) $ print (err,name)
+                                                    pure ()--appendFile "error.log" (show (err,funName) <> "\n")
+                                                Right _ -> pure ()
+                                        ) (unLoc matchList)
+                                t2 <- getCurrentTime
+                                when (shouldLog || Fdep.Types.log cliOptions) $ print $ "processed function: " <> fName <> " timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1)
+                        else do
+                            when (shouldLog || Fdep.Types.log cliOptions) $ print ("processing function: " <> fName)
+                            typeSignature <- pure $ (T.pack $ showSDocUnsafe (ppr (varType (unLoc id))))
+                            nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
+                            data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("typeSignature", String typeSignature)])
+                            t1 <- getCurrentTime
+                            sendTextData' cliOptions con _path data_
+                            processFunctionInputOutput (varType (unLoc id)) cliOptions con _path nestedNameWithParent
+                            processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
+                            mapM_ (\x -> do
+                                        eres :: Either SomeException () <- try $ processMatch (nestedNameWithParent) _path x
+                                        case eres of
+                                            Left err -> do
+                                                when (shouldLog || Fdep.Types.log cliOptions) $ print (err,name)
+                                                pure ()--appendFile "error.log" (show (err,funName) <> "\n")
+                                            Right _ -> pure ()
+                                    ) (unLoc matchList)
+                            t2 <- getCurrentTime
+                            when (shouldLog || Fdep.Types.log cliOptions) $ print $ "processed function: " <> fName <> " timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1)
         (VarBind{var_id = var, var_rhs = expr}) -> do
             let stmts = (expr ^? biplateRef :: [LHsExpr GhcTc])
                 fName = T.pack $ nameStableString $ getName var 
