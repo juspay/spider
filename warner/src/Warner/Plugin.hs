@@ -4,6 +4,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE LambdaCase,RecordWildCards #-}
 
 module Warner.Plugin (plugin) where
 #if __GLASGOW_HASKELL__ >= 900
@@ -11,6 +12,7 @@ import GHC.Driver.Errors
 import GHC.Driver.Session
 import GHC.Data.Bag
 import GHC.Types.Error
+import Control.Monad
 -- import GHC.Core.TyCo.Rep
 -- import GHC.Core.TyCon
 -- import GHC.Core.DataCon
@@ -24,13 +26,17 @@ import GHC.Types.SrcLoc
 import GHC.Driver.Env
 import GHC.Tc.Types
 import GHC.Unit.Module.ModSummary
-import GHC.Utils.Outputable (showSDocUnsafe,ppr,withPprStyle,mkErrStyle,renderWithContext,defaultUserStyle)
+import GHC.Utils.Outputable (reallyAlwaysQualify,neverQualify,vcat,text,showSDocUnsafe,ppr,withPprStyle,mkErrStyle,renderWithContext,defaultUserStyle)
 -- import GHC.Types.Var
 -- import qualified Data.Aeson.KeyMap as HM
 import GHC.Unit.Module.ModGuts
 import GHC.Data.FastString
 import GHC.Types.SourceError
+import qualified Data.Aeson as A
+import qualified Data.ByteString.Lazy as BL
 import GHC.Utils.Error
+import Language.Haskell.Syntax.Decls
+import Data.Text.Encoding (encodeUtf8)
 #endif
 
 import Data.Aeson.Encode.Pretty (encodePretty)
@@ -47,6 +53,7 @@ import GHC.IO (unsafePerformIO)
 import System.Environment
 import GHC.Generics (Generic)
 -- import Control.Monad
+import Data.Maybe (fromMaybe)
 
 
 plugin :: Plugin
@@ -54,6 +61,7 @@ plugin =
     defaultPlugin
         {
         pluginRecompile = (\_ -> return NoForceRecompile)
+        , typeCheckResultAction = fixedLengthListAction
 #if __GLASGOW_HASKELL__ >= 900
         , desugarResultAction = handleWarns
 #endif
@@ -206,4 +214,316 @@ handleWarns opts mModSummary _tcGblEnv modGuts = do
 
         clearWarnings :: Hsc ()
         clearWarnings = Hsc $ \_ _ -> return ((), emptyBag)
+
+data CliOptions = CliOptions {
+    error :: Maybe Bool
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
+
+defaultCliOptions :: CliOptions
+defaultCliOptions = CliOptions {error = Just False}
+
+fixedLengthListAction :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
+fixedLengthListAction opts _ tcEnv = do
+    forM_ (bagToList $ tcg_binds tcEnv) checkModule
+    return tcEnv
+    where
+        checkModule :: LHsBindLR GhcTc GhcTc -> TcM ()
+        checkModule (L _ AbsBinds{abs_binds = binds}) = do
+            forM_ (bagToList binds) checkModule
+        checkModule x = checkBind x
+
+        checkValBinds :: HsValBinds GhcTc -> TcM ()
+        checkValBinds = \case
+            ValBinds _ binds _ -> 
+                mapBagM_ checkBind binds
+            XValBindsLR (NValBinds binds _) -> 
+                forM_ binds $ \(_, bagBinds) -> 
+                mapBagM_ checkBind bagBinds
+
+        checkBind :: LHsBind GhcTc -> TcM ()
+        checkBind (L loc bind) = case bind of
+            FunBind{fun_matches = matches} -> 
+                checkMatchGroup matches
+            --   PatBind{pat_lhs = pat, pat_rhs = grhss} -> do
+            --     checkPattern pat
+            --     checkGRHSs grhss
+            _ -> return ()
+
+        checkMatchGroup :: (MatchGroup GhcTc (LHsExpr GhcTc)) -> TcM ()
+        checkMatchGroup ((MG _ (L _ matches) _)) = 
+            forM_ matches $ \(L _ match) -> do
+                forM_ (m_pats match) checkPattern
+                forM_ (grhssGRHSs $ m_grhss match) checkGRHSs
+
+        -- checkGRHSs :: (GRHS GhcTc (LHsExpr GhcTc)) -> TcM ()
+        checkGRHSs (L _ (GRHS _ _ rhs)) =
+            checkExpr rhs
+
+        checkExpr :: LHsExpr GhcTc -> TcM ()
+        checkExpr x@(L _ expr) = case expr of
+            HsCase _ scrut matches -> do
+                checkCaseScrutinee (getLocA x) scrut
+                checkExpr scrut
+                checkMatchGroup matches
+            HsLet _ binds body -> do
+                checkLocalBinds binds
+                checkExpr body
+            HsLam _ matches -> 
+                checkMatchGroup matches
+            HsApp _ e1 e2 -> do
+                checkExpr e1
+                checkExpr e2
+            HsAppType _ e _ -> 
+                checkExpr e
+            OpApp _ e1 op e2 -> do
+                checkExpr e1
+                checkExpr op
+                checkExpr e2
+            NegApp _ e _ -> 
+                checkExpr e
+            HsPar _ e -> 
+                checkExpr e
+            SectionL _ e1 e2 -> do
+                checkExpr e1
+                checkExpr e2
+            SectionR _ e1 e2 -> do
+                checkExpr e1
+                checkExpr e2
+            HsIf _ cond then_ else_ -> do
+                checkExpr cond
+                checkExpr then_
+                checkExpr else_
+            HsMultiIf _ grhs -> 
+                forM_ grhs $ \(L _ (GRHS _ _ e)) -> 
+                checkExpr e
+            HsLet _ binds e -> do
+                checkLocalBinds binds
+                checkExpr e
+            HsDo _ _ (L _ stmts) -> 
+                checkStmts stmts
+            ExplicitList _ elems ->
+                mapM_ checkExpr elems
+            RecordCon _ _ (HsRecFields fields _) -> 
+                forM_ fields $ \(L _ field) -> 
+                checkExpr (hsRecFieldArg field)
+            --   RecordUpd _ e fields -> do
+            --     checkExpr e
+            --     forM_ fields $ \(L _ field) -> 
+            --       checkExpr (hsRecFieldArg field)
+            ExprWithTySig _ e _ -> 
+                checkExpr e
+            ArithSeq _ _ info -> 
+                case info of
+                From e -> checkExpr e
+                FromThen e1 e2 -> do
+                    checkExpr e1
+                    checkExpr e2
+                FromTo e1 e2 -> do
+                    checkExpr e1
+                    checkExpr e2
+                FromThenTo e1 e2 e3 -> do
+                    checkExpr e1
+                    checkExpr e2
+                    checkExpr e3
+            HsBracket _ _ -> 
+                return ()
+            --   HsRnBracketOut _ _ _ -> 
+            --     return ()
+            HsTcBracketOut _ _ _ _ -> 
+                return ()
+            HsSpliceE _ _ -> 
+                return ()
+            HsProc _ pat body -> do
+                checkPattern pat
+                checkCmdTop body
+            HsStatic _ e -> 
+                checkExpr e
+            --   HsArrApp _ e1 e2 _ _ -> do
+            --     checkExpr e1
+            --     checkExpr e2
+            --   HsArrForm _ e _ cmds -> do
+            --     checkExpr e
+            --     mapM_ checkCmd cmds
+            HsTick _ _ e -> 
+                checkExpr e
+            HsBinTick _ _ _ e -> 
+                checkExpr e
+            --   HsTickPragma _ _ _ e -> 
+            --     checkExpr e
+            _ -> 
+                return ()
+
+        checkCmd :: LHsCmd GhcTc -> TcM ()
+        checkCmd (L _ cmd) = case cmd of
+            HsCmdArrApp _ e1 e2 _ _ -> do
+                checkExpr e1
+                checkExpr e2
+            HsCmdArrForm _ e _ _ cmdTop -> do
+                checkExpr e
+                forM_ cmdTop (\(L _ x) -> 
+                                case x of
+                                    HsCmdTop _ cmd -> checkCmd cmd
+                                    XCmdTop _ -> pure ()
+                            )
+            HsCmdApp _ c e -> do
+                checkCmd c
+                checkExpr e
+            HsCmdLam _ matches -> 
+                checkCmdMatchGroup matches
+            HsCmdPar _ c -> 
+                checkCmd c
+            HsCmdCase _ e matches -> do
+                checkExpr e
+                checkCmdMatchGroup matches
+            HsCmdIf _ _ e c1 c2 -> do
+                checkExpr e
+                checkCmd c1
+                checkCmd c2
+            HsCmdLet _ binds c -> do
+                checkLocalBinds binds
+                checkCmd c
+            HsCmdDo _ (L _ stmts) -> 
+                checkCmdStmts stmts
+            _ -> 
+                return ()
+
+        checkCmdTop :: LHsCmdTop GhcTc -> TcM ()
+        checkCmdTop (L _ (HsCmdTop _ cmd)) = 
+            checkCmd cmd
+
+        checkCmdMatchGroup :: (MatchGroup GhcTc (LHsCmd GhcTc)) -> TcM ()
+        checkCmdMatchGroup ((MG _ (L _ matches) _)) = 
+            forM_ matches $ \(L _ match) -> do
+                forM_ (m_pats match) checkPattern
+                -- forM_ (grhssLocalBinds $ m_grhss match) checkLocalBinds
+                (\(Match _ _ _ (grhs)) -> 
+                    case grhs of
+                        GRHSs _ grhss _ -> 
+                            forM_ grhss (\x ->
+                                case x of 
+                                    L _ (GRHS _ _ body) -> checkCmd body
+                                    _ -> pure ()
+                                )
+                        _ -> pure ()
+                    ) (match)
+
+        checkCmdStmts :: [LStmt GhcTc (LHsCmd GhcTc)] -> TcM ()
+        checkCmdStmts = mapM_ $ \(L _ stmt) -> case stmt of
+            BindStmt _ pat cmd -> do
+                checkPattern pat
+                checkCmd cmd
+            LastStmt _ cmd _ _ -> 
+                checkCmd cmd
+            BodyStmt _ cmd _ _ -> 
+                checkCmd cmd
+            LetStmt _ binds -> 
+                checkLocalBinds (binds)
+            RecStmt {} -> 
+                return ()
+            _ -> 
+                return ()
+
+        checkCaseScrutinee :: SrcSpan -> LHsExpr GhcTc -> TcM ()
+        checkCaseScrutinee loc scrut = case unLoc scrut of
+            ExplicitList _ elems -> 
+                when (length elems > 1) $ do
+                reportError loc (text "Case matching on a fixed-length list literal is not allowed.")
+            _ -> return ()  -- Only interested in explicit list literals
+
+        checkStmts :: [LStmt GhcTc (LHsExpr GhcTc)] -> TcM ()
+        checkStmts = mapM_ $ \(L _ stmt) -> case stmt of
+            BindStmt _ pat expr -> do
+                checkPattern pat
+                checkExpr expr
+            BodyStmt _ expr _ _ -> 
+                checkExpr expr
+            LetStmt _ binds -> 
+                checkLocalBinds (binds)
+            LastStmt _ expr _ _ -> 
+                checkExpr expr
+            ParStmt _ blocks _ _ -> 
+                forM_ blocks $ \((ParStmtBlock _ stmts _ _)) -> 
+                checkStmts stmts
+            TransStmt {} -> 
+                return ()
+            RecStmt {} -> 
+                return ()
+            _ -> 
+                return ()
+
+        checkLocalBinds :: (HsLocalBinds GhcTc) -> TcM ()
+        checkLocalBinds (binds) = case binds of
+            HsValBinds _ valBinds -> 
+                checkValBinds valBinds
+            HsIPBinds _ _ -> 
+                return ()
+            EmptyLocalBinds _ -> 
+                return ()
+
+        checkPattern :: LPat GhcTc -> TcM ()
+        checkPattern (L _ pat) = case pat of
+            ListPat _ pats -> 
+                mapM_ checkPattern pats
+            --   ConPatIn _ details -> do
+            --     checkConDetails details
+            --   ConPatOut {} -> 
+            --     return ()
+            ViewPat _ expr p -> do
+                checkExpr expr
+                checkPattern p
+            SplicePat {} -> 
+                return ()
+            LitPat _ _ -> 
+                return ()
+            NPat {} -> 
+                return ()
+            NPlusKPat {} -> 
+                return ()
+            SigPat _ p _ -> 
+                checkPattern p
+            AsPat _ _ p -> 
+                checkPattern p
+            TuplePat _ pats _ -> 
+                mapM_ checkPattern pats
+            SumPat _ p _ _ -> 
+                checkPattern p
+            BangPat _ p -> 
+                checkPattern p
+            LazyPat _ p -> 
+                checkPattern p
+            ParPat _ p -> 
+                checkPattern p
+            VarPat {} -> 
+                return ()
+            WildPat {} -> 
+                return ()
+            _ -> 
+                return ()
+
+        checkConDetails :: HsConPatDetails GhcTc -> TcM ()
+        checkConDetails (PrefixCon _ args) = 
+            mapM_ checkPattern args
+        checkConDetails (RecCon (HsRecFields fields _)) = 
+            forM_ fields $ \(L _ field) ->
+                checkPattern (hsRecFieldArg field)
+        checkConDetails (InfixCon p1 p2) = do
+            checkPattern p1
+            checkPattern p2
+
+        reportError :: SrcSpan -> SDoc -> TcM ()
+        reportError loc msg = do
+            let shouldThrowError = case opts of
+                    [] ->  False
+                    (local : _) ->
+                                case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                    Just (val@CliOptions{error}) -> fromMaybe False error
+                                    Nothing -> False
+            let errorMessage = "Case matching on a fixed-length list literal is not allowed. Use a tuple or cons to pattern match in case scrutinee "
+            let errorMsg = (loc, errorMessage)
+            let errorMessages = listToBag [
+                        if (shouldThrowError == True)
+                            then mkErr loc reallyAlwaysQualify (mkDecorated [text errorMessage])
+                            else mkWarnMsg loc reallyAlwaysQualify (text errorMessage)
+                    ]
+            throwErrors errorMessages
 #endif
