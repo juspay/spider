@@ -116,7 +116,7 @@
           imports = [
             inputs.references.haskellFlakeProjectModules.output
             inputs.classyplate.haskellFlakeProjectModules.output
-            inputs.large-records.haskellFlakeProjectModules.output
+            # inputs.large-records.haskellFlakeProjectModules.output
           ];
           packages = {
             streamly-core.source = inputs.streamly + /core;

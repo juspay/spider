@@ -55,14 +55,14 @@ library
         , universum
         , streamly-core
         , data-default
-        , large-records
-        , large-generics
-        , large-anon
-        , ghc-hasfield-plugin
-        , record-dot-preprocessor
-        , ghc-tcplugin-api
-        , typelet
-        , record-hasfield
+        -- , large-records
+        -- , large-generics
+        -- , large-anon
+        -- , ghc-hasfield-plugin
+        -- , record-dot-preprocessor
+        -- , ghc-tcplugin-api
+        -- , typelet
+        -- , record-hasfield
         , binary
         , references
         , uniplate
