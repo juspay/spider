@@ -108,7 +108,7 @@ common common-options
         -- , large-records
         -- , large-generics
         -- , large-anon
-        , ghc-hasfield-plugin
+        -- , ghc-hasfield-plugin
         , record-dot-preprocessor
         -- , ghc-tcplugin-api
         -- , typelet
