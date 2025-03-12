@@ -5,6 +5,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE LambdaCase,RecordWildCards #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module Warner.Plugin (plugin) where
 #if __GLASGOW_HASKELL__ >= 900
@@ -26,7 +27,7 @@ import GHC.Types.SrcLoc
 import GHC.Driver.Env
 import GHC.Tc.Types
 import GHC.Unit.Module.ModSummary
-import GHC.Utils.Outputable (reallyAlwaysQualify,neverQualify,vcat,text,showSDocUnsafe,ppr,withPprStyle,mkErrStyle,renderWithContext,defaultUserStyle)
+import GHC.Utils.Outputable (reallyAlwaysQualify,text,showSDocUnsafe,ppr,withPprStyle,mkErrStyle,renderWithContext,defaultUserStyle)
 -- import GHC.Types.Var
 -- import qualified Data.Aeson.KeyMap as HM
 import GHC.Unit.Module.ModGuts
@@ -35,7 +36,7 @@ import GHC.Types.SourceError
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as BL
 import GHC.Utils.Error
-import Language.Haskell.Syntax.Decls
+-- import Language.Haskell.Syntax.Decls
 import Data.Text.Encoding (encodeUtf8)
 #endif
 
@@ -54,7 +55,7 @@ import System.Environment
 import GHC.Generics (Generic)
 -- import Control.Monad
 import Data.Maybe (fromMaybe)
-
+-- import Control.Exception
 
 plugin :: Plugin
 plugin =
@@ -205,7 +206,7 @@ handleWarns opts mModSummary _tcGblEnv modGuts = do
                         then throwErrors updatedWarningsBag
                         else liftIO $ printOrThrowWarnings logger dflags updatedWarningsBag
         Nothing -> do
-            liftIO $ print ("Warner : MOD summary is Nothing")
+            liftIO $ print ("Warner : MOD summary is Nothing" :: String)
             pure ()
     return modGuts
     where
@@ -219,8 +220,8 @@ data CliOptions = CliOptions {
     error :: Maybe Bool
 } deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
-defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {error = Just False}
+-- defaultCliOptions :: CliOptions
+-- defaultCliOptions = CliOptions {error = Just False}
 
 fixedLengthListAction :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 fixedLengthListAction opts _ tcEnv = do
@@ -231,7 +232,6 @@ fixedLengthListAction opts _ tcEnv = do
         checkModule (L _ AbsBinds{abs_binds = binds}) = do
             forM_ (bagToList binds) checkModule
         checkModule x = checkBind x
-        checkModule _ = pure ()
 
         checkValBinds :: HsValBinds GhcTc -> TcM ()
         checkValBinds = \case
@@ -242,14 +242,14 @@ fixedLengthListAction opts _ tcEnv = do
                 mapBagM_ checkBind bagBinds
 
         checkBind :: LHsBind GhcTc -> TcM ()
-        checkBind (L loc bind) = case bind of
+        checkBind (L _ bind) = case bind of
             FunBind{fun_matches = matches} -> 
                 checkMatchGroup matches
             --   PatBind{pat_lhs = pat, pat_rhs = grhss} -> do
             --     checkPattern pat
             --     checkGRHSs grhss
             _ -> return ()
-        checkBind _ = pure ()
+        -- checkBind _ = pure ()
 
         checkMatchGroup :: (MatchGroup GhcTc (LHsExpr GhcTc)) -> TcM ()
         checkMatchGroup ((MG _ (L _ matches) _)) = 
@@ -298,9 +298,6 @@ fixedLengthListAction opts _ tcEnv = do
                 checkExpr else_
             HsMultiIf _ grhs -> 
                 forM_ grhs $ \(L _ (GRHS _ _ e)) -> 
-                checkExpr e
-            HsLet _ binds e -> do
-                checkLocalBinds binds
                 checkExpr e
             HsDo _ _ (L _ stmts) -> 
                 checkStmts stmts
@@ -357,17 +354,13 @@ fixedLengthListAction opts _ tcEnv = do
                 return ()
 
         checkCmd :: LHsCmd GhcTc -> TcM ()
-        checkCmd (L _ cmd) = case cmd of
+        checkCmd (L _ cmd_) = case cmd_ of
             HsCmdArrApp _ e1 e2 _ _ -> do
                 checkExpr e1
                 checkExpr e2
             HsCmdArrForm _ e _ _ cmdTop -> do
                 checkExpr e
-                forM_ cmdTop (\(L _ x) -> 
-                                case x of
-                                    HsCmdTop _ cmd -> checkCmd cmd
-                                    XCmdTop _ -> pure ()
-                            )
+                forM_ cmdTop (\(L _ (HsCmdTop _ cmd)) -> checkCmd cmd)
             HsCmdApp _ c e -> do
                 checkCmd c
                 checkExpr e
@@ -392,24 +385,13 @@ fixedLengthListAction opts _ tcEnv = do
 
         checkCmdTop :: LHsCmdTop GhcTc -> TcM ()
         checkCmdTop (L _ (HsCmdTop _ cmd)) = checkCmd cmd
-        checkCmdTop _ = pure ()
 
         checkCmdMatchGroup :: (MatchGroup GhcTc (LHsCmd GhcTc)) -> TcM ()
         checkCmdMatchGroup ((MG _ (L _ matches) _)) = 
             forM_ matches $ \(L _ match) -> do
                 forM_ (m_pats match) checkPattern
                 -- forM_ (grhssLocalBinds $ m_grhss match) checkLocalBinds
-                (\(Match _ _ _ (grhs)) -> 
-                    case grhs of
-                        GRHSs _ grhss _ -> 
-                            forM_ grhss (\x ->
-                                case x of 
-                                    L _ (GRHS _ _ body) -> checkCmd body
-                                    _ -> pure ()
-                                )
-                        _ -> pure ()
-                    ) (match)
-        checkCmdMatchGroup _ = pure ()
+                (\(Match _ _ _ (GRHSs _ grhss _)) -> forM_ grhss (\(L _ (GRHS _ _ body)) -> checkCmd body)) (match)
 
         checkCmdStmts :: [LStmt GhcTc (LHsCmd GhcTc)] -> TcM ()
         checkCmdStmts = mapM_ $ \(L _ stmt) -> case stmt of
@@ -431,7 +413,7 @@ fixedLengthListAction opts _ tcEnv = do
         checkCaseScrutinee loc scrut = case unLoc scrut of
             ExplicitList _ elems -> 
                 when (length elems > 1) $ do
-                reportError loc (text "Case matching on a fixed-length list literal is not allowed.")
+                reportError loc
             _ -> return ()  -- Only interested in explicit list literals
 
         checkStmts :: [LStmt GhcTc (LHsExpr GhcTc)] -> TcM ()
@@ -504,30 +486,35 @@ fixedLengthListAction opts _ tcEnv = do
             _ -> 
                 return ()
 
-        checkConDetails :: HsConPatDetails GhcTc -> TcM ()
-        checkConDetails (PrefixCon _ args) = 
-            mapM_ checkPattern args
-        checkConDetails (RecCon (HsRecFields fields _)) = 
-            forM_ fields $ \(L _ field) ->
-                checkPattern (hsRecFieldArg field)
-        checkConDetails (InfixCon p1 p2) = do
-            checkPattern p1
-            checkPattern p2
+        -- checkConDetails :: HsConPatDetails GhcTc -> TcM ()
+        -- checkConDetails (PrefixCon _ args) = 
+        --     mapM_ checkPattern args
+        -- checkConDetails (RecCon (HsRecFields fields _)) = 
+        --     forM_ fields $ \(L _ field) ->
+        --         checkPattern (hsRecFieldArg field)
+        -- checkConDetails (InfixCon p1 p2) = do
+        --     checkPattern p1
+        --     checkPattern p2
 
-        reportError :: SrcSpan -> SDoc -> TcM ()
-        reportError loc msg = do
+        reportError :: SrcSpan -> TcM ()
+        reportError loc = do
             let shouldThrowError = case opts of
                     [] ->  False
                     (local : _) ->
                                 case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
-                                    Just (val@CliOptions{error}) -> fromMaybe False error
+                                    Just (CliOptions{error=error_}) -> fromMaybe False error_
                                     Nothing -> False
             let errorMessage = "Case matching on a fixed-length list literal is not allowed. Use a tuple or cons to pattern match in case scrutinee "
-            let errorMsg = (loc, errorMessage)
+            -- let errorMsg = (loc, errorMessage)
             let errorMessages = listToBag [
                         if (shouldThrowError == True)
                             then mkErr loc reallyAlwaysQualify (mkDecorated [text errorMessage])
                             else mkWarnMsg loc reallyAlwaysQualify (text errorMessage)
                     ]
-            throwErrors errorMessages
+            if shouldThrowError
+                then throwErrors errorMessages
+                else do
+                    dflags <- getDynFlags
+                    logger <- getLogger
+                    liftIO $ printOrThrowWarnings logger dflags errorMessages
 #endif
