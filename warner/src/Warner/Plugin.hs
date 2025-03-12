@@ -231,6 +231,7 @@ fixedLengthListAction opts _ tcEnv = do
         checkModule (L _ AbsBinds{abs_binds = binds}) = do
             forM_ (bagToList binds) checkModule
         checkModule x = checkBind x
+        checkModule _ = pure ()
 
         checkValBinds :: HsValBinds GhcTc -> TcM ()
         checkValBinds = \case
@@ -248,6 +249,7 @@ fixedLengthListAction opts _ tcEnv = do
             --     checkPattern pat
             --     checkGRHSs grhss
             _ -> return ()
+        checkBind _ = pure ()
 
         checkMatchGroup :: (MatchGroup GhcTc (LHsExpr GhcTc)) -> TcM ()
         checkMatchGroup ((MG _ (L _ matches) _)) = 
@@ -258,6 +260,7 @@ fixedLengthListAction opts _ tcEnv = do
         -- checkGRHSs :: (GRHS GhcTc (LHsExpr GhcTc)) -> TcM ()
         checkGRHSs (L _ (GRHS _ _ rhs)) =
             checkExpr rhs
+        checkGRHSs _ = pure ()
 
         checkExpr :: LHsExpr GhcTc -> TcM ()
         checkExpr x@(L _ expr) = case expr of
@@ -388,8 +391,8 @@ fixedLengthListAction opts _ tcEnv = do
                 return ()
 
         checkCmdTop :: LHsCmdTop GhcTc -> TcM ()
-        checkCmdTop (L _ (HsCmdTop _ cmd)) = 
-            checkCmd cmd
+        checkCmdTop (L _ (HsCmdTop _ cmd)) = checkCmd cmd
+        checkCmdTop _ = pure ()
 
         checkCmdMatchGroup :: (MatchGroup GhcTc (LHsCmd GhcTc)) -> TcM ()
         checkCmdMatchGroup ((MG _ (L _ matches) _)) = 
@@ -406,6 +409,7 @@ fixedLengthListAction opts _ tcEnv = do
                                 )
                         _ -> pure ()
                     ) (match)
+        checkCmdMatchGroup _ = pure ()
 
         checkCmdStmts :: [LStmt GhcTc (LHsCmd GhcTc)] -> TcM ()
         checkCmdStmts = mapM_ $ \(L _ stmt) -> case stmt of
