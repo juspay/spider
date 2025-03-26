@@ -126,11 +126,11 @@ collectDecls opts modSummary hsParsedModule = do
             -- createDirectoryIfMissing True path
             (functionsVsCodeString,typesCodeString,classCodeString,instanceCodeString) <- processDecls declsList
             let importsList = concatMap (fromGHCImportDecl) (hsmodImports $ unLoc $ hpm_module hsParsedModule)
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".module_imports.json") (decodeUtf8 $ toStrict $ encodePretty $ importsList)
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".function_code.json") (decodeUtf8 $ toStrict $ encodePretty $ Map.fromList functionsVsCodeString)
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types_code.json") (decodeUtf8 $ toStrict $ encodePretty $ typesCodeString)
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".class_code.json") (decodeUtf8 $ toStrict $ encodePretty $ classCodeString)
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".instance_code.json") (decodeUtf8 $ toStrict $ encodePretty $ instanceCodeString)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".module_imports.json") (decodeUtf8 $ toStrict $ A.encode $ importsList)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".function_code.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList functionsVsCodeString)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types_code.json") (decodeUtf8 $ toStrict $ A.encode $ typesCodeString)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".class_code.json") (decodeUtf8 $ toStrict $ A.encode $ classCodeString)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".instance_code.json") (decodeUtf8 $ toStrict $ A.encode $ instanceCodeString)
             -- writeFile (modulePath <> ".module_imports.json") (encodePretty $ importsList)
             -- writeFile (modulePath <> ".function_code.json") (encodePretty $ Map.fromList functionsVsCodeString)
             -- writeFile (modulePath <> ".types_code.json") (encodePretty $ typesCodeString)
