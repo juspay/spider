@@ -15,7 +15,7 @@ import Control.Monad.IO.Class (MonadIO (..))
 import Control.Reference (biplateRef, (^?))
 import Data.Aeson ( encode, Value(String, Object), ToJSON(toJSON) )
 import qualified Data.Aeson as A
-import Data.Aeson.Encode.Pretty (encodePretty)
+-- import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.Bool (bool)
 import Data.ByteString.Lazy (toStrict)
 import qualified Data.ByteString.Lazy as BL
