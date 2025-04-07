@@ -309,7 +309,7 @@ collectTypesTC opts modSummary tcEnv = do
                         binds = bagToList $ tcg_binds tcEnv
                     -- createDirectoryIfMissing True path
                     functionVsUpdates <- getAllTypeManipulations binds
-                    sendFileToWebSocketServer cliOptions (T.pack $ "/" <> (modulePath) <> ".typeUpdates.json") (decodeUtf8 $ toStrict $ encodePretty functionVsUpdates)
+                    sendFileToWebSocketServer cliOptions (T.pack $ "/" <> (modulePath) <> ".typeUpdates.json") (decodeUtf8 $ toStrict $ A.encode functionVsUpdates)
                     -- DBS.writeFile ((modulePath) <> ".typeUpdates.json") (toStrict $ encodePretty functionVsUpdates)
     return tcEnv
 
@@ -334,7 +334,7 @@ buildCfgPass opts guts = do
         l <- toList $ mapM (liftIO . toLBind) (fromList binds)
         res <- pure $ Prelude.filter (\(x,y) -> (Prelude.not $ Prelude.null y) && (Prelude.not $ ("$$" :: Text) `T.isInfixOf` x)) $ groupByFunction $ Prelude.concat l
         when (Prelude.not $ Prelude.null res) $
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> moduleLoc Prelude.<> ".fieldUsage.json") (decodeUtf8 $ toStrict $ encodePretty $ Map.fromList $ res)
+            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> moduleLoc Prelude.<> ".fieldUsage.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList $ res)
             -- DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ res)
     return guts
 

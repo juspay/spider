@@ -255,7 +255,7 @@ collectTypeInfoParser opts modSummary hpm = do
                 -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
                 types <- toList $ mapM (pure . getTypeInfo moduleName') (fromList $ hsmodDecls hm_module)
                 -- createDirectoryIfMissing True path
-                sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types.parser.json") (decodeUtf8 $ toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
+                sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types.parser.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
                 -- DBS.writeFile (modulePath <> ".types.parser.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
                 -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
     pure hpm
