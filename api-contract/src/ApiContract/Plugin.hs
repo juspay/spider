@@ -94,7 +94,7 @@ import GhcPlugins (
     msHsFilePath
  )
 import Id (isExportedId,idType)
-import Name (getSrcSpan)
+import Name
 import SrcLoc
 import Unique (mkUnique)
 import Var (isLocalId,varType)
