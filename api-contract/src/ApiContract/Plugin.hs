@@ -76,7 +76,7 @@ import GhcPlugins (
     Outputable (..),dataConFieldLabels,PluginRecompile(..),
     Plugin (..),docToSDoc,
     Var,flLabel,dataConRepType,reallyAlwaysQualify,
-    coVarDetails,
+    coVarDetails,Unqual,Exact,Qual,
     defaultPlugin,
     idName,
     mkInternalName,

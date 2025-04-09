@@ -118,8 +118,11 @@ common common-options
         , binary
         , references
         , uniplate
-        , api-contract
         , network
+    if flag(enable-api-contract-plugins)
+        build-depends:
+            api-contract
+
         -- , fdep
 
 library
