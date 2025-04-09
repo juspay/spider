@@ -120,7 +120,9 @@ import qualified Data.Record.Plugin as DRP
 import qualified Data.Record.Anon.Plugin as DRAP
 import qualified Data.Record.Plugin.HasFieldPattern as DRPH
 import qualified RecordDotPreprocessor as RDP
+#if defined(ENABLE_API_CONTRACT_PLUGINS)
 import qualified ApiContract.Plugin as ApiContract
+#endif
 -- import qualified Fdep.Plugin as Fdep
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
