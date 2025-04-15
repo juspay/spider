@@ -50,40 +50,8 @@ import TyCoRep
 import GHC.IO (unsafePerformIO)
 import GHC.Hs
 import GHC.Hs.Decls
-import GhcPlugins (
-    rdrNameOcc,
-    unitIdString,
-    fsLit,
-    moduleUnitId,
-    CommandLineOption,Arg (..),
-    HsParsedModule(..),
-    Hsc,
-    RdrName(..),
-    Name,SDoc,DataCon,DynFlags,ModSummary(..),TyCon,
-    Literal (..),typeEnvElts,
-    ModGuts (mg_binds, mg_loc, mg_module),showSDoc,
-    Module (moduleName),tyConKind,
-    NamedThing (getName),getDynFlags,tyConDataCons,dataConOrigArgTys,dataConName,
-    Outputable (..),dataConFieldLabels,PluginRecompile(..),
-    Plugin (..),
-    Var,flLabel,dataConRepType,
-    coVarDetails,
-    defaultPlugin,
-    idName,
-    mkInternalName,
-    mkLitString,
-    mkLocalVar,
-    mkVarOcc,
-    moduleNameString,
-    nameStableString,
-    noCafIdInfo,
-    purePlugin,
-    showSDocUnsafe,
-    tyVarKind,
-    unpackFS,
-    tyConName,
-    msHsFilePath
- )
+import GhcPlugins hiding ((<>))
+import Class
 import Id (isExportedId,idType)
 import Name
 import SrcLoc
@@ -277,7 +245,7 @@ collectTypesTC opts modSummary tcg = do
         -- liftIO $ createDirectoryIfMissing True path_
         typeDefs <- extractTypeInfo tcg
         -- liftIO $ forkIO $ DBS.writeFile (modulePath <> ".type.typechecker.json") =<< (pure $ DBS.toStrict $ A.encode $ Map.fromList typeDefs)
-        liftIO $ sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".type.typechecker.json") =<< (pure $ decodeUtf8 $ DBS.toStrict $ A.encode $ Map.fromList typeDefs)
+        liftIO $ sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".type.typechecker.json") =<< (pure $ decodeUtf8 $ BL.toStrict $ A.encode $ Map.fromList typeDefs)
     pure tcg
 
 getTypeInfo :: String -> LHsDecl GhcPs -> [(String, TypeInfo)]
@@ -758,7 +726,11 @@ typeToComplexType dflags ty = case ty of
                 if length res == 0
                     then pure $ (AtomicType $ nameToTypeComponent dflags tc_name)
                     else pure $ AppType (AtomicType $ nameToTypeComponent dflags tc_name) (res)
-    FunTy _ _ argTy resTy -> do
+#if __GLASGOW_HASKELL__ >= 900
+    (FunTy _ _ argTy resTy) -> do
+#else
+    (FunTy _ argTy resTy) -> do
+#endif
         cArg <- typeToComplexType dflags argTy
         cRes <- typeToComplexType dflags resTy
         return $ FuncType cArg cRes
@@ -801,7 +773,11 @@ nameToTypeComponent dflags name = TypeComponent
 
     getPackageName :: Name -> Text
     getPackageName nm = case nameModule_maybe nm of
+#if __GLASGOW_HASKELL__ >= 900
         Just mod -> pack $ showSDocUnsafe (ppr (moduleUnit mod))
+#else
+        Just mod -> pack $ showSDocUnsafe (ppr (moduleUnitId mod))
+#endif
         Nothing  -> pack "" -- For internal/system names with no associated module
 
 -- -- | For use in the GHC plugin
@@ -959,6 +935,11 @@ extractTyCons tcg =
         not (isClassTyCon tc) &&         -- Skip type classes
         not (isPromotedDataCon tc) &&    -- Skip promoted data constructors
         not (isTcTyCon tc)            -- Skip type checker temporary TyCons
+
+#if __GLASGOW_HASKELL__ >= 900
+#else
+scaledThing a = a
+#endif
 
 dataConToDataConInfo :: DynFlags -> DataCon -> TcM DataConInfo
 dataConToDataConInfo dflags dc = do
