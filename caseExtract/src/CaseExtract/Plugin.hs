@@ -741,7 +741,7 @@ checkIfExists query (x : xs) = if query `T.isInfixOf` x then True else checkIfEx
 buildCfgPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 buildCfgPass opts guts = do
     let prefixPath = case opts of
-            [] -> "./tmp/configExtract/"
+            [] -> "./tmp/fdep/"
             [local] -> local
             _ -> error "unexpected no of arguments"
     _ <- liftIO $ do
