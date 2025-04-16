@@ -1,0 +1,130 @@
+{
+  "functions": [
+    {
+      "conditionals": [
+        {
+          "actions": [
+            "pure ()",
+            "pure ()"
+          ],
+          "conditional_type": "Case",
+          "function_calls": [
+            {
+              "branch": 1,
+              "calls": []
+            },
+            {
+              "branch": 2,
+              "calls": []
+            }
+          ],
+          "location": "test/Main.hs:8:5-10:23",
+          "nesting_level": 0,
+          "relations": [
+            "[]",
+            "[x]"
+          ],
+          "scrutiny": "x"
+        },
+        {
+          "actions": [
+            "pure ()",
+            "print \"HIII\""
+          ],
+          "conditional_type": "Case",
+          "function_calls": [
+            {
+              "branch": 1,
+              "calls": []
+            },
+            {
+              "branch": 2,
+              "calls": []
+            }
+          ],
+          "location": "test/Main.hs:11:5-13:28",
+          "nesting_level": 0,
+          "relations": [
+            "[]",
+            "[x]"
+          ],
+          "scrutiny": "x"
+        },
+        {
+          "actions": [
+            "pure ()",
+            "pure ()"
+          ],
+          "conditional_type": "Case",
+          "function_calls": [
+            {
+              "branch": 1,
+              "calls": []
+            },
+            {
+              "branch": 2,
+              "calls": []
+            }
+          ],
+          "location": "test/Main.hs:8:5-10:23",
+          "nesting_level": 0,
+          "relations": [
+            "[]",
+            "[x]"
+          ],
+          "scrutiny": "x"
+        },
+        {
+          "actions": [
+            "pure ()",
+            "print \"HIII\""
+          ],
+          "conditional_type": "Case",
+          "function_calls": [
+            {
+              "branch": 1,
+              "calls": []
+            },
+            {
+              "branch": 2,
+              "calls": []
+            }
+          ],
+          "location": "test/Main.hs:11:5-13:28",
+          "nesting_level": 0,
+          "relations": [
+            "[]",
+            "[x]"
+          ],
+          "scrutiny": "x"
+        },
+        {
+          "actions": [
+            "pure ()",
+            "pure ()"
+          ],
+          "conditional_type": "Case",
+          "function_calls": [
+            {
+              "branch": 1,
+              "calls": []
+            },
+            {
+              "branch": 2,
+              "calls": []
+            }
+          ],
+          "location": "test/Main.hs:14:5-16:23",
+          "nesting_level": 0,
+          "relations": [
+            "[]",
+            "[x]"
+          ],
+          "scrutiny": "x"
+        }
+      ],
+      "function_name": "$_in$main**test/Main.hs:6:1-4"
+    }
+  ],
+  "module": "Main"
+}
