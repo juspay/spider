@@ -760,8 +760,8 @@ buildCfgPass opts guts = do
                             pure (funName,allCaseRelations)
                         )
                         (fBinds)
-        mapM_   ( \x ->
-                        (liftIO . BS.appendFile (moduleLoc Prelude.<> ".configExtract.ast.show.jsonL") . (<> "\n") . Aeson.encode) x
+        mapM_   ( \(k,v) ->
+                        (liftIO . BS.appendFile (moduleLoc Prelude.<> ".configExtract.ast.show.jsonL") . (<> "\n") . Aeson.encode) (Map.singleton k (reverse v))
                     )
                     (coreFunctionsList)
         pure ()
@@ -854,13 +854,13 @@ getDataAltId _ = []
 --     go (Coercion{}) = []
 
 
-data CaseCollate = CaseCollate T.Text [(T.Text,[CaseCollate],[T.Text])]
+data CaseCollate = CaseCollate (T.Text,T.Text,T.Text) T.Text [(T.Text,[CaseCollate],[T.Text])]
     deriving (Show,Generic)
 
 instance Aeson.ToJSON CaseCollate where
-    toJSON (CaseCollate condition (x:xs)) = Aeson.object ["condition" Aeson..= (T.replace "\n" "" condition), "relations" Aeson..= map (\(r,a,action) -> Aeson.object ["relation" Aeson..= Aeson.toJSON r ,"action"Aeson..= Aeson.toJSON action , "next" Aeson..= Aeson.toJSON a]) (x:xs)]
-    toJSON (CaseCollate condition [x]) = Aeson.object ["condition" Aeson..= (T.replace "\n" "" condition), "relations" Aeson..= map (\(r,a,action) -> Aeson.object ["relation" Aeson..= Aeson.toJSON r ,"action"Aeson..= Aeson.toJSON action, "next" Aeson..= Aeson.toJSON a]) [x]]
-    toJSON (CaseCollate condition []) = Aeson.object ["condition" Aeson..= (T.replace "\n" "" condition)]
+    toJSON (CaseCollate (condition,type_of_condition,inputs) id_details (x:xs)) = Aeson.object ["id_details" Aeson..= Aeson.toJSON id_details,"scrutiny_type" Aeson..= Aeson.toJSON inputs,"case_match_output_type" Aeson..= Aeson.toJSON type_of_condition ,"condition" Aeson..= (T.replace "\n" "" condition), "relations" Aeson..= map (\(r,a,action) -> Aeson.object ["relation" Aeson..= Aeson.toJSON r ,"action"Aeson..= Aeson.toJSON action , "next" Aeson..= Aeson.toJSON a]) (x:xs)]
+    toJSON (CaseCollate (condition,type_of_condition,inputs) id_details [x]) = Aeson.object ["id_details" Aeson..= Aeson.toJSON id_details,"scrutiny_type" Aeson..= Aeson.toJSON inputs,"case_match_output_type" Aeson..= Aeson.toJSON type_of_condition,"condition" Aeson..= (T.replace "\n" "" condition), "relations" Aeson..= map (\(r,a,action) -> Aeson.object ["relation" Aeson..= Aeson.toJSON r ,"action"Aeson..= Aeson.toJSON action, "next" Aeson..= Aeson.toJSON a]) [x]]
+    toJSON (CaseCollate (condition,type_of_condition,inputs) id_details []) = Aeson.object ["id_details" Aeson..= Aeson.toJSON id_details,"scrutiny_type" Aeson..= Aeson.toJSON inputs,"case_match_output_type" Aeson..= Aeson.toJSON type_of_condition,"condition" Aeson..= (T.replace "\n" "" condition)]
 
 
 collectAllCaseAndRelations :: CoreExpr -> [CaseCollate]
@@ -872,10 +872,11 @@ collectAllCaseAndRelations d =
 
     go (Var v) = []
     go (Cast e _) = go e
-    go (Case scrut _ _ alts) =
+    go (Case scrut b _type alts) =
 #if __GLASGOW_HASKELL__ >= 900
         (ok scrut) <> ([ CaseCollate
-            (T.pack $ showSDocUnsafe $ ppr scrut)
+            (T.pack $ showSDocUnsafe $ ppr scrut,(T.pack $ showSDocUnsafe $ ppr _type),T.pack $ showSDocUnsafe $ ppr $ varType b)
+            (T.pack $ showSDocUnsafe $ ppr $ nameSrcSpan $ varName b)
             ( map
                 ( \(Alt zz _ rhs) ->
                     let inSideCase = go rhs
@@ -886,7 +887,8 @@ collectAllCaseAndRelations d =
         ])
 #else
         (ok scrut) <> [ CaseCollate
-            (pack $ showSDocUnsafe $ ppr scrut)
+            (pack $ showSDocUnsafe $ ppr scrut,T.pack $ showSDocUnsafe $ ppr _type,T.pack $ showSDocUnsafe $ ppr $ varType b)
+            (T.pack $ showSDocUnsafe $ ppr $ nameSrcSpan $ varName b)
             ( map
                 ( \(zz, _, rhs) ->
                     let inSideCase = go rhs

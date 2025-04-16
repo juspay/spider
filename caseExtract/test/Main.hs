@@ -11,6 +11,8 @@ main = do
     y <- getArgs
     let x = if length y > 1 then B else C
     print x
-    case x of
-        B -> pure ()
+    case x of 
+        B -> do 
+            let x = if length y > 1 then B else C
+            print x
         C -> print "HII"
