@@ -11,11 +11,9 @@ import Control.Concurrent ( forkIO )
 import Control.DeepSeq (force)
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (void, when)
-import Control.Monad.IO.Class (MonadIO (..))
 import Control.Reference (biplateRef, (^?))
 import Data.Aeson ( encode, Value(String, Object), ToJSON(toJSON) )
 import qualified Data.Aeson as A
--- import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.Bool (bool)
 import Data.ByteString.Lazy (toStrict)
 import qualified Data.ByteString.Lazy as BL
@@ -26,7 +24,6 @@ import qualified Data.Map as Map
 import Data.Maybe
 import Data.Text (Text)
 import qualified Data.Text as T
--- import qualified Data.ByteString.Lazy as BSL
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Time ( diffUTCTime, getCurrentTime )
 import Fdep.Types
@@ -36,18 +33,13 @@ import qualified Prelude as P
 import qualified Data.List.Extra as Data.List
 import Network.Socket (withSocketsDo)
 import qualified Network.WebSockets as WS
--- import System.Directory ( createDirectoryIfMissing )
 import System.Environment (lookupEnv)
 import GHC.IO (unsafePerformIO)
 #if __GLASGOW_HASKELL__ >= 900
--- import GHC.Driver.Errors
--- import GHC.Driver.Session
 import GHC.Tc.Utils.TcType
 import GHC.Core.Type hiding (tyConsOfType)
 import GHC.Core.TyCo.Rep
 import GHC.Data.Bag
--- import GHC.Types.Error
--- import GHC.Core.TyCo.Rep
 import GHC.Core.TyCon
 import GHC.Core.DataCon
 import GHC.Hs.Pat
@@ -63,8 +55,14 @@ import GHC.Utils.Outputable (showSDocUnsafe,ppr)
 import GHC.Types.Name hiding (varName)
 import GHC.Types.Var
 import qualified Data.Aeson.KeyMap as HM
--- import GHC.Unit.Module.ModGuts
+import GHC.Types.Id
+import GHC.Core
+import GHC.Core.Opt.Monad
+import GHC.Unit.Module.ModGuts
+import GHC.Data.FastString
 #else
+import CoreMonad
+import CoreSyn
 import TyCoRep
 import DataCon
 import qualified Data.HashMap.Strict as HM
@@ -73,11 +71,8 @@ import DynFlags ()
 import GHC
 import TcType
 import BasicTypes
-import GhcPlugins (splitAppTys,splitFunTys,tyConName,rdrNameOcc,occNameString,RdrName (..),HsParsedModule, Hsc, Plugin (..), PluginRecompile (..), Var (..), getOccString, hpm_module, ppr, showSDocUnsafe)
-import HscTypes (msHsFilePath)
-import Name (nameStableString)
+import GhcPlugins hiding ((<>),tyConsOfType,tyConsOfType)
 import Outputable ()
-import Plugins (CommandLineOption, defaultPlugin)
 import TcRnTypes (TcGblEnv (..), TcM)
 #endif
 
@@ -87,7 +82,42 @@ plugin =
         { typeCheckResultAction = fDep
         , pluginRecompile = (\_ -> return NoForceRecompile)
         , parsedResultAction = collectDecls
+        , installCoreToDos = installInstanceTracker
         }
+
+installInstanceTracker :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
+installInstanceTracker cli todos = do
+    return (CoreDoPluginPass "Instance Usage Tracker" (instanceTrackerPass cli) : todos)
+
+#if __GLASGOW_HASKELL__ >= 900
+getFilePath :: SrcSpan -> String
+getFilePath (RealSrcSpan rSSpan _) = unpackFS $ srcSpanFile rSSpan
+getFilePath (UnhelpfulSpan fs) = showSDocUnsafe $ ppr $ fs
+#else
+getFilePath :: SrcSpan -> String
+getFilePath (RealSrcSpan rSSpan) = unpackFS $ srcSpanFile rSSpan
+getFilePath (UnhelpfulSpan fs) = unpackFS fs
+#endif
+
+instanceTrackerPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
+instanceTrackerPass opts guts = do
+    let cliOptions = case opts of 
+                    [] ->  defaultCliOptions
+                    (local : _) -> 
+                                case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                    Just (val :: CliOptions) -> val
+                                    Nothing -> defaultCliOptions
+    let prefixPath = path cliOptions
+        allBinds = mg_binds guts
+        moduleN = moduleNameString $ moduleName $ mg_module guts
+        moduleLoc = prefixPath Prelude.<> getFilePath (mg_loc guts)
+    liftIO $ sendFileToWebSocketServer cliOptions (T.pack $ "/" Prelude.<> moduleLoc Prelude.<> ".function_instance_mapping.json") (decodeUtf8 $ toStrict $ encode $ Map.fromList $ concat $ map (toLBind) allBinds)
+    pure guts
+
+toLBind :: CoreBind -> [(String,[(String,String)])]
+toLBind (NonRec binder expr) = [(nameStableString $ idName binder,filter (\(name,_) -> "$f" `Data.List.isPrefixOf` name) $ map (\x -> (showSDocUnsafe $ ppr $ varName x,showSDocUnsafe $ ppr $ varType x)) (expr ^? biplateRef :: [Id]))]
+toLBind (Rec binds) = map (\(b, e) -> (nameStableString $ idName b,filter (\(name,_) -> "$f" `Data.List.isPrefixOf` name) $ map (\x -> (showSDocUnsafe $ ppr $ varName x,showSDocUnsafe $ ppr $ varType x)) (e ^? biplateRef :: [Id])) ) binds
+
 
 sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
 sendFileToWebSocketServer cliOptions path data_ =
