@@ -24,7 +24,7 @@ async def handler(websocket, path):
             "fieldUsage",
             "typeUpdates",
             ".types.parser.",
-            ".function_instance_mapping"
+            ".function_instance_mapping",
             "module_apis",
             ".type.typechecker.json"
         ]:
