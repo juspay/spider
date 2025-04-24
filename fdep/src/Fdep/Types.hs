@@ -3,8 +3,6 @@ module Fdep.Types where
 import Data.Aeson
 import GHC.Generics (Generic)
 import Data.Text
-import Data.Binary
-import Control.DeepSeq
 
 data CliOptions = CliOptions {
     path :: FilePath,
@@ -12,7 +10,7 @@ data CliOptions = CliOptions {
     host :: String,
     log :: Bool,
     tc_funcs :: Maybe Bool
-} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data FunctionInfo = FunctionInfo
   { package_name :: Text
@@ -21,7 +19,7 @@ data FunctionInfo = FunctionInfo
   , _type :: Text
   , src_Loc    :: Text
   , arguments :: [Text]
-  } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+  } deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data Function = Function
   {  function_name    :: Text
@@ -30,12 +28,12 @@ data Function = Function
   , src_loc    :: Text
   , stringified_code :: Text
   , function_signature :: Text
-  } deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+  } deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data MissingTopLevelBindsSignature = MissingTopLevelBindsSignature {
   srcSpan :: Text
   , typeSignature :: Text
-} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data PFunction = PFunction {
     parser_name :: Text
@@ -43,35 +41,35 @@ data PFunction = PFunction {
     , parser_src_loc :: Text
     , line_number    :: (Int,Int)
 }
-    deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+    deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data PType = PType {
     typeName :: Text,
     typeDefinition :: Text,
     typeLocation :: Text
     ,line_number    :: (Int,Int)
-} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data PClass = PClass {
     className :: Text,
     classDefinition :: Text,
     classLocation :: Text
     ,line_number    :: (Int,Int)
-} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data PInstance = PInstance {
     instanceType :: Text,
     instanceDefinition :: Text,
     instanceLocation :: Text
     ,line_number    :: (Int,Int)
-} deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 
 data QualifiedStyle = 
     NotQualified 
   | Qualified 
   | QualifiedWith Text
-  deriving (Show, Eq, Ord,Binary,Generic,NFData,ToJSON,FromJSON)
+  deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data HidingSpec = HidingSpec {
     isHiding :: Bool,

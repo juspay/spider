@@ -5,65 +5,68 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE LambdaCase,RecordWildCards #-}
-{-# OPTIONS_GHC -Wno-orphans #-}
+{-# OPTIONS_GHC -Wno-orphans -Wno-error=unused-imports -Wno-error=unused-top-binds #-}
 
 module Warner.Plugin (plugin) where
 #if __GLASGOW_HASKELL__ >= 900
-import GHC.Driver.Errors
-import GHC.Driver.Session
-import GHC.Data.Bag
-import GHC.Types.Error
 import Control.Monad
--- import GHC.Core.TyCo.Rep
--- import GHC.Core.TyCon
--- import GHC.Core.DataCon
--- import GHC.Hs.Pat
-import GHC.Unit.Types
+import Data.Text.Encoding (encodeUtf8)
 import GHC
--- import GHC.Types.SourceText
-import GHC.Driver.Plugins
-import GHC.Types.SrcLoc
--- import GHC.Types.Name.Reader
-import GHC.Driver.Env
-import GHC.Tc.Types
-import GHC.Unit.Module.ModSummary
-import GHC.Utils.Outputable (reallyAlwaysQualify,text,showSDocUnsafe,ppr,withPprStyle,mkErrStyle,renderWithContext,defaultUserStyle)
--- import GHC.Types.Var
--- import qualified Data.Aeson.KeyMap as HM
-import GHC.Unit.Module.ModGuts
+import GHC.Data.Bag
 import GHC.Data.FastString
+import GHC.Driver.Env
+import GHC.Driver.Errors
+import GHC.Driver.Plugins
+import GHC.Driver.Session
+import GHC.Tc.Types
+import GHC.Types.Error
 import GHC.Types.SourceError
+import GHC.Types.SrcLoc
+import GHC.Unit.Module.ModGuts
+import GHC.Unit.Module.ModSummary
+import GHC.Unit.Types
+import GHC.Utils.Error
+import GHC.Utils.Outputable (reallyAlwaysQualify,text,showSDocUnsafe,ppr,withPprStyle,mkErrStyle,renderWithContext,defaultUserStyle)
 import qualified Data.Aeson as A
 import qualified Data.ByteString.Lazy as BL
-import GHC.Utils.Error
--- import Language.Haskell.Syntax.Decls
-import Data.Text.Encoding (encodeUtf8)
+#else
+-- import TyCoRep
+-- import DataCon
+-- import Bag (bagToList)
+-- import DynFlags ()
+-- import GHC
+-- import TcType
+-- import BasicTypes
+import GhcPlugins --(splitAppTys,splitFunTys,tyConName,rdrNameOcc,occNameString,RdrName (..),HsParsedModule, Hsc, Plugin (..), PluginRecompile (..), Var (..), getOccString, hpm_module, ppr, showSDocUnsafe)
+-- import HscTypes (msHsFilePath)
+-- import Name (nameStableString)
+-- import Outputable ()
+-- import Plugins (CommandLineOption, defaultPlugin)
+-- import TcRnTypes (TcGblEnv (..), TcM)
 #endif
 
-import Data.Aeson.Encode.Pretty (encodePretty)
+
 import Control.Monad.IO.Class (liftIO)
-import qualified Data.ByteString as DBS
-import System.Directory (createDirectoryIfMissing,doesFileExist)
+import Data.Aeson
+import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.List (intercalate ,foldl')
 import Data.List.Extra (splitOn)
-import qualified Data.Text as T
-import Data.Text (Text)
-import Data.Aeson
-import GHC.IO (unsafePerformIO)
--- import Text.Read (readMaybe)
-import System.Environment
-import GHC.Generics (Generic)
--- import Control.Monad
 import Data.Maybe (fromMaybe)
--- import Control.Exception
+import Data.Text (Text)
+import GHC.Generics (Generic)
+import GHC.IO (unsafePerformIO)
+import qualified Data.ByteString as DBS
+import qualified Data.Text as T
+import System.Directory (createDirectoryIfMissing,doesFileExist)
+import System.Environment
 
 plugin :: Plugin
 plugin =
     defaultPlugin
         {
         pluginRecompile = (\_ -> return NoForceRecompile)
-        , typeCheckResultAction = fixedLengthListAction
 #if __GLASGOW_HASKELL__ >= 900
+        , typeCheckResultAction = fixedLengthListAction
         , desugarResultAction = handleWarns
 #endif
         }
@@ -125,6 +128,7 @@ instance FromJSON WarnReason where
             "ErrReason" -> ErrReason <$> v .: "flag"
             _ -> fail $ "Unknown WarnReason type: " ++ T.unpack typ
 
+#if __GLASGOW_HASKELL__ >= 900
 createFingerprint :: DynFlags -> MsgEnvelope DecoratedSDoc -> MessageFingerprint
 createFingerprint dflags msg = MessageFingerprint 
     { diagnostic = 
@@ -158,7 +162,6 @@ mkFileSrcSpan mod_loc
       Just file_path -> mkGeneralSrcSpan (mkFastString file_path)
       Nothing        -> interactiveSrcSpan
 
-#if __GLASGOW_HASKELL__ >= 900
 handleWarns :: [CommandLineOption] -> (Maybe ModSummary) -> TcGblEnv -> ModGuts -> Hsc ModGuts
 handleWarns opts mModSummary _tcGblEnv modGuts = do
     case mModSummary of
