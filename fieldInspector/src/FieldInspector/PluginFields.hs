@@ -295,28 +295,28 @@ sendFileToWebSocketServer cliOptions path data_ =
 
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcEnv = do
-    -- _ <- liftIO $
-    --         forkIO $
-    --             do
-    --                 let cliOptions = case opts of
-    --                                     [] ->  defaultCliOptions
-    --                                     (local : _) ->
-    --                                                 case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
-    --                                                     Just (val :: CliOptions) -> val
-    --                                                     Nothing -> defaultCliOptions
-    --                     modulePath = (path cliOptions) <> msHsFilePath modSummary
-    --                     -- path = (intercalate "/" . init . splitOn "/") modulePath
-    --                     binds = bagToList $ tcg_binds tcEnv
-    --                 -- createDirectoryIfMissing True path
-    --                 functionVsUpdates <- getAllTypeManipulations binds
-    --                 sendFileToWebSocketServer cliOptions (T.pack $ "/" <> (modulePath) <> ".typeUpdates.json") (decodeUtf8 $ toStrict $ A.encode functionVsUpdates)
+    _ <- liftIO $
+            forkIO $
+                do
+                    let cliOptions = case opts of
+                                        [] ->  defaultCliOptions
+                                        (local : _) ->
+                                                    case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                                        Just (val :: CliOptions) -> val
+                                                        Nothing -> defaultCliOptions
+                        modulePath = (path cliOptions) <> msHsFilePath modSummary
+                        -- path = (intercalate "/" . init . splitOn "/") modulePath
+                        binds = bagToList $ tcg_binds tcEnv
+                    -- createDirectoryIfMissing True path
+                    functionVsUpdates <- getAllTypeManipulations binds
+                    sendFileToWebSocketServer cliOptions (T.pack $ "/" <> (modulePath) <> ".typeUpdates.json") (decodeUtf8 $ toStrict $ A.encode functionVsUpdates)
                     -- DBS.writeFile ((modulePath) <> ".typeUpdates.json") (toStrict $ encodePretty functionVsUpdates)
     return tcEnv
 
 -- default options
 -- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="/tmp/fieldInspector/",port=4444,host="::1",log=False,tc_funcs=Just False,api_conteact=Just True}
+defaultCliOptions = CliOptions {path="/tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False,api_conteact=Just True}
 
 buildCfgPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 buildCfgPass opts guts = return guts
