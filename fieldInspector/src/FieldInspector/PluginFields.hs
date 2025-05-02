@@ -273,7 +273,7 @@ websocketHost :: Maybe String
 websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
 
 
-sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
+sendFileToWebSocketServer :: CliOptions -> Text -> Text -> IO ()
 sendFileToWebSocketServer cliOptions path data_ =
     withSocketsDo $ do
         eres <- try $
@@ -316,27 +316,10 @@ collectTypesTC opts modSummary tcEnv = do
 -- default options
 -- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="/tmp/fieldInspector/",port=4444,host="::1",log=False,tc_funcs=Just False,api_conteact=Just True}
+defaultCliOptions = CliOptions {path="/tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False,api_conteact=Just True}
 
 buildCfgPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
-buildCfgPass opts guts = do
-    let cliOptions = case opts of
-                    [] ->  defaultCliOptions
-                    (local : _) ->
-                                case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
-                                    Just (val :: CliOptions) -> val
-                                    Nothing -> defaultCliOptions
-    _ <- liftIO $ do
-        let binds = mg_binds guts
-            moduleLoc = (path cliOptions) Prelude.<> getFilePath (mg_loc guts)
-        -- createDirectoryIfMissing True ((intercalate "/" . init . splitOn "/") moduleLoc)
-        -- removeIfExists (moduleLoc Prelude.<> ".fieldUsage.json")
-        l <- toList $ mapM (liftIO . toLBind) (fromList binds)
-        res <- pure $ Prelude.filter (\(x,y) -> (Prelude.not $ Prelude.null y) && (Prelude.not $ ("$$" :: Text) `T.isInfixOf` x)) $ groupByFunction $ Prelude.concat l
-        when (Prelude.not $ Prelude.null res) $
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> moduleLoc Prelude.<> ".fieldUsage.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList $ res)
-            -- DBS.writeFile (moduleLoc Prelude.<> ".fieldUsage.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ res)
-    return guts
+buildCfgPass opts guts = return guts
 
 getAllTypeManipulations :: [LHsBindLR GhcTc GhcTc] -> IO [DataTypeUC]
 getAllTypeManipulations binds = do

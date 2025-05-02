@@ -64,35 +64,7 @@ import TyCoRep
 import GHC.IO (unsafePerformIO)
 import GHC.Hs
 import GHC.Hs.Decls
-import GhcPlugins (
-    CommandLineOption,Arg (..),
-    HsParsedModule(..),
-    Hsc,ModLocation(..),
-    Name,SDoc,DataCon,DynFlags,ModSummary(..),TyCon,
-    Literal (..),typeEnvElts,
-    ModGuts (mg_binds, mg_loc, mg_module),showSDoc,
-    Module (moduleName),tyConKind,
-    NamedThing (getName),getDynFlags,tyConDataCons,dataConOrigArgTys,dataConName,
-    Outputable (..),dataConFieldLabels,PluginRecompile(..),
-    Plugin (..),docToSDoc,
-    Var,flLabel,dataConRepType,reallyAlwaysQualify,
-    coVarDetails,
-    defaultPlugin,
-    idName,
-    mkInternalName,
-    mkLitString,
-    mkLocalVar,
-    mkVarOcc,
-    moduleNameString,
-    nameStableString,
-    noCafIdInfo,
-    purePlugin,
-    showSDocUnsafe,
-    tyVarKind,
-    unpackFS,
-    tyConName,
-    msHsFilePath
- )
+import GhcPlugins hiding ((<>),getRdrName)
 import Id (isExportedId,idType)
 import Name (getSrcSpan)
 import SrcLoc

@@ -162,7 +162,7 @@ executable fieldInspector
 -- test-suite fieldInspector-test
 --     -- Import common warning flags.
 --     import:           common-options
---     ghc-options: -fplugin=ApiContract.Plugin -fplugin=FieldInspector.PluginFields -fplugin-opt FieldInspector.PluginFields:/tmp/fieldInspector/ -fplugin=FieldInspector.PluginTypes -fplugin-opt FieldInspector.PluginTypes:/tmp/fieldInspector/
+--     ghc-options: -fplugin=FieldInspector.PluginFields -fplugin-opt FieldInspector.PluginFields:./tmp/fieldInspector/ -fplugin=FieldInspector.PluginTypes -fplugin-opt FieldInspector.PluginTypes:./tmp/fieldInspector/
 --     -- Base language which the package is written in.
 --     default-language: Haskell2010
 
@@ -193,3 +193,4 @@ executable fieldInspector
 --         , typelet
 --         , record-hasfield
 --         , scientific
+--         , newtype

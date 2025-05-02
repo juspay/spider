@@ -403,7 +403,6 @@ parseApiType ty = do
 isTyConApp :: Type -> Bool
 isTyConApp (TyConApp _ _) = True
 isTyConApp _              = False
-#endif
 
 data CliOptions = CliOptions {
     path :: FilePath,
@@ -412,3 +411,4 @@ data CliOptions = CliOptions {
     log :: Bool,
     tc_funcs :: Maybe Bool
 } deriving (Show,Generic,ToJSON,FromJSON)
+#endif

@@ -6,7 +6,7 @@
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE CPP #-}
 
-module FieldInspector.PluginTypes (plugin) where
+module FieldInspector.PluginTypes where
 
 #if __GLASGOW_HASKELL__ >= 900
 import Language.Haskell.Syntax.Type
@@ -14,7 +14,6 @@ import GHC.Hs.Extension ()
 import GHC.Parser.Annotation ()
 import GHC.Utils.Outputable ()
 import qualified Data.IntMap.Internal as IntMap
-import Streamly.Internal.Data.Stream (fromList,mapM_,mapM,toList)
 import GHC
 import GHC.Unit.Types
 import GHC.Driver.Plugins (Plugin(..),CommandLineOption,defaultPlugin,PluginRecompile(..))
@@ -30,8 +29,13 @@ import GHC.Core.Opt.Monad
 import GHC.Rename.HsType
 -- import GHC.HsToCore.Docs
 import GHC.Types.Name.Reader
-
-
+import GHC.Data.FastString
+import GHC.Types.TypeEnv
+import GHC.Types.FieldLabel
+import GHC.Core.DataCon
+import GHC.Core.TyCon
+import GHC.Core.TyCo.Rep
+import GHC.Core.Type
 #else
 import CoreMonad (CoreM, CoreToDo (CoreDoPluginPass), liftIO)
 import CoreSyn (
@@ -46,40 +50,8 @@ import TyCoRep
 import GHC.IO (unsafePerformIO)
 import GHC.Hs
 import GHC.Hs.Decls
-import GhcPlugins (
-    rdrNameOcc,
-    unitIdString,
-    fsLit,
-    moduleUnitId,
-    CommandLineOption,Arg (..),
-    HsParsedModule(..),
-    Hsc,
-    RdrName(..),
-    Name,SDoc,DataCon,DynFlags,ModSummary(..),TyCon,
-    Literal (..),typeEnvElts,
-    ModGuts (mg_binds, mg_loc, mg_module),showSDoc,
-    Module (moduleName),tyConKind,
-    NamedThing (getName),getDynFlags,tyConDataCons,dataConOrigArgTys,dataConName,
-    Outputable (..),dataConFieldLabels,PluginRecompile(..),
-    Plugin (..),
-    Var,flLabel,dataConRepType,
-    coVarDetails,
-    defaultPlugin,
-    idName,
-    mkInternalName,
-    mkLitString,
-    mkLocalVar,
-    mkVarOcc,
-    moduleNameString,
-    nameStableString,
-    noCafIdInfo,
-    purePlugin,
-    showSDocUnsafe,
-    tyVarKind,
-    unpackFS,
-    tyConName,
-    msHsFilePath
- )
+import GhcPlugins hiding ((<>))
+import Class
 import Id (isExportedId,idType)
 import Name
 import SrcLoc
@@ -98,7 +70,7 @@ import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.ByteString as DBS
 import Data.ByteString.Lazy (toStrict)
 import Data.Int (Int64)
-import Data.List.Extra (intercalate, isSuffixOf, replace, splitOn,groupBy)
+import Data.List.Extra (intercalate, isSuffixOf, replace, splitOn,groupBy,nubBy)
 import Data.List ( sortBy, intercalate ,foldl')
 import qualified Data.Map as Map
 import Data.Text (Text, concat, isInfixOf, pack, unpack)
@@ -106,15 +78,15 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Time
 import Data.Map (Map)
-import Data.Data
-import Data.Maybe (catMaybes)
+import Data.Data (Data,toConstr)
+import Data.Maybe (catMaybes,isJust)
 import Control.Monad.IO.Class (liftIO)
 import System.IO (writeFile)
-import Control.Monad (forM)
-import Streamly.Internal.Data.Stream hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
+import Control.Monad (forM,zipWithM)
+-- import Streamly.Internal.Data.Stream hiding (concatMap, init, length, map, splitOn,foldl',intercalate)
 import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude hiding (mapM, mapM_,log)
-import Prelude hiding (id, mapM, mapM_,log)
+import Prelude hiding (id, mapM_,log)
 import Control.Exception (evaluate)
 import qualified Data.Record.Plugin as DRP
 import qualified Data.Record.Anon.Plugin as DRAP
@@ -131,12 +103,15 @@ import GHC.IO (unsafePerformIO)
 import Data.Binary
 import Control.DeepSeq
 import GHC.Generics (Generic)
+import Control.Reference (biplateRef, (^?))
+import Data.Generics.Uniplate.Data ()
 
 plugin :: Plugin
 plugin = (defaultPlugin{
             -- installCoreToDos = install
         pluginRecompile = (\_ -> return NoForceRecompile)
         , parsedResultAction = collectTypeInfoParser
+        , typeCheckResultAction = collectTypesTC
         })
 #if defined(ENABLE_API_CONTRACT_PLUGINS)
         <> ApiContract.plugin
@@ -211,7 +186,7 @@ websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_
 websocketHost :: Maybe String
 websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
 
-sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
+sendFileToWebSocketServer :: CliOptions -> Text -> Text -> IO ()
 sendFileToWebSocketServer cliOptions path data_ =
     withSocketsDo $ do
         eres <- try $
@@ -232,16 +207,12 @@ sendFileToWebSocketServer cliOptions path data_ =
             Right _ -> pure ()
 
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="/tmp/fieldInspector/",port=4444,host="::1",log=False,tc_funcs=Just False,api_conteact=Just True}
+defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False,api_conteact=Just True}
 
 collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectTypeInfoParser opts modSummary hpm = do
-    -- _ <- Fdep.collectDecls opts modSummary hpm
     _ <- liftIO $ forkIO $
             do
-                -- let prefixPath = case opts of
-                --         [] -> "/tmp/fieldInspector/"
-                --         local : _ -> local
                 let cliOptions = case opts of
                                 [] ->  defaultCliOptions
                                 (local : _) ->
@@ -251,14 +222,31 @@ collectTypeInfoParser opts modSummary hpm = do
                 let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
                     modulePath = (path cliOptions) <> msHsFilePath modSummary
                     hm_module = unLoc $ hpm_module hpm
-                    -- path = (intercalate "/" . init . splitOn "/") modulePath
-                -- print ("generating types data for module: " <> moduleName' <> " at path: " <> path)
-                types <- toList $ mapM (pure . getTypeInfo moduleName') (fromList $ hsmodDecls hm_module)
-                -- createDirectoryIfMissing True path
+                    path_ = (intercalate "/" . init . splitOn "/") modulePath
+                -- createDirectoryIfMissing True path_
+                types <- mapM (pure . getTypeInfo moduleName') (hsmodDecls hm_module)
+                -- DBS.writeFile (modulePath <> ".type.parser.json") (toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
                 sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types.parser.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
-                -- DBS.writeFile (modulePath <> ".types.parser.json") =<< (evaluate $ toStrict $ encodePretty $ Map.fromList $ Prelude.concat types)
-                -- print ("generated types data for module: " <> moduleName' <> " at path: " <> path)
     pure hpm
+
+collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
+collectTypesTC opts modSummary tcg = do
+    _ <- do
+        let cliOptions = case opts of
+                        [] ->  defaultCliOptions
+                        (local : _) ->
+                                    case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
+                                        Just (val :: CliOptions) -> val
+                                        Nothing -> defaultCliOptions
+        let tcEnv = (tcg_rn_decls tcg)
+        let tcEnv' = (tcg_rn_exports tcg)
+            modulePath = (path cliOptions) <> msHsFilePath modSummary
+            path_ = (intercalate "/" . init . splitOn "/") modulePath
+        -- liftIO $ createDirectoryIfMissing True path_
+        typeDefs <- extractTypeInfo tcg
+        -- liftIO $ forkIO $ DBS.writeFile (modulePath <> ".type.typechecker.json") =<< (pure $ DBS.toStrict $ A.encode $ Map.fromList typeDefs)
+        liftIO $ sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".type.typechecker.json") =<< (pure $ decodeUtf8 $ BL.toStrict $ A.encode $ Map.fromList typeDefs)
+    pure tcg
 
 getTypeInfo :: String -> LHsDecl GhcPs -> [(String, TypeInfo)]
 getTypeInfo modName (L _ decl) = case decl of
@@ -313,25 +301,7 @@ getTypeInfo modName (L _ decl) = case decl of
 #endif
     _ -> []
 
--- getTypeInfo :: LHsDecl GhcPs -> [(String,TypeInfo)]
--- getTypeInfo (L _ (TyClD _ (DataDecl _ lname _ _ defn))) =
---   [((showSDocUnsafe' lname) ,TypeInfo
---     { name = showSDocUnsafe' lname
---     , typeKind = "data"
---     -- , dataConstructors = map getDataConInfo (dd_cons defn)
---     , dataConstructors = map (getDataConInfo modName) (dd_cons defn)
---     })]
--- getTypeInfo (L _ (TyClD _ (SynDecl _ lname _ _ rhs))) =
---     [((showSDocUnsafe' lname),TypeInfo
---     { name = showSDocUnsafe' lname
---     , typeKind = "type"
--- #if __GLASGOW_HASKELL__ >= 900
---     , dataConstructors = [DataConInfo (showSDocUnsafe' lname) (Map.singleton "synonym" (parseTypeToComplexType $ unLoc rhs)) []]
--- #else
---     , dataConstructors = [DataConInfo (showSDocUnsafe' lname) (Map.singleton "synonym" (parseTypeToComplexType $ unLoc rhs)) []]
--- #endif
---     })]
--- getTypeInfo _ = []
+
 
 instance Outputable Void where
 
@@ -698,3 +668,321 @@ unwrapRdrName = id
 unwrapLocated :: Located RdrName -> RdrName
 unwrapLocated (L _ name) = name
 #endif
+
+extractTypeInfo :: TcGblEnv -> TcM [(String,TypeInfo)]
+extractTypeInfo tcg = do
+    dflags <- getDynFlags
+    let tcs = extractTyCons tcg
+    mapM (tyConToTypeInfo dflags) tcs
+
+typeToStructuredTypeRep :: DynFlags -> Type -> TcM StructuredTypeRep
+typeToStructuredTypeRep dflags ty = do
+    let rawCode = pack (showSDocUnsafe (ppr ty))
+    structType <- typeToComplexType dflags ty
+    return $ StructuredTypeRep {
+        raw_code = rawCode,
+        structure = structType
+    }
+
+typeToComplexType :: DynFlags -> Type -> TcM ComplexType
+typeToComplexType dflags ty = case ty of
+    TyVarTy var -> return $ AtomicType $ nameToTypeComponent dflags $ getName var
+    AppTy t1 t2 -> do
+        c1 <- typeToComplexType dflags t1
+        c2 <- typeToComplexType dflags t2
+        return $ AppType c1 [c2]
+    
+    TyConApp tc args ->
+        let tc_name = getName tc
+            tc_string = showSDocUnsafe $ ppr tc_name
+            occ = getOccString tc_name
+        in
+            if occ == "~" then do
+                -- In GHC, equality constraints can have different numbers of arguments
+                -- Traditionally it's kind, lhs, rhs but we need to be careful
+                -- For clarity, let's process all args to see what we're dealing with
+                processedArgs <- mapM (typeToComplexType dflags) args
+                
+                -- If there are at least 2 args, the last one is typically the RHS type
+                if length args >= 2 then do
+                    rhs <- typeToComplexType dflags (last args)
+                    return rhs
+                else if (length processedArgs == 0)
+                    then return $ (AtomicType $ nameToTypeComponent dflags tc_name)
+                else do
+                    -- Default case: create the AppType normally
+                    return $ AppType (AtomicType $ nameToTypeComponent dflags tc_name) processedArgs
+            
+            else if getOccString (getName tc) == "[]" && length args == 1 then do
+                res <- typeToComplexType dflags (head args)
+                pure $ ListType res
+            -- Check for tuples using proper GHC API functions
+            else if isBoxedTupleTyCon tc || isUnboxedTupleTyCon tc 
+                then do
+                    res <- mapM (typeToComplexType dflags) args
+                    pure $ TupleType res
+            else do
+                res <- mapM (typeToComplexType dflags) args
+                if length res == 0
+                    then pure $ (AtomicType $ nameToTypeComponent dflags tc_name)
+                    else pure $ AppType (AtomicType $ nameToTypeComponent dflags tc_name) (res)
+#if __GLASGOW_HASKELL__ >= 900
+    (FunTy _ _ argTy resTy) -> do
+#else
+    (FunTy _ argTy resTy) -> do
+#endif
+        cArg <- typeToComplexType dflags argTy
+        cRes <- typeToComplexType dflags resTy
+        return $ FuncType cArg cRes
+    
+    ForAllTy bndr ty -> do
+        let var = binderVar bndr
+        varComp <- varToTypeComponent dflags var
+        innerType <- typeToComplexType dflags ty
+        return $ ForallType [varComp] innerType
+    
+    LitTy lit -> 
+        return $ LiteralType (showSDocUnsafe (ppr lit))
+    
+    CastTy t _ -> 
+        typeToComplexType dflags t
+    
+    CoercionTy _ -> 
+        return $ UnknownType "Coercion"
+    
+    _ -> return $ UnknownType (pack $ showSDocUnsafe (ppr ty))
+
+tyConToAtomicType :: DynFlags -> TyCon -> TcM TypeComponent
+tyConToAtomicType dflags tc =
+    pure $ nameToTypeComponent dflags $ tyConName tc
+
+nameToTypeComponent :: DynFlags -> Name -> TypeComponent
+nameToTypeComponent dflags name = TypeComponent 
+    { moduleName' = getModuleName name
+    , typeName' = getTypeName name
+    , packageName = getPackageName name
+    }
+  where
+    getModuleName :: Name -> Text
+    getModuleName nm = case nameModule_maybe nm of
+        Just mod -> pack $ showSDocUnsafe (ppr (moduleName mod))
+        Nothing  -> pack "" -- For internal/system names with no associated module
+
+    getTypeName :: Name -> Text
+    getTypeName nm = pack $ showSDocUnsafe (ppr (nameOccName nm))
+
+    getPackageName :: Name -> Text
+    getPackageName nm = case nameModule_maybe nm of
+#if __GLASGOW_HASKELL__ >= 900
+        Just mod -> pack $ showSDocUnsafe (ppr (moduleUnit mod))
+#else
+        Just mod -> pack $ showSDocUnsafe (ppr (moduleUnitId mod))
+#endif
+        Nothing  -> pack "" -- For internal/system names with no associated module
+
+-- -- | For use in the GHC plugin
+varToTypeComponent :: DynFlags -> Var -> TcM TypeComponent
+varToTypeComponent dflags var = do
+    return $ nameToTypeComponent dflags (getName var)
+
+           
+tyConToTypeInfo :: DynFlags -> TyCon -> TcM (String,TypeInfo)
+tyConToTypeInfo dflags tc = do
+    let tcName = showSDocUnsafe (ppr (tyConName tc))
+    
+    -- Determine what type of declaration this is - use the same format as in parser
+    let typeCategory = if isTypeSynonymTyCon tc
+                      then "type"             -- Use "type" instead of "type synonym"
+                      else if isAlgTyCon tc && isNewTyCon tc
+                           then "newtype"
+                           else if isAlgTyCon tc
+                                then "data"
+                                else if isClassTyCon tc
+                                     then "class"
+                                     else if isFamilyTyCon tc
+                                          then "type family"
+                                          else "other"
+
+    
+    -- Get data constructors based on the type constructor's kind
+    dataConsInfo <- case () of
+        -- Algebraic data types (regular data and newtype)
+        _ | isAlgTyCon tc && not (isClassTyCon tc) -> do
+            -- liftIO $ putStrLn $ "  Processing as algebraic type"
+            let dcons = tyConDataCons tc
+            -- liftIO $ putStrLn $ "  Found " ++ show (length dcons) ++ " data constructors"
+            mapM (dataConToDataConInfo dflags) dcons
+            
+        -- Type synonyms: extract the expanded type - format to match parser
+        _ | isTypeSynonymTyCon tc -> do
+            -- liftIO $ putStrLn $ "  Processing as type synonym"
+            case synTyConRhs_maybe tc of
+                Just ty -> do
+                    -- liftIO $ putStrLn $ "  Synonym expands to: " ++ showSDocUnsafe (ppr ty)
+                    structType <- typeToStructuredTypeRep dflags ty
+                    return [DataConInfo {
+                        dataConNames = tcName,  -- Use the type name instead of "type_synonym"
+                        fields = Map.singleton "synonym" structType,  -- Use "synonym" key as in parser
+                        sumTypes = []
+                    }]
+                Nothing -> do
+                    -- liftIO $ putStrLn $ "  Could not get expansion"
+                    return []
+                
+        -- Type families (open and closed)
+        _ | isFamilyTyCon tc -> do
+            -- liftIO $ putStrLn $ "  Processing as type family"
+            -- Get the type parameters
+            let tyVars = tyConTyVars tc
+            let tyVarStrings = map (showSDocUnsafe . ppr . getName) tyVars
+            
+            -- Check if it's a closed family
+            let isClosed = isJust $ isClosedSynFamilyTyConWithAxiom_maybe tc
+            
+            -- Format to match parser style
+            return [DataConInfo {
+                dataConNames = tcName,  -- Use the type name
+                fields = Map.singleton "family_kind" (StructuredTypeRep {
+                    raw_code = pack $ if isClosed then "closed" else "open",
+                    structure = LiteralType $ if isClosed then "closed" else "open"
+                }),
+                sumTypes = tyVarStrings
+            }]
+                
+        -- Type classes - format to match parser
+        _ | isClassTyCon tc -> do
+            -- liftIO $ putStrLn $ "  Processing as type class"
+            let cls = tyConClass_maybe tc
+            methods <- case cls of
+                Just cls' -> do
+                    -- liftIO $ putStrLn $ "  Class has " ++ show (length (classMethods cls')) ++ " methods"
+                    return $ classMethods cls'
+                Nothing -> do
+                    -- liftIO $ putStrLn $ "  Could not get class methods"
+                    return []
+                
+            -- Format methods similar to fields in the parser
+            methodInfos <- forM methods $ \method -> do
+                let methodName = showSDocUnsafe (ppr (getName method))
+                let methodType = idType method
+                structType <- typeToStructuredTypeRep dflags methodType
+                return DataConInfo {
+                    dataConNames = methodName,  -- Use method name as constructor name
+                    fields = Map.singleton "method_type" structType,
+                    sumTypes = []
+                }
+            
+            -- If no methods, return a single representation of the class
+            if null methodInfos then
+                return [DataConInfo {
+                    dataConNames = tcName,
+                    fields = Map.empty,
+                    sumTypes = []
+                }]
+            else
+                return methodInfos
+                
+        -- Other special cases - match parser format
+        _ | isPrimTyCon tc || isBuiltInSyntax (tyConName tc) -> do
+            -- liftIO $ putStrLn $ "  Processing as primitive/built-in type"
+            
+            -- Create simple representation matching parser style
+            return [DataConInfo {
+                dataConNames = tcName,  -- Use type name
+                fields = Map.empty,
+                sumTypes = []
+            }]
+            
+        -- Any other type constructor - match parser's empty list for unknown types
+        _ -> do
+            -- liftIO $ print $ ("  Unknown type constructor" , showSDocUnsafe $ ppr tc)
+            return []  -- Return empty list as parser does for unknown types
+    
+    return $ (tcName,TypeInfo {
+        name = tcName,          -- Type name
+        typeKind = typeCategory, -- Use the category string determined above
+        dataConstructors = dataConsInfo
+    })
+
+-- Helper to safely check if a TyCon is an algebraic type constructor
+-- This replaces the unsafe direct pattern matching on algTyConRhs
+tyConDataCons_maybe :: TyCon -> Maybe [DataCon]
+tyConDataCons_maybe tc
+    | isAlgTyCon tc = Just (tyConDataCons tc)  -- Safe because we've checked it's algebraic
+    | otherwise = Nothing
+
+-- Additional helper function to check for newtype specifically
+isNewTyCon_maybe :: TyCon -> Maybe DataCon
+isNewTyCon_maybe tc
+    | isNewTyCon tc = Just (head (tyConDataCons tc))  -- Newtypes always have exactly one constructor
+    | otherwise = Nothing
+
+-- Safe function for extracting all TyCons
+extractTyCons :: TcGblEnv -> [TyCon]
+extractTyCons tcg = 
+    -- Filter out TyCons that cause problems
+    let tcs1 = filter isSafeTyCon (extractTyCons' (tcg_binds tcg))
+        tcs2 = filter isSafeTyCon (extractTyCons' (tcg_tcs tcg))
+    in nubBy (\tc1 tc2 -> tyConName tc1 == tyConName tc2) (tcs1 ++ tcs2)
+  where
+    extractTyCons' :: Data a => a -> [TyCon]
+    extractTyCons' a = a ^? biplateRef
+    
+    -- Additional safety check for TyCons
+    isSafeTyCon :: TyCon -> Bool
+    isSafeTyCon tc = 
+        -- Skip certain TyCons that cause problems
+        not (isClassTyCon tc) &&         -- Skip type classes
+        not (isPromotedDataCon tc) &&    -- Skip promoted data constructors
+        not (isTcTyCon tc)            -- Skip type checker temporary TyCons
+
+#if __GLASGOW_HASKELL__ >= 900
+#else
+scaledThing a = a
+#endif
+
+dataConToDataConInfo :: DynFlags -> DataCon -> TcM DataConInfo
+dataConToDataConInfo dflags dc = do
+    let dcName = showSDocUnsafe (ppr (dataConName dc))
+    
+    -- Get field information
+    let fieldLabels = dataConFieldLabels dc
+    let fieldTypes = dataConRepArgTys dc
+    
+    -- Debug information
+    -- liftIO $ putStrLn $ "Processing DataCon: " ++ dcName
+    -- liftIO $ putStrLn $ "  Field labels count: " ++ (showSDocUnsafe $ ppr (fieldLabels))
+    -- liftIO $ putStrLn $ "  Field types count: " ++ (showSDocUnsafe $ ppr (fieldTypes))
+    
+    -- Handle cases where the number of field labels doesn't match the number of types
+    fieldMap <- if not (null fieldLabels) && length fieldLabels == length (filter (\x -> not $ "~" `isInfixOf` (pack $ showSDocUnsafe $ ppr x)) fieldTypes)
+        then do
+            -- liftIO $ print $ showSDocUnsafe $ ppr (fieldLabels,fieldTypes)
+            -- Normal case: build field map with real labels
+            Map.fromList <$> zipWithM (\l t -> do
+                    structType <- typeToStructuredTypeRep dflags (scaledThing t)
+                    return (unpackFS (flLabel l), structType)
+                ) fieldLabels fieldTypes
+        else
+            -- For non-record constructors, we still need to capture the arguments
+            if not (null fieldTypes)
+            then do
+                -- liftIO $ putStrLn $ "  Non-record constructor with " ++ show (length fieldTypes) ++ " arguments"
+                -- Use argument positions as field names
+                Map.fromList <$> zipWithM (\i t -> do
+                            structType <- typeToStructuredTypeRep dflags (scaledThing t)
+                            -- liftIO $ putStrLn $ "    Arg " ++ show i ++ ": " ++ showSDocUnsafe (ppr (scaledThing t))
+                            return (show i, structType)
+                        ) [0..] fieldTypes
+            else do
+                -- liftIO $ putStrLn "  No arguments for this constructor"
+                return Map.empty
+    
+    -- Safely get sum type information for GADTs 
+    sumTypeNames <- mapM (\x -> pure $ showSDocUnsafe $ ppr $ binderVar x) (dataConUserTyVarBinders dc)
+    
+    return $ DataConInfo {
+        dataConNames = dcName,
+        fields = fieldMap,
+        sumTypes = sumTypeNames
+    }
