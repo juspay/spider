@@ -52,7 +52,7 @@ import GHC.IORef (readIORef)
 import LoadIface (pprModIface, pprModIfaceSimple)
 import Name (nameStableString)
 import Plugins (CommandLineOption, Plugin (typeCheckResultAction), defaultPlugin)
-import TcRnTypes (TcGblEnv (..), TcM)
+import TcRnTypes (TcGblEnv (..), TcM,)
 import Prelude hiding (id,writeFile, appendFile)
 import Data.Aeson as A
 import Data.ByteString.Lazy (writeFile, appendFile)
@@ -144,6 +144,7 @@ extractSrcSpanSegment srcSpan' filePath oldCode = case srcSpan' of
 
 sheriff :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 sheriff opts modSummary tcEnv = do
+  liftIO $ putStrLn $ "Sheriff plugin: Processing module " ++ (moduleNameString . moduleName . ms_mod $ modSummary)
   let pluginOpts = case opts of
                     []      -> defaultPluginOpts
                     (x : _) -> fromMaybe defaultPluginOpts $ A.decode (Char8.pack x)
@@ -156,7 +157,7 @@ sheriff opts modSummary tcEnv = do
       sheriffExceptionsPath = exceptionsConfigPath pluginOpts
       failOnFileNotFoundV = failOnFileNotFound pluginOpts 
       moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
-
+ 
   -- parse the yaml file from the path given
   parsedYaml <- liftIO $ parseYAMLFile indexedKeysPathV
 
@@ -171,7 +172,7 @@ sheriff opts modSummary tcEnv = do
                             Left err -> do
                               when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
                               pure badPracticeRules
-                            Right (YamlTables tables) -> pure $ badPracticeRules <> (map yamlToDbRule tables)
+                            Right (YamlTables tables) -> pure $ (map yamlToDbRule tables)
   
   rulesList' <- case parsedRulesYaml of
                 Left err -> do
@@ -231,17 +232,18 @@ sheriff opts modSummary tcEnv = do
 -- Loop over top level function binds
 loopOverModBinds :: Rules -> PluginOpts -> LHsBindLR GhcTc GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
 loopOverModBinds rules opts (L _ ap@(FunBind _ id matches _ _)) = do
-  -- liftIO $ print "FunBinds" >> showOutputable ap
+  liftIO $ print "FunBinds" >> showOutputable ap
   badCalls <- getBadFnCalls rules opts ap
   pure badCalls
 loopOverModBinds _ _ (L _ ap@(PatBind _ _ pat_rhs _)) = do
-  -- liftIO $ print "PatBinds" >> showOutputable ap
+  liftIO $ print "PatBinds" >> showOutputable ap
   pure []
 loopOverModBinds _ _ (L _ ap@(VarBind {var_rhs = rhs})) = do 
-  -- liftIO $ print "VarBinds" >> showOutputable ap
+  liftIO $ print "VarBinds" >> showOutputable ap
   pure []
 loopOverModBinds rules opts (L _ ap@(AbsBinds {abs_binds = binds})) = do
-  -- liftIO $ print "AbsBinds" >> showOutputable ap
+  liftIO $ print "AbsBinds" >> showOutputable ap
+  liftIO $ print "AbsBindss" >> showOutputable binds
   list <- mapM (loopOverModBinds rules opts) $ bagToList binds
   pure (concat list)
 loopOverModBinds _ _ _ = pure []
@@ -261,7 +263,9 @@ getBadFnCalls rules opts (FunBind _ id matches _ _) = do
           -- exprs = match ^? biplateRef :: [LHsExpr GhcTc]
           -- use childrenBi and then repeated children usage as per use case
           exprs = traverseConditionalUni (noWhereClauseExpansion) (childrenBi match :: [LHsExpr GhcTc])
-      concat <$> mapM (isBadFunApp rules opts) exprs
+      result <- concat <$> mapM (isBadFunApp rules opts) exprs
+      liftIO $ print "exprs: " >> showOutputable exprs
+      pure result
 getBadFnCalls _ _ _ = pure []
 
 -- Takes a predicate which return true if further expansion is not required, false otherwise
@@ -399,6 +403,7 @@ type SimplifiedIsClause = (LHsExpr GhcTc, String, String)
 trfWhereToSOP :: PluginOpts -> [LHsExpr GhcTc] -> TcM [[SimplifiedIsClause]]
 trfWhereToSOP _ [] = pure [[]]
 trfWhereToSOP opts (clause : ls) = do
+  liftIO $ print "clause: " >> showOutputable clause
   let res = getWhereClauseFnNameWithAllArgs clause
       (fnName, args) = fromMaybe ("NA", []) res
   case (fnName, args) of
