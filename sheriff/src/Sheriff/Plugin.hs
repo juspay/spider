@@ -7,6 +7,7 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 
 module Sheriff.Plugin (plugin) where
+import Data.Maybe (mapMaybe,maybeToList)
 
 -- Sheriff imports
 import Sheriff.CommonTypes
@@ -187,6 +188,10 @@ sheriff opts modSummary tcEnv = do
   let namesModTuple = concatMap (\inst -> let clsName = className (is_cls inst) in (is_dfun_name inst, clsName) : fmap (\clsMethod -> (varName clsMethod, clsName)) (classMethods $ is_cls inst)) insts
       nameModMap = foldr (\(name, clsName) r -> HM.insert (NMV_Name name) (NMV_ClassModule clsName (getModuleName clsName)) r) HM.empty namesModTuple
   liftIO $ putStrLn $ "checking: " ++ showSDocUnsafe (ppr (bagToList $ tcg_binds tcEnv)) ++ "up to here"
+  let binds = bagToList $ tcg_binds tcEnv
+      extracted = concatMap extractFindOneOrAllFromBind binds
+  
+  forM_ extracted $ \(func, table, clause) -> liftIO $ putStrLn $ "Extracted binds" ++ func ++ " " ++ table ++ " " ++ clause
   rawErrors <- concat <$> (mapM (loopOverModBinds finalSheriffRules) $ bagToList $ tcg_binds tcEnv)
   (rawInfiniteRecursionErrors, _) <- flip runStateT nameModMap $ concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)
   
@@ -208,6 +213,30 @@ sheriff opts modSummary tcEnv = do
     else pure ()
 
   return tcEnv
+
+extractFindOneOrAllFromBind :: LHsBind GhcTc -> [ (String, String, String) ]
+extractFindOneOrAllFromBind (L _ bind) = case bind of
+  FunBind { fun_matches = MG { mg_alts = L _ matches } } ->
+    concatMap extractFromMatch matches
+  _ -> []
+
+extractFromMatch :: LMatch GhcTc (LHsExpr GhcTc) -> [ (String, String, String) ]
+extractFromMatch (L _ (Match _ _ _ (GRHSs _ grhss _))) =
+  concatMap extractFromGRHS grhss
+
+extractFromGRHS :: LGRHS GhcTc (LHsExpr GhcTc) -> [ (String, String, String) ]
+extractFromGRHS (L _ (GRHS _ _ body)) =
+  maybeToList $ extractFromExpr body
+
+extractFromExpr :: LHsExpr GhcTc -> Maybe (String, String, String)
+extractFromExpr expr = case expr of
+  L _ (HsApp _ (L _ (HsApp _ (L _ (HsApp _ (L _ (HsVar _ (L _ funcName))) dbConf)) table)) filters)
+    | occNameString (nameOccName (varName funcName)) `elem` ["findOneRow", "findAllRows"] ->
+        Just ( occNameString (nameOccName (varName funcName))
+             , showSDocUnsafe (ppr table)
+             , showSDocUnsafe (ppr filters) )
+  _ -> Nothing
+
 
 --------------------------- Infinite Recursion Detection Logic ---------------------------
 {-
