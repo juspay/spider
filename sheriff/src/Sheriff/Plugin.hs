@@ -248,15 +248,23 @@ extractFromExpr expr =
                , showSDocUnsafe (ppr table)
                , showSDocUnsafe (ppr filters) )
 
-    -- Lambda: \x y z -> case x of ...
-    HsLam _ (MG _ (L _ alts) _)
-      -> listToMaybe (concatMap extractFromMatch alts)
+    -- Lambda expressions
+    HsLam _ (MG _ (L _ alts) _) ->
+      trace "🔍 Descending into HsLam" $
+        listToMaybe (concatMap extractFromMatch alts)
 
-    -- Case expression
-    HsCase _ _ (MG _ (L _ alts) _)
-      -> listToMaybe (concatMap extractFromMatch alts)
+    -- Case expressions
+    HsCase _ _ (MG _ (L _ alts) _) ->
+      trace "🔍 Descending into HsCase" $
+        listToMaybe (concatMap extractFromMatch alts)
 
-    -- Let / Do expressions (optional: expand later)
+    -- This handles the case: \scrut cont fail -> case scrut of ...
+    HsLamCase _ (MG _ (L _ alts) _) ->
+      trace "🔍 Descending into HsLamCase" $
+        listToMaybe (concatMap extractFromMatch alts)
+
+    -- Let expressions, do blocks etc. can be added similarly if needed
+
     _ -> Nothing
 
 
