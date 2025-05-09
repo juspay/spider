@@ -244,6 +244,7 @@ extractFromExpr expr =
     HsApp _ (L _ (HsApp _ (L _ (HsApp _ (L _ (HsVar _ (L _ funcName))) dbConf)) table)) filters
       | let fname = occNameString (nameOccName (varName funcName))
       , fname `elem` ["findOneRow", "findAllRows"] ->
+          trace ("🔍 Descending into Nothing: " ++ show (fname, showSDocUnsafe (ppr table), showSDocUnsafe (ppr filters)))
           Just ( fname
                , showSDocUnsafe (ppr table)
                , showSDocUnsafe (ppr filters) )
@@ -265,7 +266,8 @@ extractFromExpr expr =
 
     -- Let expressions, do blocks etc. can be added similarly if needed
 
-    _ -> Nothing
+    _ -> trace "🔍 Descending into Nothing" $ Just ("default_fname", "default_table", "default_filters")
+
 
 
 
