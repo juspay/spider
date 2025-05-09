@@ -7,7 +7,7 @@
 {-# LANGUAGE TypeSynonymInstances #-}
 
 module Sheriff.Plugin (plugin) where
-import Data.Maybe (mapMaybe,maybeToList)
+import Data.Maybe (mapMaybe,maybeToList,listToMaybe)
 
 -- Sheriff imports
 import Sheriff.CommonTypes
@@ -191,7 +191,7 @@ sheriff opts modSummary tcEnv = do
   let binds = bagToList $ tcg_binds tcEnv
       extracted = concatMap extractFindOneOrAllFromBind binds
   
-  forM_ extracted $ \(func, table, clause) -> liftIO $ putStrLn $ "Extracted binds" ++ func ++ " " ++ table ++ " " ++ clause
+  forM_ extracted $ \(func, table, clause) -> liftIO $ putStrLn $ "Extracted bind: " ++ func ++ " " ++ table ++ " " ++ clause
   rawErrors <- concat <$> (mapM (loopOverModBinds finalSheriffRules) $ bagToList $ tcg_binds tcEnv)
   (rawInfiniteRecursionErrors, _) <- flip runStateT nameModMap $ concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)
   
@@ -214,28 +214,44 @@ sheriff opts modSummary tcEnv = do
 
   return tcEnv
 
-extractFindOneOrAllFromBind :: LHsBind GhcTc -> [ (String, String, String) ]
+extractFindOneOrAllFromBind :: LHsBind GhcTc -> [(String, String, String)]
 extractFindOneOrAllFromBind (L _ bind) = case bind of
   FunBind { fun_matches = MG { mg_alts = L _ matches } } ->
     concatMap extractFromMatch matches
   _ -> []
 
-extractFromMatch :: LMatch GhcTc (LHsExpr GhcTc) -> [ (String, String, String) ]
+-- Match -> [ (func, table, filters) ]
+extractFromMatch :: LMatch GhcTc (LHsExpr GhcTc) -> [(String, String, String)]
 extractFromMatch (L _ (Match _ _ _ (GRHSs _ grhss _))) =
   concatMap extractFromGRHS grhss
 
-extractFromGRHS :: LGRHS GhcTc (LHsExpr GhcTc) -> [ (String, String, String) ]
+-- GRHS -> [(func, table, filters)]
+extractFromGRHS :: LGRHS GhcTc (LHsExpr GhcTc) -> [(String, String, String)]
 extractFromGRHS (L _ (GRHS _ _ body)) =
+  trace ("GRHS body: " ++ showSDocUnsafe (ppr body)) $
   maybeToList $ extractFromExpr body
 
+-- Recursive expression search for findOneRow/findAllRows
 extractFromExpr :: LHsExpr GhcTc -> Maybe (String, String, String)
-extractFromExpr expr = case expr of
-  L _ (HsApp _ (L _ (HsApp _ (L _ (HsApp _ (L _ (HsVar _ (L _ funcName))) dbConf)) table)) filters)
-    | occNameString (nameOccName (varName funcName)) `elem` ["findOneRow", "findAllRows"] ->
-        Just ( occNameString (nameOccName (varName funcName))
-             , showSDocUnsafe (ppr table)
-             , showSDocUnsafe (ppr filters) )
-  _ -> Nothing
+extractFromExpr expr = go expr
+  where
+    go :: LHsExpr GhcTc -> Maybe (String, String, String)
+    go e@(L _ (HsApp _ (L _ (HsApp _ (L _ (HsApp _ (L _ (HsVar _ (L _ funcName))) dbConf)) table)) filters))
+      | occNameString (nameOccName (varName funcName)) `elem` ["findOneRow", "findAllRows"] =
+          Just ( occNameString (nameOccName (varName funcName))
+               , showSDocUnsafe (ppr table)
+               , showSDocUnsafe (ppr filters) )
+    go (L _ (HsApp _ e1 e2)) = go e1 <|> go e2
+    go (L _ (HsLam _ (MG _ (L _ alts) _))) = listToMaybe (concatMap extractFromMatch alts)
+    go (L _ (HsDo _ _ (L _ stmts))) = msum (map extractFromStmt stmts)
+    go (L _ (HsLet _ _ body)) = go body
+    go _ = trace ("Unmatched expr: " ++ showSDocUnsafe (ppr expr)) Nothing
+
+-- Handle let/do expressions
+extractFromStmt :: ExprLStmt GhcTc -> Maybe (String, String, String)
+extractFromStmt (L _ (BodyStmt _ expr _ _)) = extractFromExpr expr
+extractFromStmt (L _ (BindStmt _ _ expr))   = extractFromExpr expr
+extractFromStmt _ = Nothing
 
 
 --------------------------- Infinite Recursion Detection Logic ---------------------------
