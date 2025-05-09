@@ -233,19 +233,23 @@ extractFromGRHS (L _ (GRHS _ _ body)) =
 
 -- Recursive expression search for findOneRow/findAllRows
 extractFromExpr :: LHsExpr GhcTc -> Maybe (String, String, String)
-extractFromExpr expr = go expr
-  where
-    go :: LHsExpr GhcTc -> Maybe (String, String, String)
-    go e@(L _ (HsApp _ (L _ (HsApp _ (L _ (HsApp _ (L _ (HsVar _ (L _ funcName))) dbConf)) table)) filters))
-      | occNameString (nameOccName (varName funcName)) `elem` ["findOneRow", "findAllRows"] =
-          Just ( occNameString (nameOccName (varName funcName))
-               , showSDocUnsafe (ppr table)
-               , showSDocUnsafe (ppr filters) )
-    go (L _ (HsApp _ e1 e2)) = go e1 <|> go e2
-    go (L _ (HsLam _ (MG _ (L _ alts) _))) = listToMaybe (concatMap extractFromMatch alts)
-    go (L _ (HsDo _ _ (L _ stmts))) = msum (map extractFromStmt stmts)
-    go (L _ (HsLet _ _ body)) = go body
-    go _ = trace ("Unmatched expr: " ++ showSDocUnsafe (ppr expr)) Nothing
+extractFromExpr expr = case unLoc expr of
+  -- Match applications: findOneRow dbConf table filters
+  HsApp _ (L _ (HsApp _ (L _ (HsApp _ (L _ (HsVar _ (L _ funcName))) dbConf)) table)) filters
+    | occNameString (nameOccName (varName funcName)) `elem` ["findOneRow", "findAllRows"] ->
+        Just ( occNameString (nameOccName (varName funcName))
+             , showSDocUnsafe (ppr table)
+             , showSDocUnsafe (ppr filters) )
+
+  -- Match lambdas like: \x y z -> case x of ...
+  HsLam _ mg@(MG _ (L _ alts) _)
+    -> listToMaybe (concatMap extractFromMatch alts)
+
+  -- Direct case matching
+  HsCase _ _ (MG _ (L _ alts) _)
+    -> listToMaybe (concatMap extractFromMatch alts)
+
+  _ -> Nothing
 
 -- Handle let/do expressions
 extractFromStmt :: ExprLStmt GhcTc -> Maybe (String, String, String)
