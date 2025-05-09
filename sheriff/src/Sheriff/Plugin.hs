@@ -220,42 +220,45 @@ extractFindOneOrAllFromBind (L _ bind) = case bind of
     concatMap extractFromMatch matches
   _ -> []
 
--- Match -> [ (func, table, filters) ]
+-- Extract info from a Match
 extractFromMatch :: LMatch GhcTc (LHsExpr GhcTc) -> [(String, String, String)]
 extractFromMatch (L _ (Match _ _ _ (GRHSs _ grhss _))) =
   concatMap extractFromGRHS grhss
 
--- GRHS -> [(func, table, filters)]
+-- Extract info from a GRHS
 extractFromGRHS :: LGRHS GhcTc (LHsExpr GhcTc) -> [(String, String, String)]
 extractFromGRHS (L _ (GRHS _ _ body)) =
   trace ("GRHS body: " ++ showSDocUnsafe (ppr body)) $
-  maybeToList $ extractFromExpr body
+  case extractFromExpr body of
+    Just res ->
+      trace (" Matched in GRHS: " ++ show res) [res]
+    Nothing ->
+      trace " No match in GRHS" []
 
--- Recursive expression search for findOneRow/findAllRows
+-- Try to match an expression to findOneRow/findAllRows
 extractFromExpr :: LHsExpr GhcTc -> Maybe (String, String, String)
-extractFromExpr expr = case unLoc expr of
-  -- Match applications: findOneRow dbConf table filters
-  HsApp _ (L _ (HsApp _ (L _ (HsApp _ (L _ (HsVar _ (L _ funcName))) dbConf)) table)) filters
-    | occNameString (nameOccName (varName funcName)) `elem` ["findOneRow", "findAllRows"] ->
-        Just ( occNameString (nameOccName (varName funcName))
-             , showSDocUnsafe (ppr table)
-             , showSDocUnsafe (ppr filters) )
+extractFromExpr expr =
+  trace ("🔍 Inspecting expr: " ++ showSDocUnsafe (ppr expr)) $
+  case unLoc expr of
+    -- findOneRow dbConf table filters
+    HsApp _ (L _ (HsApp _ (L _ (HsApp _ (L _ (HsVar _ (L _ funcName))) dbConf)) table)) filters
+      | let fname = occNameString (nameOccName (varName funcName))
+      , fname `elem` ["findOneRow", "findAllRows"] ->
+          Just ( fname
+               , showSDocUnsafe (ppr table)
+               , showSDocUnsafe (ppr filters) )
 
-  -- Match lambdas like: \x y z -> case x of ...
-  HsLam _ mg@(MG _ (L _ alts) _)
-    -> listToMaybe (concatMap extractFromMatch alts)
+    -- Lambda: \x y z -> case x of ...
+    HsLam _ (MG _ (L _ alts) _)
+      -> listToMaybe (concatMap extractFromMatch alts)
 
-  -- Direct case matching
-  HsCase _ _ (MG _ (L _ alts) _)
-    -> listToMaybe (concatMap extractFromMatch alts)
+    -- Case expression
+    HsCase _ _ (MG _ (L _ alts) _)
+      -> listToMaybe (concatMap extractFromMatch alts)
 
-  _ -> Nothing
+    -- Let / Do expressions (optional: expand later)
+    _ -> Nothing
 
--- Handle let/do expressions
-extractFromStmt :: ExprLStmt GhcTc -> Maybe (String, String, String)
-extractFromStmt (L _ (BodyStmt _ expr _ _)) = extractFromExpr expr
-extractFromStmt (L _ (BindStmt _ _ expr))   = extractFromExpr expr
-extractFromStmt _ = Nothing
 
 
 --------------------------- Infinite Recursion Detection Logic ---------------------------
