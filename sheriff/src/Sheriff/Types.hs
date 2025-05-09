@@ -22,6 +22,7 @@ data PluginOpts = PluginOpts {
     failOnFileNotFound    :: Bool,
     savePath              :: String,
     indexedKeysPath       :: String,
+    queryFunctionsPath    :: String,
     rulesConfigPath       :: String,
     exceptionsConfigPath  :: String,
     matchAllInsideAnd     :: Bool,
@@ -41,6 +42,7 @@ defaultPluginOpts =
     matchAllInsideAnd     = False,
     savePath              = ".juspay/tmp/sheriff/", 
     indexedKeysPath       = ".juspay/indexedKeys.yaml" ,
+    queryFunctionsPath    = ".juspay/queryFunctions.yaml" ,
     rulesConfigPath       = ".juspay/sheriffRules.yaml",
     exceptionsConfigPath  = ".juspay/sheriffExceptionRules.yaml",
     logDebugInfo          = False,
@@ -57,6 +59,7 @@ instance FromJSON PluginOpts where
     throwCompilationError <- o .:? "throwCompilationError" .!= (throwCompilationError defaultPluginOpts)
     savePath              <- o .:? "savePath"              .!= (savePath defaultPluginOpts)
     indexedKeysPath       <- o .:? "indexedKeysPath"       .!= (indexedKeysPath defaultPluginOpts)
+    queryFunctionsPath    <- o .:? "queryFunctionsPath"    .!= (queryFunctionsPath defaultPluginOpts)
     rulesConfigPath       <- o .:? "rulesConfigPath"       .!= (rulesConfigPath defaultPluginOpts)
     exceptionsConfigPath  <- o .:? "exceptionsConfigPath"  .!= (exceptionsConfigPath defaultPluginOpts)
     matchAllInsideAnd     <- o .:? "matchAllInsideAnd"     .!= (matchAllInsideAnd defaultPluginOpts)
@@ -88,6 +91,26 @@ instance FromJSON SheriffRules where
   parseJSON = withObject "SheriffRules" $ \o -> do
     rules <- o .: "rules"
     return SheriffRules { rules = rules }
+
+data YamlFunctions = YamlFunctions
+  { functions :: [YamlFunction]
+  } deriving (Show, Eq)
+
+instance FromJSON YamlFunctions where
+  parseJSON = withObject "YamlFunctions" $ \o -> do
+    functionList <- o .: "functions"
+    return YamlFunctions {functions = functionList}
+
+data YamlFunction = YamlFunction
+  { functionName :: String
+  , functionArg :: Int
+  } deriving (Show, Eq)
+
+instance FromJSON YamlFunction where
+  parseJSON = withObject "YamlFunction" $ \o -> do
+    functionName <- o .: "functionName"
+    functionArg <- o .: "functionArg"
+    return YamlFunction { functionName = functionName, functionArg = functionArg }
 
 data YamlTables = YamlTables
   { tables :: [YamlTable]

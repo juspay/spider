@@ -15,7 +15,7 @@ import Sheriff.Rules
 import Sheriff.Types
 import Sheriff.TypesUtils
 import Sheriff.Utils
-
+import GHC.Utils.Outputable (ppr, showSDocUnsafe)
 -- GHC imports
 import Control.Applicative ((<|>))
 import Control.Monad (foldM, when)
@@ -130,6 +130,8 @@ sheriff opts modSummary tcEnv = do
   -- parse the yaml file from the path given
   parsedYaml <- liftIO $ parseYAMLFile indexedKeysPath
 
+  -- parsedqueryFunctionsYaml <- liftIO $ parseYAMLFile queryFunctionsPath
+
   -- parse the yaml file from the path given for sheriff general rules
   parsedRulesYaml <- liftIO $ parseYAMLFile rulesConfigPath
 
@@ -142,7 +144,13 @@ sheriff opts modSummary tcEnv = do
                 when failOnFileNotFound $ addErr (mkInvalidYamlFileErr (show err))
                 pure []
               Right (YamlTables tables) -> pure $ (map yamlToDbRule tables)
-  
+
+  -- rulesListWithqueryFunctions <- case parsedqueryFunctionsYaml of
+  --                                  Left err -> do
+  --                                    when failOnFileNotFoundV $ addErr (mkInvalidYamlFileErr (show err))
+  --                                    pure badPracticeRules
+  --                                  Right (YamlFunctions functions) -> pure $ (map yamlToQueryFunctions functions)
+
   -- Check the parsed rules yaml file.  If failed, throw file error if configured.
   configuredRules <- case parsedRulesYaml of
                 Left err -> do
@@ -178,7 +186,7 @@ sheriff opts modSummary tcEnv = do
   insts <- tcg_insts . env_gbl <$> getEnv
   let namesModTuple = concatMap (\inst -> let clsName = className (is_cls inst) in (is_dfun_name inst, clsName) : fmap (\clsMethod -> (varName clsMethod, clsName)) (classMethods $ is_cls inst)) insts
       nameModMap = foldr (\(name, clsName) r -> HM.insert (NMV_Name name) (NMV_ClassModule clsName (getModuleName clsName)) r) HM.empty namesModTuple
-  
+  liftIO $ putStrLn $ "checking: " ++ showSDocUnsafe (ppr (bagToList $ tcg_binds tcEnv)) ++ "up to here"
   rawErrors <- concat <$> (mapM (loopOverModBinds finalSheriffRules) $ bagToList $ tcg_binds tcEnv)
   (rawInfiniteRecursionErrors, _) <- flip runStateT nameModMap $ concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)
   
