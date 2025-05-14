@@ -5,9 +5,9 @@ module Sheriff.Types where
 import Sheriff.Utils
 import Data.Aeson as A
 import Control.Applicative ((<|>))
-import Data.Text (unpack)
+import Data.Text (unpack, Text)
 import Data.Data (Data)
-
+import Data.Map
 #if __GLASGOW_HASKELL__ >= 900
 import GHC.Types.SrcLoc
 import GHC.Types.Var
@@ -15,6 +15,13 @@ import GHC.Types.Var
 import SrcLoc 
 import Var
 #endif
+
+data TableFlags = TableFlags
+  { hasDisabledField :: Bool
+  , hasEnabledField  :: Bool
+  } deriving (Show, Eq)
+
+type TableAnalysis = Map Text TableFlags
 
 data PluginOpts = PluginOpts {
     saveToFile            :: Bool,

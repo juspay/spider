@@ -31,10 +31,12 @@ import qualified Data.ByteString.Lazy.Char8 as Char8
 import Data.Data
 import Data.Function (on)
 import qualified Data.HashMap.Strict as HM
-import Data.List (nub, sortBy, groupBy, find, isInfixOf, isSuffixOf, isPrefixOf)
+import Data.List (nub, sortBy, groupBy, find, isInfixOf, isSuffixOf, isPrefixOf, intercalate)
 import Data.List.Extra (splitOn)
-import Data.Maybe (catMaybes, fromMaybe)
+import qualified Data.Map as Map
+import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import Data.Yaml
+import qualified Data.Text as T
 import Debug.Trace (traceShowId, trace)
 import GHC hiding (exprType)
 import Prelude hiding (id, writeFile, appendFile)
@@ -79,6 +81,69 @@ plugin = defaultPlugin {
 
 purePlugin :: [CommandLineOption] -> IO PluginRecompile
 purePlugin _ = return NoForceRecompile
+
+isDisabledField :: String -> Bool
+isDisabledField field =
+  "disabled" `isInfixOf` field || any (`isInfixOf` field) ["status"]
+
+isEnabledField :: String -> Bool
+isEnabledField field =
+  "enabled" `isInfixOf` field
+
+extractTableAndFieldFromHsBind :: LHsBindLR GhcTc GhcTc -> Maybe (T.Text, String)
+extractTableAndFieldFromHsBind (L _ FunBind{fun_id = fid}) =
+  let nameStr = occNameString . nameOccName . getName . unLoc $ fid
+      parts = splitOn "_" nameStr
+  in case parts of
+       (table : rest) ->
+         let field = intercalate "_" rest
+         in Just (T.pack table, field)
+       _ -> Nothing
+extractTableAndFieldFromHsBind _ = Nothing
+
+-- Try to extract table and field from a binding
+extractFromExpr :: Name -> CoreExpr -> Maybe (String, String)
+extractFromExpr name expr =
+  let nameStr = occNameString (nameOccName name)
+  in case splitFieldFromName nameStr of
+       Just (table, field) -> Just (table, field)
+       Nothing -> case expr of
+         App (App _ _) _ -> Nothing
+         _ -> Nothing
+
+-- Custom logic to guess table/field from a binder name
+splitFieldFromName :: String -> Maybe (String, String)
+splitFieldFromName nameStr =
+  -- Look for patterns like: hasField_<table>_<field>
+  case wordsWhen (== '_') nameStr of
+    ("hasField" : table : rest) ->
+      let field = intercalate "_" rest
+       in Just (table, field)
+    _ -> Nothing
+
+-- Util function to split string by a delimiter
+wordsWhen :: (Char -> Bool) -> String -> [String]
+wordsWhen p s =
+  case dropWhile p s of
+    "" -> []
+    s' -> w : wordsWhen p s''
+      where (w, s'') = break p s'
+
+-- Build final map from extracted (table, field)
+buildTableAnalysis :: [LHsBindLR GhcTc GhcTc] -> TableAnalysis
+buildTableAnalysis binds =
+  let tableFields = Map.fromListWith (++)
+        [ (tbl, [fld])
+        | Just (tbl, fld) <- map extractTableAndFieldFromHsBind binds
+        ]
+   in Map.map
+        (\fields ->
+           TableFlags
+             { hasDisabledField = any isDisabledField fields
+             , hasEnabledField  = any isEnabledField fields
+             })
+        tableFields
+
 
 --------------------------- Core Logic ---------------------------
 
@@ -188,9 +253,11 @@ sheriff opts modSummary tcEnv = do
   insts <- tcg_insts . env_gbl <$> getEnv
   let namesModTuple = concatMap (\inst -> let clsName = className (is_cls inst) in (is_dfun_name inst, clsName) : fmap (\clsMethod -> (varName clsMethod, clsName)) (classMethods $ is_cls inst)) insts
       nameModMap = foldr (\(name, clsName) r -> HM.insert (NMV_Name name) (NMV_ClassModule clsName (getModuleName clsName)) r) HM.empty namesModTuple
-  liftIO $ putStrLn $ "checking: " ++ showSDocUnsafe (ppr (bagToList $ tcg_binds tcEnv)) ++ "up to here"
+  -- liftIO $ putStrLn $ "checking: " ++ showSDocUnsafe (ppr (bagToList $ tcg_binds tcEnv)) ++ "up to here"
   let binds = bagToList $ tcg_binds tcEnv
   liftIO $ putStrLn ("📌 Extracted bind names: " ++ showSDocUnsafe (ppr binds))
+  let tableAnalysis = buildTableAnalysis binds
+  liftIO $ putStrLn ("📊 Table Analysis:\n" ++ show tableAnalysis)
   -- let extracted = concatMap extractFindOneOrAllFromBind binds
   extracted <- concat <$> mapM extractExprFromBind (bagToList $ tcg_binds tcEnv)
   forM_ extracted $ \(func, table, clause) -> liftIO $ putStrLn $ "Extracted bind: " ++ func ++ " " ++ table ++ " " ++ clause
@@ -260,8 +327,8 @@ extractFindOneOrAllFromExpr expr maybeTableName = do
   case expr of
     L _ (HsApp _ func args) -> do
       traceM "📌 Found HsApp expression - Extracting function and arguments..."
-      traceM ("📌 Raw function expression: " ++ showSDocUnsafe (ppr func))
-      traceM ("📌 Raw argument expression: " ++ showSDocUnsafe (ppr args))
+      -- traceM ("📌 Raw function expression: " ++ showSDocUnsafe (ppr func))
+      -- traceM ("📌 Raw argument expression: " ++ showSDocUnsafe (ppr args))
     
       let functionNames = ["findOneRow", "findAllRows"]
           rawStr = showSDocUnsafe (ppr func)
@@ -306,7 +373,7 @@ extractFindOneOrAllFromStmt stmt maybeTableName = do
   traceM ("📌 Checking Statement: " ++ showSDocUnsafe (ppr stmt))
   case stmt of
     L _ (BindStmt _ pat expr) -> do
-      traceM ("📌 BindStmt detected - Assigned Variable: " ++ showSDocUnsafe (ppr pat))
+      -- traceM ("📌 BindStmt detected - Assigned Variable: " ++ showSDocUnsafe (ppr pat))
       let extractedTableName = extractTableFromDBConf expr
       traceM ("📌 Table extracted from RHS: " ++ extractedTableName)
       extractFindOneOrAllFromExpr expr (Just extractedTableName)  -- ✅ Pass table name forward
