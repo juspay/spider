@@ -90,15 +90,17 @@ isEnabledField :: String -> Bool
 isEnabledField field =
   "enabled" `isInfixOf` field
 
-extractTableAndFieldFromHsBind :: LHsBindLR GhcTc GhcTc -> Maybe (T.Text, String)
-extractTableAndFieldFromHsBind (L _ FunBind{fun_id = fid}) =
-  let nameStr = occNameString . nameOccName . getName . unLoc $ fid
-      parts = splitOn "_" nameStr
-  in case parts of
-       (table : rest) ->
-         let field = intercalate "_" rest
-         in Just (T.pack table, field)
-       _ -> Nothing
+extractTableAndFieldFromHsBind :: HsBind GhcTc -> Maybe (String, String)
+extractTableAndFieldFromHsBind (FunBind{fun_id = L _ fid}) =
+  trace ("fun_id: " ++ showSDocUnsafe (ppr fid)) $
+    let nameStr = occNameString . nameOccName . getName $ fid
+        parts = splitOn "_" nameStr
+    in case parts of
+         table : rest@(_:_) ->
+           let field = intercalate "_" rest
+               result = Just (table, field)
+           in trace ("[extractTableAndFieldFromHsBind] Extracted: " ++ show result) result
+         _ -> trace ("[extractTableAndFieldFromHsBind] Skipped: " ++ show nameStr) Nothing
 extractTableAndFieldFromHsBind _ = Nothing
 
 -- Try to extract table and field from a binding
@@ -130,19 +132,31 @@ wordsWhen p s =
       where (w, s'') = break p s'
 
 -- Build final map from extracted (table, field)
-buildTableAnalysis :: [LHsBindLR GhcTc GhcTc] -> TableAnalysis
+buildTableAnalysis :: [HsBind GhcTc] -> TableAnalysis
 buildTableAnalysis binds =
-  let tableFields = Map.fromListWith (++)
-        [ (tbl, [fld])
-        | Just (tbl, fld) <- map extractTableAndFieldFromHsBind binds
-        ]
-   in Map.map
-        (\fields ->
-           TableFlags
-             { hasDisabledField = any isDisabledField fields
-             , hasEnabledField  = any isEnabledField fields
-             })
-        tableFields
+  let
+    -- Step 1: Extract table + field pairs
+    extracted :: [(String, String)]
+    extracted = mapMaybe extractTableAndFieldFromHsBind binds
+
+    _ = trace ("[buildTableAnalysis] Extracted table+field: " ++ show extracted) ()
+
+    -- Step 2: Group by table
+    tableFields :: Map.Map T.Text [String]
+    tableFields = Map.fromListWith (++)
+      [ (T.pack tbl, [fld]) | (tbl, fld) <- extracted ]
+
+    _ = trace ("[buildTableAnalysis] Grouped tableFields: " ++ show tableFields) ()
+  in
+    -- Step 3: Construct final table flags
+    Map.map
+      (\fields ->
+         TableFlags
+           { hasDisabledField = any isDisabledField fields
+           , hasEnabledField  = any isEnabledField fields
+           })
+      tableFields
+
 
 
 --------------------------- Core Logic ---------------------------
@@ -256,7 +270,7 @@ sheriff opts modSummary tcEnv = do
   -- liftIO $ putStrLn $ "checking: " ++ showSDocUnsafe (ppr (bagToList $ tcg_binds tcEnv)) ++ "up to here"
   let binds = bagToList $ tcg_binds tcEnv
   liftIO $ putStrLn ("📌 Extracted bind names: " ++ showSDocUnsafe (ppr binds))
-  let tableAnalysis = buildTableAnalysis binds
+  let tableAnalysis = buildTableAnalysis (map unLoc binds)
   liftIO $ putStrLn ("📊 Table Analysis:\n" ++ show tableAnalysis)
   -- let extracted = concatMap extractFindOneOrAllFromBind binds
   extracted <- concat <$> mapM extractExprFromBind (bagToList $ tcg_binds tcEnv)
