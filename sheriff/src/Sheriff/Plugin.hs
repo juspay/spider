@@ -23,6 +23,7 @@ import Control.Applicative ((<|>))
 import Control.Monad (foldM, when)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.State
+import Control.Reference (biplateRef, (^?))
 import Data.Aeson as A
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.Bool (bool)
@@ -338,6 +339,8 @@ extractFindOneOrAllFromMatch (L _ (Match _ _ _ (GRHSs _ grhss _))) = do
 extractFindOneOrAllFromExpr :: LHsExpr GhcTc -> Maybe String -> TcM [(String, String, String)]
 extractFindOneOrAllFromExpr expr maybeTableName = do
   traceM ("📌 Checking Expression: " ++ showSDocUnsafe (ppr expr))
+  let types = map (\x -> (toConstr x , showSDocUnsafe (ppr expr))) $ ((expr) ^? biplateRef :: [Type])
+  traceM ("📌 types to check: " ++ show (types))
   case expr of
     L _ (HsApp _ func args) -> do
       traceM "📌 Found HsApp expression - Extracting function and arguments..."
