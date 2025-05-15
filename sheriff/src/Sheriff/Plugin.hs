@@ -339,7 +339,7 @@ extractFindOneOrAllFromMatch (L _ (Match _ _ _ (GRHSs _ grhss _))) = do
 extractFindOneOrAllFromExpr :: LHsExpr GhcTc -> Maybe String -> TcM [(String, String, String)]
 extractFindOneOrAllFromExpr expr maybeTableName = do
   traceM ("📌 Checking Expression: " ++ showSDocUnsafe (ppr expr))
-  let types = map (\x -> (toConstr x , showSDocUnsafe (ppr expr))) $ ((expr) ^? biplateRef :: [Type])
+  let types = map (\x -> (toConstr x , showSDocUnsafe (ppr x))) $ ((expr) ^? biplateRef :: [LHsExpr GhcTc])
   traceM ("📌 types to check: " ++ show (types))
   return [("<>" , "<>" , "<>")]
   -- case expr of
