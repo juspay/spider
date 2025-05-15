@@ -323,7 +323,7 @@ extractExprFromBind (L _ bind) = trace "entered extractExprFromBind" $
         concat
           [ let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
                 extracted = mapMaybe extractQueryInfo exprs
-             in trace ("📌 Query Info:\n" ++ unlines (map showTriple extracted)) [body]
+             in trace ("exprs: " ++ showSDocUnsafe (ppr exprs )++ "\n📌 Query Info:" ++ unlines (map showTriple extracted)) [body]
           | L _ (GRHS _ _ body) <- grhss
           ]
 
@@ -336,18 +336,19 @@ extractExprFromBind (L _ bind) = trace "entered extractExprFromBind" $
 
 extractQueryInfo :: LHsExpr GhcTc -> Maybe (String, String, String)
 extractQueryInfo expr = case expr of
-  L _ (HsApp _ 
-          (L _ (HsApp _ 
-                   (L _ (HsAppType _ (L _ fn) tyWrapper)) 
-                   _midArg)) 
+  L _ (HsApp _
+          (L _ (HsApp _
+                   (L _ (HsAppType _ (L _ fn) tyWrapper))
+                   _midArg))
           lastArg) ->
     let fnName = extractFnName fn
         table = case tyWrapper of
           HsWC _ inner -> extractTypeFromHsType inner
         clause = extractClause lastArg
-    in Just (fnName, table, clause)
+    in trace ("\n📌 fnName: " ++ fnName ++ " , table: " ++ table ++ " , clause: " ++ clause)
+       `seq` Just (fnName, table, clause)
 
-  _ -> Nothing
+  _ -> trace "📌 extractQueryInfo: fell through default case" Nothing
 
 extractTypeFromHsType :: LHsType (NoGhcTc GhcTc) -> String
 extractTypeFromHsType (L _ t) = case t of
