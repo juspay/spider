@@ -310,44 +310,69 @@ extractExprFromBind (L _ bind) = trace "entered extractExprFromBind" $
   case bind of
     FunBind{fun_matches = MG{mg_alts = L _ matches}} ->
       trace "📌 Matched FunBind" $
-        [ body
-        | L _ Match{m_grhss = GRHSs _ grhss _} <- matches
-        , L _ (GRHS _ _ body) <- grhss
-        , let types = map (\x -> (toConstr x, showSDocUnsafe (ppr x)))
-                          (body ^? biplateRef :: [LHsExpr GhcTc])
-        , trace ("📌 types to check: " ++ show types) True
-        ]
+        concat
+          [ let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
+                extracted = mapMaybe extractQueryInfo exprs
+             in trace ("exprs: " ++ showSDocUnsafe (ppr exprs) ++ "📌 Query Info:\n" ++ unlines (map showTriple extracted)) [body]
+          | L _ Match { m_grhss = GRHSs _ grhss _ } <- matches
+          , L _ (GRHS _ _ body) <- grhss
+          ]
 
-    PatBind{pat_rhs = GRHSs _ grhss _} ->
+    PatBind { pat_rhs = GRHSs _ grhss _ } ->
       trace "📌 Matched PatBind" $
-        [ body
-        | L _ (GRHS _ _ body) <- grhss
-        , let types = map (\x -> (toConstr x, showSDocUnsafe (ppr x)))
-                          (body ^? biplateRef :: [LHsExpr GhcTc])
-        , trace ("📌 types to check: " ++ show types) True
-        ]
-    AbsBinds{abs_binds = binds} ->
+        concat
+          [ let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
+                extracted = mapMaybe extractQueryInfo exprs
+             in trace ("📌 Query Info:\n" ++ unlines (map showTriple extracted)) [body]
+          | L _ (GRHS _ _ body) <- grhss
+          ]
+
+    AbsBinds { abs_binds = binds } ->
       trace "📌 Matched AbsBinds" $
         concatMap extractExprFromBind (bagToList binds)
 
     _ -> trace "📌 No matching bind constructor (not FunBind or PatBind)" []
 
-extractExprFromMatch :: LMatch GhcTc (LHsExpr GhcTc) -> [LHsExpr GhcTc]
-extractExprFromMatch (L _ Match{m_grhss = GRHSs _ grhss _}) =
-  extractExprsFromGRHSs grhss
 
-extractExprsFromGRHSs :: [LGRHS GhcTc (LHsExpr GhcTc)] -> [LHsExpr GhcTc]
-extractExprsFromGRHSs grhss = concatMap extractExpr grhss
-  where
-    extractExpr (L _ (GRHS _ _ body)) =
-      let types = map (\x -> (toConstr x, showSDocUnsafe (ppr x)))
-                      (body ^? biplateRef :: [LHsExpr GhcTc])
-      in trace ("📌 types to check: " ++ show types) [body]
+extractQueryInfo :: LHsExpr GhcTc -> Maybe (String, String, String)
+extractQueryInfo expr = case expr of
+  L _ (HsApp _ 
+          (L _ (HsApp _ 
+                   (L _ (HsAppType _ (L _ fn) tyWrapper)) 
+                   _midArg)) 
+          lastArg) ->
+    let fnName = extractFnName fn
+        table = case tyWrapper of
+          HsWC _ inner -> extractTypeFromHsType inner
+        clause = extractClause lastArg
+    in Just (fnName, table, clause)
 
-    extractExpr (L _ (XGRHS _)) =
-      trace "⚠️ XGRHS encountered: ignoring this GRHS" []
+  _ -> Nothing
+
+extractTypeFromHsType :: LHsType (NoGhcTc GhcTc) -> String
+extractTypeFromHsType (L _ t) = case t of
+  HsTyVar _ _ (L _ name) -> occNameString (occName name)
+  _                      -> "unknown_type"
 
 
+-- Extract function name as Text
+extractFnName :: HsExpr GhcTc -> String
+extractFnName = \case
+  HsVar _ (L _ name) -> occNameString (occName name) 
+  _ -> "unknown_fn"
+
+-- Extract type name (e.g. IsinRoutesT)
+extractType :: HsType GhcTc -> String
+extractType = \case
+  HsTyVar _ _ (L _ name) -> occNameString (occName name) 
+  _ -> "unknown_type"
+
+-- Extract where clause from final argument
+extractClause :: LHsExpr GhcTc -> String
+extractClause (L _ expr) = (showSDocUnsafe (ppr expr))
+
+showTriple :: (String, String, String) -> String
+showTriple (a, b, c) = "(" ++ a ++ ", " ++ b ++ ", " ++ c ++ ")"
 
 -- extractExprFromBind :: LHsBindLR GhcTc GhcTc -> TcM [(String, String, String)]
 -- extractExprFromBind (L _ (FunBind { fun_id = L _ funVar, fun_matches = MG _ (L _ matches) _ })) = do
