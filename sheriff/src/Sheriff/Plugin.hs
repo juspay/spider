@@ -274,12 +274,12 @@ sheriff opts modSummary tcEnv = do
   -- let tableAnalysis = buildTableAnalysis (map unLoc binds)
   -- liftIO $ putStrLn ("📊 Table Analysis:\n" ++ show tableAnalysis)
   -- let extracted = concatMap extractFindOneOrAllFromBind binds
-  extracted <- concat <$> mapM extractExprFromBind (bagToList $ tcg_binds tcEnv)
-  forM_ extracted $ \(func, table, clause) -> liftIO $ putStrLn $ "Extracted bind: " ++ func ++ " " ++ table ++ " " ++ clause
-  let relevantBinds = filter (\(func, _, _) -> func `elem` ["findOneRow", "findAllRows"]) extracted
+  let extracted = concatMap extractExprFromBind (bagToList $ tcg_binds tcEnv)
+  -- forM_ extracted $ \(func, table, clause) -> liftIO $ putStrLn $ "Extracted bind: " ++ func ++ " " ++ table ++ " " ++ clause
+  -- let relevantBinds = filter (\(func, _, _) -> func `elem` ["findOneRow", "findAllRows"]) extracted
 
-  liftIO $ putStrLn "🔍 Filtered binds containing :"
-  mapM_ (\(func, typ, _) -> liftIO $ putStrLn ("✅ Function Call: " ++ func ++ " | Type: " ++ typ)) relevantBinds
+  -- liftIO $ putStrLn "🔍 Filtered binds containing :"
+  -- mapM_ (\(func, typ, _) -> liftIO $ putStrLn ("✅ Function Call: " ++ func ++ " | Type: " ++ typ)) relevantBinds
 
   rawErrors <- concat <$> (mapM (loopOverModBinds finalSheriffRules) $ bagToList $ tcg_binds tcEnv)
   (rawInfiniteRecursionErrors, _) <- flip runStateT nameModMap $ concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)
@@ -303,131 +303,152 @@ sheriff opts modSummary tcEnv = do
 
   return tcEnv
 
-extractExprFromBind :: LHsBindLR GhcTc GhcTc -> TcM [(String, String, String)]
-extractExprFromBind (L _ (FunBind { fun_id = L _ funVar, fun_matches = MG _ (L _ matches) _ })) = do
-  let funcNameStr = occNameString $ occName funVar
-  traceM ("🔍 FunBind definition detected: " ++ funcNameStr)
-  extractedUsages <- mapM extractFindOneOrAllFromMatch matches
-  return (concat extractedUsages)
+
+extractExprFromBind :: LHsBindLR GhcTc GhcTc -> [LHsExpr GhcTc]
+extractExprFromBind (L _ bind) = case bind of
+  FunBind{fun_matches = MG{mg_alts = L _ matches}} ->
+    [ body
+    | L _ Match{m_grhss = GRHSs _ grhss _} <- matches
+    , L _ (GRHS _ _ body) <- grhss
+    , let types = map (\x -> (toConstr x, showSDocUnsafe (ppr x))) (body ^? biplateRef :: [LHsExpr GhcTc])
+    , trace ("📌 types to check: " ++ show types) True
+    ]
+
+  PatBind{pat_rhs = GRHSs _ grhss _} ->
+    [ body
+    | L _ (GRHS _ _ body) <- grhss
+    , let types = map (\x -> (toConstr x, showSDocUnsafe (ppr x))) (body ^? biplateRef :: [LHsExpr GhcTc])
+    , trace ("📌 types to check: " ++ show types) True
+    ]
+
+  _ -> []
 
 
-extractExprFromBind (L _ (VarBind { var_id = var, var_rhs = rhs })) = do
-  let varNameStr = occNameString $ occName var
-  traceM ("📌 VarBind detected: " ++ varNameStr)
+-- extractExprFromBind :: LHsBindLR GhcTc GhcTc -> TcM [(String, String, String)]
+-- extractExprFromBind (L _ (FunBind { fun_id = L _ funVar, fun_matches = MG _ (L _ matches) _ })) = do
+--   let funcNameStr = occNameString $ occName funVar
+--   traceM ("🔍 FunBind definition detected: " ++ funcNameStr)
+--   extractedUsages <- mapM extractFindOneOrAllFromMatch matches
+--   return (concat extractedUsages)
+
+
+-- extractExprFromBind (L _ (VarBind { var_id = var, var_rhs = rhs })) = do
+--   let varNameStr = occNameString $ occName var
+--   traceM ("📌 VarBind detected: " ++ varNameStr)
   
-  extractedUsages <- extractFindOneOrAllFromExpr rhs Nothing
-  return extractedUsages
+--   extractedUsages <- extractFindOneOrAllFromExpr rhs Nothing
+--   return extractedUsages
 
-extractExprFromBind (L _ (AbsBinds { abs_binds = binds })) = do
-  let bindList = bagToList binds
-  traceM "📌 AbsBinds detected: extracting nested binds..."
+-- extractExprFromBind (L _ (AbsBinds { abs_binds = binds })) = do
+--   let bindList = bagToList binds
+--   traceM "📌 AbsBinds detected: extracting nested binds..."
   
-  extracted <- mapM extractExprFromBind bindList
-  return (concat extracted)
+--   extracted <- mapM extractExprFromBind bindList
+--   return (concat extracted)
 
 
-extractExprFromBind _ = return []
+-- extractExprFromBind _ = return []
 
 
 
-extractFindOneOrAllFromMatch :: LMatch GhcTc (LHsExpr GhcTc) -> TcM [(String, String, String)]
-extractFindOneOrAllFromMatch (L _ (Match _ _ _ (GRHSs _ grhss _))) = do
-  extracted <- fmap concat $ sequence $ map (\body -> extractFindOneOrAllFromExpr body Nothing) [grhsBody | L _ (GRHS _ _ grhsBody) <- grhss]
-  traceM ("📌 Extracted GRHSs Body: " ++ show extracted)
-  return extracted
+-- extractFindOneOrAllFromMatch :: LMatch GhcTc (LHsExpr GhcTc) -> TcM [(String, String, String)]
+-- extractFindOneOrAllFromMatch (L _ (Match _ _ _ (GRHSs _ grhss _))) = do
+--   extracted <- fmap concat $ sequence $ map (\body -> extractFindOneOrAllFromExpr body Nothing) [grhsBody | L _ (GRHS _ _ grhsBody) <- grhss]
+--   traceM ("📌 Extracted GRHSs Body: " ++ show extracted)
+--   return extracted
 
-extractFindOneOrAllFromExpr :: LHsExpr GhcTc -> Maybe String -> TcM [(String, String, String)]
-extractFindOneOrAllFromExpr expr maybeTableName = do
-  traceM ("📌 Checking Expression: " ++ showSDocUnsafe (ppr expr))
-  let types = map (\x -> (toConstr x , showSDocUnsafe (ppr x))) $ ((expr) ^? biplateRef :: [LHsExpr GhcTc])
-  traceM ("📌 types to check: " ++ show (types))
-  return [("<>" , "<>" , "<>")]
-  -- case expr of
-  --   L _ (HsApp _ func args) -> do
-  --     traceM "📌 Found HsApp expression - Extracting function and arguments..."
-  --     -- traceM ("📌 Raw function expression: " ++ showSDocUnsafe (ppr func))
-  --     -- traceM ("📌 Raw argument expression: " ++ showSDocUnsafe (ppr args))
+-- extractFindOneOrAllFromExpr :: LHsExpr GhcTc -> Maybe String -> TcM [(String, String, String)]
+-- extractFindOneOrAllFromExpr expr maybeTableName = do
+--   traceM ("📌 Checking Expression: " ++ showSDocUnsafe (ppr expr))
+--   let types = map (\x -> (toConstr x , showSDocUnsafe (ppr x))) $ ((expr) ^? biplateRef :: [LHsExpr GhcTc])
+--   traceM ("📌 types to check: " ++ show (types))
+--   return [("<>" , "<>" , "<>")]
+--   -- case expr of
+--   --   L _ (HsApp _ func args) -> do
+--   --     traceM "📌 Found HsApp expression - Extracting function and arguments..."
+--   --     -- traceM ("📌 Raw function expression: " ++ showSDocUnsafe (ppr func))
+--   --     -- traceM ("📌 Raw argument expression: " ++ showSDocUnsafe (ppr args))
     
-  --     let functionNames = ["findOneRow", "findAllRows"]
-  --         rawStr = showSDocUnsafe (ppr func)
-  --         funcNameStr = fromMaybe "" $ find (`isPrefixOf` rawStr) functionNames
+--   --     let functionNames = ["findOneRow", "findAllRows"]
+--   --         rawStr = showSDocUnsafe (ppr func)
+--   --         funcNameStr = fromMaybe "" $ find (`isPrefixOf` rawStr) functionNames
   
-  --     if not (null funcNameStr)
-  --       then do
-  --             let tableName = fromMaybe "<<unknown_table>>" maybeTableName  -- ✅ Use stored table name
-  --             let extractedFilters = extractWhereClause args
-  --             traceM ("📌 MATCH FOUND: " ++ funcNameStr ++ " | Table: " ++ tableName ++ " | Filters: " ++ extractedFilters)
-  --             return [(funcNameStr, tableName, extractedFilters)]
-  --       else do
-  --         traceM "📌 Function name does not match expected values."
-  --         return []
+--   --     if not (null funcNameStr)
+--   --       then do
+--   --             let tableName = fromMaybe "<<unknown_table>>" maybeTableName  -- ✅ Use stored table name
+--   --             let extractedFilters = extractWhereClause args
+--   --             traceM ("📌 MATCH FOUND: " ++ funcNameStr ++ " | Table: " ++ tableName ++ " | Filters: " ++ extractedFilters)
+--   --             return [(funcNameStr, tableName, extractedFilters)]
+--   --       else do
+--   --         traceM "📌 Function name does not match expected values."
+--   --         return []
 
-  --   L _ (HsDo _ _ (L _ stmts)) -> do
-  --     traceM "📌 Found HsDo expression - Processing statements..."
+--   --   L _ (HsDo _ _ (L _ stmts)) -> do
+--   --     traceM "📌 Found HsDo expression - Processing statements..."
 
-  --     let maybeTableName = listToMaybe [extractTableFromDBConf expr | L _ (BindStmt _ _ expr) <- stmts]
+--   --     let maybeTableName = listToMaybe [extractTableFromDBConf expr | L _ (BindStmt _ _ expr) <- stmts]
 
-  --     extractedFromStmts <- mapM (\stmt -> extractFindOneOrAllFromStmt stmt maybeTableName) stmts
-  --     return (concat extractedFromStmts)
+--   --     extractedFromStmts <- mapM (\stmt -> extractFindOneOrAllFromStmt stmt maybeTableName) stmts
+--   --     return (concat extractedFromStmts)
 
-  --   L _ (HsPar _ innerExpr) -> do
-  --     traceM "📌 Found HsPar expression - Unwrapping..."
-  --     extractFindOneOrAllFromExpr innerExpr maybeTableName
+--   --   L _ (HsPar _ innerExpr) -> do
+--   --     traceM "📌 Found HsPar expression - Unwrapping..."
+--   --     extractFindOneOrAllFromExpr innerExpr maybeTableName
 
-  --   _ -> do
-  --     traceM ("📌 NO MATCH: " ++ showSDocUnsafe (ppr expr))
-  --     return []
+--   --   _ -> do
+--   --     traceM ("📌 NO MATCH: " ++ showSDocUnsafe (ppr expr))
+--   --     return []
 
-extractTableFromDBConf :: LHsExpr GhcTc -> String
-extractTableFromDBConf dbConfExpr =
-  let rawExprStr = showSDocUnsafe (ppr dbConfExpr)  -- Convert the expression to a string
-  in trace ("📌 Raw dbConfExpr string: " ++ rawExprStr) $
-     case break (=='@') rawExprStr of
-       (_, '@' : tableName) -> trace ("📌 Extracted Table Name: " ++ tableName) tableName  -- ✅ Get table name after '@'
-       _ -> trace "📌 No table name found in dbConfExpr!" "<<unknown_table>>"
+-- extractTableFromDBConf :: LHsExpr GhcTc -> String
+-- extractTableFromDBConf dbConfExpr =
+--   let rawExprStr = showSDocUnsafe (ppr dbConfExpr)  -- Convert the expression to a string
+--   in trace ("📌 Raw dbConfExpr string: " ++ rawExprStr) $
+--      case break (=='@') rawExprStr of
+--        (_, '@' : tableName) -> trace ("📌 Extracted Table Name: " ++ tableName) tableName  -- ✅ Get table name after '@'
+--        _ -> trace "📌 No table name found in dbConfExpr!" "<<unknown_table>>"
 
-extractFindOneOrAllFromStmt :: ExprLStmt GhcTc -> Maybe String -> TcM [(String, String, String)]
-extractFindOneOrAllFromStmt stmt maybeTableName = do
-  traceM ("📌 Checking Statement: " ++ showSDocUnsafe (ppr stmt))
-  case stmt of
-    L _ (BindStmt _ pat expr) -> do
-      -- traceM ("📌 BindStmt detected - Assigned Variable: " ++ showSDocUnsafe (ppr pat))
-      let extractedTableName = extractTableFromDBConf expr
-      traceM ("📌 Table extracted from RHS: " ++ extractedTableName)
-      extractFindOneOrAllFromExpr expr (Just extractedTableName)  -- ✅ Pass table name forward
+-- extractFindOneOrAllFromStmt :: ExprLStmt GhcTc -> Maybe String -> TcM [(String, String, String)]
+-- extractFindOneOrAllFromStmt stmt maybeTableName = do
+--   traceM ("📌 Checking Statement: " ++ showSDocUnsafe (ppr stmt))
+--   case stmt of
+--     L _ (BindStmt _ pat expr) -> do
+--       -- traceM ("📌 BindStmt detected - Assigned Variable: " ++ showSDocUnsafe (ppr pat))
+--       let extractedTableName = extractTableFromDBConf expr
+--       traceM ("📌 Table extracted from RHS: " ++ extractedTableName)
+--       extractFindOneOrAllFromExpr expr (Just extractedTableName)  -- ✅ Pass table name forward
 
-    L _ (BodyStmt _ expr _ _) -> do
-      traceM "📌 BodyStmt detected, extracting function call..."
-      extractFindOneOrAllFromExpr expr maybeTableName
+--     L _ (BodyStmt _ expr _ _) -> do
+--       traceM "📌 BodyStmt detected, extracting function call..."
+--       extractFindOneOrAllFromExpr expr maybeTableName
 
-    L _ (LastStmt _ expr _ _) -> do
-      traceM "📌 LastStmt detected - Checking for direct function calls..."
-      extractFindOneOrAllFromExpr expr maybeTableName
+--     L _ (LastStmt _ expr _ _) -> do
+--       traceM "📌 LastStmt detected - Checking for direct function calls..."
+--       extractFindOneOrAllFromExpr expr maybeTableName
 
-    L _ (LetStmt _ binds) -> do
-      traceM "📌 LetStmt detected, extracting bound expressions..."
-      case binds of
-        HsValBinds _ (ValBinds _ bindBag _) -> do
-          let bindList = bagToList bindBag
-          extractedFromBinds <- mapM extractExprFromBind bindList
-          return (concat extractedFromBinds)
+--     L _ (LetStmt _ binds) -> do
+--       traceM "📌 LetStmt detected, extracting bound expressions..."
+--       case binds of
+--         HsValBinds _ (ValBinds _ bindBag _) -> do
+--           let bindList = bagToList bindBag
+--           extractedFromBinds <- mapM extractExprFromBind bindList
+--           return (concat extractedFromBinds)
         
-        _ -> do
-          traceM "📌 Unsupported HsLocalBinds type detected."
-          return []
+--         _ -> do
+--           traceM "📌 Unsupported HsLocalBinds type detected."
+--           return []
 
-    _ -> do
-      traceM "📌 Unmatched Statement!"
-      return []
+--     _ -> do
+--       traceM "📌 Unmatched Statement!"
+--       return []
 
-extractTableName :: LHsExpr GhcTc -> String
-extractTableName (L _ (HsVar _ tblVar)) = occNameString $ nameOccName (varName (unLoc tblVar))
-extractTableName expr = trace ("📌 Unknown table expression: " ++ showSDocUnsafe (ppr expr)) "<<unknown_table>>"
+-- extractTableName :: LHsExpr GhcTc -> String
+-- extractTableName (L _ (HsVar _ tblVar)) = occNameString $ nameOccName (varName (unLoc tblVar))
+-- extractTableName expr = trace ("📌 Unknown table expression: " ++ showSDocUnsafe (ppr expr)) "<<unknown_table>>"
 
-extractWhereClause :: LHsExpr GhcTc -> String
-extractWhereClause expr = 
-  let clause = showSDocUnsafe (ppr expr)
-  in trace ("📌 Extracted Where Clause: " ++ clause) clause
+-- extractWhereClause :: LHsExpr GhcTc -> String
+-- extractWhereClause expr = 
+--   let clause = showSDocUnsafe (ppr expr)
+--   in trace ("📌 Extracted Where Clause: " ++ clause) clause
 
 {-
 
