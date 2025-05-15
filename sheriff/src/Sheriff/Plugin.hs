@@ -271,8 +271,8 @@ sheriff opts modSummary tcEnv = do
   -- liftIO $ putStrLn $ "checking: " ++ showSDocUnsafe (ppr (bagToList $ tcg_binds tcEnv)) ++ "up to here"
   let binds = bagToList $ tcg_binds tcEnv
   liftIO $ putStrLn ("📌 Extracted bind names: " ++ showSDocUnsafe (ppr binds))
-  let tableAnalysis = buildTableAnalysis (map unLoc binds)
-  liftIO $ putStrLn ("📊 Table Analysis:\n" ++ show tableAnalysis)
+  -- let tableAnalysis = buildTableAnalysis (map unLoc binds)
+  -- liftIO $ putStrLn ("📊 Table Analysis:\n" ++ show tableAnalysis)
   -- let extracted = concatMap extractFindOneOrAllFromBind binds
   extracted <- concat <$> mapM extractExprFromBind (bagToList $ tcg_binds tcEnv)
   forM_ extracted $ \(func, table, clause) -> liftIO $ putStrLn $ "Extracted bind: " ++ func ++ " " ++ table ++ " " ++ clause
