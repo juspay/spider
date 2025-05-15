@@ -341,41 +341,42 @@ extractFindOneOrAllFromExpr expr maybeTableName = do
   traceM ("📌 Checking Expression: " ++ showSDocUnsafe (ppr expr))
   let types = map (\x -> (toConstr x , showSDocUnsafe (ppr expr))) $ ((expr) ^? biplateRef :: [Type])
   traceM ("📌 types to check: " ++ show (types))
-  case expr of
-    L _ (HsApp _ func args) -> do
-      traceM "📌 Found HsApp expression - Extracting function and arguments..."
-      -- traceM ("📌 Raw function expression: " ++ showSDocUnsafe (ppr func))
-      -- traceM ("📌 Raw argument expression: " ++ showSDocUnsafe (ppr args))
+  return [("<>" , "<>" , "<>")]
+  -- case expr of
+  --   L _ (HsApp _ func args) -> do
+  --     traceM "📌 Found HsApp expression - Extracting function and arguments..."
+  --     -- traceM ("📌 Raw function expression: " ++ showSDocUnsafe (ppr func))
+  --     -- traceM ("📌 Raw argument expression: " ++ showSDocUnsafe (ppr args))
     
-      let functionNames = ["findOneRow", "findAllRows"]
-          rawStr = showSDocUnsafe (ppr func)
-          funcNameStr = fromMaybe "" $ find (`isPrefixOf` rawStr) functionNames
+  --     let functionNames = ["findOneRow", "findAllRows"]
+  --         rawStr = showSDocUnsafe (ppr func)
+  --         funcNameStr = fromMaybe "" $ find (`isPrefixOf` rawStr) functionNames
   
-      if not (null funcNameStr)
-        then do
-              let tableName = fromMaybe "<<unknown_table>>" maybeTableName  -- ✅ Use stored table name
-              let extractedFilters = extractWhereClause args
-              traceM ("📌 MATCH FOUND: " ++ funcNameStr ++ " | Table: " ++ tableName ++ " | Filters: " ++ extractedFilters)
-              return [(funcNameStr, tableName, extractedFilters)]
-        else do
-          traceM "📌 Function name does not match expected values."
-          return []
+  --     if not (null funcNameStr)
+  --       then do
+  --             let tableName = fromMaybe "<<unknown_table>>" maybeTableName  -- ✅ Use stored table name
+  --             let extractedFilters = extractWhereClause args
+  --             traceM ("📌 MATCH FOUND: " ++ funcNameStr ++ " | Table: " ++ tableName ++ " | Filters: " ++ extractedFilters)
+  --             return [(funcNameStr, tableName, extractedFilters)]
+  --       else do
+  --         traceM "📌 Function name does not match expected values."
+  --         return []
 
-    L _ (HsDo _ _ (L _ stmts)) -> do
-      traceM "📌 Found HsDo expression - Processing statements..."
+  --   L _ (HsDo _ _ (L _ stmts)) -> do
+  --     traceM "📌 Found HsDo expression - Processing statements..."
 
-      let maybeTableName = listToMaybe [extractTableFromDBConf expr | L _ (BindStmt _ _ expr) <- stmts]
+  --     let maybeTableName = listToMaybe [extractTableFromDBConf expr | L _ (BindStmt _ _ expr) <- stmts]
 
-      extractedFromStmts <- mapM (\stmt -> extractFindOneOrAllFromStmt stmt maybeTableName) stmts
-      return (concat extractedFromStmts)
+  --     extractedFromStmts <- mapM (\stmt -> extractFindOneOrAllFromStmt stmt maybeTableName) stmts
+  --     return (concat extractedFromStmts)
 
-    L _ (HsPar _ innerExpr) -> do
-      traceM "📌 Found HsPar expression - Unwrapping..."
-      extractFindOneOrAllFromExpr innerExpr maybeTableName
+  --   L _ (HsPar _ innerExpr) -> do
+  --     traceM "📌 Found HsPar expression - Unwrapping..."
+  --     extractFindOneOrAllFromExpr innerExpr maybeTableName
 
-    _ -> do
-      traceM ("📌 NO MATCH: " ++ showSDocUnsafe (ppr expr))
-      return []
+  --   _ -> do
+  --     traceM ("📌 NO MATCH: " ++ showSDocUnsafe (ppr expr))
+  --     return []
 
 extractTableFromDBConf :: LHsExpr GhcTc -> String
 extractTableFromDBConf dbConfExpr =
