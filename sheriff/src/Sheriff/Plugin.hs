@@ -321,7 +321,7 @@ extractExprFromBind (L _ bind) = case bind of
     , trace ("📌 types to check: " ++ show types) True
     ]
 
-  _ -> []
+  _ -> trace("not matching with any case ") []
 
 
 -- extractExprFromBind :: LHsBindLR GhcTc GhcTc -> TcM [(String, String, String)]
