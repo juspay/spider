@@ -274,7 +274,8 @@ sheriff opts modSummary tcEnv = do
   -- let tableAnalysis = buildTableAnalysis (map unLoc binds)
   -- liftIO $ putStrLn ("📊 Table Analysis:\n" ++ show tableAnalysis)
   -- let extracted = concatMap extractFindOneOrAllFromBind binds
-  let extracted = concatMap extractExprFromBind (bagToList $ tcg_binds tcEnv)
+  let extracted = concatMap extractExprFromBind binds
+  liftIO $ putStrLn ("📌 Extracted extracted: " ++ showSDocUnsafe (ppr extracted))
   -- forM_ extracted $ \(func, table, clause) -> liftIO $ putStrLn $ "Extracted bind: " ++ func ++ " " ++ table ++ " " ++ clause
   -- let relevantBinds = filter (\(func, _, _) -> func `elem` ["findOneRow", "findAllRows"]) extracted
 
@@ -305,23 +306,47 @@ sheriff opts modSummary tcEnv = do
 
 
 extractExprFromBind :: LHsBindLR GhcTc GhcTc -> [LHsExpr GhcTc]
-extractExprFromBind (L _ bind) = case bind of
-  FunBind{fun_matches = MG{mg_alts = L _ matches}} ->
-    [ body
-    | L _ Match{m_grhss = GRHSs _ grhss _} <- matches
-    , L _ (GRHS _ _ body) <- grhss
-    , let types = map (\x -> (toConstr x, showSDocUnsafe (ppr x))) (body ^? biplateRef :: [LHsExpr GhcTc])
-    , trace ("📌 types to check: " ++ show types) True
-    ]
+extractExprFromBind (L _ bind) = trace "entered extractExprFromBind" $
+  case bind of
+    FunBind{fun_matches = MG{mg_alts = L _ matches}} ->
+      trace "📌 Matched FunBind" $
+        [ body
+        | L _ Match{m_grhss = GRHSs _ grhss _} <- matches
+        , L _ (GRHS _ _ body) <- grhss
+        , let types = map (\x -> (toConstr x, showSDocUnsafe (ppr x)))
+                          (body ^? biplateRef :: [LHsExpr GhcTc])
+        , trace ("📌 types to check: " ++ show types) True
+        ]
 
-  PatBind{pat_rhs = GRHSs _ grhss _} ->
-    [ body
-    | L _ (GRHS _ _ body) <- grhss
-    , let types = map (\x -> (toConstr x, showSDocUnsafe (ppr x))) (body ^? biplateRef :: [LHsExpr GhcTc])
-    , trace ("📌 types to check: " ++ show types) True
-    ]
+    PatBind{pat_rhs = GRHSs _ grhss _} ->
+      trace "📌 Matched PatBind" $
+        [ body
+        | L _ (GRHS _ _ body) <- grhss
+        , let types = map (\x -> (toConstr x, showSDocUnsafe (ppr x)))
+                          (body ^? biplateRef :: [LHsExpr GhcTc])
+        , trace ("📌 types to check: " ++ show types) True
+        ]
+    AbsBinds{abs_binds = binds} ->
+      trace "📌 Matched AbsBinds" $
+        concatMap extractExprFromBind (bagToList binds)
 
-  _ -> trace("not matching with any case ") []
+    _ -> trace "📌 No matching bind constructor (not FunBind or PatBind)" []
+
+extractExprFromMatch :: LMatch GhcTc (LHsExpr GhcTc) -> [LHsExpr GhcTc]
+extractExprFromMatch (L _ Match{m_grhss = GRHSs _ grhss _}) =
+  extractExprsFromGRHSs grhss
+
+extractExprsFromGRHSs :: [LGRHS GhcTc (LHsExpr GhcTc)] -> [LHsExpr GhcTc]
+extractExprsFromGRHSs grhss = concatMap extractExpr grhss
+  where
+    extractExpr (L _ (GRHS _ _ body)) =
+      let types = map (\x -> (toConstr x, showSDocUnsafe (ppr x)))
+                      (body ^? biplateRef :: [LHsExpr GhcTc])
+      in trace ("📌 types to check: " ++ show types) [body]
+
+    extractExpr (L _ (XGRHS _)) =
+      trace "⚠️ XGRHS encountered: ignoring this GRHS" []
+
 
 
 -- extractExprFromBind :: LHsBindLR GhcTc GhcTc -> TcM [(String, String, String)]
