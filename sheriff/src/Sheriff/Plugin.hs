@@ -335,20 +335,17 @@ extractExprFromBind (L _ bind) = trace "entered extractExprFromBind" $
 
 
 extractQueryInfo :: LHsExpr GhcTc -> Maybe (String, String, String)
-extractQueryInfo expr = case expr of
-  L _ (HsApp _
-          (L _ (HsApp _
-                   (L _ (HsAppType _ (L _ fn) tyWrapper))
-                   _midArg))
-          lastArg) ->
-    let fnName = extractFnName fn
-        table = case tyWrapper of
-          HsWC _ inner -> extractTypeFromHsType inner
-        clause = extractClause lastArg
-    in trace ("\n📌 fnName: " ++ fnName ++ " , table: " ++ table ++ " , clause: " ++ clause)
-       `seq` Just (fnName, table, clause)
+extractQueryInfo (L _ (HsApp _ (L _ (HsApp _ (L _ (HsAppType _ (L _ fn) tyWrapper)) midArg)) lastArg)) =
+  let fnName = extractFnName fn
+      table = case tyWrapper of
+        HsWC _ inner -> extractTypeFromHsType inner
+      clause = extractClause lastArg
+  in trace ("\n📌 fnName: " ++ fnName ++ ", table: " ++ table ++ ", clause: " ++ clause)
+     `seq` Just (fnName, table, clause)
 
-  _ -> trace "📌 extractQueryInfo: fell through default case" Nothing
+extractQueryInfo other =
+  trace ("\n❌ extractQueryInfo fell through. Expr was: \n" ++ showSDocUnsafe (ppr other))
+  Nothing
 
 extractTypeFromHsType :: LHsType (NoGhcTc GhcTc) -> String
 extractTypeFromHsType (L _ t) = case t of
