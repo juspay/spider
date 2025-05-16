@@ -121,7 +121,10 @@ plugin = (defaultPlugin{
         <> DRAP.plugin
         <> DRPH.plugin
 #endif
+#if defined(DISABLE_RDP_PLUGIN)
+#else
         <> RDP.plugin
+#endif
 
 instance Semigroup Plugin where
   p <> q = defaultPlugin {

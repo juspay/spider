@@ -58,11 +58,18 @@ flag enable-api-contract-plugins
   default:           True
   manual:            False
 
+flag disable-rdp-plugins
+  description:       set this flag to disable these rdp plugins
+  default:           False
+  manual:            True
+
 common common-options
     if flag(enable-lr-plugins)
         cpp-options:     -DENABLE_LR_PLUGINS
     if flag(enable-api-contract-plugins)
         cpp-options:     -DENABLE_API_CONTRACT_PLUGINS
+    if flag(disable-rdp-plugins)
+        cpp-options:     -DDISABLE_RDP_PLUGIN
     ghc-options:
         -Wall
         -Wincomplete-uni-patterns
