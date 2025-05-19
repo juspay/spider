@@ -281,7 +281,7 @@ extractQueryInfo expr = do
       myMap <- get
       let key = OP.showSDocUnsafe (OP.ppr (args !! 0))
           tableName = fromMaybe "<unknown_table" (Map.lookup key myMap)
-      traceM ("✅ Matched query function.\nFunction: " ++ fnName ++ "\nTable Name: " ++ tableName ++ "\nClause: " ++ clause)
+      traceM ("✅ Matched query function.\nFunction: " ++ fnName ++ "\nTable Name: " ++ tableName ++ "\nClause: " ++ clause ++ "\nmyMap: " ++ show myMap)
       pure $ Just (fnName, tableName, clause)
     else do
       traceM ("⚠️ Skipping: fnName = " ++ fnName ++ ", args = " ++ show (length args))
