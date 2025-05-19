@@ -31,6 +31,7 @@ import Data.ByteString.Lazy (writeFile, appendFile)
 import qualified Data.ByteString.Lazy.Char8 as Char8
 import Data.Data
 import Data.Function (on)
+import Data.Functor.Identity (runIdentity)
 import qualified Data.HashMap.Strict as HM
 import Data.List (nub, sortBy, groupBy, find, isInfixOf, isSuffixOf, isPrefixOf, intercalate)
 import Data.List.Extra (splitOn)
@@ -50,6 +51,7 @@ import GHC.Core.InstEnv
 import GHC.Core.TyCo.Rep
 import GHC.Data.Bag
 import GHC.HsToCore.Monad
+import GHC.Hs.Expr (HsExpr(..))
 import GHC.HsToCore.Expr
 import GHC.Plugins hiding ((<>), getHscEnv, purePlugin)
 import GHC.Tc.Types
@@ -73,6 +75,11 @@ import TcRnTypes
 import TcType
 import TyCoRep
 #endif
+
+type VarBindingMap = Map.Map String (LHsExpr GhcTc)
+
+initialMyMap :: MyMap
+initialMyMap = Map.empty
 
 plugin :: Plugin
 plugin = defaultPlugin {
@@ -274,8 +281,23 @@ sheriff opts modSummary tcEnv = do
   -- let tableAnalysis = buildTableAnalysis (map unLoc binds)
   -- liftIO $ putStrLn ("📊 Table Analysis:\n" ++ show tableAnalysis)
   -- let extracted = concatMap extractFindOneOrAllFromBind binds
-  let extracted = concatMap extractExprFromBind binds
-  liftIO $ putStrLn ("📌 Extracted extracted: " ++ showSDocUnsafe (ppr extracted))
+  -- results <- forM binds $ \bind -> do
+  --   let mymAction = extractExprFromBind bind
+  --   let (extracted, currentState) = runMyM mymAction
+  --   liftIO $ putStrLn "✅ extractExprFromBind executed"
+  --   liftIO $ putStrLn $ "State map: " ++ show currentState
+  --   pure extracted  -- extracted :: [LHsExpr GhcTc]
+
+  let mymAction = do
+        results <- forM binds extractExprFromBind
+        return (concat results)
+  
+  let (extractedAll, finalState) = runMyM mymAction
+  liftIO $ putStrLn $ "📍 Final state: " ++ show finalState
+  liftIO $ putStrLn $ "📌 Extracted expressions: " ++ showSDocUnsafe (ppr extractedAll)
+
+  -- let extractedAll = concat results
+  liftIO $ putStrLn ("📌 Extracted extracted: " ++ showSDocUnsafe (ppr extractedAll))
   -- forM_ extracted $ \(func, table, clause) -> liftIO $ putStrLn $ "Extracted bind: " ++ func ++ " " ++ table ++ " " ++ clause
   -- let relevantBinds = filter (\(func, _, _) -> func `elem` ["findOneRow", "findAllRows"]) extracted
 
@@ -304,74 +326,150 @@ sheriff opts modSummary tcEnv = do
 
   return tcEnv
 
+type MyMap = Map.Map String String
+type MyM = State MyMap
 
-extractExprFromBind :: LHsBindLR GhcTc GhcTc -> [LHsExpr GhcTc]
-extractExprFromBind (L _ bind) = trace "entered extractExprFromBind" $
+runMyM :: MyM a -> (a, MyMap)
+runMyM action = runIdentity $ runStateT action initialMyMap
+
+extractExprFromBind :: LHsBindLR GhcTc GhcTc -> MyM [LHsExpr GhcTc]
+extractExprFromBind (L _ bind) = do
+  traceM "extractExprFromBind called"
+  myMap <- get
+  traceM $ "📍 Map contents:\n" ++ show myMap
   case bind of
-    FunBind{fun_matches = MG{mg_alts = L _ matches}} ->
-      trace "📌 Matched FunBind" $
-        concat
-          [ let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
-                extracted = mapMaybe extractQueryInfo exprs
-             in trace ("exprs: " ++ showSDocUnsafe (ppr exprs) ++ "📌 Query Info:\n" ++ unlines (map showTriple extracted)) [body]
-          | L _ Match { m_grhss = GRHSs _ grhss _ } <- matches
-          , L _ (GRHS _ _ body) <- grhss
-          ]
 
-    PatBind { pat_rhs = GRHSs _ grhss _ } ->
-      trace "📌 Matched PatBind" $
-        concat
-          [ let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
-                extracted = mapMaybe extractQueryInfo exprs
-             in trace ("exprs: " ++ showSDocUnsafe (ppr exprs )++ "\n📌 Query Info:" ++ unlines (map showTriple extracted)) [body]
-          | L _ (GRHS _ _ body) <- grhss
-          ]
+    FunBind { fun_matches = MG { mg_alts = L _ matches } } -> do
+      traceM "📌 Matched FunBind"
+      concat <$> forM matches (\(L _ match) -> case match of
+        Match { m_grhss = GRHSs _ grhss _ } -> 
+          concat <$> forM grhss (\(L _ grhs) -> case grhs of
+            GRHS _ _ body -> do
+              let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
+              extracted <- mapM extractQueryInfo exprs
+              traceM $ "exprs: " ++ showSDocUnsafe (ppr exprs) ++ "\n📌 Query Info:\n" ++ unlines (map showTriple (catMaybes extracted))
+              pure [body]
+          )
+        )
 
-    AbsBinds { abs_binds = binds } ->
-      trace "📌 Matched AbsBinds" $
-        concatMap extractExprFromBind (bagToList binds)
+    PatBind { pat_rhs = GRHSs _ grhss _ } -> do
+      traceM "📌 Matched PatBind" 
+      concat <$> forM grhss (\(L _ grhs) -> case grhs of
+        GRHS _ _ body -> do
+          let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
+          extracted <- mapM extractQueryInfo exprs
+          traceM $ "exprs: " ++ showSDocUnsafe (ppr exprs) ++ "\n📌 Query Info:\n" ++ unlines (map showTriple (catMaybes extracted))
+          pure [body]
+        )
 
-    _ -> trace "📌 No matching bind constructor (not FunBind or PatBind)" []
+    AbsBinds { abs_binds = binds } -> do
+      traceM "📌 Matched AbsBinds"
+      concat <$> mapM extractExprFromBind (bagToList binds)
+
+    _ -> do
+      traceM "📌 No matching bind constructor (not FunBind or PatBind)"
+      pure []
 
 
-extractQueryInfo :: LHsExpr GhcTc -> Maybe (String, String, String)
-extractQueryInfo (L _ (HsApp _ (L _ (HsApp _ (L _ (HsAppType _ (L _ fn) tyWrapper)) midArg)) lastArg)) =
-  let fnName = extractFnName fn
-      table = case tyWrapper of
-        HsWC _ inner -> extractTypeFromHsType inner
-      clause = extractClause lastArg
-  in trace ("\n📌 fnName: " ++ fnName ++ ", table: " ++ table ++ ", clause: " ++ clause)
-     `seq` Just (fnName, table, clause)
 
-extractQueryInfo other =
-  trace ("\n❌ extractQueryInfo fell through. Expr was: \n" ++ showSDocUnsafe (ppr other))
-  Nothing
+extractQueryInfo :: LHsExpr GhcTc -> MyM (Maybe (String, String, String))
+extractQueryInfo expr = do
+  traceM ("🔍 Called extractQueryInfo with expr: " ++ showSDocUnsafe (ppr expr))
+  (fn, args) <- flattenHsAppM expr
+  let fnName = showSDocUnsafe (ppr fn)
+  if fnName `elem` ["findOneRow", "findAllRows"] && length args == 3
+    then do
+      let clause = showSDocUnsafe (ppr (args !! 2))
+      myMap <- get
+      let key = showSDocUnsafe (ppr (args !! 0))
+          tableName = fromMaybe "<unknown_table" (Map.lookup key myMap)
 
+          -- tableName = extractTableNameFromExpr (args !! 0)
+
+      traceM ("✅ Matched query function.\nFunction: " ++ fnName ++
+              "\nTable Name: " ++ tableName ++
+              "\nClause: " ++ clause)
+      pure $ Just (fnName, tableName, clause)
+    else do
+      traceM ("⚠️ Skipping: fnName = " ++ fnName ++ ", args = " ++ show (length args))
+      pure Nothing
+
+
+flattenHsAppM :: LHsExpr GhcTc -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
+flattenHsAppM expr = do
+  traceM "📍 Entering flattenHsAppM"
+  traceM $ "🧾 Received expr: " ++ showSDocUnsafe (ppr expr)
+
+  case expr of
+    L _ (HsDo _ _ (L _ (L _ (BindStmt _ (L _ (VarPat _ (L _ varName))) rhsExpr) : _rest))) -> do
+      traceM "🔍 Matched first BindStmt in HsDo block"
+      traceM $ "🔗 varName = " ++ occNameString (occName varName)
+      traceM $ "🔗 Real varName = " ++ showSDocUnsafe (ppr varName)
+      traceM $ "📦 RHS Expr: " ++ showSDocUnsafe (ppr rhsExpr)
+      let normalizedExpr = stripExpr rhsExpr
+      case normalizedExpr of
+        L _ (HsAppType _ (L _ (HsVar _ (L _ fnName))) (HsWC _ innerType))
+          | occNameString (occName fnName) == "getEulerDbConf" -> do
+              let lhsVarStr = showSDocUnsafe (ppr varName)
+                  typeStr   = extractTypeFromHsType innerType
+              traceM $ "✅ Matched getEulerDbConf with type @" ++ typeStr
+              traceM $ "📥 Inserting into map: " ++ lhsVarStr ++ " -> " ++ typeStr
+              modify (Map.insert lhsVarStr typeStr)
+
+        L _ (HsVar _ (L _ varOccName)) -> do
+          let varStr = occNameString (occName varOccName)
+          traceM $ "🔍 Looking up variable: " ++ varStr
+          myMap <- get
+          case Map.lookup varStr myMap of
+            Just typeStr -> do
+              traceM $ "🔁 Found type string for " ++ varStr ++ ": " ++ typeStr
+              -- No call to extractQueryInfo, just continue
+              pure ()
+            Nothing -> traceM $ "⚠️ Unbound variable or not a let-bound expr: " ++ varStr
+
+        -- Fallback case
+        _ -> do
+          traceM $ "⚠️ RHS is not getEulerDbConf @Type"
+          traceM $ "🚧 RHS expr structure: " ++ showSDocUnsafe (ppr rhsExpr)
+          traceM $ "RHS expr full constructor: " ++ show (toConstr rhsExpr)
+
+    _ -> traceM "⚠️ Expression is not an HsDo with BindStmt as first stmt" >> pure ()
+
+  -- Return something to satisfy the type; adjust as needed
+  traceM "🔁 Starting application flattening"
+  go expr []
+  where
+    go :: LHsExpr GhcTc -> [LHsExpr GhcTc] -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
+    go (L _ (HsApp _ f x)) args = do
+      traceM $ "➡️ HsApp found: func = " ++ showSDocUnsafe (ppr f)
+      traceM $ "➡️ Arg pushed: " ++ showSDocUnsafe (ppr x)
+      go f (x : args)
+    go (L _ f) args = do
+      traceM $ "✅ Final func: " ++ showSDocUnsafe (ppr f)
+      traceM $ "✅ Args collected: " ++ show (map (showSDocUnsafe . ppr) args)
+      pure (f, args)
+
+stripExpr :: LHsExpr GhcTc -> LHsExpr GhcTc
+stripExpr (L l (HsPar _ e))               = stripExpr e
+stripExpr (L l (HsAppType x e t))         = L l (HsAppType x (stripExpr e) t)
+stripExpr (L l (XExpr (WrapExpr (HsWrap _ e)))) = stripExpr (L l e)
+stripExpr other                           = other
+
+extractTableNameFromExpr :: LHsExpr GhcTc -> String
+extractTableNameFromExpr (L _ (HsAppType _ _ (HsWC _ inner))) =
+  extractTypeFromHsType inner
+extractTableNameFromExpr _ = "<unknown_table>"
+
+-- Extracts name from a type
 extractTypeFromHsType :: LHsType (NoGhcTc GhcTc) -> String
-extractTypeFromHsType (L _ t) = case t of
-  HsTyVar _ _ (L _ name) -> occNameString (occName name)
-  _                      -> "unknown_type"
+extractTypeFromHsType (L _ (HsTyVar _ _ (L _ name))) =
+  occNameString (occName name)
+extractTypeFromHsType _ = "unknown_type"
 
 
--- Extract function name as Text
-extractFnName :: HsExpr GhcTc -> String
-extractFnName = \case
-  HsVar _ (L _ name) -> occNameString (occName name) 
-  _ -> "unknown_fn"
-
--- Extract type name (e.g. IsinRoutesT)
-extractType :: HsType GhcTc -> String
-extractType = \case
-  HsTyVar _ _ (L _ name) -> occNameString (occName name) 
-  _ -> "unknown_type"
-
--- Extract where clause from final argument
-extractClause :: LHsExpr GhcTc -> String
-extractClause (L _ expr) = (showSDocUnsafe (ppr expr))
-
+-- Show extracted triple
 showTriple :: (String, String, String) -> String
 showTriple (a, b, c) = "(" ++ a ++ ", " ++ b ++ ", " ++ c ++ ")"
-
 -- extractExprFromBind :: LHsBindLR GhcTc GhcTc -> TcM [(String, String, String)]
 -- extractExprFromBind (L _ (FunBind { fun_id = L _ funVar, fun_matches = MG _ (L _ matches) _ })) = do
 --   let funcNameStr = occNameString $ occName funVar
