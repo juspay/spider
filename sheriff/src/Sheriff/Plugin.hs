@@ -373,56 +373,33 @@ extractQueryInfo expr = do
 
 flattenHsAppM :: LHsExpr GhcTc -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
 flattenHsAppM expr = do
-  -- traceM "📍 Entering flattenHsAppM"
   traceM $ "🧾 Received expr: " ++ showSDocUnsafe (ppr expr)
 
   case expr of
     L _ (HsDo _ _ (L _ (L _ (BindStmt _ (L _ (VarPat _ (L _ varName))) rhsExpr) : _rest))) -> do
-      -- traceM "🔍 Matched first BindStmt in HsDo block"
-      -- traceM $ "🔗 varName = " ++ occNameString (occName varName)
-      -- traceM $ "🔗 Real varName = " ++ showSDocUnsafe (ppr varName)
       traceM $ "📦 RHS Expr: " ++ showSDocUnsafe (ppr rhsExpr)
       let normalizedExpr = stripExpr rhsExpr
       case normalizedExpr of
         L _ (HsAppType _ (L _ (HsVar _ (L _ fnName))) (HsWC _ innerType))
-          | occNameString (occName fnName) == "getEulerDbConf" -> do
+          | occNameString (occName fnName) == "getEulerDbConf" || occNameString (occName fnName) == "getEulerPsqlDbConf" -> do
               let lhsVarStr = showSDocUnsafe (ppr varName)
                   typeStr   = extractTypeFromHsType innerType
               traceM $ "✅ Matched getEulerDbConf with type @" ++ typeStr
               traceM $ "📥 Inserting into map: " ++ lhsVarStr ++ " -> " ++ typeStr
               modify (Map.insert lhsVarStr typeStr)
 
-        -- L _ (HsVar _ (L _ varOccName)) -> do
-        --   let varStr = occNameString (occName varOccName)
-        --   traceM $ "🔍 Looking up variable: " ++ varStr
-        --   myMap <- get
-        --   case Map.lookup varStr myMap of
-        --     Just typeStr -> do
-        --       traceM $ "🔁 Found type string for " ++ varStr ++ ": " ++ typeStr
-        --       -- No call to extractQueryInfo, just continue
-        --       pure ()
-        --     Nothing -> traceM $ "⚠️ Unbound variable or not a let-bound expr: " ++ varStr
-
-        -- Fallback case
         _ -> do
-          -- traceM $ "⚠️ RHS is not getEulerDbConf @Type"
           traceM $ "🚧 RHS expr structure: " ++ showSDocUnsafe (ppr rhsExpr)
-          -- traceM $ "RHS expr full constructor: " ++ show (toConstr rhsExpr)
 
     _ -> traceM "⚠️ Expression is not an HsDo with BindStmt as first stmt" >> pure ()
 
-  -- Return something to satisfy the type; adjust as needed
-  -- traceM "🔁 Starting application flattening"
   go expr []
   where
     go :: LHsExpr GhcTc -> [LHsExpr GhcTc] -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
     go (L _ (HsApp _ f x)) args = do
-      -- traceM $ "➡️ HsApp found: func = " ++ showSDocUnsafe (ppr f)
-      -- traceM $ "➡️ Arg pushed: " ++ showSDocUnsafe (ppr x)
+
       go f (x : args)
     go (L _ f) args = do
-      -- traceM $ "✅ Final func: " ++ showSDocUnsafe (ppr f)
-      -- traceM $ "✅ Args collected: " ++ show (map (showSDocUnsafe . ppr) args)
       pure (f, args)
 
 stripExpr :: LHsExpr GhcTc -> LHsExpr GhcTc
@@ -431,12 +408,7 @@ stripExpr (L l (HsAppType x e t))         = L l (HsAppType x (stripExpr e) t)
 stripExpr (L l (XExpr (WrapExpr (HsWrap _ e)))) = stripExpr (L l e)
 stripExpr other                           = other
 
--- extractTableNameFromExpr :: LHsExpr GhcTc -> String
--- extractTableNameFromExpr (L _ (HsAppType _ _ (HsWC _ inner))) =
---   extractTypeFromHsType inner
--- extractTableNameFromExpr _ = "<unknown_table>"
 
--- -- Extracts name from a type
 extractTypeFromHsType :: LHsType (NoGhcTc GhcTc) -> String
 extractTypeFromHsType (L _ (HsTyVar _ _ (L _ name))) =
   occNameString (occName name)
