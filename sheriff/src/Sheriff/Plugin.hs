@@ -332,7 +332,7 @@ extractTypeFromHsType (L _ (HsTyVar _ _ (L _ name))) =
 extractTypeFromHsType _ = "unknown_type"
 
 showTriple :: (String, String, String) -> String
-showTriple (a, b, c) = "(" ++ a ++ ", " ++ b ++ ", " ++ c ++ ")"
+showTriple (a, b, c) = "(" ++ a ++ ", " ++ b ++ ", " ++ c ++ ")" 
 
 {-
 
