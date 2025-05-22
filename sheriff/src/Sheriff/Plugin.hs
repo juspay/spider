@@ -290,14 +290,16 @@ extractQueryInfo expr = do
       myMap <- get
       let key = OP.showSDocUnsafe (OP.ppr (args !! 0))
           tableName = fromMaybe "<unknown_table" (Map.lookup key myMap)
-      traceM ("✅ Matched query function.\nFunction: " ++ fnName ++ "\nTable Name: " ++ tableName ++ "\nClause: " ++ clause ++ "\nmyMap: " ++ show myMap)
+      traceM ("✅ Matched query function.\nFunction: " ++ fnName ++ "\nTable Name: " ++ tableName ++ "\nClause: " ++ clause ++ "\nmyMap: " ++ show myMap ++ "\nIsit Where Clause: " ++ show whereClause)
       pure $ Just (fnName, tableName, clause)
     else do
       traceM ("⚠️ Skipping: fnName = " ++ fnName ++ ", args = " ++ show (length args))
       pure Nothing
 
 checkExpr :: Monad m => LHsExpr GhcTc -> m Bool
-checkExpr expr = case unLoc expr of
+checkExpr expr = do
+  traceM("checkExpr: " ++ showSDocUnsafe (ppr expr))
+  case unLoc expr of
     ExplicitList _ exprs -> do
       traceM $ "🔍 Checking ExplicitList with " ++ show (length exprs) ++ " items"
       allWithLog "  ↪ each subexpr in ExplicitList" isClauseExpr exprs
@@ -316,7 +318,9 @@ checkExpr expr = case unLoc expr of
 
 
 isClauseExpr :: Monad m => LHsExpr GhcTc -> m Bool
-isClauseExpr e = case unLoc e of
+isClauseExpr e = do
+  traceM("isClauseExpr: " ++ showSDocUnsafe(ppr e))
+  case unLoc e of
     HsApp {} -> do
       traceM "✅ isClauseExpr: Found HsApp"
       pure True
