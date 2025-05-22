@@ -292,32 +292,31 @@ flattenHsAppM :: LHsExpr GhcTc -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
 flattenHsAppM expr = do
   traceM $ "🧾 Received expr: " ++ OP.showSDocUnsafe (OP.ppr expr)
 
-  case expr of
-    L _ (HsDo _ _ (L _ (L _ (BindStmt _ (L _ (VarPat _ (L _ varName))) rhsExpr) : _rest))) -> do
+  let doStmts = case expr of
+        L _ (HsDo _ _ (L _ stmts)) -> stmts
+        _                          -> []
+
+  forM_ doStmts $ \stmt -> case stmt of
+    L _ (BindStmt _ (L _ (VarPat _ (L _ varName))) rhsExpr) -> do
       traceM $ "📦 RHS Expr: " ++ OP.showSDocUnsafe (OP.ppr rhsExpr)
       let normalizedExpr = stripExpr rhsExpr
       case normalizedExpr of
         L _ (HsAppType _ (L _ (HsVar _ (L _ fnName))) (HsWC _ innerType))
-          | occNameString (occName fnName) == "getEulerDbConf" || occNameString (occName fnName) == "getEulerPsqlDbConf" -> do
+          | occNameString (occName fnName) `elem` ["getEulerDbConf", "getEulerPsqlDbConf"] -> do
               let lhsVarStr = OP.showSDocUnsafe (OP.ppr varName)
                   typeStr   = extractTypeFromHsType innerType
               traceM $ "✅ Matched getEulerDbConf with type @" ++ typeStr
               traceM $ "📥 Inserting into map: " ++ lhsVarStr ++ " -> " ++ typeStr
               modify (Map.insert lhsVarStr typeStr)
-
-        _ -> do
-          traceM $ "🚧 RHS expr structure: " ++ OP.showSDocUnsafe (OP.ppr rhsExpr)
-
-    _ -> traceM "⚠️ Expression is not an HsDo with BindStmt as first stmt" >> pure ()
+        _ -> pure ()
+    _ -> pure ()
 
   go expr []
   where
     go :: LHsExpr GhcTc -> [LHsExpr GhcTc] -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
-    go (L _ (HsApp _ f x)) args = do
+    go (L _ (HsApp _ f x)) args = go f (x : args)
+    go (L _ f) args = pure (f, args)
 
-      go f (x : args)
-    go (L _ f) args = do
-      pure (f, args)
 
 stripExpr :: LHsExpr GhcTc -> LHsExpr GhcTc
 stripExpr (L l (HsPar _ e))               = stripExpr e
