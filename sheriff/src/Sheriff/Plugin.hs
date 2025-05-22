@@ -38,6 +38,7 @@ import Data.Yaml
 import qualified Data.Text as T
 import Debug.Trace (traceShowId, trace, traceM)
 import GHC hiding (exprType)
+import GHC.Types.TypeEnv (typeEnvElts)
 import Prelude hiding (id, writeFile, appendFile)
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
 
@@ -193,16 +194,16 @@ sheriff opts modSummary tcEnv = do
   insts <- tcg_insts . env_gbl <$> getEnv
   let namesModTuple = concatMap (\inst -> let clsName = className (is_cls inst) in (is_dfun_name inst, clsName) : fmap (\clsMethod -> (varName clsMethod, clsName)) (classMethods $ is_cls inst)) insts
       nameModMap = foldr (\(name, clsName) r -> HM.insert (NMV_Name name) (NMV_ClassModule clsName (getModuleName clsName)) r) HM.empty namesModTuple
-  -- let binds = bagToList $ tcg_binds tcEnv
-  -- liftIO $ putStrLn ("📌 Extracted bind names: " ++ OP.showSDocUnsafe (OP.ppr binds))
+  let binds = bagToList $ tcg_binds tcEnv
+  liftIO $ putStrLn ("📌 Extracted bind names: " ++ OP.showSDocUnsafe (OP.ppr binds))
 
-  -- let mymAction = do
-  --       results <- forM binds extractExprFromBind
-  --       return (results)
+  let mymAction = do
+        results <- forM binds extractExprFromBind
+        return (results)
   
-  -- let (extractedAll, finalState) = runMyM mymAction
-  -- liftIO $ putStrLn $ "📍 Final state: " ++ show finalState
-  -- liftIO $ putStrLn $ "📌 Extracted expressions: " ++ OP.showSDocUnsafe (OP.ppr extractedAll)
+  let (extractedAll, finalState) = runMyM mymAction
+  liftIO $ putStrLn $ "📍 Final state: " ++ show finalState
+  liftIO $ putStrLn $ "📌 Extracted expressions: " ++ OP.showSDocUnsafe (OP.ppr extractedAll)
 
   rawErrors <- concat <$> (mapM (loopOverModBinds finalSheriffRules) $ bagToList $ tcg_binds tcEnv)
   (rawInfiniteRecursionErrors, _) <- flip runStateT nameModMap $ concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)
@@ -282,6 +283,10 @@ extractQueryInfo expr = do
   if fnName `elem` ["findOneRow", "findAllRows"] && length args == 3
     then do
       let clause = OP.showSDocUnsafe (OP.ppr (args !! 2))
+      whereClause <- checkExpr (args !! 2)
+      if whereClause
+         then traceM "✅ Detected inline where clause"
+         else traceM "🧠 Not inline, possibly variable like `whereClause`"
       myMap <- get
       let key = OP.showSDocUnsafe (OP.ppr (args !! 0))
           tableName = fromMaybe "<unknown_table" (Map.lookup key myMap)
@@ -290,6 +295,49 @@ extractQueryInfo expr = do
     else do
       traceM ("⚠️ Skipping: fnName = " ++ fnName ++ ", args = " ++ show (length args))
       pure Nothing
+
+checkExpr :: Monad m => LHsExpr GhcTc -> m Bool
+checkExpr expr = case unLoc expr of
+    ExplicitList _ exprs -> do
+      traceM $ "🔍 Checking ExplicitList with " ++ show (length exprs) ++ " items"
+      allWithLog "  ↪ each subexpr in ExplicitList" isClauseExpr exprs
+
+    HsApp {} -> do
+      traceM "📌 Found HsApp (not inline)"
+      pure False
+
+    HsVar {} -> do
+      traceM "📌 Found HsVar (probably a variable like `whereClause`)"
+      pure False
+
+    other -> do
+      traceM $ "❓ Found other expr: " ++ showSDocUnsafe (ppr other)
+      pure False
+
+
+isClauseExpr :: Monad m => LHsExpr GhcTc -> m Bool
+isClauseExpr e = case unLoc e of
+    HsApp {} -> do
+      traceM "✅ isClauseExpr: Found HsApp"
+      pure True
+
+    ExplicitList _ inner -> do
+      traceM "🔁 isClauseExpr: Found nested ExplicitList"
+      allWithLog "    ↪ nested subexpr in ExplicitList" isClauseExpr inner
+
+    other -> do
+      traceM $ "❌ isClauseExpr: Not a clause expr: " ++ showSDocUnsafe (ppr other)
+      pure False
+
+
+
+allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
+allWithLog label f xs = foldr (\x acc -> do
+    b <- f x
+    traceM label
+    rest <- acc
+    return (b && rest)
+  ) (return True) xs
 
 
 flattenHsAppM :: LHsExpr GhcTc -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
