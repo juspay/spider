@@ -227,14 +227,22 @@ sheriff opts modSummary tcEnv = do
 
   return tcEnv
 
-type MyMap = Map.Map String String
-type MyM = State MyMap
+type TableMap = Map.Map String String
+type ClauseMap = Map.Map String String
 
-initialMyMap :: MyMap
-initialMyMap = Map.empty
 
-runMyM :: MyM a -> (a, MyMap)
-runMyM action = runIdentity $ runStateT action initialMyMap
+data MyState = MyState
+  { tableMap  :: TableMap
+  , clauseMap :: ClauseMap
+  } deriving (Show)
+
+type MyM = State MyState
+
+runMyM :: MyM a -> (a, MyState)
+runMyM action = runState action initialMyState
+
+initialMyState :: MyState
+initialMyState = MyState Map.empty Map.empty
 
 extractExprFromBind :: LHsBindLR GhcTc GhcTc -> MyM (Maybe (String, String, String))
 extractExprFromBind (L _ bind) = do
@@ -287,7 +295,7 @@ extractQueryInfo expr = do
       if whereClause
          then traceM "✅ Detected inline where clause"
          else traceM "🧠 Not inline, possibly variable like `whereClause`"
-      myMap <- get
+      myMap <- gets tableMap
       let key = OP.showSDocUnsafe (OP.ppr (args !! 0))
           tableName = fromMaybe "<unknown_table" (Map.lookup key myMap)
       traceM ("✅ Matched query function.\nFunction: " ++ fnName ++ "\nTable Name: " ++ tableName ++ "\nClause: " ++ clause ++ "\nmyMap: " ++ show myMap ++ "\nIsit Where Clause: " ++ show whereClause)
@@ -363,7 +371,7 @@ flattenHsAppM expr = do
                   typeStr   = extractTypeFromHsType innerType
               traceM $ "✅ Matched getEulerDbConf with type @" ++ typeStr
               traceM $ "📥 Inserting into map: " ++ lhsVarStr ++ " -> " ++ typeStr
-              modify (Map.insert lhsVarStr typeStr)
+              modify $ \s -> s { tableMap = Map.insert lhsVarStr typeStr (tableMap s) }
         _ -> pure ()
     _ -> pure ()
 
