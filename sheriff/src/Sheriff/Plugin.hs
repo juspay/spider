@@ -131,6 +131,10 @@ type SheriffTcM = StateT (HM.HashMap NameModuleValue NameModuleValue) TcM
 
 sheriff :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 sheriff opts modSummary tcEnv = do
+  
+  traceM $ "tcg_binds: " ++ showSDocUnsafe (ppr (tcg_binds tcEnv))
+  -- traceM $ "tcg_insts: " ++ showSDocUnsafe (ppr (tcg_insts tcEnv))
+  traceM $ "tcg_type_env: " ++ showSDocUnsafe (ppr (tcg_type_env tcEnv))
   -- STAGE-1
   let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
       pluginOpts@PluginOpts{..} = decodeAndUpdateOpts opts defaultPluginOpts
@@ -189,16 +193,16 @@ sheriff opts modSummary tcEnv = do
   insts <- tcg_insts . env_gbl <$> getEnv
   let namesModTuple = concatMap (\inst -> let clsName = className (is_cls inst) in (is_dfun_name inst, clsName) : fmap (\clsMethod -> (varName clsMethod, clsName)) (classMethods $ is_cls inst)) insts
       nameModMap = foldr (\(name, clsName) r -> HM.insert (NMV_Name name) (NMV_ClassModule clsName (getModuleName clsName)) r) HM.empty namesModTuple
-  let binds = bagToList $ tcg_binds tcEnv
-  liftIO $ putStrLn ("📌 Extracted bind names: " ++ OP.showSDocUnsafe (OP.ppr binds))
+  -- let binds = bagToList $ tcg_binds tcEnv
+  -- liftIO $ putStrLn ("📌 Extracted bind names: " ++ OP.showSDocUnsafe (OP.ppr binds))
 
-  let mymAction = do
-        results <- forM binds extractExprFromBind
-        return (results)
+  -- let mymAction = do
+  --       results <- forM binds extractExprFromBind
+  --       return (results)
   
-  let (extractedAll, finalState) = runMyM mymAction
-  liftIO $ putStrLn $ "📍 Final state: " ++ show finalState
-  liftIO $ putStrLn $ "📌 Extracted expressions: " ++ OP.showSDocUnsafe (OP.ppr extractedAll)
+  -- let (extractedAll, finalState) = runMyM mymAction
+  -- liftIO $ putStrLn $ "📍 Final state: " ++ show finalState
+  -- liftIO $ putStrLn $ "📌 Extracted expressions: " ++ OP.showSDocUnsafe (OP.ppr extractedAll)
 
   rawErrors <- concat <$> (mapM (loopOverModBinds finalSheriffRules) $ bagToList $ tcg_binds tcEnv)
   (rawInfiniteRecursionErrors, _) <- flip runStateT nameModMap $ concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)
