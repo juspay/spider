@@ -126,7 +126,7 @@ extractModulePath path =
        else path
 
 insertToPostgreSQL :: CliOptions -> Text -> Text -> IO ()
-insertToPostgreSQL _cliOptions path content = do
+insertToPostgreSQL _cliOptions path content = void $ forkIO $ do
     pool <- getDBPool
     result <- try $ withResource pool $ \conn -> do
         let (table, itemType) = determineTableAndType path
@@ -148,7 +148,7 @@ insertToPostgreSQL _cliOptions path content = do
     case result of
         Left (e :: SomeException) -> do
             putStrLn $ "PostgreSQL error: " ++ show e
-            appendFile "fdep_fallback.log" $ T.unpack path ++ "|" ++ T.unpack content ++ "\n"
+            appendFile "fdep_fallback.log" $ T.unpack path ++ "|" ++ T.unpack content ++ "\n" ++ (show e)
         Right _ -> return ()
 
 -- insertToPostgreSQL :: CliOptions -> Text -> Text -> IO ()

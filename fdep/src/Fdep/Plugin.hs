@@ -13,7 +13,6 @@ import Control.Monad (void, when)
 import Control.Reference (biplateRef, (^?))
 import Data.Aeson ( encode, Value(String, Object), ToJSON(toJSON) )
 import qualified Data.Aeson as A
--- import Data.Bool (bool)
 import Data.ByteString.Lazy (toStrict)
 import qualified Data.ByteString.Lazy as BL
 import Data.Data (toConstr)
@@ -28,7 +27,6 @@ import Data.Time ( diffUTCTime, getCurrentTime )
 import Fdep.Types
 import Text.Read (readMaybe)
 import Prelude hiding (id, writeFile,span)
--- import qualified Prelude as P
 import qualified Data.List.Extra as Data.List
 -- import Network.Socket (withSocketsDo)
 -- import qualified Network.WebSockets as WS
