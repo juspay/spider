@@ -17,6 +17,7 @@ import Control.Monad (when)
 import Control.Applicative ((<|>))
 import qualified Fdep.Plugin ()
 import GHC.Base (undefined)
+import Fdep.Plugin
 
 -- Basic data type
 data Person = Person
@@ -117,7 +118,7 @@ cartesianProduct xs ys = do
   y <- ys
   return (x, y)
 
--- Lambda function
+-- Lambda function 
 multiplyBy :: Num a => a -> a -> a
 multiplyBy = \x y -> x * y
 
