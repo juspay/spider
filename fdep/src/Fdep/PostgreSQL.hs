@@ -96,7 +96,7 @@ getDBPool = do
 
 sendTextData' :: CliOptions -> Text -> Text -> IO ()
 sendTextData' cliOptions path data_ = do
-    void $ forkIO $ insertToPostgreSQL cliOptions path data_
+    insertToPostgreSQL cliOptions path data_
 
 createConnection :: DBConfig -> IO Connection
 createConnection DBConfig{..} = connect defaultConnectInfo
