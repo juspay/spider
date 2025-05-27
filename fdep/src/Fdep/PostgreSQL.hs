@@ -11,6 +11,7 @@ import Control.Monad (void, when, forM_,forever, unless)
 import Data.Aeson (encode, toJSON, object, (.=))
 import Data.ByteString.Lazy (toStrict,fromStrict)
 import Data.Text (Text)
+import Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Time
@@ -125,67 +126,93 @@ extractModulePath path =
        else path
 
 insertToPostgreSQL :: CliOptions -> Text -> Text -> IO ()
-insertToPostgreSQL cliOptions path content = do
+insertToPostgreSQL _cliOptions path content = do
     pool <- getDBPool
     result <- try $ withResource pool $ \conn -> do
         let (table, itemType) = determineTableAndType path
         case table of
             "haskell_code" -> do
-                -- Try to parse module and item name
-                case parseModuleAndName path of
-                    Just (modulePath, itemName) -> do
-                        -- Insert into haskell_code table
-                        execute conn [sql|
-                            INSERT INTO haskell_code (module_path, item_name, item_type, data) 
-                            VALUES (?, ?, ?, ?::jsonb)
-                            ON CONFLICT (module_path, item_name, item_type) 
-                            DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP
-                        |] (modulePath, itemName, itemType, content)
-                    Nothing -> do
-                        -- Fallback: try to extract from path
-                        case extractItemName path of
-                            Just itemName -> do
-                                let modulePath = extractModulePath path
-                                execute conn [sql|
-                                    INSERT INTO haskell_code (module_path, item_name, item_type, data) 
-                                    VALUES (?, ?, ?, ?::jsonb)
-                                    ON CONFLICT (module_path, item_name, item_type) 
-                                    DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP
-                                |] (modulePath, itemName, itemType, content)
-                            Nothing -> do
-                                -- Final fallback to fdep_data
-                                execute conn [sql|
-                                    INSERT INTO fdep_data (path, data) 
-                                    VALUES (?, ?) 
-                                    ON CONFLICT (path) 
-                                    DO UPDATE SET data = EXCLUDED.data
-                                |] (path, content)
-            
-            "fdep_data" -> do
-                -- Insert into generic data table
-                execute conn [sql|
-                    INSERT INTO fdep_data (path, data) 
-                    VALUES (?, ?) 
-                    ON CONFLICT (path) 
-                    DO UPDATE SET data = EXCLUDED.data
-                |] (path, content)
-            
+                let (modulePath, itemName) =
+                        fromMaybe (extractModulePath path, fromMaybe path (extractItemName path))
+                                  (parseModuleAndName path)
+                void $ execute conn [sql|
+                    INSERT INTO haskell_code (module_path, item_name, item_type, data) 
+                    VALUES (?, ?, ?, ?::jsonb)
+                |] (modulePath, itemName, itemType, content)
             _ -> do
-                -- Shouldn't happen, but fallback to fdep_data
-                execute conn [sql|
+                void $ execute conn [sql|
                     INSERT INTO fdep_data (path, data) 
-                    VALUES (?, ?) 
-                    ON CONFLICT (path) 
-                    DO UPDATE SET data = EXCLUDED.data
+                    VALUES (?, ?)
                 |] (path, content)
-    
+
     case result of
         Left (e :: SomeException) -> do
-            print $ "PostgreSQL error: " ++ show e
+            putStrLn $ "PostgreSQL error: " ++ show e
             appendFile "fdep_fallback.log" $ T.unpack path ++ "|" ++ T.unpack content ++ "\n"
-        Right val -> do
-            -- print (val,content)
-            return ()
+        Right _ -> return ()
+
+-- insertToPostgreSQL :: CliOptions -> Text -> Text -> IO ()
+-- insertToPostgreSQL cliOptions path content = do
+--     pool <- getDBPool
+--     result <- try $ withResource pool $ \conn -> do
+--         let (table, itemType) = determineTableAndType path
+--         case table of
+--             "haskell_code" -> do
+--                 -- Try to parse module and item name
+--                 case parseModuleAndName path of
+--                     Just (modulePath, itemName) -> do
+--                         -- Insert into haskell_code table
+--                         execute conn [sql|
+--                             INSERT INTO haskell_code (module_path, item_name, item_type, data) 
+--                             VALUES (?, ?, ?, ?::jsonb)
+--                             ON CONFLICT (module_path, item_name, item_type) 
+--                             DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP
+--                         |] (modulePath, itemName, itemType, content)
+--                     Nothing -> do
+--                         -- Fallback: try to extract from path
+--                         case extractItemName path of
+--                             Just itemName -> do
+--                                 let modulePath = extractModulePath path
+--                                 execute conn [sql|
+--                                     INSERT INTO haskell_code (module_path, item_name, item_type, data) 
+--                                     VALUES (?, ?, ?, ?::jsonb)
+--                                     ON CONFLICT (module_path, item_name, item_type) 
+--                                     DO UPDATE SET data = EXCLUDED.data, updated_at = CURRENT_TIMESTAMP
+--                                 |] (modulePath, itemName, itemType, content)
+--                             Nothing -> do
+--                                 -- Final fallback to fdep_data
+--                                 execute conn [sql|
+--                                     INSERT INTO fdep_data (path, data) 
+--                                     VALUES (?, ?) 
+--                                     ON CONFLICT (path) 
+--                                     DO UPDATE SET data = EXCLUDED.data
+--                                 |] (path, content)
+            
+--             "fdep_data" -> do
+--                 -- Insert into generic data table
+--                 execute conn [sql|
+--                     INSERT INTO fdep_data (path, data) 
+--                     VALUES (?, ?) 
+--                     ON CONFLICT (path) 
+--                     DO UPDATE SET data = EXCLUDED.data
+--                 |] (path, content)
+            
+--             _ -> do
+--                 -- Shouldn't happen, but fallback to fdep_data
+--                 execute conn [sql|
+--                     INSERT INTO fdep_data (path, data) 
+--                     VALUES (?, ?) 
+--                     ON CONFLICT (path) 
+--                     DO UPDATE SET data = EXCLUDED.data
+--                 |] (path, content)
+    
+--     case result of
+--         Left (e :: SomeException) -> do
+--             print $ "PostgreSQL error: " ++ show e
+--             appendFile "fdep_fallback.log" $ T.unpack path ++ "|" ++ T.unpack content ++ "\n"
+--         Right val -> do
+--             -- print (val,content)
+--             return ()
 
 determineTableAndType :: Text -> (Text, Text)
 determineTableAndType path
