@@ -309,11 +309,16 @@ extractQueryInfo expr = do
 
 checkExpr :: Monad m => LHsExpr GhcTc -> m Bool
 checkExpr expr = do
-  traceM("checkExpr: " ++ showSDocUnsafe (ppr expr))
+  traceM ("checkExpr: " ++ showSDocUnsafe (ppr expr))
   case unLoc expr of
     ExplicitList _ exprs -> do
       traceM $ "🔍 Checking ExplicitList with " ++ show (length exprs) ++ " items"
-      allWithLog "  ↪ each subexpr in ExplicitList" isClauseExpr exprs
+      results <- forM exprs $ \subExpr -> do
+        traceM "  ↪ checking subexpr in ExplicitList"
+        isClauseExpr subExpr
+      let allPassed = and results
+      traceM $ "✅ All subexpressions valid: " ++ show allPassed
+      pure allPassed
 
     HsApp {} -> do
       traceM "📌 Found HsApp (not inline)"
@@ -330,7 +335,7 @@ checkExpr expr = do
 
 isClauseExpr :: Monad m => LHsExpr GhcTc -> m Bool
 isClauseExpr e = do
-  traceM("isClauseExpr: " ++ showSDocUnsafe(ppr e))
+  traceM ("isClauseExpr: " ++ showSDocUnsafe (ppr e))
   case unLoc e of
     HsApp {} -> do
       traceM "✅ isClauseExpr: Found HsApp"
@@ -338,7 +343,12 @@ isClauseExpr e = do
 
     ExplicitList _ inner -> do
       traceM "🔁 isClauseExpr: Found nested ExplicitList"
-      allWithLog "    ↪ nested subexpr in ExplicitList" isClauseExpr inner
+      results <- forM inner $ \subExpr -> do
+        traceM "    ↪ checking nested subexpr"
+        isClauseExpr subExpr
+      let allValid = and results
+      traceM $ "📋 All nested subexprs valid: " ++ show allValid
+      pure allValid
 
     other -> do
       traceM $ "❌ isClauseExpr: Not a clause expr: " ++ showSDocUnsafe (ppr other)
