@@ -312,10 +312,10 @@ checkExpr expr = do
   traceM ("checkExpr: " ++ showSDocUnsafe (ppr expr))
   let u = unLoc expr
   traceM ("📦 unLoc expr structure: " ++ showSDocUnsafe (ppr u))
-  traceM ("🧬 Constructor: " ++ show (toConstr u))  -- This line shows exact constructor
+  traceM ("🧬 Constructor: " ++ show (toConstr u))
   case u of
-    HsVar {} -> do
-      traceM "📌 Found HsVar (probably a variable like `whereClause`)"
+    HsVar _ (L _ name) -> do
+      traceM $ "📌 Found HsVar with name: " ++ showSDocUnsafe (ppr name)
       pure False
 
     ExplicitList _ exprs -> do
@@ -334,7 +334,6 @@ checkExpr expr = do
     _ -> do
       traceM $ "❓ Found other expr (not matched above): " ++ showSDocUnsafe (ppr u)
       pure False
-
 
 
 isClauseExpr :: Monad m => LHsExpr GhcTc -> m Bool
