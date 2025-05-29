@@ -310,7 +310,9 @@ extractQueryInfo expr = do
 checkExpr :: Monad m => LHsExpr GhcTc -> m Bool
 checkExpr expr = do
   traceM ("checkExpr: " ++ showSDocUnsafe (ppr expr))
-  case unLoc expr of
+  let u = unLoc expr
+  traceM ("📦 unLoc expr structure: " ++ showSDocUnsafe (ppr u))
+  case u of
     ExplicitList _ exprs -> do
       traceM $ "🔍 Checking ExplicitList with " ++ show (length exprs) ++ " items"
       results <- forM exprs $ \subExpr -> do
@@ -329,7 +331,7 @@ checkExpr expr = do
       pure False
 
     other -> do
-      traceM $ "❓ Found other expr: " ++ showSDocUnsafe (ppr other)
+      traceM $ "❓ Found other expr (not matched above): " ++ showSDocUnsafe (ppr other)
       pure False
 
 
