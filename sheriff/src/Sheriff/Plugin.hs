@@ -292,9 +292,12 @@ extractQueryInfo expr = do
     then do
       let clause = OP.showSDocUnsafe (OP.ppr (args !! 2))
       whereClause <- checkExpr (args !! 2)
-      if whereClause
-         then traceM "✅ Detected inline where clause"
-         else traceM "🧠 Not inline, possibly variable like `whereClause`"
+      _ <- if whereClause
+             then traceM "✅ Detected inline where clause"
+             else traceM "🧠 Not inline, possibly variable like `whereClause`"
+      -- if whereClause
+      --    then traceM "✅ Detected inline where clause"
+      --    else traceM "🧠 Not inline, possibly variable like `whereClause`"
       myMap <- gets tableMap
       let key = OP.showSDocUnsafe (OP.ppr (args !! 0))
           tableName = fromMaybe "<unknown_table" (Map.lookup key myMap)
