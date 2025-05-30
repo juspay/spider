@@ -34,6 +34,7 @@ import Data.List (nub, sortBy, groupBy, find, isInfixOf, isSuffixOf, isPrefixOf)
 import Data.List.Extra (splitOn)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
+import Data.Typeable (typeOf)
 import Data.Yaml
 import qualified Data.Text as T
 import Debug.Trace (traceShowId, trace, traceM)
@@ -291,6 +292,9 @@ extractQueryInfo expr bindings = do
   if fnName `elem` ["findOneRow", "findAllRows"] && length args == 3
     then do
       let clause = OP.showSDocUnsafe (OP.ppr (args !! 2))
+      let typeStr = show (typeOf (args !! 2))
+      -- liftIO $ putStrLn $ "clause: " ++ clause ++ " :: type: " ++ typeStr
+      traceM ("clausee: " ++ clause ++ " :: type: " ++ typeStr)
       let unlocatedBindings = [unLoc bindings]
       whereClause <- checkExpr unlocatedBindings (args !! 2)
       _ <- if whereClause
@@ -312,6 +316,7 @@ resolveVarExpr :: (Monad m) => Name -> [HsBindLR GhcTc GhcTc] -> m (Maybe (LHsEx
 resolveVarExpr name binds = do
   let matchName (FunBind { fun_id = L _ var }) = name == getName var
       matchName _ = False
+  mapM_ (\b -> traceM $ "📦 Top-level bind:\n" ++ showSDocUnsafe (ppr b)) binds
   traceM "🔍 Available bindings:"
   mapM_ (\b -> case b of
     FunBind { fun_id = L _ id' } ->
