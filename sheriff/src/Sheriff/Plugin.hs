@@ -423,21 +423,21 @@ containsIsOrAnd e =
       trace ("No match for: " ++ show (showSDocUnsafe (ppr other))) False
 
 isInteresting :: LHsExpr GhcTc -> Bool
-isInteresting expr = go expr
-  where
-    go :: LHsExpr GhcTc -> Bool  -- ✨ This is the fix!
-    go (L _ (HsVar _ (L _ var))) =
-      let occStr = occNameString (nameOccName (varName var))
+isInteresting expr =
+  case getHeadHsVar expr of
+    Just name ->
+      let occStr = occNameString (nameOccName name)
        in trace ("isInteresting (HsVar): " ++ occStr) $
             occStr `elem` ["Is", "And", "Or"]
-    go (L _ (HsPar _ e)) =
-      trace "isInteresting: HsPar" $ go e
-    go (L _ (HsApp _ f _)) =
-      trace "isInteresting: HsApp" $ go f
-    go (L _ (HsAppType _ f _)) =
-      trace "isInteresting: HsAppType" $ go f
-    go other =
-      trace ("isInteresting: not HsVar - got " ++ showSDocUnsafe (ppr (unLoc other))) False
+    Nothing ->
+      trace ("isInteresting: not HsVar - got " ++ showSDocUnsafe (ppr expr)) False
+
+getHeadHsVar :: LHsExpr GhcTc -> Maybe Name
+getHeadHsVar (L _ (HsVar _ varLId)) = Just (varName (unLoc varLId))
+getHeadHsVar (L _ (HsApp _ f _))    = getHeadHsVar f
+getHeadHsVar (L _ (HsAppType _ f _))= getHeadHsVar f
+getHeadHsVar (L _ (HsPar _ e))      = getHeadHsVar e
+getHeadHsVar _                      = Nothing
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
 allWithLog label f xs = foldr (\x acc -> do
