@@ -292,7 +292,7 @@ extractQueryInfo expr bindings = do
   if fnName `elem` ["findOneRow", "findAllRows"] && length args == 3
     then do
       let clause = OP.showSDocUnsafe (OP.ppr (args !! 2))
-      let typeStr = show (typeOf (args !! 2))
+      let typeStr = show (typeOf (unLoc (args !! 2)))
       -- liftIO $ putStrLn $ "clause: " ++ clause ++ " :: type: " ++ typeStr
       traceM ("clausee: " ++ clause ++ " :: type: " ++ typeStr ++ " :: toConstr clause: " ++ show (toConstr clause )++ " :: toConstr (args !! 2):" ++ show (toConstr (unLoc (args !! 2))) )
       let unlocatedBindings = [unLoc bindings]
