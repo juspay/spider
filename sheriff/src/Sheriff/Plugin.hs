@@ -423,11 +423,21 @@ containsIsOrAnd e =
       trace ("No match for: " ++ show (showSDocUnsafe (ppr other))) False
 
 isInteresting :: LHsExpr GhcTc -> Bool
-isInteresting (L _ (HsVar _ (L _ var))) =
-  let occStr = occNameString (nameOccName (varName var))
-   in trace ("isInteresting: " ++ occStr) $
-        occStr `elem` ["Is", "And", "Or"]
-isInteresting _ = trace "isInteresting: not HsVar" False
+isInteresting expr = go expr
+  where
+    go :: LHsExpr GhcTc -> Bool  -- ✨ This is the fix!
+    go (L _ (HsVar _ (L _ var))) =
+      let occStr = occNameString (nameOccName (varName var))
+       in trace ("isInteresting (HsVar): " ++ occStr) $
+            occStr `elem` ["Is", "And", "Or"]
+    go (L _ (HsPar _ e)) =
+      trace "isInteresting: HsPar" $ go e
+    go (L _ (HsApp _ f _)) =
+      trace "isInteresting: HsApp" $ go f
+    go (L _ (HsAppType _ f _)) =
+      trace "isInteresting: HsAppType" $ go f
+    go other =
+      trace ("isInteresting: not HsVar - got " ++ showSDocUnsafe (ppr (unLoc other))) False
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
 allWithLog label f xs = foldr (\x acc -> do
