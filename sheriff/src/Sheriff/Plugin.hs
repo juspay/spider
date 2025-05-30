@@ -245,7 +245,7 @@ initialMyState :: MyState
 initialMyState = MyState Map.empty Map.empty
 
 extractExprFromBind :: LHsBindLR GhcTc GhcTc -> MyM (Maybe (String, String, String))
-extractExprFromBind (L _ bind) = do
+extractExprFromBind (L loc bind) = do
   traceM "extractExprFromBind called"
   myMap <- get
   case bind of
@@ -256,7 +256,7 @@ extractExprFromBind (L _ bind) = do
           innerResults <- forM grhss $ \(L _ grhs) -> case grhs of
             GRHS _ _ body -> do
               let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
-              extracted <- mapM extractQueryInfo exprs
+              extracted <- mapM (\expr -> extractQueryInfo expr (L loc bind)) exprs
               traceM $ "exprs: " ++ OP.showSDocUnsafe (OP.ppr exprs) ++ "\n📌 Query Info:\n" ++ unlines (map showTriple (catMaybes extracted))
               pure (catMaybes extracted)
           pure (concat innerResults)
@@ -267,7 +267,7 @@ extractExprFromBind (L _ bind) = do
       results <- forM grhss $ \(L _ grhs) -> case grhs of
         GRHS _ _ body -> do
           let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
-          extracted <- mapM extractQueryInfo exprs
+          extracted <- mapM (\expr -> extractQueryInfo expr (L loc bind)) exprs
           traceM $ "exprs: " ++ OP.showSDocUnsafe (OP.ppr exprs) ++ "\n📌 Query Info:\n" ++ unlines (map showTriple (catMaybes extracted))
           pure (catMaybes extracted)
       pure $ listToMaybe (concat results)
@@ -283,15 +283,16 @@ extractExprFromBind (L _ bind) = do
 
 
 
-extractQueryInfo :: LHsExpr GhcTc -> MyM (Maybe (String, String, String))
-extractQueryInfo expr = do
+extractQueryInfo :: LHsExpr GhcTc -> LHsBindLR GhcTc GhcTc -> MyM (Maybe (String, String, String))
+extractQueryInfo expr bindings = do
   traceM ("🔍 Called extractQueryInfo with expr: " ++ OP.showSDocUnsafe (OP.ppr expr))
   (fn, args) <- flattenHsAppM expr
   let fnName = OP.showSDocUnsafe (OP.ppr fn)
   if fnName `elem` ["findOneRow", "findAllRows"] && length args == 3
     then do
       let clause = OP.showSDocUnsafe (OP.ppr (args !! 2))
-      whereClause <- checkExpr (args !! 2)
+      let unlocatedBindings = [unLoc bindings]
+      whereClause <- checkExpr unlocatedBindings (args !! 2)
       _ <- if whereClause
              then traceM "✅ Detected inline where clause"
              else traceM "🧠 Not inline, possibly variable like `whereClause`"
@@ -307,17 +308,43 @@ extractQueryInfo expr = do
       traceM ("⚠️ Skipping: fnName = " ++ fnName ++ ", args = " ++ show (length args))
       pure Nothing
 
-checkExpr :: Monad m => LHsExpr GhcTc -> m Bool
-checkExpr expr = do
-  traceM ("checkExpr: " ++ showSDocUnsafe (ppr expr))
-  let u = unLoc expr
-  traceM ("📦 unLoc expr structure: " ++ showSDocUnsafe (ppr u))
-  traceM ("🧬 Constructor: " ++ show (toConstr u))
-  case u of
-    HsVar _ (L _ name) -> do
-      traceM $ "📌 Found HsVar with name: " ++ showSDocUnsafe (ppr name)
-      pure False
+resolveVarExpr :: (Monad m) => Name -> [HsBindLR GhcTc GhcTc] -> m (Maybe (LHsExpr GhcTc))
+resolveVarExpr name binds = do
+  let matchName (FunBind { fun_id = L _ var }) = name == getName var
+      matchName _ = False
 
+  case find matchName binds of
+    Just (FunBind { fun_matches = MG { mg_alts = L _ [L _ Match { m_grhss = GRHSs { grhssGRHSs = [L _ (GRHS _ _ (L _ body))] } }] } }) -> do
+      traceM $ "✅ Matched function: " ++ showSDocUnsafe (ppr name)
+      pure (Just (noLocA body))
+
+    Just other -> do
+      traceM $ "⚠️ Found something with matching name but structure didn't match."
+      traceM $ "📦 Found: " ++ showSDocUnsafe (ppr other)
+      pure Nothing
+
+    Nothing -> do
+      traceM $ "❌ No matching function found for: " ++ showSDocUnsafe (ppr name)
+      -- Optional: print the type of each binding for debugging
+      mapM_ (\b -> traceM $ "🔍 Binding type: " ++ show (typeOf b)) binds
+      pure Nothing
+
+
+checkExpr :: Monad m => [HsBindLR GhcTc GhcTc] -> LHsExpr GhcTc -> m Bool
+checkExpr bindings expr = do
+  case unLoc expr of
+    HsVar _ var -> do
+      traceM $ "📌 Found HsVar: " ++ showSDocUnsafe (ppr var)
+      let name = varName (unLoc var)
+      mResolved <- resolveVarExpr name bindings
+      case mResolved of
+        Just resolvedExpr -> do
+          traceM $ "🔄 Resolved HsVar to: " ++ showSDocUnsafe (ppr resolvedExpr)
+          checkExpr bindings resolvedExpr
+        Nothing -> do
+          traceM $ "❌ Could not resolve variable"
+          pure False
+    -- other cases
     ExplicitList _ exprs -> do
       traceM $ "🔍 Checking ExplicitList with " ++ show (length exprs) ++ " items"
       results <- forM exprs $ \subExpr -> do
@@ -331,8 +358,8 @@ checkExpr expr = do
       traceM "📌 Found HsApp (not inline)"
       pure False
 
-    _ -> do
-      traceM $ "❓ Found other expr (not matched above): " ++ showSDocUnsafe (ppr u)
+    other -> do
+      traceM $ "❓ Found other expr (not matched above): " ++ showSDocUnsafe (ppr other)
       pure False
 
 
