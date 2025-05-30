@@ -294,8 +294,10 @@ extractQueryInfo expr bindings = do
       let clause = OP.showSDocUnsafe (OP.ppr (args !! 2))
       let typeStr = show (typeOf (unLoc (args !! 2)))
       -- liftIO $ putStrLn $ "clause: " ++ clause ++ " :: type: " ++ typeStr
-      traceM ("clausee: " ++ clause ++ " :: type: " ++ typeStr ++ " :: toConstr clause: " ++ show (toConstr clause )++ " :: toConstr (args !! 2):" ++ show (toConstr (unLoc (args !! 2))) )
+      -- traceM ("clausee: " ++ clause ++ " :: type: " ++ typeStr ++ " :: toConstr clause: " ++ show (toConstr clause )++ " :: toConstr (args !! 2):" ++ show (toConstr (unLoc (args !! 2))) )
       let unlocatedBindings = [unLoc bindings]
+      let x = hasIsOrEmptyList (args !! 2)
+      traceM ("clausee: " ++ clause ++ " :: x: " ++ show x)
       whereClause <- checkExpr unlocatedBindings (args !! 2)
       _ <- if whereClause
              then traceM "✅ Detected inline where clause"
@@ -391,7 +393,41 @@ isClauseExpr e = do
       traceM $ "❌ isClauseExpr: Not a clause expr: " ++ showSDocUnsafe (ppr other)
       pure False
 
+hasIsOrEmptyList :: LHsExpr GhcTc -> Bool
+hasIsOrEmptyList expr =
+  case unLoc expr of
+    ExplicitList _ [] ->
+      trace "Matched: Empty list" True
+    ExplicitList _ xs ->
+      trace ("Checking list of length " ++ show (length xs)) $
+        any containsIsOrAnd xs
+    other ->
+      trace ("Not a list expression: " ++ show (showSDocUnsafe (ppr other))) False
 
+containsIsOrAnd :: LHsExpr GhcTc -> Bool
+containsIsOrAnd e =
+  case unLoc e of
+    HsApp _ fun _ ->
+      trace "Matched: HsApp" $ isInteresting fun
+    HsAppType _ fun _ ->
+      trace "Matched: HsAppType" $ isInteresting fun
+    HsVar _ (L _ var) ->
+      let occStr = occNameString . nameOccName . varName $ var
+       in trace ("Matched: HsVar with name " ++ occStr) $
+            occStr `elem` ["Is", "And", "Or"]
+    ExplicitList _ sub ->
+      trace "Matched: nested list" $ any containsIsOrAnd sub
+    HsPar _ sub ->
+      trace "Matched: HsPar" $ containsIsOrAnd sub
+    other ->
+      trace ("No match for: " ++ show (showSDocUnsafe (ppr other))) False
+
+isInteresting :: LHsExpr GhcTc -> Bool
+isInteresting (L _ (HsVar _ (L _ var))) =
+  let occStr = occNameString (nameOccName (varName var))
+   in trace ("isInteresting: " ++ occStr) $
+        occStr `elem` ["Is", "And", "Or"]
+isInteresting _ = trace "isInteresting: not HsVar" False
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
 allWithLog label f xs = foldr (\x acc -> do
