@@ -294,7 +294,7 @@ extractQueryInfo expr bindings = do
       let clause = OP.showSDocUnsafe (OP.ppr (args !! 2))
       let typeStr = show (typeOf (args !! 2))
       -- liftIO $ putStrLn $ "clause: " ++ clause ++ " :: type: " ++ typeStr
-      traceM ("clausee: " ++ clause ++ " :: type: " ++ typeStr ++ " :: toConstr clause: " ++ show (toConstr clause )++ " :: toConstr (args !! 2):" ++ show (toConstr (args !! 2)))
+      traceM ("clausee: " ++ clause ++ " :: type: " ++ typeStr ++ " :: toConstr clause: " ++ show (toConstr clause )++ " :: toConstr (args !! 2):" ++ show (toConstr (unLoc (args !! 2))) )
       let unlocatedBindings = [unLoc bindings]
       whereClause <- checkExpr unlocatedBindings (args !! 2)
       _ <- if whereClause
