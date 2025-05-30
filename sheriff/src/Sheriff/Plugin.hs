@@ -312,24 +312,26 @@ resolveVarExpr :: (Monad m) => Name -> [HsBindLR GhcTc GhcTc] -> m (Maybe (LHsEx
 resolveVarExpr name binds = do
   let matchName (FunBind { fun_id = L _ var }) = name == getName var
       matchName _ = False
-
+  traceM "🔍 Available bindings:"
+  mapM_ (\b -> case b of
+    FunBind { fun_id = L _ id' } ->
+      traceM $ "  - " ++ showSDocUnsafe (ppr (getName id'))
+    _ -> traceM "  - [Not a FunBind]"
+    ) binds
   case find matchName binds of
     Just (FunBind { fun_matches = MG { mg_alts = L _ [L _ Match { m_grhss = GRHSs { grhssGRHSs = [L _ (GRHS _ _ (L _ body))] } }] } }) -> do
-      traceM $ "✅ Matched function: " ++ showSDocUnsafe (ppr name)
+      traceM "✅ Found matching function with expected structure"
       pure (Just (noLocA body))
-
-    Just other -> do
-      traceM $ "⚠️ Found something with matching name but structure didn't match."
-      traceM $ "📦 Found: " ++ showSDocUnsafe (ppr other)
+  
+    Just otherBind -> do
+      traceM $ "❌ Matching Name found, but unexpected structure:\n" ++ showSDocUnsafe (ppr otherBind)
       pure Nothing
-
+  
     Nothing -> do
-      traceM $ "❌ No matching function found for: " ++ showSDocUnsafe (ppr name)
-      -- Optional: print the type of each binding for debugging
-      mapM_ (\b -> traceM $ "🔍 Binding type: " ++ show (typeOf b)) binds
+      traceM "❌ No matching function found"
+      traceM $ "📌 Bindings were:\n" ++ unlines (map (showSDocUnsafe . ppr) binds)
       pure Nothing
-
-
+  
 checkExpr :: Monad m => [HsBindLR GhcTc GhcTc] -> LHsExpr GhcTc -> m Bool
 checkExpr bindings expr = do
   case unLoc expr of
