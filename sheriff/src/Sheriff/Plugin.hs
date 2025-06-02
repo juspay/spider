@@ -5,6 +5,7 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 module Sheriff.Plugin (plugin) where
 
@@ -433,11 +434,14 @@ isInteresting expr =
       trace ("isInteresting: not HsVar - got " ++ showSDocUnsafe (ppr expr)) False
 
 getHeadHsVar :: LHsExpr GhcTc -> Maybe Name
-getHeadHsVar (L _ (HsVar _ varLId)) = Just (varName (unLoc varLId))
-getHeadHsVar (L _ (HsApp _ f _))    = getHeadHsVar f
-getHeadHsVar (L _ (HsAppType _ f _))= getHeadHsVar f
-getHeadHsVar (L _ (HsPar _ e))      = getHeadHsVar e
-getHeadHsVar _                      = Nothing
+getHeadHsVar expr = go expr
+  where
+    go (L _ (HsVar _ varLId)) = Just (varName (unLoc varLId))
+    go (L _ (HsApp _ f _)) = go f
+    go (L _ (HsAppType _ f _)) = go f
+    go (L _ (HsPar _ e)) = go e
+    go (L _ (HsTick _ _ e)) = go e
+    go e = trace ("getHeadHsVar: unhandled expr: " ++ showSDocUnsafe (ppr e)) Nothing
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
 allWithLog label f xs = foldr (\x acc -> do
