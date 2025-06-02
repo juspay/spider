@@ -401,18 +401,16 @@ hasIsOrEmptyList expr =
       trace "Matched: Empty list" True
     ExplicitList _ xs ->
       trace ("Checking list of length " ++ show (length xs)) $
-        any containsIsOrAnd xs
-    other ->
-      trace ("Not a list expression: " ++ show (showSDocUnsafe (ppr other))) False
+        any hasIsOrEmptyList xs
 
-containsIsOrAnd :: LHsExpr GhcTc -> Bool
-containsIsOrAnd e =
-  case unLoc e of
     HsApp _ fun _ ->
-      trace ("Matched: HsApp" ++ showSDocUnsafe (ppr fun)) True
-
-    other ->
-      trace ("No match for: " ++ show (showSDocUnsafe (ppr other))) False
+      let funStr = showSDocUnsafe (ppr (unLoc fun))
+          matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
+       in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
+    HsPar _ sub ->
+      hasIsOrEmptyList sub
+    _ ->
+      False
 
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
