@@ -409,49 +409,10 @@ containsIsOrAnd :: LHsExpr GhcTc -> Bool
 containsIsOrAnd e =
   case unLoc e of
     HsApp _ fun _ ->
-      trace "Matched: HsApp" $ isInteresting fun
-    HsAppType _ fun _ ->
-      trace "Matched: HsAppType" $ isInteresting fun
-    HsVar _ (L _ var) ->
-      let occStr = occNameString . nameOccName . varName $ var
-       in trace ("Matched: HsVar with name " ++ occStr) $
-            occStr `elem` ["Is", "And", "Or"]
-    ExplicitList _ sub ->
-      trace "Matched: nested list" $ any containsIsOrAnd sub
-    HsPar _ sub ->
-      trace "Matched: HsPar" $ containsIsOrAnd sub
+      trace ("Matched: HsApp" ++ showSDocUnsafe (ppr fun)) True
+
     other ->
       trace ("No match for: " ++ show (showSDocUnsafe (ppr other))) False
-isInteresting :: LHsExpr GhcTc -> Bool
-isInteresting (L _ expr) = case expr of
-  -- If expression is a variable directly
-  HsVar _ (L _ var) ->
-    let occStr = occNameString (nameOccName (varName var))
-    in trace ("isInteresting (HsVar): " ++ occStr) $ occStr `elem` ["Is", "And", "Or"]
-
-  -- If expression is a function application, check the function part if it's a variable
-  HsApp _ (L _ funExpr) _ -> case funExpr of
-    HsVar _ (L _ var) ->
-      let occStr = occNameString (nameOccName (varName var))
-      in trace ("isInteresting (HsApp fun part): " ++ occStr) $ occStr `elem` ["Is", "And", "Or"]
-    _ -> trace ("isInteresting: HsApp func part not HsVar - got " ++ showSDocUnsafe (ppr funExpr)) False
-
-  -- For type applications
-  HsAppType _ (L _ funExpr) _ -> case funExpr of
-    HsVar _ (L _ var) ->
-      let occStr = occNameString (nameOccName (varName var))
-      in trace ("isInteresting (HsAppType fun part): " ++ occStr) $ occStr `elem` ["Is", "And", "Or"]
-    _ -> trace ("isInteresting: HsAppType func part not HsVar - got " ++ showSDocUnsafe (ppr funExpr)) False
-
-  -- For parenthesized expressions
-  HsPar _ e -> isInteresting e
-
-  -- For ticks (source annotations)
-  HsTick _ _ e -> isInteresting e
-
-  -- Anything else is not interesting
-  _ -> trace ("isInteresting: unmatched expr - got " ++ showSDocUnsafe (ppr expr)) False
-
 
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
