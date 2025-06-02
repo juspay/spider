@@ -424,28 +424,16 @@ containsIsOrAnd e =
       trace ("No match for: " ++ show (showSDocUnsafe (ppr other))) False
 
 isInteresting :: LHsExpr GhcTc -> Bool
-isInteresting expr =
-  case getHeadHsVar expr of
-    Just name ->
-      let occStr = occNameString (nameOccName name)
+isInteresting (L _ expr) =
+  case expr of
+    HsVar _ (L _ var) ->
+      let name = varName var
+          occStr = occNameString (nameOccName name)
        in trace ("isInteresting (HsVar): " ++ occStr) $
             occStr `elem` ["Is", "And", "Or"]
-    Nothing ->
+    _ ->
       trace ("isInteresting: not HsVar - got " ++ showSDocUnsafe (ppr expr)) False
 
-getHeadHsVar :: LHsExpr GhcTc -> Maybe Name
-getHeadHsVar expr =
-  case unLoc fun of
-    HsVar _ (L _ name) -> Just (varName name)
-    _ -> trace ("getHeadHsVar: head not HsVar, got: " ++ showSDocUnsafe (ppr (unLoc fun))) Nothing
-  where
-    (fun, _) = collectHsApps expr
-
-collectHsApps :: (XRec p (HsExpr p) ~ GenLocated l (HsExpr p)) => LHsExpr p -> (LHsExpr p, [LHsExpr p])
-collectHsApps = go []
-  where
-    go args (L _ (HsApp _ f x)) = go (x : args) f
-    go args e                   = (e, args)
 
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
