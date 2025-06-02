@@ -434,14 +434,19 @@ isInteresting expr =
       trace ("isInteresting: not HsVar - got " ++ showSDocUnsafe (ppr expr)) False
 
 getHeadHsVar :: LHsExpr GhcTc -> Maybe Name
-getHeadHsVar expr = go expr
+getHeadHsVar expr =
+  case unLoc fun of
+    HsVar _ (L _ name) -> Just (varName name)
+    _ -> trace ("getHeadHsVar: head not HsVar, got: " ++ showSDocUnsafe (ppr (unLoc fun))) Nothing
   where
-    go (L _ (HsVar _ varLId)) = Just (varName (unLoc varLId))
-    go (L _ (HsApp _ f _)) = go f
-    go (L _ (HsAppType _ f _)) = go f
-    go (L _ (HsPar _ e)) = go e
-    go (L _ (HsTick _ _ e)) = go e
-    go e = trace ("getHeadHsVar: unhandled expr: " ++ showSDocUnsafe (ppr e)) Nothing
+    (fun, _) = collectHsApps expr
+
+collectHsApps :: (XRec p (HsExpr p) ~ GenLocated l (HsExpr p)) => LHsExpr p -> (LHsExpr p, [LHsExpr p])
+collectHsApps = go []
+  where
+    go args (L _ (HsApp _ f x)) = go (x : args) f
+    go args e                   = (e, args)
+
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
 allWithLog label f xs = foldr (\x acc -> do
