@@ -451,19 +451,23 @@ flattenHsAppM expr = do
               traceM "🔍 Processing LetStmt -> HsValBinds -> XValBindsLR"
               forM_ bindList $ \(recFlag, bindBag) -> do
                 traceM $ "🌀 Processing bind list with RecFlag: " ++ showSDocUnsafe (ppr recFlag) ++ " ,bindBag: " ++ showSDocUnsafe (ppr bindBag)
-                forM_ (bagToList bindBag) $ \(L _ bind) -> case bind of
-                  PatBind { pat_lhs = L _ (VarPat _ (L _ varName))
-                          , pat_rhs = GRHSs _ [L _ (GRHS _ [] body)] _
-                          } -> do
-                    traceM $ "📦 Found PatBind with var: " ++ OP.showSDocUnsafe (OP.ppr varName)
-                    traceM $ "📦 Let RHS: " ++ OP.showSDocUnsafe (OP.ppr body)
-                    let normalizedExpr = stripExpr body
-                        varStr = OP.showSDocUnsafe (OP.ppr varName)
-                    traceM $ "🧹 Normalized RHS: " ++ OP.showSDocUnsafe (OP.ppr normalizedExpr)
-                    when (hasIsOrEmptyList normalizedExpr) $ do
-                      traceM $ "✅ Match: RHS has 'is' or '[]', recording clause for: " ++ varStr
-                      modify $ \s -> s { clauseMap = Map.insert varStr (OP.showSDocUnsafe (OP.ppr normalizedExpr)) (clauseMap s) }
-                  _ -> traceM "⛔ Skipping non-PatBind or unhandled bind pattern"
+                let binds = bagToList bindBag
+                traceM $ "🔍 Number of binds in bindBag: " ++ show (length binds)
+                if null binds
+                  then traceM "⚠️ bindBag is empty – nothing to process"
+                  else forM_ (bagToList bindBag) $ \(L _ bind) -> case bind of
+                         PatBind { pat_lhs = L _ (VarPat _ (L _ varName))
+                                 , pat_rhs = GRHSs _ [L _ (GRHS _ [] body)] _
+                                 } -> do
+                           traceM $ "📦 Found PatBind with var: " ++ OP.showSDocUnsafe (OP.ppr varName)
+                           traceM $ "📦 Let RHS: " ++ OP.showSDocUnsafe (OP.ppr body)
+                           let normalizedExpr = stripExpr body
+                               varStr = OP.showSDocUnsafe (OP.ppr varName)
+                           traceM $ "🧹 Normalized RHS: " ++ OP.showSDocUnsafe (OP.ppr normalizedExpr)
+                           when (hasIsOrEmptyList normalizedExpr) $ do
+                             traceM $ "✅ Match: RHS has 'is' or '[]', recording clause for: " ++ varStr
+                             modify $ \s -> s { clauseMap = Map.insert varStr (OP.showSDocUnsafe (OP.ppr normalizedExpr)) (clauseMap s) }
+                         _ -> traceM "⛔ Skipping non-PatBind or unhandled bind pattern"
             _ -> traceM "⚠️ valBinds is not XValBindsLR -> skipping"
         _ -> pure ())
 
