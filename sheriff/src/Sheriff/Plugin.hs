@@ -406,8 +406,8 @@ hasIsOrEmptyList expr =
        in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
     HsPar _ sub ->
       hasIsOrEmptyList sub
-    _ ->
-      False
+    other -> 
+      trace ("we came to other case:" ++ showSDocUnsafe(ppr other)) False
 
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
