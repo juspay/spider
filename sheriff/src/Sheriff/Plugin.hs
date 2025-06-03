@@ -450,7 +450,7 @@ flattenHsAppM expr = do
             XValBindsLR (NValBinds bindList _) -> do
               traceM "🔍 Processing LetStmt -> HsValBinds -> XValBindsLR"
               forM_ bindList $ \(recFlag, bindBag) -> do
-                traceM $ "🌀 Processing bind list with RecFlag: " ++ showSDocUnsafe (ppr recFlag)
+                traceM $ "🌀 Processing bind list with RecFlag: " ++ showSDocUnsafe (ppr recFlag) ++ " ,bindBag: " ++ showSDocUnsafe (ppr bindBag)
                 forM_ (bagToList bindBag) $ \(L _ bind) -> case bind of
                   PatBind { pat_lhs = L _ (VarPat _ (L _ varName))
                           , pat_rhs = GRHSs _ [L _ (GRHS _ [] body)] _
