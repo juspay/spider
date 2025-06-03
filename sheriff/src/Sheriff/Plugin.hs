@@ -400,14 +400,21 @@ hasIsOrEmptyList expr =
       trace ("Checking list of length " ++ show (length xs)) $
         any hasIsOrEmptyList xs
 
-    HsApp _ fun _ ->
+    HsApp _ fun arg ->
       let funStr = showSDocUnsafe (ppr (unLoc fun))
           matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
        in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
+
+    OpApp _ fun _ arg ->
+      let funStr = showSDocUnsafe (ppr (unLoc fun))
+          matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
+       in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
+
     HsPar _ sub ->
       hasIsOrEmptyList sub
-    other -> 
-      trace ("we came to other case:" ++ showSDocUnsafe(ppr other) ++ " , toconstr: " ++ show (toConstr(other))) False
+
+    other ->
+      trace ("we came to other case:" ++ showSDocUnsafe (ppr other) ++ " , toconstr: " ++ show (toConstr other)) False
 
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
