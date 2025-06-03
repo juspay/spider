@@ -455,7 +455,9 @@ flattenHsAppM expr = do
                 traceM $ "🔍 Number of binds in bindBag: " ++ show (length binds)
                 if null binds
                   then traceM "⚠️ bindBag is empty – nothing to process"
-                  else forM_ (bagToList bindBag) $ \(L _ bind) -> case bind of
+                  else forM_ (bagToList bindBag) $ \(L _ bind) -> do
+                    traceM $ "🔍 bind constructor: " ++ showConstr (toConstr bind)
+                    case bind of
                          PatBind { pat_lhs = L _ (VarPat _ (L _ varName))
                                  , pat_rhs = GRHSs _ [L _ (GRHS _ [] body)] _
                                  } -> do
