@@ -76,7 +76,7 @@ import TcType
 import TyCoRep
 #endif
 
-type VarBindingMap = Map.Map String (LHsExpr GhcTc)
+-- type VarBindingMap = Map.Map String (LHsExpr GhcTc)
 
 plugin :: Plugin
 plugin = defaultPlugin {
@@ -194,7 +194,7 @@ sheriff opts modSummary tcEnv = do
   let namesModTuple = concatMap (\inst -> let clsName = className (is_cls inst) in (is_dfun_name inst, clsName) : fmap (\clsMethod -> (varName clsMethod, clsName)) (classMethods $ is_cls inst)) insts
       nameModMap = foldr (\(name, clsName) r -> HM.insert (NMV_Name name) (NMV_ClassModule clsName (getModuleName clsName)) r) HM.empty namesModTuple
   let binds = bagToList $ tcg_binds tcEnv
-  liftIO $ putStrLn ("📌 Extracted bind names: " ++ OP.showSDocUnsafe (OP.ppr binds))
+  liftIO $ putStrLn ("Extracted bind names: " ++ OP.showSDocUnsafe (OP.ppr binds))
 
   let mymAction = do
         results <- forM binds extractExprFromBind
@@ -202,7 +202,7 @@ sheriff opts modSummary tcEnv = do
   
   let (extractedAll, finalState) = runMyM mymAction
   liftIO $ putStrLn $ "📍 Final state: " ++ show finalState
-  liftIO $ putStrLn $ "📌 Extracted expressions: " ++ OP.showSDocUnsafe (OP.ppr extractedAll)
+  -- liftIO $ putStrLn $ "📌 Extracted expressions: " ++ OP.showSDocUnsafe (OP.ppr extractedAll)
 
   rawErrors <- concat <$> (mapM (loopOverModBinds finalSheriffRules) $ bagToList $ tcg_binds tcEnv)
   (rawInfiniteRecursionErrors, _) <- flip runStateT nameModMap $ concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)
@@ -249,7 +249,7 @@ extractExprFromBind (L loc bind) = do
   myMap <- get
   case bind of
     FunBind { fun_matches = MG { mg_alts = L _ matches } } -> do
-      traceM "📌 Matched FunBind"
+      traceM "Matched FunBind"
       results <- forM matches $ \(L _ match) -> case match of
         Match { m_grhss = GRHSs _ grhss _ } -> do
           innerResults <- forM grhss $ \(L _ grhs) -> case grhs of
@@ -262,7 +262,7 @@ extractExprFromBind (L loc bind) = do
       pure $ listToMaybe (concat results)
 
     PatBind { pat_rhs = GRHSs _ grhss _ } -> do
-      traceM "📌 Matched PatBind" 
+      traceM "Matched PatBind" 
       results <- forM grhss $ \(L _ grhs) -> case grhs of
         GRHS _ _ body -> do
           let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
@@ -272,12 +272,12 @@ extractExprFromBind (L loc bind) = do
       pure $ listToMaybe (concat results)
 
     AbsBinds { abs_binds = binds } -> do
-      traceM "📌 Matched AbsBinds"
+      traceM "Matched AbsBinds"
       results <- mapM extractExprFromBind (bagToList binds)
       pure $ listToMaybe (catMaybes results)
 
     _ -> do
-      traceM "📌 No matching bind constructor (not FunBind or PatBind)"
+      traceM "No matching bind constructor (not FunBind or PatBind)"
       pure Nothing
 
 
@@ -393,12 +393,10 @@ isClauseExpr e = do
 
 hasIsOrEmptyList :: LHsExpr GhcTc -> Bool
 hasIsOrEmptyList expr =
-  case unLoc expr of
-    ExplicitList _ [] ->
-      trace "Matched: Empty list" True
-    ExplicitList _ xs ->
-      trace ("Checking list of length " ++ show (length xs)) $
-        any hasIsOrEmptyList xs
+  case unLoc (stripParensAndWraps expr) of
+    ExplicitList _ [] -> trace "Matched: Empty list" True
+    ExplicitList _ xs -> trace ("Checking list of length " ++ show (length xs)) $
+                           any hasIsOrEmptyList xs
 
     HsApp _ fun arg ->
       let funStr = showSDocUnsafe (ppr (unLoc fun))
@@ -410,11 +408,16 @@ hasIsOrEmptyList expr =
           matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
        in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
 
-    HsPar _ sub ->
-      hasIsOrEmptyList sub
+    other -> trace ("we came to other case: " ++ showSDocUnsafe (ppr other) ++
+                    " , toConstr: " ++ show (toConstr other)) False
 
-    other ->
-      trace ("we came to other case:" ++ showSDocUnsafe (ppr other) ++ " , toconstr: " ++ show (toConstr other)) False
+stripParensAndWraps :: LHsExpr GhcTc -> LHsExpr GhcTc
+stripParensAndWraps e@(L _ expr) = case expr of
+  HsPar _ sub           -> stripParensAndWraps sub
+  HsTick _ _ sub        -> stripParensAndWraps sub
+  ExprWithTySig _ sub _ -> stripParensAndWraps sub
+  _                     -> e
+
 
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
