@@ -135,9 +135,6 @@ type SheriffTcM = StateT (HM.HashMap NameModuleValue NameModuleValue) TcM
 sheriff :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 sheriff opts modSummary tcEnv = do
   
-  traceM $ "tcg_binds: " ++ showSDocUnsafe (ppr (tcg_binds tcEnv))
-  -- traceM $ "tcg_insts: " ++ showSDocUnsafe (ppr (tcg_insts tcEnv))
-  traceM $ "tcg_type_env: " ++ showSDocUnsafe (ppr (tcg_type_env tcEnv))
   -- STAGE-1
   let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
       pluginOpts@PluginOpts{..} = decodeAndUpdateOpts opts defaultPluginOpts
@@ -458,17 +455,17 @@ flattenHsAppM expr = do
                   else forM_ (bagToList bindBag) $ \(L _ bind) -> do
                     traceM $ "🔍 bind constructor: " ++ showConstr (toConstr bind)
                     case bind of
-                         PatBind { pat_lhs = L _ (VarPat _ (L _ varName))
-                                 , pat_rhs = GRHSs _ [L _ (GRHS _ [] body)] _
+                         FunBind { fun_id = L _ varName
+                                 , fun_matches = MG _ (L _ [L _ (Match _ _ _ (GRHSs _ [L _ (GRHS _ [] body)] _) )]) _
                                  } -> do
-                           traceM $ "📦 Found PatBind with var: " ++ OP.showSDocUnsafe (OP.ppr varName)
-                           traceM $ "📦 Let RHS: " ++ OP.showSDocUnsafe (OP.ppr body)
+                           traceM $ "📦 Found FunBind with var: " ++ showSDocUnsafe (ppr varName)
+                           traceM $ "📦 Let RHS: " ++ showSDocUnsafe (ppr body)
                            let normalizedExpr = stripExpr body
-                               varStr = OP.showSDocUnsafe (OP.ppr varName)
-                           traceM $ "🧹 Normalized RHS: " ++ OP.showSDocUnsafe (OP.ppr normalizedExpr)
+                               varStr = showSDocUnsafe (ppr varName)
+                           traceM $ "🧹 Normalized RHS: " ++ showSDocUnsafe (ppr normalizedExpr)
                            when (hasIsOrEmptyList normalizedExpr) $ do
                              traceM $ "✅ Match: RHS has 'is' or '[]', recording clause for: " ++ varStr
-                             modify $ \s -> s { clauseMap = Map.insert varStr (OP.showSDocUnsafe (OP.ppr normalizedExpr)) (clauseMap s) }
+                             modify $ \s -> s { clauseMap = Map.insert varStr (showSDocUnsafe (ppr normalizedExpr)) (clauseMap s) }
                          _ -> traceM "⛔ Skipping non-PatBind or unhandled bind pattern"
             _ -> traceM "⚠️ valBinds is not XValBindsLR -> skipping"
         _ -> pure ())
