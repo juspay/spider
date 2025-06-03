@@ -407,7 +407,7 @@ hasIsOrEmptyList expr =
     HsPar _ sub ->
       hasIsOrEmptyList sub
     other -> 
-      trace ("we came to other case:" ++ showSDocUnsafe(ppr other)) False
+      trace ("we came to other case:" ++ showSDocUnsafe(ppr other) ++ " , toconstr: " ++ show (toConstr(other))) False
 
 
 allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
