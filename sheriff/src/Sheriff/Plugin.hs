@@ -325,7 +325,9 @@ hasIsOrEmptyList expr =
 
     XExpr (WrapExpr innerExpr) -> 
       case innerExpr of
-        (HsWrap _ expr) -> hasIsOrEmptyList (noLocA expr)
+        (HsWrap _ expr) -> 
+          trace ("Matched: XExpr WrapExpr with location " ++ showSDocUnsafe(ppr expr)) $ 
+          hasIsOrEmptyList (noLocA expr)
 
     XExpr _ -> trace "XExpr case: cannot handle yet" False
 
