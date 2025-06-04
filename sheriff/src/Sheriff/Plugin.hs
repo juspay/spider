@@ -290,13 +290,17 @@ extractQueryInfo expr bindings = do
       let clause = OP.showSDocUnsafe (OP.ppr (args !! 2))
       let typeStr = show (typeOf (unLoc (args !! 2)))
       let unlocatedBindings = [unLoc bindings]
-      let x = hasIsOrEmptyList (args !! 2)
-      traceM ("clausee: " ++ clause ++ " :: x: " ++ show x)
-      myMap <- gets tableMap
+      let isWhereClause = hasIsOrEmptyList (args !! 2)
+      clauseMapVal <- gets clauseMap
+      let whereClause = if isWhereClause
+                        then clause
+                        else fromMaybe "<unknown_clause" (Map.lookup clause clauseMapVal)
+      traceM ("clausee: " ++ clause ++ " :: whereClause: " ++ show whereClause)
+      tableNameMap <- gets tableMap
       let key = OP.showSDocUnsafe (OP.ppr (args !! 0))
-          tableName = fromMaybe "<unknown_table" (Map.lookup key myMap)
-      traceM ("✅ Matched query function.\nFunction: " ++ fnName ++ "\nTable Name: " ++ tableName ++ "\nClause: " ++ clause ++ "\nmyMap: " ++ show myMap)
-      pure $ Just (fnName, tableName, clause)
+          tableName = fromMaybe "<unknown_table" (Map.lookup key tableNameMap)
+      traceM ("✅ Matched query function.\nFunction: " ++ fnName ++ "\nTable Name: " ++ tableName ++ "\nClause: " ++ whereClause ++ "\n tableNameMap: " ++ show tableNameMap ++ "\n clauseMapVal: " ++ show clauseMapVal)
+      pure $ Just (fnName, tableName, whereClause)
     else do
       traceM ("⚠️ Skipping: fnName = " ++ fnName ++ ", args = " ++ show (length args))
       pure Nothing
