@@ -309,22 +309,38 @@ hasIsOrEmptyList :: LHsExpr GhcTc -> Bool
 hasIsOrEmptyList expr =
   case unLoc expr of
     ExplicitList _ [] -> trace "Matched: Empty list" True
-    ExplicitList _ xs -> trace ("Checking list of length " ++ show (length xs)) $
-                           any hasIsOrEmptyList xs
+    ExplicitList _ xs -> trace ("Checking list of length " ++ show (length xs)) $ any hasIsOrEmptyList xs
 
     HsApp _ fun arg ->
       let funStr = showSDocUnsafe (ppr (unLoc fun))
           matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
-       in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
+      in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
 
     OpApp _ fun _ arg ->
       let funStr = showSDocUnsafe (ppr (unLoc fun))
           matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
-       in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
+      in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
 
-    HsPar _ e -> hasIsOrEmptyList e
+    HsPar _ inner -> trace "Matched: HsPar" $ hasIsOrEmptyList inner
 
-    other -> trace ("🧩 Reached unmatched case:\n"   ++ showSDocUnsafe (ppr expr)  ++ "\n🔎 Raw unLoc expr: " ++ showSDocUnsafe (ppr (unLoc expr))  ++ "\n📦 toConstr: " ++ show (toConstr (unLoc expr))) False
+    XExpr (WrapExpr innerExpr) -> 
+      case innerExpr of
+        (HsWrap _ expr) -> hasIsOrEmptyList (noLocA expr)
+
+    XExpr _ -> trace "XExpr case: cannot handle yet" False
+
+    other -> trace ("we came to other case: " ++ showSDocUnsafe (ppr other)) False
+
+
+-- unwrapExpr :: LHsExpr GhcTc -> LHsExpr GhcTc
+-- unwrapExpr lexpr =
+--   case unLoc lexpr of
+--     HsWrap _ inner -> noLocA inner -- inner :: HsExpr GhcTc
+--     other          -> lexpr
+
+-- unwrapExprFromHsExpr :: HsExpr GhcTc -> HsExpr GhcTc
+-- unwrapExprFromHsExpr (HsWrap _ inner) = unwrapExprFromHsExpr inner
+-- unwrapExprFromHsExpr expr             = expr
 
 
 
@@ -378,7 +394,7 @@ flattenHsAppM expr = do
                            let normalizedExpr = stripExpr body
                                varStr = showSDocUnsafe (ppr varName)
                            traceM $ "🧹 Normalized RHS: " ++ showSDocUnsafe (ppr normalizedExpr)
-                           when (hasIsOrEmptyList normalizedExpr) $ do
+                           when (hasIsOrEmptyList normalizedExpr) $ do 
                              traceM $ "✅ Match: RHS has 'is' or '[]', recording clause for: " ++ varStr
                              modify $ \s -> s { clauseMap = Map.insert varStr (showSDocUnsafe (ppr normalizedExpr)) (clauseMap s) }
                          _ -> traceM "⛔ Skipping non-PatBind or unhandled bind pattern"
