@@ -256,7 +256,7 @@ extractExprFromBind (L loc bind) = do
             GRHS _ _ body -> do
               let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
               extracted <- mapM (\expr -> extractQueryInfo expr (L loc bind)) exprs
-              traceM $ "exprs: " ++ OP.showSDocUnsafe (OP.ppr exprs) ++ "\n📌 Query Info:\n" ++ unlines (map showTriple (catMaybes extracted))
+              traceM $ "exprs from FunBind: " ++ OP.showSDocUnsafe (OP.ppr exprs) ++ "\n📌 Query Info:\n" ++ unlines (map showTriple (catMaybes extracted))
               pure (catMaybes extracted)
           pure (concat innerResults)
       pure $ listToMaybe (concat results)
@@ -267,7 +267,7 @@ extractExprFromBind (L loc bind) = do
         GRHS _ _ body -> do
           let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
           extracted <- mapM (\expr -> extractQueryInfo expr (L loc bind)) exprs
-          traceM $ "exprs: " ++ OP.showSDocUnsafe (OP.ppr exprs) ++ "\n📌 Query Info:\n" ++ unlines (map showTriple (catMaybes extracted))
+          traceM $ "exprs from PatBind: " ++ OP.showSDocUnsafe (OP.ppr exprs) ++ "\n📌 Query Info:\n" ++ unlines (map showTriple (catMaybes extracted))
           pure (catMaybes extracted)
       pure $ listToMaybe (concat results)
 
@@ -280,8 +280,6 @@ extractExprFromBind (L loc bind) = do
       traceM "No matching bind constructor (not FunBind or PatBind)"
       pure Nothing
 
-
-
 extractQueryInfo :: LHsExpr GhcTc -> LHsBindLR GhcTc GhcTc -> MyM (Maybe (String, String, String))
 extractQueryInfo expr bindings = do
   traceM ("🔍 Called extractQueryInfo with expr: " ++ OP.showSDocUnsafe (OP.ppr expr))
@@ -291,109 +289,21 @@ extractQueryInfo expr bindings = do
     then do
       let clause = OP.showSDocUnsafe (OP.ppr (args !! 2))
       let typeStr = show (typeOf (unLoc (args !! 2)))
-      -- liftIO $ putStrLn $ "clause: " ++ clause ++ " :: type: " ++ typeStr
-      -- traceM ("clausee: " ++ clause ++ " :: type: " ++ typeStr ++ " :: toConstr clause: " ++ show (toConstr clause )++ " :: toConstr (args !! 2):" ++ show (toConstr (unLoc (args !! 2))) )
       let unlocatedBindings = [unLoc bindings]
       let x = hasIsOrEmptyList (args !! 2)
       traceM ("clausee: " ++ clause ++ " :: x: " ++ show x)
-      whereClause <- checkExpr unlocatedBindings (args !! 2)
-      _ <- if whereClause
-             then traceM "✅ Detected inline where clause"
-             else traceM "🧠 Not inline, possibly variable like `whereClause`"
-      -- if whereClause
-      --    then traceM "✅ Detected inline where clause"
-      --    else traceM "🧠 Not inline, possibly variable like `whereClause`"
       myMap <- gets tableMap
       let key = OP.showSDocUnsafe (OP.ppr (args !! 0))
           tableName = fromMaybe "<unknown_table" (Map.lookup key myMap)
-      traceM ("✅ Matched query function.\nFunction: " ++ fnName ++ "\nTable Name: " ++ tableName ++ "\nClause: " ++ clause ++ "\nmyMap: " ++ show myMap ++ "\nIsit Where Clause: " ++ show whereClause)
+      traceM ("✅ Matched query function.\nFunction: " ++ fnName ++ "\nTable Name: " ++ tableName ++ "\nClause: " ++ clause ++ "\nmyMap: " ++ show myMap)
       pure $ Just (fnName, tableName, clause)
     else do
       traceM ("⚠️ Skipping: fnName = " ++ fnName ++ ", args = " ++ show (length args))
       pure Nothing
 
-resolveVarExpr :: (Monad m) => Name -> [HsBindLR GhcTc GhcTc] -> m (Maybe (LHsExpr GhcTc))
-resolveVarExpr name binds = do
-  let matchName (FunBind { fun_id = L _ var }) = name == getName var
-      matchName _ = False
-  mapM_ (\b -> traceM $ "📦 Top-level bind:\n" ++ showSDocUnsafe (ppr b)) binds
-  traceM "🔍 Available bindings:"
-  mapM_ (\b -> case b of
-    FunBind { fun_id = L _ id' } ->
-      traceM $ "  - " ++ showSDocUnsafe (ppr (getName id'))
-    _ -> traceM "  - [Not a FunBind]"
-    ) binds
-  case find matchName binds of
-    Just (FunBind { fun_matches = MG { mg_alts = L _ [L _ Match { m_grhss = GRHSs { grhssGRHSs = [L _ (GRHS _ _ (L _ body))] } }] } }) -> do
-      traceM "✅ Found matching function with expected structure"
-      pure (Just (noLocA body))
-  
-    Just otherBind -> do
-      traceM $ "❌ Matching Name found, but unexpected structure:\n" ++ showSDocUnsafe (ppr otherBind)
-      pure Nothing
-  
-    Nothing -> do
-      traceM "❌ No matching function found"
-      traceM $ "📌 Bindings were:\n" ++ unlines (map (showSDocUnsafe . ppr) binds)
-      pure Nothing
-  
-checkExpr :: Monad m => [HsBindLR GhcTc GhcTc] -> LHsExpr GhcTc -> m Bool
-checkExpr bindings expr = do
-  case unLoc expr of
-    HsVar _ var -> do
-      traceM $ "📌 Found HsVar: " ++ showSDocUnsafe (ppr var)
-      let name = varName (unLoc var)
-      mResolved <- resolveVarExpr name bindings
-      case mResolved of
-        Just resolvedExpr -> do
-          traceM $ "🔄 Resolved HsVar to: " ++ showSDocUnsafe (ppr resolvedExpr)
-          checkExpr bindings resolvedExpr
-        Nothing -> do
-          traceM $ "❌ Could not resolve variable"
-          pure False
-    -- other cases
-    ExplicitList _ exprs -> do
-      traceM $ "🔍 Checking ExplicitList with " ++ show (length exprs) ++ " items"
-      results <- forM exprs $ \subExpr -> do
-        traceM "  ↪ checking subexpr in ExplicitList"
-        isClauseExpr subExpr
-      let allPassed = and results
-      traceM $ "✅ All subexpressions valid: " ++ show allPassed
-      pure allPassed
-
-    HsApp {} -> do
-      traceM "📌 Found HsApp (not inline)"
-      pure False
-
-    other -> do
-      traceM $ "❓ Found other expr (not matched above): " ++ showSDocUnsafe (ppr other)
-      pure False
-
-
-isClauseExpr :: Monad m => LHsExpr GhcTc -> m Bool
-isClauseExpr e = do
-  traceM ("isClauseExpr: " ++ showSDocUnsafe (ppr e))
-  case unLoc e of
-    HsApp {} -> do
-      traceM "✅ isClauseExpr: Found HsApp"
-      pure True
-
-    ExplicitList _ inner -> do
-      traceM "🔁 isClauseExpr: Found nested ExplicitList"
-      results <- forM inner $ \subExpr -> do
-        traceM "    ↪ checking nested subexpr"
-        isClauseExpr subExpr
-      let allValid = and results
-      traceM $ "📋 All nested subexprs valid: " ++ show allValid
-      pure allValid
-
-    other -> do
-      traceM $ "❌ isClauseExpr: Not a clause expr: " ++ showSDocUnsafe (ppr other)
-      pure False
-
 hasIsOrEmptyList :: LHsExpr GhcTc -> Bool
 hasIsOrEmptyList expr =
-  case unLoc (stripParensAndWraps expr) of
+  case unLoc expr of
     ExplicitList _ [] -> trace "Matched: Empty list" True
     ExplicitList _ xs -> trace ("Checking list of length " ++ show (length xs)) $
                            any hasIsOrEmptyList xs
@@ -411,46 +321,35 @@ hasIsOrEmptyList expr =
     other -> trace ("we came to other case: " ++ showSDocUnsafe (ppr other) ++
                     " , toConstr: " ++ show (toConstr other)) False
 
-stripParensAndWraps :: LHsExpr GhcTc -> LHsExpr GhcTc
-stripParensAndWraps e@(L _ expr) = case expr of
-  HsPar _ sub           -> stripParensAndWraps sub
-  HsTick _ _ sub        -> stripParensAndWraps sub
-  ExprWithTySig _ sub _ -> stripParensAndWraps sub
-  _                     -> e
-
-
-
-allWithLog :: Monad m => String -> (a -> m Bool) -> [a] -> m Bool
-allWithLog label f xs = foldr (\x acc -> do
-    b <- f x
-    traceM label
-    rest <- acc
-    return (b && rest)
-  ) (return True) xs
-
 
 flattenHsAppM :: LHsExpr GhcTc -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
 flattenHsAppM expr = do
   traceM $ "🧾 Received expr: " ++ OP.showSDocUnsafe (OP.ppr expr)
-
   let doStmts = case expr of
         L _ (HsDo _ _ (L _ stmts)) -> stmts
         _                          -> []
 
   forM_ doStmts $ \stmt -> case stmt of
-    L _ (BindStmt _ (L _ (VarPat _ (L _ varName))) rhsExpr) -> do
+    L _ (BindStmt _ (L _ (VarPat _ (L _ varName))) rhsExpr) -> do   -- To get dbConfig (Table Name)
       traceM $ "📦 RHS Expr: " ++ OP.showSDocUnsafe (OP.ppr rhsExpr)
       let normalizedExpr = stripExpr rhsExpr
       case normalizedExpr of
         L _ (HsAppType _ (L _ (HsVar _ (L _ fnName))) (HsWC _ innerType))
           | occNameString (occName fnName) `elem` ["getEulerDbConf", "getEulerPsqlDbConf"] -> do
               let lhsVarStr = OP.showSDocUnsafe (OP.ppr varName)
-                  typeStr   = extractTypeFromHsType innerType
-              traceM $ "✅ Matched getEulerDbConf with type @" ++ typeStr
+                  typeStr = case innerType of
+                              L _ (HsTyVar _ _ (L _ name)) -> occNameString (occName name)
+                              _                            -> "unknown_type"
               traceM $ "📥 Inserting into map: " ++ lhsVarStr ++ " -> " ++ typeStr
-              modify $ \s -> s { tableMap = Map.insert lhsVarStr typeStr (tableMap s) }
+              modify $ \s -> s { tableMap = Map.insert lhsVarStr typeStr (tableMap s) } -- Map Insertion (if dbcongig1 <- getEulerDbConf @orderReferenceT) , ["dbcongig1", "orderReferenceT"] get inserted
         _ -> pure ()
-    L _ (LetStmt _ localBindsL) ->
+    -- To get where clause => 
+    -- 1. Written in let statement => let whereclause = [Is..]
+    -- 2. Directly Passed to select functions => findonerow tablename [Is..]
+    -- 3. Passed as a parameter to the function => fun1 whereClause = do
+    --                                             findonerow tableame whereClause
+    -- 4. A local function or local value defined using a where clause  
+    L _ (LetStmt _ localBindsL) ->  
       (case localBindsL of
         HsValBinds _ valBinds -> 
           case valBinds of
@@ -494,12 +393,6 @@ stripExpr (L l (HsPar _ e))               = stripExpr e
 stripExpr (L l (HsAppType x e t))         = L l (HsAppType x (stripExpr e) t)
 stripExpr (L l (XExpr (WrapExpr (HsWrap _ e)))) = stripExpr (L l e)
 stripExpr other                           = other
-
-
-extractTypeFromHsType :: LHsType (NoGhcTc GhcTc) -> String
-extractTypeFromHsType (L _ (HsTyVar _ _ (L _ name))) =
-  occNameString (occName name)
-extractTypeFromHsType _ = "unknown_type"
 
 showTriple :: (String, String, String) -> String
 showTriple (a, b, c) = "(" ++ a ++ ", " ++ b ++ ", " ++ c ++ ")" 
