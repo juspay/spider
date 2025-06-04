@@ -307,7 +307,8 @@ extractQueryInfo expr bindings = do
 
 hasIsOrEmptyList :: LHsExpr GhcTc -> Bool
 hasIsOrEmptyList expr =
-  case unLoc expr of
+  let expr' = stripExpr expr
+  in case unLoc expr' of
     ExplicitList _ [] -> trace "Matched: Empty list" True
     ExplicitList _ xs -> trace ("Checking list of length " ++ show (length xs)) $ any hasIsOrEmptyList xs
 
@@ -325,14 +326,13 @@ hasIsOrEmptyList expr =
 
     XExpr (WrapExpr innerExpr) -> 
       case innerExpr of
-        (HsWrap _ expr) -> 
-          trace ("Matched: XExpr WrapExpr with location " ++ showSDocUnsafe(ppr expr)) $ 
-          hasIsOrEmptyList (noLocA expr)
+        (HsWrap _ exprInner) -> 
+          trace ("Matched: XExpr WrapExpr with location " ++ showSDocUnsafe(ppr exprInner)) $ 
+          hasIsOrEmptyList (noLocA exprInner)
 
     XExpr _ -> trace "XExpr case: cannot handle yet" False
 
     other -> trace ("we came to other case: " ++ showSDocUnsafe (ppr other)) False
-
 
 -- unwrapExpr :: LHsExpr GhcTc -> LHsExpr GhcTc
 -- unwrapExpr lexpr =
