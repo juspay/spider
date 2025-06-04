@@ -322,6 +322,8 @@ hasIsOrEmptyList expr =
           matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
        in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
 
+    HsPar _ e -> hasIsOrEmptyList e
+
     other -> trace ("we came to other case: " ++ showSDocUnsafe (ppr other) ++
                     " , toConstr: " ++ show (toConstr other)) False
 
