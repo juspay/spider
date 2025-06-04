@@ -307,6 +307,7 @@ extractQueryInfo expr bindings = do
 
 hasIsOrEmptyList :: LHsExpr GhcTc -> Bool
 hasIsOrEmptyList expr =
+  trace "📍 Entering hasIsOrEmptyList" $
   let expr' = stripExpr expr
   in case unLoc expr' of
     ExplicitList _ [] -> trace "Matched: Empty list" True
