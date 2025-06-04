@@ -324,8 +324,8 @@ hasIsOrEmptyList expr =
 
     HsPar _ e -> hasIsOrEmptyList e
 
-    other -> trace ("we came to other case: " ++ showSDocUnsafe (ppr other) ++
-                    " , toConstr: " ++ show (toConstr other)) False
+    other -> trace ("🧩 Reached unmatched case:\n"   ++ showSDocUnsafe (ppr expr)  ++ "\n🔎 Raw unLoc expr: " ++ showSDocUnsafe (ppr (unLoc expr))  ++ "\n📦 toConstr: " ++ show (toConstr (unLoc expr))) False
+
 
 
 flattenHsAppM :: LHsExpr GhcTc -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
