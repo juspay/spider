@@ -396,7 +396,9 @@ flattenHsAppM expr = do
                            let normalizedExpr = stripExpr body
                                varStr = showSDocUnsafe (ppr varName)
                            traceM $ "🧹 Normalized RHS: " ++ showSDocUnsafe (ppr normalizedExpr)
-                           when (hasIsOrEmptyList normalizedExpr) $ do 
+                           let result = hasIsOrEmptyList normalizedExpr
+                           traceM $ "🧪 hasIsOrEmptyList result: " ++ show result
+                           when result $ do 
                              traceM $ "✅ Match: RHS has 'is' or '[]', recording clause for: " ++ varStr
                              modify $ \s -> s { clauseMap = Map.insert varStr (showSDocUnsafe (ppr normalizedExpr)) (clauseMap s) }
                          _ -> traceM "⛔ Skipping non-PatBind or unhandled bind pattern"
