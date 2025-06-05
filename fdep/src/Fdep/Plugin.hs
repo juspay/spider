@@ -26,7 +26,6 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Time ( diffUTCTime, getCurrentTime )
 import Fdep.Types
-import Text.Read (readMaybe)
 import Prelude hiding (id, writeFile,span)
 import qualified Prelude as P
 import qualified Data.List.Extra as Data.List
