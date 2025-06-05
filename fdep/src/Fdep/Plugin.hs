@@ -31,9 +31,14 @@ import Prelude hiding (id, writeFile,span)
 import qualified Prelude as P
 import qualified Data.List.Extra as Data.List
 import Network.Socket (withSocketsDo)
-import qualified Network.WebSockets as WS
 import System.Environment (lookupEnv)
 import GHC.IO (unsafePerformIO)
+import qualified Network.Socket as NS
+import qualified Network.Socket.ByteString as NSB
+import qualified Data.ByteString as BS
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath (takeDirectory)
+import Data.Hashable (hash)
 #if __GLASGOW_HASKELL__ >= 900
 import GHC.Tc.Utils.TcType
 import GHC.Core.Type hiding (tyConsOfType)
@@ -120,23 +125,8 @@ toLBind (Rec binds) = map (\(b, e) -> (nameStableString $ idName b,filter (\(nam
 
 sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
 sendFileToWebSocketServer cliOptions path data_ =
-    withSocketsDo $ do
-        eres <- try $
-            WS.runClient
-                (fromMaybe (host cliOptions) websocketHost)
-                (fromMaybe (port cliOptions) websocketPort)
-                (T.unpack path)
-                (\conn -> do
-                    res <- try $ WS.sendTextData conn data_
-                    case res of
-                        Left (err :: SomeException) ->
-                            when (shouldLog || Fdep.Types.log cliOptions) $ print err
-                        Right _ -> pure ()
-                )
-        case eres of
-            Left (err :: SomeException) ->
-                when (shouldLog || Fdep.Types.log cliOptions) $ print err
-            Right _ -> pure ()
+    -- Use the Unix Domain Socket implementation
+    sendViaUnixSocket cliOptions path data_
 
 collectDecls :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectDecls opts modSummary hsParsedModule = do
@@ -360,23 +350,66 @@ websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_
 websocketHost :: Maybe String
 websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
 
+-- Get socket path from environment variable
+fdepSocketPath :: Maybe FilePath
+fdepSocketPath = unsafePerformIO $ lookupEnv "FDEP_SOCKET_PATH"
+
 sendTextData' :: CliOptions -> WS.Connection -> Text -> Text -> IO ()
-sendTextData' cliOptions conn path data_ = do
-    -- t1 <- getCurrentTime
-    res <- try $ WS.sendTextData conn data_
+sendTextData' cliOptions _ path data_ = do
+    -- Use the Unix Domain Socket implementation instead of WebSockets
+    sendViaUnixSocket cliOptions path data_
+
+-- Connect to Unix Domain Socket
+connectToUnixSocket :: FilePath -> IO NS.Socket
+connectToUnixSocket socketPath = do
+    sock <- NS.socket NS.AF_UNIX NS.Stream NS.defaultProtocol
+    NS.connect sock (NS.SockAddrUnix socketPath)
+    return sock
+
+-- Send data via Unix Domain Socket
+sendViaUnixSocket :: CliOptions -> Text -> Text -> IO ()
+sendViaUnixSocket cliOptions path data_ = do
+    -- Create message with path as header for routing
+    let message = encodeUtf8 $ path <> "\n" <> data_
+    
+    -- Get socket path from environment or config
+    let socketPathToUse = fromMaybe (socketPath cliOptions) fdepSocketPath
+    
+    -- Try to send data
+    res <- try $ do
+        sock <- connectToUnixSocket socketPathToUse
+        NSB.sendAll sock (BS.fromStrict message)
+        NS.close sock
+    
     case res of
         Left (err :: SomeException) -> do
-            when (shouldLog || Fdep.Types.log cliOptions) $ print err
+            when (shouldLog || Fdep.Types.log cliOptions) $ 
+                print $ "Error sending data: " <> (T.pack $ show err)
+            
+            -- Save to error log
             appendFile "error.log" ((T.unpack path) <> "," <> (T.unpack data_) <> "\n")
-            withSocketsDo $ WS.runClient (fromMaybe (host cliOptions) websocketHost) (fromMaybe (port cliOptions) websocketPort) (T.unpack path) (\nconn -> WS.sendTextData nconn data_)
-        Right _ -> pure ()
-            -- t2 <- getCurrentTime
-            -- when (shouldLog || Fdep.Types.log cliOptions) $ print ("websocket call timetaken: " <> (T.pack $ show $ diffUTCTime t2 t1))
+            
+            -- Save to recovery file
+            let errorDir = "fdep_recovery"
+            createDirectoryIfMissing True errorDir
+            let timestamp = show $ hash $ T.unpack path
+            appendFile (errorDir <> "/" <> timestamp <> ".json") (T.unpack data_ <> "\n")
+        
+        Right _ -> 
+            when (shouldLog || Fdep.Types.log cliOptions) $ 
+                print $ "Successfully sent data to " <> path
 
 -- default options
 -- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False}
+defaultCliOptions = CliOptions {
+    path="./tmp/fdep/",
+    socketPath="/tmp/fdep.sock",  -- Default socket path
+    port=4444,
+    host="::1",
+    log=False,
+    tc_funcs=Just False
+}
 
 filterList :: [Text]
 filterList =
@@ -450,28 +483,20 @@ fDep opts modSummary tcEnv = do
             let prefixPath = path cliOptions
                 moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
                 modulePath = prefixPath <> msHsFilePath modSummary
-            let path = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
-            when (shouldLog || Fdep.Types.log cliOptions) $ print ("generating dependancy for module: " <> moduleName' <> " at path: " <> path)
-            -- createDirectoryIfMissing True path
+                wsPath = "/" <> modulePath <> ".json"
+            let pathStr = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
+            when (shouldLog || Fdep.Types.log cliOptions) $ print ("generating dependancy for module: " <> moduleName' <> " at path: " <> pathStr)
+            
             t1 <- getCurrentTime
-            withSocketsDo $ do
-                eres <- try $
-                    WS.runClient
-                        (fromMaybe (host cliOptions) websocketHost)
-                        (fromMaybe (port cliOptions) websocketPort)
-                        ("/" <> modulePath <> ".json")
-                        (\conn ->
-                            mapM_
-                                (loopOverLHsBindLR cliOptions conn Nothing (T.pack ("/" <> modulePath <> ".json")))
-                                (bagToList $ tcg_binds tcEnv)
-                        )
-                case eres of
-                    Left (err :: SomeException) ->
-                        when (shouldLog || Fdep.Types.log cliOptions) $ print err
-                        --appendFile "error.log" (show err <> "\n")
-                    Right _ -> pure ()
+            
+            -- Process all bindings directly using Unix Domain Sockets
+            -- No need to create a connection here as each sendViaUnixSocket creates its own connection
+            mapM_
+                (loopOverLHsBindLR cliOptions undefined Nothing (T.pack wsPath))
+                (bagToList $ tcg_binds tcEnv)
+            
             t2 <- getCurrentTime
-            when (shouldLog || Fdep.Types.log cliOptions) $ print ("generated dependancy for module: " <> moduleName' <> " at path: " <> path <> " total-timetaken: " <> show (diffUTCTime t2 t1))
+            when (shouldLog || Fdep.Types.log cliOptions) $ print ("generated dependancy for module: " <> moduleName' <> " at path: " <> pathStr <> " total-timetaken: " <> show (diffUTCTime t2 t1))
     return tcEnv
 
 transformFromNameStableString :: (Maybe Text, Maybe Text, Maybe Text, [Text]) -> Maybe FunctionInfo
