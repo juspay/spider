@@ -321,13 +321,15 @@ hasIsOrEmptyList expr =
              isListCons = funStr == ":" || funStr == "[]"
          in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches ++ ", isListCons? " ++ show isListCons) $
               matches || isListCons || hasIsOrEmptyList fun || hasIsOrEmptyList arg
-
-       OpApp _ fun _ arg ->
+       OpApp _ fun op arg ->
          let funStr = showSDocUnsafe (ppr (unLoc fun))
+             opStr  = showSDocUnsafe (ppr (unLoc op))
+             argStr = showSDocUnsafe (ppr (unLoc arg))
              matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
              isListCons = funStr == ":" || funStr == "[]"
-         in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches ++ ", isListCons? " ++ show isListCons) $
-              matches || isListCons || hasIsOrEmptyList fun || hasIsOrEmptyList arg
+         in trace ("Matched: OpApp, fun: " ++ funStr ++ ", op: " ++ opStr ++ ", arg: " ++ argStr ++
+                   ", matches? " ++ show matches ++ ", isListCons? " ++ show isListCons) $
+              matches || isListCons || hasIsOrEmptyList fun || hasIsOrEmptyList op || hasIsOrEmptyList arg
 
        HsPar _ inner -> trace "Matched: HsPar" $ hasIsOrEmptyList inner
 
