@@ -310,20 +310,20 @@ hasIsOrEmptyList expr =
   trace "📍 Entering hasIsOrEmptyList" $
   let expr' = stripExpr expr
       core = unLoc expr'
-  in trace ("🔍 unLoc expr': " ++ showSDocUnsafe (ppr core)) $
+  in trace ("🔍 unLoc expr': " ++ showSDocUnsafe (ppr core) ++ " , Tyoe of expr :" ++ show (typeOf expr)) $
      case core of
        ExplicitList _ [] -> trace "Matched: Empty list" True
        ExplicitList _ xs -> trace ("Checking list of length " ++ show (length xs)) $ any hasIsOrEmptyList xs
 
        HsApp _ fun arg ->
          let funStr = showSDocUnsafe (ppr (unLoc fun))
-             matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
+             matches = any (isPrefixOf funStr) ["Is", "And", "Or"]
          in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) $
               matches || hasIsOrEmptyList fun || hasIsOrEmptyList arg
 
        OpApp _ fun _ arg ->
          let funStr = showSDocUnsafe (ppr (unLoc fun))
-             matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
+             matches = any (isPrefixOf funStr) ["Is", "And", "Or"]
          in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) $
               matches || hasIsOrEmptyList fun || hasIsOrEmptyList arg
 
@@ -338,7 +338,6 @@ hasIsOrEmptyList expr =
        XExpr _ -> trace "XExpr case: cannot handle yet" False
 
        other -> trace ("🛑 we came to other case: " ++ showSDocUnsafe (ppr other)) False
-
 -- unwrapExpr :: LHsExpr GhcTc -> LHsExpr GhcTc
 -- unwrapExpr lexpr =
 --   case unLoc lexpr of
