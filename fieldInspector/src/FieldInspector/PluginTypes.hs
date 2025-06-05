@@ -105,6 +105,10 @@ import Control.DeepSeq
 import GHC.Generics (Generic)
 import Control.Reference (biplateRef, (^?))
 import Data.Generics.Uniplate.Data ()
+import qualified Network.Socket as NS
+import qualified Network.Socket.ByteString as NSB
+import System.Directory (createDirectoryIfMissing)
+import Data.Hashable (hash)
 
 plugin :: Plugin
 plugin = (defaultPlugin{
@@ -180,31 +184,46 @@ pprTyCon = ppr
 pprDataCon :: Name -> SDoc
 pprDataCon = ppr
 
-websocketPort :: Maybe Int
-websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
+fdepSocketPath :: Maybe FilePath
+fdepSocketPath = unsafePerformIO $ lookupEnv "FDEP_SOCKET_PATH"
 
-websocketHost :: Maybe String
-websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
+-- Connect to Unix Domain Socket
+connectToUnixSocket :: FilePath -> IO NS.Socket
+connectToUnixSocket socketPath = do
+    sock <- NS.socket NS.AF_UNIX NS.Stream NS.defaultProtocol
+    NS.connect sock (NS.SockAddrUnix socketPath)
+    return sock
 
-sendFileToWebSocketServer :: CliOptions -> Text -> Text -> IO ()
+
+sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
 sendFileToWebSocketServer cliOptions path data_ =
-    withSocketsDo $ do
-        eres <- try $
-            WS.runClient
-                (fromMaybe (host cliOptions) websocketHost)
-                (fromMaybe (port cliOptions) websocketPort)
-                (T.unpack path)
-                (\conn -> do
-                    res <- try $ WS.sendTextData conn data_
-                    case res of
-                        Left (err :: SomeException) ->
-                            when (log cliOptions) $ print err
-                        Right _ -> pure ()
-                )
-        case eres of
-            Left (err :: SomeException) ->
-                when (log cliOptions) $ print err
-            Right _ -> pure ()
+    -- Use the Unix Domain Socket implementation
+    sendViaUnixSocket cliOptions path data_
+
+sendViaUnixSocket :: CliOptions -> Text -> Text -> IO ()
+sendViaUnixSocket cliOptions path data_ = do
+    -- Create message with path as header for routing
+    let message = encodeUtf8 $ path <> "****" <> data_
+    
+    -- Get socket path from environment or config
+    let socketPathToUse = fromMaybe (FieldInspector.Types.path cliOptions) fdepSocketPath
+    
+    -- Try to send data
+    res <- try $ do
+        sock <- connectToUnixSocket socketPathToUse
+        NSB.sendAll sock (message)
+        NS.close sock
+    
+    case res of
+        Left (err :: SomeException) -> do
+            appendFile "error.log" ((T.unpack path) <> "," <> (T.unpack data_) <> "\n")
+            let errorDir = "fdep_recovery"
+            createDirectoryIfMissing True errorDir
+            let timestamp = show $ hash $ T.unpack path
+            appendFile (errorDir <> "/" <> timestamp <> ".json") (T.unpack data_ <> "\n")
+    
+        Right _ -> 
+            print $ "Successfully sent data to " <> path
 
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False,api_conteact=Just True}

@@ -120,6 +120,7 @@ common common-options
         , uniplate
         , api-contract
         , network
+        , hashable
         -- , fdep
 
 library

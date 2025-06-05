@@ -344,12 +344,6 @@ shouldLog = readBool $ unsafePerformIO $ lookupEnv "ENABLE_LOGS"
     readBool (Just "TRUE") = True
     readBool _ = False
 
-websocketPort :: Maybe Int
-websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
-
-websocketHost :: Maybe String
-websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
-
 -- Get socket path from environment variable
 fdepSocketPath :: Maybe FilePath
 fdepSocketPath = unsafePerformIO $ lookupEnv "FDEP_SOCKET_PATH"
