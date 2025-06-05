@@ -317,15 +317,17 @@ hasIsOrEmptyList expr =
 
        HsApp _ fun arg ->
          let funStr = showSDocUnsafe (ppr (unLoc fun))
-             matches = any (isPrefixOf funStr) ["Is", "And", "Or"]
-         in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) $
-              matches || hasIsOrEmptyList fun || hasIsOrEmptyList arg
+             matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
+             isListCons = funStr == ":" || funStr == "[]"
+         in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches ++ ", isListCons? " ++ show isListCons) $
+              matches || isListCons || hasIsOrEmptyList fun || hasIsOrEmptyList arg
 
        OpApp _ fun _ arg ->
          let funStr = showSDocUnsafe (ppr (unLoc fun))
-             matches = any (isPrefixOf funStr) ["Is", "And", "Or"]
-         in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) $
-              matches || hasIsOrEmptyList fun || hasIsOrEmptyList arg
+             matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
+             isListCons = funStr == ":" || funStr == "[]"
+         in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches ++ ", isListCons? " ++ show isListCons) $
+              matches || isListCons || hasIsOrEmptyList fun || hasIsOrEmptyList arg
 
        HsPar _ inner -> trace "Matched: HsPar" $ hasIsOrEmptyList inner
 
