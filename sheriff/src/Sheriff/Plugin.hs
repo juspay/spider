@@ -309,31 +309,33 @@ hasIsOrEmptyList :: LHsExpr GhcTc -> Bool
 hasIsOrEmptyList expr =
   trace "📍 Entering hasIsOrEmptyList" $
   let expr' = stripExpr expr
-  in case unLoc expr' of
-    ExplicitList _ [] -> trace "Matched: Empty list" True
-    ExplicitList _ xs -> trace ("Checking list of length " ++ show (length xs)) $ any hasIsOrEmptyList xs
+      core = unLoc expr'
+  in trace ("🔍 unLoc expr': " ++ showSDocUnsafe (ppr core)) $
+     case core of
+       ExplicitList _ [] -> trace "Matched: Empty list" True
+       ExplicitList _ xs -> trace ("Checking list of length " ++ show (length xs)) $ any hasIsOrEmptyList xs
 
-    HsApp _ fun arg ->
-      let funStr = showSDocUnsafe (ppr (unLoc fun))
-          matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
-      in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
+       HsApp _ fun arg ->
+         let funStr = showSDocUnsafe (ppr (unLoc fun))
+             matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
+         in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
 
-    OpApp _ fun _ arg ->
-      let funStr = showSDocUnsafe (ppr (unLoc fun))
-          matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
-      in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
+       OpApp _ fun _ arg ->
+         let funStr = showSDocUnsafe (ppr (unLoc fun))
+             matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
+         in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
 
-    HsPar _ inner -> trace "Matched: HsPar" $ hasIsOrEmptyList inner
+       HsPar _ inner -> trace "Matched: HsPar" $ hasIsOrEmptyList inner
 
-    XExpr (WrapExpr innerExpr) -> 
-      case innerExpr of
-        (HsWrap _ exprInner) -> 
-          trace ("Matched: XExpr WrapExpr with location " ++ showSDocUnsafe(ppr exprInner)) $ 
-          hasIsOrEmptyList (noLocA exprInner)
+       XExpr (WrapExpr innerExpr) -> 
+         case innerExpr of
+           HsWrap _ exprInner -> 
+             trace ("Matched: XExpr WrapExpr with location " ++ showSDocUnsafe(ppr exprInner)) $ 
+             hasIsOrEmptyList (noLocA exprInner)
 
-    XExpr _ -> trace "XExpr case: cannot handle yet" False
+       XExpr _ -> trace "XExpr case: cannot handle yet" False
 
-    other -> trace ("we came to other case: " ++ showSDocUnsafe (ppr other)) False
+       other -> trace ("🛑 we came to other case: " ++ showSDocUnsafe (ppr other)) False
 
 -- unwrapExpr :: LHsExpr GhcTc -> LHsExpr GhcTc
 -- unwrapExpr lexpr =
