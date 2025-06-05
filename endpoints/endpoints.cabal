@@ -69,7 +69,7 @@ library
     -- other-extensions:
 
     -- Other library packages from which modules are imported.
-    build-depends:    websockets,network,servant,containers,base,text,directory, bytestring, aeson, extra, aeson-pretty, unordered-containers, uniplate, ghc, references, yaml
+    build-depends:    hashable,websockets,network,servant,containers,base,text,directory, bytestring, aeson, extra, aeson-pretty, unordered-containers, uniplate, ghc, references, yaml
 
 
     -- Directories containing source files.
