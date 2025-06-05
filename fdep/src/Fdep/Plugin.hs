@@ -30,14 +30,14 @@ import Text.Read (readMaybe)
 import Prelude hiding (id, writeFile,span)
 import qualified Prelude as P
 import qualified Data.List.Extra as Data.List
-import Network.Socket (withSocketsDo)
+-- import Network.Socket (withSocketsDo)
 import System.Environment (lookupEnv)
 import GHC.IO (unsafePerformIO)
 import qualified Network.Socket as NS
 import qualified Network.Socket.ByteString as NSB
-import qualified Data.ByteString as BS
+-- import qualified Data.ByteString as BS
 import System.Directory (createDirectoryIfMissing)
-import System.FilePath (takeDirectory)
+-- import System.FilePath (takeDirectory)
 import Data.Hashable (hash)
 #if __GLASGOW_HASKELL__ >= 900
 import GHC.Tc.Utils.TcType
@@ -62,7 +62,7 @@ import qualified Data.Aeson.KeyMap as HM
 import GHC.Types.Id
 import GHC.Core
 import GHC.Core.Opt.Monad
-import GHC.Unit.Module.ModGuts
+import GHC.Unit.Module.ModGuts 
 import GHC.Data.FastString
 #else
 import CoreMonad
@@ -354,10 +354,9 @@ websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
 fdepSocketPath :: Maybe FilePath
 fdepSocketPath = unsafePerformIO $ lookupEnv "FDEP_SOCKET_PATH"
 
-sendTextData' :: CliOptions -> WS.Connection -> Text -> Text -> IO ()
-sendTextData' cliOptions _ path data_ = do
-    -- Use the Unix Domain Socket implementation instead of WebSockets
-    sendViaUnixSocket cliOptions path data_
+sendTextData' :: CliOptions -> _ -> Text -> Text -> IO ()
+sendTextData' cliOptions sock path data_ = do
+    NSB.sendAll sock (encodeUtf8 $ path <> "****" <> data_)
 
 -- Connect to Unix Domain Socket
 connectToUnixSocket :: FilePath -> IO NS.Socket
@@ -370,31 +369,27 @@ connectToUnixSocket socketPath = do
 sendViaUnixSocket :: CliOptions -> Text -> Text -> IO ()
 sendViaUnixSocket cliOptions path data_ = do
     -- Create message with path as header for routing
-    let message = encodeUtf8 $ path <> "\n" <> data_
+    let message = encodeUtf8 $ path <> "****" <> data_
     
     -- Get socket path from environment or config
-    let socketPathToUse = fromMaybe (socketPath cliOptions) fdepSocketPath
+    let socketPathToUse = fromMaybe (Fdep.Types.path cliOptions) fdepSocketPath
     
     -- Try to send data
     res <- try $ do
         sock <- connectToUnixSocket socketPathToUse
-        NSB.sendAll sock (BS.fromStrict message)
+        NSB.sendAll sock (message)
         NS.close sock
     
     case res of
         Left (err :: SomeException) -> do
             when (shouldLog || Fdep.Types.log cliOptions) $ 
                 print $ "Error sending data: " <> (T.pack $ show err)
-            
-            -- Save to error log
             appendFile "error.log" ((T.unpack path) <> "," <> (T.unpack data_) <> "\n")
-            
-            -- Save to recovery file
             let errorDir = "fdep_recovery"
             createDirectoryIfMissing True errorDir
             let timestamp = show $ hash $ T.unpack path
             appendFile (errorDir <> "/" <> timestamp <> ".json") (T.unpack data_ <> "\n")
-        
+    
         Right _ -> 
             when (shouldLog || Fdep.Types.log cliOptions) $ 
                 print $ "Successfully sent data to " <> path
@@ -404,7 +399,6 @@ sendViaUnixSocket cliOptions path data_ = do
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions {
     path="./tmp/fdep/",
-    socketPath="/tmp/fdep.sock",  -- Default socket path
     port=4444,
     host="::1",
     log=False,
@@ -488,12 +482,12 @@ fDep opts modSummary tcEnv = do
             when (shouldLog || Fdep.Types.log cliOptions) $ print ("generating dependancy for module: " <> moduleName' <> " at path: " <> pathStr)
             
             t1 <- getCurrentTime
-            
-            -- Process all bindings directly using Unix Domain Sockets
-            -- No need to create a connection here as each sendViaUnixSocket creates its own connection
+            let socketPathToUse = fromMaybe (path cliOptions) fdepSocketPath
+            sock <- connectToUnixSocket socketPathToUse
             mapM_
-                (loopOverLHsBindLR cliOptions undefined Nothing (T.pack wsPath))
+                (loopOverLHsBindLR cliOptions sock Nothing (T.pack wsPath))
                 (bagToList $ tcg_binds tcEnv)
+            NS.close sock
             
             t2 <- getCurrentTime
             when (shouldLog || Fdep.Types.log cliOptions) $ print ("generated dependancy for module: " <> moduleName' <> " at path: " <> pathStr <> " total-timetaken: " <> show (diffUTCTime t2 t1))
@@ -519,7 +513,7 @@ tail' (x:xs) = xs
 maybeBool (Just v) = v
 maybeBool _ = False
 
-processAndSendTypeDetails :: CliOptions -> WS.Connection -> Text -> Text -> [(Type)] -> IO ()
+processAndSendTypeDetails :: CliOptions -> _ -> Text -> Text -> [(Type)] -> IO ()
 processAndSendTypeDetails cliOptions con path keyFunction typesUsed =
     let details = concat $ map getTypeDetails typesUsed
         functionInfoList = nub $ map (\(name,_type) -> transformFromNameStableString ((Just $ T.pack $ name) ,Nothing ,(Just $ T.pack $ show $ toConstr _type),[])) details
@@ -544,7 +538,7 @@ tyConsOfType ty = case ty of
     TyVarTy _       -> []
 
 
-processFunctionInputOutput :: Type -> CliOptions -> WS.Connection -> Text -> Text -> IO ()
+processFunctionInputOutput :: Type -> CliOptions -> _ -> Text -> Text -> IO ()
 processFunctionInputOutput type_ cliOptions con _path nestedNameWithParent = do
     let info = HM.fromList $ extractDetailsFromBind (type_)
     data_ <- pure (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String nestedNameWithParent), ("functionIO", toJSON info)])
@@ -577,7 +571,7 @@ extractDetailsFromBind ty =
     in [("inputs",toJSON processedArgs), ("outputs",toJSON (quantifiedPart ++ constraintPart ++ fst processedRes, snd processedRes))]
 
 
-loopOverLHsBindLR :: CliOptions -> WS.Connection -> (Maybe Text) -> Text -> LHsBindLR GhcTc GhcTc -> IO ()
+loopOverLHsBindLR :: CliOptions -> _ -> (Maybe Text) -> Text -> LHsBindLR GhcTc GhcTc -> IO ()
 loopOverLHsBindLR cliOptions con mParentName path (L _ AbsBinds{abs_binds = binds}) =
     mapM_ (loopOverLHsBindLR cliOptions con mParentName path) $ bagToList binds
 loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do

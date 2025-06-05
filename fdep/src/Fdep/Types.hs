@@ -6,7 +6,6 @@ import Data.Text
 
 data CliOptions = CliOptions {
     path :: FilePath,
-    socketPath :: Maybe FilePath,  -- New field for Unix socket path
     port :: Int,             -- Keep for backward compatibility
     host :: String,          -- Keep for backward compatibility
     log :: Bool,
