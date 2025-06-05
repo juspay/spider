@@ -318,20 +318,22 @@ hasIsOrEmptyList expr =
        HsApp _ fun arg ->
          let funStr = showSDocUnsafe (ppr (unLoc fun))
              matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
-         in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
+         in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches) $
+              matches || hasIsOrEmptyList fun || hasIsOrEmptyList arg
 
        OpApp _ fun _ arg ->
          let funStr = showSDocUnsafe (ppr (unLoc fun))
              matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
-         in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) matches
+         in trace ("Matched: OpApp, head string: " ++ funStr ++ ", matches? " ++ show matches) $
+              matches || hasIsOrEmptyList fun || hasIsOrEmptyList arg
 
        HsPar _ inner -> trace "Matched: HsPar" $ hasIsOrEmptyList inner
 
-       XExpr (WrapExpr innerExpr) -> 
+       XExpr (WrapExpr innerExpr) ->
          case innerExpr of
-           HsWrap _ exprInner -> 
-             trace ("Matched: XExpr WrapExpr with location " ++ showSDocUnsafe(ppr exprInner)) $ 
-             hasIsOrEmptyList (noLocA exprInner)
+           HsWrap _ exprInner ->
+             trace ("Matched: XExpr WrapExpr with location " ++ showSDocUnsafe (ppr exprInner)) $
+               hasIsOrEmptyList (noLocA exprInner)
 
        XExpr _ -> trace "XExpr case: cannot handle yet" False
 
