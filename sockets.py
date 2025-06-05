@@ -74,23 +74,24 @@ async def handle_client(reader, writer):
             # For file dumps, write directly to file
             os.makedirs(path[1:].rsplit("/", 1)[0], exist_ok=True)
 
-            def file_write():
-                with open(path[1:], "w") as f:
-                    f.write(data_content)
-
-            file_write()
+            with open(path[1:], "w") as f:
+                f.write(data_content)
         else:
             # For streaming data, add to buffer
-            if data_content.strip():
-                buffer.append(data_content.strip())
+            data_content_list = message.strip().split("\n")
+            for i in data_content_list:
+                try:
+                    buffer.append(i.split("****")[1])
+                except Exception as e:
+                    print(e)
 
-                # Process buffer when it gets large enough
-                if len(buffer) > 400:
-                    await asyncio.get_event_loop().run_in_executor(
-                        None, process_fdep_output, path, buffer
-                    )
-                    buffer = []
-                    gc.collect()
+            # Process buffer when it gets large enough
+            if len(buffer) > 400:
+                await asyncio.get_event_loop().run_in_executor(
+                    None, process_fdep_output, path, buffer
+                )
+                buffer = []
+                gc.collect()
 
     except Exception as e:
         print(f"Error handling client: {e}")
@@ -115,7 +116,6 @@ def process_fdep_output(k, v):
     """Process and save output data"""
     if not v:  # Skip if buffer is empty
         return
-
     output_path = k[1:]
 
     if not os.path.isfile(output_path):
@@ -139,7 +139,7 @@ async def start_socket_server():
         os.unlink(socket_path)
 
     # Write socket path to a file that can be read by clients
-    with open("fdep_socket", "w") as f:
+    with open("server.pid", "w") as f:
         f.write(socket_path)
 
     # Print the export command for the user to run
@@ -177,147 +177,8 @@ async def start_socket_server():
             os.unlink(socket_path)
 
 
-# Alternative synchronous version for better compatibility
-def start_socket_server_sync():
-    """Synchronous version of the socket server"""
-    socket_path = find_free_socket_path()
-
-    # Ensure socket file doesn't exist
-    if os.path.exists(socket_path):
-        os.unlink(socket_path)
-
-    # Write socket path to a file
-    with open("fdep_socket", "w") as f:
-        f.write(socket_path)
-
-    print(f"Run the following command in your shell:")
-    print(f"export FDEP_SOCKET_PATH={socket_path}")
-
-    # Create socket
-    server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    server_sock.bind(socket_path)
-    server_sock.listen(100)
-
-    # Set socket permissions
-    os.chmod(socket_path, 0o777)
-
-    print(f"Synchronous Unix Domain Socket server started on {socket_path}")
-
-    def handle_client_sync(conn, addr):
-        """Handle client connection synchronously"""
-        a = datetime.datetime.now()
-        buffer = []
-        path = None
-
-        try:
-            # Read all data
-            all_data = b""
-            while True:
-                try:
-                    chunk = conn.recv(8192)
-                    if not chunk:
-                        break
-                    all_data += chunk
-                except:
-                    break
-
-            if not all_data:
-                return
-
-            message = all_data.decode("utf-8")
-
-            # Split on the first occurrence of "****"
-            if "****" not in message:
-                print(f"Invalid message format - no '****' separator found")
-                return
-
-            path, data_content = message.split("****", 1)
-            path = path.strip()
-
-            # Check if file dump
-            file_dump = any(
-                i in path
-                for i in [
-                    "module_imports",
-                    "function_code",
-                    "types_code",
-                    "class_code",
-                    "instance_code",
-                    "fieldUsage",
-                    "typeUpdates",
-                    "types.parser.json",
-                    "module_apis.json",
-                    "function_instance_mapping.json",
-                    "type.typechecker.json",
-                ]
-            )
-
-            if file_dump:
-                # Process file dump
-                os.makedirs(path[1:].rsplit("/", 1)[0], exist_ok=True)
-                with open(path[1:], "w") as f:
-                    f.write(data_content)
-            else:
-                # Handle streaming data
-                if data_content.strip():
-                    buffer.append(data_content.strip())
-
-                    if len(buffer) > 400:
-                        process_fdep_output(path, buffer)
-                        buffer = []
-                        gc.collect()
-
-        except Exception as e:
-            print(f"Error handling client: {e}")
-
-        finally:
-            if buffer and path:
-                process_fdep_output(path, buffer)
-
-            conn.close()
-
-            if path:
-                b = datetime.datetime.now()
-                delta = b - a
-                print("time taken to dump:", path[1:], delta)
-
-    def signal_handler(sig, frame):
-        print(f"Received signal {sig}, shutting down...")
-        server_sock.close()
-        if os.path.exists(socket_path):
-            os.unlink(socket_path)
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
-
-    try:
-        while True:
-            conn, addr = server_sock.accept()
-            # Handle each client in a separate thread
-            client_thread = threading.Thread(
-                target=handle_client_sync, args=(conn, addr)
-            )
-            client_thread.daemon = True
-            client_thread.start()
-
-    except KeyboardInterrupt:
-        print("Server shutting down...")
-    finally:
-        server_sock.close()
-        if os.path.exists(socket_path):
-            os.unlink(socket_path)
-
-
 if __name__ == "__main__":
-    # You can choose between async or sync version
-    # For better performance with many connections, use async
-    use_async = True
-
-    if use_async:
-        try:
-            asyncio.run(start_socket_server())
-        except KeyboardInterrupt:
-            print("Server stopped")
-    else:
-        start_socket_server_sync()
+    try:
+        asyncio.run(start_socket_server())
+    except KeyboardInterrupt:
+        print("Server stopped")

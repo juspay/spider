@@ -356,7 +356,7 @@ fdepSocketPath = unsafePerformIO $ lookupEnv "FDEP_SOCKET_PATH"
 
 sendTextData' :: CliOptions -> _ -> Text -> Text -> IO ()
 sendTextData' cliOptions sock path data_ = do
-    NSB.sendAll sock (encodeUtf8 $ path <> "****" <> data_)
+    NSB.sendAll sock (encodeUtf8 $ path <> "****" <> data_ <> "\n")
 
 -- Connect to Unix Domain Socket
 connectToUnixSocket :: FilePath -> IO NS.Socket
