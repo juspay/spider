@@ -12,6 +12,7 @@
 
 module Endpoints.Plugin where
 
+import Socket
 #if __GLASGOW_HASKELL__ >= 900
 import GHC
 import GHC.Data.FastString (unpackFS)
@@ -57,18 +58,13 @@ import Data.Generics.Uniplate.Data ()
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
 import Prelude hiding (log)
-import qualified Network.WebSockets as WS
 import Control.Exception
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import qualified Data.List.Extra as Data.List
-import Network.Socket (withSocketsDo)
 import Data.Maybe
 import System.Environment (lookupEnv)
 import Data.List.Extra (intercalate, isSuffixOf, replace, splitOn,groupBy)
-import qualified Network.Socket as NS
-import qualified Network.Socket.ByteString as NSB
 import System.Directory (createDirectoryIfMissing)
-import Data.Hashable (hash)
 
 plugin :: Plugin
 plugin =
@@ -87,46 +83,6 @@ shouldLog = readBool $ unsafePerformIO $ lookupEnv "ENABLE_LOGS"
     readBool (Just "True") = True
     readBool (Just "TRUE") = True
     readBool _ = False
-
-fdepSocketPath :: Maybe FilePath
-fdepSocketPath = unsafePerformIO $ lookupEnv "FDEP_SOCKET_PATH"
-
-connectToUnixSocket :: FilePath -> IO NS.Socket
-connectToUnixSocket socketPath = do
-    sock <- NS.socket NS.AF_UNIX NS.Stream NS.defaultProtocol
-    NS.connect sock (NS.SockAddrUnix socketPath)
-    return sock
-
-sendFileToWebSocketServer :: CliOptions -> T.Text -> _ -> IO ()
-sendFileToWebSocketServer cliOptions path data_ =
-    -- Use the Unix Domain Socket implementation
-    sendViaUnixSocket cliOptions path data_
-
-sendViaUnixSocket :: CliOptions -> T.Text -> T.Text -> IO ()
-sendViaUnixSocket cliOptions path data_ = do
-    -- Create message with path as header for routing
-    let message = encodeUtf8 $ path <> "****" <> data_
-    
-    -- Get socket path from environment or config
-    let socketPathToUse = fromMaybe (Endpoints.Plugin.path cliOptions) fdepSocketPath
-    
-    -- Try to send data
-    res <- try $ do
-        sock <- connectToUnixSocket socketPathToUse
-        NSB.sendAll sock (message)
-        NS.close sock
-    
-    case res of
-        Left (err :: SomeException) -> do
-            appendFile "error.log" ((T.unpack path) <> "," <> (T.unpack data_) <> "\n")
-            let errorDir = "fdep_recovery"
-            createDirectoryIfMissing True errorDir
-            let timestamp = show $ hash $ T.unpack path
-            appendFile (errorDir <> "/" <> timestamp <> ".json") (T.unpack data_ <> "\n")
-    
-        Right _ -> 
-            print $ "Successfully sent data to " <> path
-
 
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False}
@@ -157,7 +113,7 @@ collectTypesTC opts modSummary tcg = do
                 parsedEndpoints <-  processServantApis $ concat servantAPIs
                 -- createDirectoryIfMissing True path
                 -- DBS.writeFile (modulePath <> ".api-spec.json") (DBS.toStrict $ encode $ parsedEndpoints)
-                sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".module_apis.json") (decodeUtf8 $ (DBS.toStrict $ encode $ parsedEndpoints))
+                sendViaUnixSocket prefixPath (T.pack $ "/" <> modulePath <> ".module_apis.json") (decodeUtf8 $ (DBS.toStrict $ encode $ parsedEndpoints))
     return tcg
 
 mergeEndpoints x = x

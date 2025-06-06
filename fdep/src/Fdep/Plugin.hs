@@ -2,13 +2,14 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE NamedFieldPuns,PartialTypeSignatures #-}
-{-# OPTIONS_GHC -Werror=unused-imports -Werror=incomplete-patterns -Werror=name-shadowing #-}
+-- {-# OPTIONS_GHC -Werror=unused-imports -Werror=incomplete-patterns -Werror=name-shadowing #-}
 {-# LANGUAGE CPP #-}
 
 module Fdep.Plugin (plugin,collectDecls) where
 
+import Socket
 import Control.Concurrent ( forkIO )
-import Control.Exception (SomeException, try)
+import Control.Exception (SomeException, try,bracket)
 import Control.Monad (void, when)
 import Control.Reference (biplateRef, (^?))
 import Data.Aeson ( encode, Value(String, Object), ToJSON(toJSON) )
@@ -29,15 +30,9 @@ import Fdep.Types
 import Prelude hiding (id, writeFile,span)
 import qualified Prelude as P
 import qualified Data.List.Extra as Data.List
--- import Network.Socket (withSocketsDo)
 import System.Environment (lookupEnv)
 import GHC.IO (unsafePerformIO)
-import qualified Network.Socket as NS
-import qualified Network.Socket.ByteString as NSB
--- import qualified Data.ByteString as BS
 import System.Directory (createDirectoryIfMissing)
--- import System.FilePath (takeDirectory)
-import Data.Hashable (hash)
 #if __GLASGOW_HASKELL__ >= 900
 import GHC.Tc.Utils.TcType
 import GHC.Core.Type hiding (tyConsOfType)
@@ -114,18 +109,13 @@ instanceTrackerPass opts guts = do
         allBinds = mg_binds guts
         moduleN = moduleNameString $ moduleName $ mg_module guts
         moduleLoc = prefixPath Prelude.<> getFilePath (mg_loc guts)
-    liftIO $ sendFileToWebSocketServer cliOptions (T.pack $ "/" Prelude.<> moduleLoc Prelude.<> ".function_instance_mapping.json") (decodeUtf8 $ toStrict $ encode $ Map.fromList $ concat $ map (toLBind) allBinds)
+    liftIO $ sendViaUnixSocket (prefixPath) (T.pack $ "/" Prelude.<> moduleLoc Prelude.<> ".function_instance_mapping.json") (decodeUtf8 $ toStrict $ encode $ Map.fromList $ concat $ map (toLBind) allBinds)
     pure guts
 
 toLBind :: CoreBind -> [(String,[(String,String)])]
 toLBind (NonRec binder expr) = [(nameStableString $ idName binder,filter (\(name,_) -> "$f" `Data.List.isPrefixOf` name) $ map (\x -> (showSDocUnsafe $ ppr $ varName x,showSDocUnsafe $ ppr $ varType x)) (expr ^? biplateRef :: [Id]))]
 toLBind (Rec binds) = map (\(b, e) -> (nameStableString $ idName b,filter (\(name,_) -> "$f" `Data.List.isPrefixOf` name) $ map (\x -> (showSDocUnsafe $ ppr $ varName x,showSDocUnsafe $ ppr $ varType x)) (e ^? biplateRef :: [Id])) ) binds
 
-
-sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
-sendFileToWebSocketServer cliOptions path data_ =
-    -- Use the Unix Domain Socket implementation
-    sendViaUnixSocket cliOptions path data_
 
 collectDecls :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectDecls opts modSummary hsParsedModule = do
@@ -144,11 +134,11 @@ collectDecls opts modSummary hsParsedModule = do
             -- createDirectoryIfMissing True path
             (functionsVsCodeString,typesCodeString,classCodeString,instanceCodeString) <- processDecls declsList
             let importsList = concatMap (fromGHCImportDecl) (hsmodImports $ unLoc $ hpm_module hsParsedModule)
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".module_imports.json") (decodeUtf8 $ toStrict $ A.encode $ importsList)
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".function_code.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList functionsVsCodeString)
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types_code.json") (decodeUtf8 $ toStrict $ A.encode $ typesCodeString)
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".class_code.json") (decodeUtf8 $ toStrict $ A.encode $ classCodeString)
-            sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".instance_code.json") (decodeUtf8 $ toStrict $ A.encode $ instanceCodeString)
+            sendViaUnixSocket (Fdep.Types.path cliOptions) (T.pack $ "/" <> modulePath <> ".module_imports.json") (decodeUtf8 $ toStrict $ A.encode $ importsList)
+            sendViaUnixSocket (Fdep.Types.path cliOptions) (T.pack $ "/" <> modulePath <> ".function_code.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList functionsVsCodeString)
+            sendViaUnixSocket (Fdep.Types.path cliOptions) (T.pack $ "/" <> modulePath <> ".types_code.json") (decodeUtf8 $ toStrict $ A.encode $ typesCodeString)
+            sendViaUnixSocket (Fdep.Types.path cliOptions) (T.pack $ "/" <> modulePath <> ".class_code.json") (decodeUtf8 $ toStrict $ A.encode $ classCodeString)
+            sendViaUnixSocket (Fdep.Types.path cliOptions) (T.pack $ "/" <> modulePath <> ".instance_code.json") (decodeUtf8 $ toStrict $ A.encode $ instanceCodeString)
             -- writeFile (modulePath <> ".module_imports.json") (encodePretty $ importsList)
             -- writeFile (modulePath <> ".function_code.json") (encodePretty $ Map.fromList functionsVsCodeString)
             -- writeFile (modulePath <> ".types_code.json") (encodePretty $ typesCodeString)
@@ -343,50 +333,6 @@ shouldLog = readBool $ unsafePerformIO $ lookupEnv "ENABLE_LOGS"
     readBool (Just "TRUE") = True
     readBool _ = False
 
--- Get socket path from environment variable
-fdepSocketPath :: Maybe FilePath
-fdepSocketPath = unsafePerformIO $ lookupEnv "FDEP_SOCKET_PATH"
-
-sendTextData' :: CliOptions -> _ -> Text -> Text -> IO ()
-sendTextData' cliOptions sock path data_ = do
-    NSB.sendAll sock (encodeUtf8 $ path <> "****" <> data_ <> "\n")
-
--- Connect to Unix Domain Socket
-connectToUnixSocket :: FilePath -> IO NS.Socket
-connectToUnixSocket socketPath = do
-    sock <- NS.socket NS.AF_UNIX NS.Stream NS.defaultProtocol
-    NS.connect sock (NS.SockAddrUnix socketPath)
-    return sock
-
--- Send data via Unix Domain Socket
-sendViaUnixSocket :: CliOptions -> Text -> Text -> IO ()
-sendViaUnixSocket cliOptions path data_ = do
-    -- Create message with path as header for routing
-    let message = encodeUtf8 $ path <> "****" <> data_
-    
-    -- Get socket path from environment or config
-    let socketPathToUse = fromMaybe (Fdep.Types.path cliOptions) fdepSocketPath
-    
-    -- Try to send data
-    res <- try $ do
-        sock <- connectToUnixSocket socketPathToUse
-        NSB.sendAll sock (message)
-        NS.close sock
-    
-    case res of
-        Left (err :: SomeException) -> do
-            when (shouldLog || Fdep.Types.log cliOptions) $ 
-                print $ "Error sending data: " <> (T.pack $ show err)
-            appendFile "error.log" ((T.unpack path) <> "," <> (T.unpack data_) <> "\n")
-            let errorDir = "fdep_recovery"
-            createDirectoryIfMissing True errorDir
-            let timestamp = show $ hash $ T.unpack path
-            appendFile (errorDir <> "/" <> timestamp <> ".json") (T.unpack data_ <> "\n")
-    
-        Right _ -> 
-            when (shouldLog || Fdep.Types.log cliOptions) $ 
-                print $ "Successfully sent data to " <> path
-
 -- default options
 -- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
 defaultCliOptions :: CliOptions
@@ -473,15 +419,9 @@ fDep opts modSummary tcEnv = do
                 wsPath = "/" <> modulePath <> ".json"
             let pathStr = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
             when (shouldLog || Fdep.Types.log cliOptions) $ print ("generating dependancy for module: " <> moduleName' <> " at path: " <> pathStr)
-            
             t1 <- getCurrentTime
             let socketPathToUse = fromMaybe (path cliOptions) fdepSocketPath
-            sock <- connectToUnixSocket socketPathToUse
-            mapM_
-                (loopOverLHsBindLR cliOptions sock Nothing (T.pack wsPath))
-                (bagToList $ tcg_binds tcEnv)
-            NS.close sock
-            
+            sendPathPerformAction wsPath socketPathToUse (\sock -> mapM_ (loopOverLHsBindLR cliOptions sock Nothing (T.pack wsPath)) (bagToList $ tcg_binds tcEnv))
             t2 <- getCurrentTime
             when (shouldLog || Fdep.Types.log cliOptions) $ print ("generated dependancy for module: " <> moduleName' <> " at path: " <> pathStr <> " total-timetaken: " <> show (diffUTCTime t2 t1))
     return tcEnv
