@@ -1,112 +1,89 @@
+{-# LANGUAGE DeriveAnyClass,DuplicateRecordFields #-}
 module Fdep.Types where
 import Data.Aeson
+import GHC.Generics (Generic)
+import Data.Text
 
-data DataTypeUC = DataTypeUC {
-    function_name_ :: [String]
-    , typeVsFields :: [TypeVsFields]
-    } deriving (Show, Eq, Ord)
-
-data TypeVsFields = TypeVsFields {
-    type_name :: String
-    , fieldsVsExprs :: [(FieldRep)]
-} deriving (Show, Eq, Ord)
-
-data FieldRep = FieldRep {
-  field_name :: String
-  , expression :: String
-  , field_type :: String
-} deriving (Show, Eq, Ord)
+data CliOptions = CliOptions {
+    path :: FilePath,
+    port :: Int,             -- Keep for backward compatibility
+    host :: String,          -- Keep for backward compatibility
+    log :: Bool,
+    tc_funcs :: Maybe Bool
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data FunctionInfo = FunctionInfo
-  { package_name :: String
-  , module_name :: String
-  , name    :: String
-  , _type :: String
-  , src_Loc    :: String
-  , arguments :: [String]
-  } deriving (Show, Eq, Ord)
+  { package_name :: Text
+  , module_name :: Text
+  , name    :: Text
+  , _type :: Text
+  , src_Loc    :: Text
+  , arguments :: [Text]
+  } deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data Function = Function
-  {  function_name    :: String
+  {  function_name    :: Text
   , functions_called :: [Maybe FunctionInfo]
   , where_functions :: [Function]
-  , src_loc    :: String
-  , stringified_code :: String
-  , function_signature :: String
-  } deriving (Show, Eq, Ord)
+  , src_loc    :: Text
+  , stringified_code :: Text
+  , function_signature :: Text
+  } deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data MissingTopLevelBindsSignature = MissingTopLevelBindsSignature {
-  srcSpan :: String
-  , typeSignature :: String
-} deriving (Show, Eq, Ord)
+  srcSpan :: Text
+  , typeSignature :: Text
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
-instance ToJSON MissingTopLevelBindsSignature where
-  toJSON (MissingTopLevelBindsSignature srcSpan typeSignature) =
-    object [ "srcSpan" .= srcSpan
-           , "typeSignature"  .= typeSignature
-           ]
+data PFunction = PFunction {
+    parser_name :: Text
+    , parser_stringified_code :: Text
+    , parser_src_loc :: Text
+    , line_number    :: (Int,Int)
+}
+    deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
-instance ToJSON FunctionInfo where
-  toJSON (FunctionInfo pkg modName funcName _type srcLoc arguments) =
-    object [ "package_name" .= pkg
-           , "module_name"  .= modName
-           , "name"         .= funcName
-           , "_type"         .= _type
-           , "src_loc"         .= srcLoc
-           , "arguments"         .= arguments
-           ]
+data PType = PType {
+    typeName :: Text,
+    typeDefinition :: Text,
+    typeLocation :: Text
+    ,line_number    :: (Int,Int)
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
-instance ToJSON Function where
-  toJSON (Function funcName funcsCalled whereFuncs srcLoc codeStringified function_signature) =
-    object [ "function_name"    .= funcName
-           , "functions_called" .= funcsCalled
-           , "where_functions"  .= whereFuncs
-           , "src_loc"         .= srcLoc
-           , "code_string"         .= codeStringified
-           , "function_signature" .= function_signature
-           ]
+data PClass = PClass {
+    className :: Text,
+    classDefinition :: Text,
+    classLocation :: Text
+    ,line_number    :: (Int,Int)
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
-instance FromJSON FunctionInfo where
-  parseJSON = withObject "FunctionInfo" $ \v ->
-    FunctionInfo <$> v .: "package_name"
-                 <*> v .: "module_name"
-                 <*> v .: "name"
-                 <*> v .: "_type"
-                 <*> v .: "src_loc"
-                 <*> v .: "arguments"
+data PInstance = PInstance {
+    instanceType :: Text,
+    instanceDefinition :: Text,
+    instanceLocation :: Text
+    ,line_number    :: (Int,Int)
+} deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
-instance FromJSON Function where
-  parseJSON = withObject "Function" $ \v ->
-    Function <$> v .: "function_name"
-             <*> v .: "functions_called"
-             <*> v .: "where_functions"
-             <*> v .: "src_loc"
-             <*> v .: "code_string"
-             <*> v .: "function_signature"
 
-instance ToJSON DataTypeUC where
-    toJSON (DataTypeUC fn fields) =
-        object ["function_name" .= fn, "typeVsFields" .= fields]
+data QualifiedStyle = 
+    NotQualified 
+  | Qualified 
+  | QualifiedWith Text
+  deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
-instance FromJSON DataTypeUC where
-    parseJSON (Object v) =
-        DataTypeUC <$> v .: "function_name" <*> v .: "typeVsFields"
-    parseJSON _ = fail "Invalid DataTypeUC JSON"
+data HidingSpec = HidingSpec {
+    isHiding :: Bool,
+    names :: [Text]
+} deriving (Show, Eq, Generic,ToJSON,FromJSON)
 
-instance ToJSON FieldRep where
-    toJSON (FieldRep field_name expression field_type) =
-        object ["field_name" .= field_name, "expression" .= expression , "field_type" .= field_type]
-
-instance FromJSON FieldRep where
-    parseJSON (Object v) =
-        FieldRep <$> v .: "field_name" <*> v .: "expression" <*> v .: "field_type"
-    parseJSON _ = fail "Invalid FieldRep JSON"
-
-instance ToJSON TypeVsFields where
-    toJSON (TypeVsFields tn fes) =
-        object ["type_name" .= tn, "fieldsVsExprs" .= fes]
-
-instance FromJSON TypeVsFields where
-    parseJSON (Object v) =
-        TypeVsFields <$> v .: "type_name" <*> v .: "fieldsVsExprs"
-    parseJSON _ = fail "Invalid TypeVsFields JSON"
+data SimpleImportDecl = SimpleImportDecl {
+    moduleName'      :: Text,          -- ^ Module being imported
+    packageName     :: Maybe Text,    -- ^ Optional package qualifier
+    isBootSource    :: Bool,            -- ^ Whether this is a SOURCE import
+    isSafe         :: Bool,            -- ^ Whether this is a safe import
+    qualifiedStyle  :: QualifiedStyle,  -- ^ How the import is qualified
+    isImplicit     :: Bool,            -- ^ Whether this is an implicit import
+    asModuleName   :: Maybe Text,    -- ^ Optional module rename
+    hidingSpec     :: Maybe HidingSpec  -- ^ Optional hiding specification
+    ,line_number    :: (Int,Int)
+} deriving (Show, Eq, Generic,ToJSON,FromJSON)

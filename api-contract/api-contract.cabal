@@ -1,0 +1,89 @@
+cabal-version:      3.0
+name:               api-contract
+version:            0.1.0.0
+-- synopsis:
+-- description:
+license:            MIT
+license-file:       LICENSE
+author:             eswar2001
+maintainer:         eswar.tadiparth@juspay.in
+-- copyright:
+category:           Control
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+data-files: .juspay/api-contract/**/*.hs.yaml
+-- extra-source-files:
+
+flag enable-isolation
+  description:       set this flag to enable these plugins Data.Record.Plugin , Data.Record.Anon.Plugin , Data.Record.Plugin.HasFieldPattern
+  default:           False
+  manual:            True
+
+common warnings
+    if flag(enable-isolation)
+        cpp-options:     -DENABLE_ISOLATION
+    ghc-options: -Wall
+
+library
+    import:           warnings
+    exposed-modules:
+        ApiContract.Plugin
+        , ApiContract.Types
+    -- other-modules:
+    -- other-extensions:
+    build-depends:
+        bytestring
+        , containers
+        , filepath
+        , ghc
+        , unordered-containers
+        , ordered-containers
+        , insert-ordered-containers
+        , aeson
+        , directory
+        , extra
+        , aeson-pretty
+        , base
+        , text
+        , base64-bytestring
+        , optparse-applicative
+        , deepseq
+        , time
+        , async
+        , cryptonite
+        , hasbolt
+        , universum
+        , streamly-core
+        , data-default
+        , large-records
+        , large-generics
+        , large-anon
+        , ghc-hasfield-plugin
+        , record-dot-preprocessor
+        , ghc-tcplugin-api
+        , typelet
+        , record-hasfield
+        , binary
+        , references
+        , uniplate
+        , yaml
+
+    hs-source-dirs:   src
+    default-language: Haskell2010
+
+test-suite api-contract-test
+    import:           warnings
+    default-language: Haskell2010
+    ghc-options: -fplugin=ApiContract.Plugin
+    -- other-modules:
+    -- other-extensions:
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    build-depends:
+        base
+        , api-contract
+        , aeson
+        , record-hasfield
+        , text
+        , newtype

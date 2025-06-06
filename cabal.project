@@ -1,5 +1,10 @@
 packages:
   ./fdep
-  ./coresyn2chart
-  ./sheriff
   ./fieldInspector
+  ./sheriff
+  ./paymentFlow
+  ./api-contract
+  ./dc
+  ./endpoints
+  ./warner
+  ./keyLookupTracker

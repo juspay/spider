@@ -12,7 +12,7 @@ build-type:         Simple
 extra-doc-files:    CHANGELOG.md
 
 common common-options
-  build-depends:       base ^>=4.14.3.0
+  build-depends:       base
   ghc-options:         -Wall
                        -Wincomplete-uni-patterns
                        -Wincomplete-record-updates
@@ -34,30 +34,25 @@ common common-options
 
 library
     import: common-options
-    exposed-modules:  Fdep.Plugin Fdep.Types Fdep.Group
+    exposed-modules:  Fdep.Plugin Fdep.Types
     build-depends:
                 bytestring
                 , containers
                 , filepath
-                , ghc ^>= 8.10.7
-                , ghc-exactprint
+                , ghc
                 , unordered-containers
-                , uniplate >= 1.6  && < 1.7
+                , uniplate
                 , references
                 , classyplate
                 , aeson
-                , directory
                 , extra
-                , aeson-pretty
-                , streamly
+                , time
+                , text
+                , websockets
+                , network
+                , hashable
+                , directory
     hs-source-dirs:   src
-    default-language: Haskell2010
-
-executable fdep
-    import:           common-options
-    main-is:          Main.hs
-    build-depends: fdep
-    hs-source-dirs:   app
     default-language: Haskell2010
 
 test-suite fdep-test
@@ -68,4 +63,6 @@ test-suite fdep-test
     main-is:          Main.hs
     build-depends:
         fdep
-    ghc-options: -fplugin=Fdep.Plugin -fplugin-opt Fdep.Plugin:./tmp/fdep/
+        , text
+        , record-hasfield
+    ghc-options: -fplugin=Fdep.Plugin -fplugin-opt=Fdep.Plugin:{"path":"./tmp/fdep/","port":9898,"host":"localhost","log":true,"tc_funcs":false}
