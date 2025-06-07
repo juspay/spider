@@ -676,10 +676,12 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
         processExpr keyFunction path y@(L _ x@(HsOverLit _ overLitVal)) = do
             expr <- pure $ transformFromNameStableString (Just $ ("$_lit$" <> (T.pack $ showSDocUnsafe $ ppr overLitVal)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr overLitVal), mempty)
             sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
-        processExpr keyFunction path (L _ (HsSpliceE exprLStmtL exprLStmtR)) =
-            let stmtsL = (exprLStmtL ^? biplateRef :: [LHsExpr GhcTc])
-                stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
-            in void $ mapM (processExpr keyFunction path) (stmtsL <> stmtsR)
+        -- processExpr keyFunction path (L _ (HsSpliceE exprLStmtL exprLStmtR)) =
+        --     let stmtsL = (exprLStmtL ^? biplateRef :: [LHsExpr GhcTc])
+        --         stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
+        --     in void $ mapM (processExpr keyFunction path) (stmtsL <> stmtsR)
+        processExpr keyFunction path (L _ (HsSpliceE _ splice)) =
+            mapM_ (processExpr keyFunction path) (extractExprsFromSplice splice)
         processExpr keyFunction path y@(L _ x@(HsConLikeOut _ hsType)) = do
             expr <- pure $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr hsType)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr hsType), mempty)
             sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
@@ -765,37 +767,21 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             processExpr keyFunction path (noLoc fun)
         processExpr keyFunction path (L _ (HsIf _ exprLStmt funl funm funr)) =
             mapM_ (processExpr keyFunction path) $ [funl, funm, funr]
-        processExpr keyFunction path (L _ (HsTcBracketOut b exprLStmtL exprLStmtR)) =
-            let stmtsL = (exprLStmtL ^? biplateRef :: [LHsExpr GhcTc])
-                stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
-            in void $ mapM (processExpr keyFunction path) (stmtsL <> stmtsR)
-        processExpr keyFunction path (L _ (ArithSeq _ Nothing exprLStmtR)) =
-            let stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
-                stmtsRNoLoc = (exprLStmtR ^? biplateRef :: [HsExpr GhcTc])
-            in void $ mapM (processExpr keyFunction path) (stmtsR <> ((map noLoc) $ stmtsRNoLoc))
-        processExpr keyFunction path (L _ (HsRecFld _ exprLStmt)) =
-            let stmts = (exprLStmt ^? biplateRef :: [LHsExpr GhcTc])
-                stmtsNoLoc = (exprLStmt ^? biplateRef :: [HsExpr GhcTc])
-            in void $ mapM (processExpr keyFunction path) ( (stmts  <> (map noLoc) stmtsNoLoc))
-        processExpr keyFunction path (L _ (HsRnBracketOut _ exprLStmtL exprLStmtR)) =
-            let stmtsL = (exprLStmtL ^? biplateRef :: [LHsExpr GhcTc])
-                stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
-                stmtsLNoLoc = (exprLStmtL ^? biplateRef :: [HsExpr GhcTc])
-                stmtsRNoLoc = (exprLStmtR ^? biplateRef :: [HsExpr GhcTc])
-            in void $ mapM (processExpr keyFunction path) (stmtsL <> stmtsR <> (map noLoc $ (stmtsLNoLoc <> stmtsRNoLoc)))
-        processExpr keyFunction path (L _ x@(RecordCon expr (L _ (iD)) rcon_flds)) =
-            let stmts = (rcon_flds ^? biplateRef :: [LHsExpr GhcTc])
-                stmtsNoLoc = (rcon_flds ^? biplateRef :: [HsExpr GhcTc])
-                stmtsNoLocexpr = (expr ^? biplateRef :: [HsExpr GhcTc])
-            in void $ mapM (processExpr keyFunction path) (stmts <> (map noLoc) (stmtsNoLoc <> stmtsNoLocexpr))
-        processExpr keyFunction path (L _ (RecordUpd _ rupd_expr rupd_flds)) =
-            let stmts = (rupd_flds ^? biplateRef :: [LHsExpr GhcTc])
-                stmtsNoLoc = (rupd_flds ^? biplateRef :: [HsExpr GhcTc])
-            in void $ mapM (processExpr keyFunction path) (stmts <> (map noLoc) stmtsNoLoc)
-        processExpr keyFunction path y@(L _ (XExpr overLitVal)) =
-            let stmts = (overLitVal ^? biplateRef :: [LHsExpr GhcTc])
-                stmtsNoLoc = (overLitVal ^? biplateRef :: [HsExpr GhcTc])
-            in void $ mapM (processExpr keyFunction path) ( (stmts <> (map (noLoc) stmtsNoLoc)))
+        processExpr keyFunction path (L _ (HsTcBracketOut _ bracket pending)) = do
+            -- processBracket keyFunction path bracket
+            mapM_ (processPendingSplice keyFunction path) pending
+        processExpr keyFunction path (L _ (ArithSeq _ Nothing arithSeqInfo)) =
+            processArithSeqInfo keyFunction path arithSeqInfo
+        processExpr keyFunction path x@(L _ (HsRecFld _ exprLStmt)) =
+            getDataTypeDetails keyFunction path x
+        processExpr keyFunction path (L _ (HsRnBracketOut _ bracket pending)) = pure ()
+            -- processBracket keyFunction path bracket
+            -- mapM_ (processExpr keyFunction path) pending
+        processExpr keyFunction path y@(L _ x@(RecordCon _ (L _ (iD)) rcon_flds)) = 
+            getDataTypeDetails keyFunction path y
+        processExpr keyFunction path x@(L _ (RecordUpd _ rupd_expr rupd_flds)) = 
+            getDataTypeDetails keyFunction path x
+        processExpr keyFunction path y@(L _ (XExpr _)) = pure ()
         processExpr keyFunction path y@(L _ x@(HsOverLabel _ mIdp fs)) = do
             expr <- pure $ transformFromNameStableString (Just $ ("$_overLabel$" <> (T.pack $ showSDocUnsafe $ ppr fs)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr x), mempty)
             sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
@@ -803,6 +789,333 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             let stmts = (x ^? biplateRef :: [LHsExpr GhcTc])
                 stmtsNoLoc = (x ^? biplateRef :: [HsExpr GhcTc])
             in void $ mapM (processExpr keyFunction path) ( (stmts <> (map (noLoc) stmtsNoLoc)))
+
+        processArithSeqInfo :: Text -> Text -> ArithSeqInfo GhcTc -> IO ()
+        processArithSeqInfo keyFunction path arithInfo = case arithInfo of
+            From expr -> processExpr keyFunction path expr
+            FromThen expr1 expr2 -> do
+                processExpr keyFunction path expr1
+                processExpr keyFunction path expr2
+            FromTo expr1 expr2 -> do
+                processExpr keyFunction path expr1
+                processExpr keyFunction path expr2
+            FromThenTo expr1 expr2 expr3 -> do
+                processExpr keyFunction path expr1
+                processExpr keyFunction path expr2
+                processExpr keyFunction path expr3
+
+        processPendingSplice :: Text -> Text -> PendingTcSplice -> IO ()
+        processPendingSplice keyFunction path (PendingTcSplice _ expr) = 
+            processExpr keyFunction path expr
+
+        processBracket :: Text -> Text -> HsBracket GhcTc -> IO ()
+        processBracket keyFunction path bracket = case bracket of
+            ExpBr _ expr -> processExpr keyFunction path expr
+            PatBr _ pat -> extractExprsFromPat keyFunction path pat
+            DecBrL _ decls -> mapM_ (processDecl keyFunction path) $ decls
+            -- DecBrG _ decls -> mapM_ (processDecl keyFunction path) $ decls  
+            TypBr _ _ -> pure ()
+            VarBr _ _ _ -> pure ()
+            TExpBr _ expr -> processExpr keyFunction path expr
+            _ -> pure ()
+
+        processDecl :: Text -> Text -> LHsDecl GhcTc -> IO ()
+        processDecl keyFunction path (L _ decl) = case decl of
+            ValD _ bind -> processHsBind keyFunction path bind
+            TyClD _ tyClDecl -> processTyClDecl keyFunction path tyClDecl
+            InstD _ instDecl -> processInstDecl keyFunction path instDecl
+            ForD _ forDecl -> processForDecl keyFunction path forDecl
+            SigD _ sig -> processSig keyFunction path sig
+            _ -> pure ()
+
+        -- Process bindings
+        processHsBind :: Text -> Text -> HsBindLR GhcTc GhcTc -> IO ()
+        processHsBind keyFunction path bind = loopOverLHsBindLR cliOptions con (Just keyFunction) path (noLoc bind)
+
+        -- Process type class declarations
+        processTyClDecl :: Text -> Text -> TyClDecl GhcTc -> IO ()
+        processTyClDecl keyFunction path tyClDecl = case tyClDecl of
+            DataDecl{tcdDataDefn = defn} -> processDataDefn keyFunction path defn
+            ClassDecl{tcdSigs = sigs, tcdMeths = meths} -> do
+                mapM_ (processSig keyFunction path . unLoc) sigs
+                mapM_ (processHsBind keyFunction path . unLoc) (bagToList meths)
+            _ -> pure ()
+
+        -- Process data definitions
+        processDataDefn :: Text -> Text -> HsDataDefn GhcTc -> IO ()
+        processDataDefn keyFunction path (HsDataDefn{dd_cons = cons}) =
+            mapM_ (processConDecl keyFunction path) cons
+
+        -- Process constructor declarations
+        processConDecl :: Text -> Text -> LConDecl GhcTc -> IO ()
+        processConDecl keyFunction path (L _ conDecl) = case conDecl of
+            ConDeclGADT{con_args = args} -> processConDeclDetails keyFunction path args
+            ConDeclH98{con_args = args} -> processConDeclDetails keyFunction path args
+            _ -> pure ()
+
+        processConDeclDetails :: Text -> Text -> HsConDeclDetails GhcTc -> IO ()
+        processConDeclDetails keyFunction path details = case details of
+            PrefixCon args -> mapM_ (processLHsType keyFunction path) args
+            RecCon (L _ recordFields) -> mapM_ (processConDeclField keyFunction path) recordFields
+            InfixCon arg1 arg2 -> do
+                processLHsType keyFunction path arg1
+                processLHsType keyFunction path arg2
+
+        processConDeclField :: Text -> Text -> LConDeclField GhcTc -> IO ()
+        processConDeclField keyFunction path (L _ (ConDeclField _ _ fieldType _)) =
+            processLHsType keyFunction path fieldType
+
+        -- Process types
+        processLHsType :: Text -> Text -> LHsType GhcTc -> IO ()
+        processLHsType keyFunction path (L _ hsType) = 
+            processType keyFunction path hsType
+
+        processType :: Text -> Text -> HsType GhcTc -> IO ()
+        processType keyFunction path hsType = case hsType of
+            HsAppTy _ t1 t2 -> do
+                processLHsType keyFunction path t1
+                processLHsType keyFunction path t2
+            HsFunTy _ t1 t2 -> do
+                processLHsType keyFunction path t1
+                processLHsType keyFunction path t2
+            HsListTy _ t -> processLHsType keyFunction path t
+            HsTupleTy _ _ ts -> mapM_ (processLHsType keyFunction path) ts
+            _ -> pure ()
+
+        -- Process instance declarations
+        processInstDecl :: Text -> Text -> InstDecl GhcTc -> IO ()
+        processInstDecl keyFunction path instDecl = case instDecl of
+            ClsInstD _ clsInst -> processClsInstDecl keyFunction path clsInst
+            _ -> pure ()
+
+        processClsInstDecl :: Text -> Text -> ClsInstDecl GhcTc -> IO ()
+        processClsInstDecl keyFunction path (ClsInstDecl{cid_binds = binds}) =
+            mapM_ (processHsBind keyFunction path . unLoc) (bagToList binds)
+
+        -- Process foreign declarations
+        processForDecl :: Text -> Text -> ForeignDecl GhcTc -> IO ()
+        processForDecl keyFunction path _ = pure () -- Usually no expressions in foreign decls
+
+        -- Process signatures
+        processSig :: Text -> Text -> Sig GhcTc -> IO ()
+        processSig keyFunction path sig = case sig of
+            TypeSig _ _ hsType -> processLHsSigWcType keyFunction path hsType
+            _ -> pure ()
+
+        processLHsSigWcType :: Text -> Text -> LHsSigWcType GhcTc -> IO ()
+        processLHsSigWcType keyFunction path (HsWC _ (HsIB _ hsType)) =
+            processLHsType keyFunction path hsType
+
+        extractExprsFromLHsCmdTop :: Text -> Text -> LHsCmdTop GhcTc -> IO ()
+        extractExprsFromLHsCmdTop keyFunction path (L _ cmdTop) = 
+            case cmdTop of
+                HsCmdTop _ cmd -> extractExprsFromLHsCmd keyFunction path cmd
+                _ -> pure ()
+
+        extractExprsFromLHsCmd :: Text -> Text ->  LHsCmd GhcTc -> IO ()
+        extractExprsFromLHsCmd keyFunction path (L _ cmd) = extractExprsFromHsCmd keyFunction path cmd
+
+        extractExprsFromCmdLStmt :: Text -> Text -> CmdLStmt GhcTc -> IO ()
+        extractExprsFromCmdLStmt keyFunction path (L _ stmt) = extractExprsFromStmtLR keyFunction path stmt
+
+        extractExprsFromMatchGroup :: Text -> Text -> MatchGroup GhcTc (LHsCmd GhcTc) -> IO ()
+        extractExprsFromMatchGroup keyFunction path (MG _ (L _ matches) _) = mapM_ (extractExprsFromMatch keyFunction path) matches
+
+        extractExprsFromMatch :: Text -> Text ->  LMatch GhcTc (LHsCmd GhcTc) -> IO ()
+        extractExprsFromMatch keyFunction path (L _ (Match _ _ _ grhs)) = extractExprsFromGRHSs keyFunction path grhs
+
+        extractExprsFromGRHSs :: Text -> Text ->  GRHSs GhcTc (LHsCmd GhcTc) -> IO ()
+        extractExprsFromGRHSs keyFunction path (GRHSs _ grhss _) = mapM_ (extractExprsFromGRHS keyFunction path)  grhss
+
+        extractExprsFromGRHS :: Text -> Text ->  LGRHS GhcTc (LHsCmd GhcTc) -> IO ()
+        extractExprsFromGRHS keyFunction path (L _ (GRHS _ _ body)) = extractExprsFromLHsCmd keyFunction path body
+        extractExprsFromGRHS keyFunction path _ = pure ()
+
+        extractExprsFromStmtLR :: Text -> Text -> StmtLR GhcTc GhcTc (LHsCmd GhcTc) -> IO ()
+        extractExprsFromStmtLR keyFunction path stmt = case stmt of
+            LastStmt _ body _ retExpr -> do
+                extractExprsFromLHsCmd keyFunction path body
+                processSynExpr keyFunction path retExpr
+            BindStmt _ pat body l r -> do
+                processSynExpr keyFunction path l
+                processSynExpr keyFunction path r
+                extractExprsFromPat keyFunction path pat
+                extractExprsFromLHsCmd keyFunction path body
+            ApplicativeStmt _ args mJoin -> do
+                mapM_ (\(op, arg) -> do
+                    processSynExpr keyFunction path op
+                    extractExprFromApplicativeArg keyFunction path arg) args
+                case mJoin of
+                    Just m -> processSynExpr keyFunction path m
+                    _ -> pure ()
+            BodyStmt _ body _ guardOp -> do
+                extractExprsFromLHsCmd keyFunction path body
+                processSynExpr keyFunction path guardOp
+            LetStmt _ binds ->
+                processHsLocalBinds keyFunction path $ unLoc binds
+            ParStmt _ blocks _ bindOp -> do
+                mapM_ (extractExprsFromParStmtBlock keyFunction path) blocks
+                processSynExpr keyFunction path bindOp
+            TransStmt{..} -> do
+                mapM_ (extractExprsFromStmtLRHsExpr keyFunction path . unLoc) (trS_stmts)
+                processExpr keyFunction path trS_using
+                mapM_ (processExpr keyFunction path) (trS_by)
+                processSynExpr keyFunction path trS_ret
+                processSynExpr keyFunction path trS_bind
+                processExpr keyFunction path (noLoc trS_fmap)
+            RecStmt{..} -> do
+                mapM_ (extractExprsFromStmtLR keyFunction path . unLoc) (recS_stmts)
+                processSynExpr keyFunction path recS_bind_fn
+                processSynExpr keyFunction path recS_ret_fn
+                processSynExpr keyFunction path recS_mfix_fn
+            _ -> pure ()
+
+        extractExprsFromParStmtBlock :: Text -> Text -> ParStmtBlock GhcTc GhcTc -> IO ()
+        extractExprsFromParStmtBlock keyFunction path (ParStmtBlock _ stmts _ _) =
+            mapM_ (extractExprsFromStmtLRHsExpr keyFunction path . unLoc) stmts
+
+        processSynExpr :: Text -> Text -> SyntaxExpr GhcTc -> IO ()
+        processSynExpr keyFunction path synExpr = processExpr keyFunction path (noLoc $ syn_expr synExpr)
+
+        extractExprsFromStmtLRHsExpr :: Text -> Text -> StmtLR GhcTc GhcTc (LHsExpr GhcTc) -> IO ()
+        extractExprsFromStmtLRHsExpr keyFunction path stmt = case stmt of
+            LastStmt _ body _ retExpr -> do
+                processExpr keyFunction path body
+                processSynExpr keyFunction path retExpr
+            BindStmt _ pat body l r -> do
+                processSynExpr keyFunction path l
+                processSynExpr keyFunction path r
+                extractExprsFromPat keyFunction path pat
+                processExpr keyFunction path body
+            ApplicativeStmt _ args mJoin -> do
+                mapM_ (\(op, arg) -> do
+                    processSynExpr keyFunction path op
+                    extractExprFromApplicativeArg keyFunction path arg) args
+                case mJoin of
+                    Just m -> processSynExpr keyFunction path m
+                    _ -> pure ()
+            BodyStmt _ body _ guardOp -> do
+                processExpr keyFunction path body
+                processSynExpr keyFunction path guardOp
+            LetStmt _ binds ->
+                processHsLocalBinds keyFunction path $ unLoc binds
+            ParStmt _ blocks _ bindOp -> do
+                mapM_ (extractExprsFromParStmtBlock keyFunction path) blocks
+                processSynExpr keyFunction path bindOp
+            TransStmt{..} -> do
+                mapM_ (extractExprsFromStmtLRHsExpr keyFunction path . unLoc) trS_stmts
+                processExpr keyFunction path trS_using
+                mapM_ (processExpr keyFunction path) (trS_by)
+                processSynExpr keyFunction path trS_ret
+                processSynExpr keyFunction path trS_bind
+                processExpr keyFunction path (noLoc trS_fmap)
+            RecStmt{..} -> do
+                mapM_ (extractExprsFromStmtLRHsExpr keyFunction path . unLoc) (recS_stmts)
+                processSynExpr keyFunction path recS_bind_fn
+                processSynExpr keyFunction path recS_ret_fn
+                processSynExpr keyFunction path recS_mfix_fn
+            _ -> pure ()
+
+        extractExprsFromHsCmd :: Text -> Text -> HsCmd GhcTc -> IO ()
+        extractExprsFromHsCmd keyFunction path cmd = case cmd of
+            HsCmdArrApp _ f arg _ _ ->
+                void $ mapM (processExpr keyFunction path) [f, arg]
+            HsCmdArrForm _ e _ _ cmdTops -> do
+                mapM_ (extractExprsFromLHsCmdTop keyFunction path) cmdTops
+                processExpr keyFunction path e
+            HsCmdApp _ cmd' e -> do
+                extractExprsFromLHsCmd keyFunction path cmd'
+                processExpr keyFunction path e
+            HsCmdLam _ mg -> extractExprsFromMatchGroup keyFunction path mg
+            HsCmdPar _ cmd' ->
+                extractExprsFromLHsCmd keyFunction path cmd'
+            HsCmdCase _ e mg -> do
+                extractExprsFromMatchGroup keyFunction path mg
+                processExpr keyFunction path e
+            -- HsCmdLamCase _ mg ->
+            --     extractExprsFromMatchGroup keyFunction path mg
+            HsCmdIf _ mSyntaxEcpr predExpr thenCmd elseCmd -> do
+                when (isJust mSyntaxEcpr) (processSynExpr keyFunction path (fromJust mSyntaxEcpr)) 
+                extractExprsFromLHsCmd keyFunction path elseCmd
+                extractExprsFromLHsCmd keyFunction path thenCmd
+                processExpr keyFunction path predExpr
+            HsCmdLet _ binds cmd' -> do
+                processHsLocalBinds keyFunction path $ unLoc binds
+                extractExprsFromLHsCmd keyFunction path cmd'
+            HsCmdDo _ stmts ->
+                mapM_ (extractExprsFromCmdLStmt keyFunction path )(unLoc stmts)
+            _ -> pure ()
+
+        extractExprsFromPat :: Text -> Text -> LPat GhcTc -> IO ()
+        extractExprsFromPat keyFunction path y@(L _ pat) =
+            case pat of
+                WildPat hsType     -> do
+                    expr <- pure $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr hsType)), (Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc y), (Just $ T.pack $ show $ toConstr hsType), mempty)
+                    sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
+                VarPat _ var    -> processExpr keyFunction path (noLoc (HsVar noExtField var))
+                LazyPat _ p   -> (extractExprsFromPat keyFunction path) p
+                AsPat _ var p   -> do
+                    processExpr keyFunction path (noLoc (HsVar noExtField var))
+                    (extractExprsFromPat keyFunction path) p
+                ParPat _ p    -> (extractExprsFromPat keyFunction path) p
+                BangPat _ p   -> (extractExprsFromPat keyFunction path) p
+                ListPat _ ps  -> mapM_ (extractExprsFromPat keyFunction path) ps
+                TuplePat _ ps _ -> mapM_ (extractExprsFromPat keyFunction path) ps
+                SumPat hsTypes p _ _ -> do 
+                    mapM_ (\hsType -> do
+                                expr <- pure $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr hsType)), (Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc y), (Just $ T.pack $ show $ toConstr hsType), mempty)
+                                sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
+                            ) hsTypes
+                    (extractExprsFromPat keyFunction path) p
+                ConPatOut {pat_args = args} -> (extractExprsFromHsConPatDetails keyFunction path args)
+                ViewPat hsType expr p -> do
+                    expr' <- pure $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr hsType)), (Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc y), (Just $ T.pack $ show $ toConstr hsType), mempty)
+                    sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr')])
+                    processExpr keyFunction path expr
+                    (extractExprsFromPat keyFunction path) p
+                SplicePat _ splice -> mapM_ (processExpr keyFunction path) $ extractExprsFromSplice splice
+                LitPat _ hsLit     -> do
+                    expr <- pure $ transformFromNameStableString (Just $ ("$_lit$" <> (T.pack $ showSDocUnsafe $ ppr hsLit)), (Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc $ y), (Just $ T.pack $ show $ toConstr hsLit), mempty)
+                    sendTextData' cliOptions con path (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String keyFunction), ("expr", toJSON expr)])
+                NPat _ (L _ overLit) _ _ -> do
+                    extractExprsFromOverLit overLit
+                NPlusKPat _ _ (L _ overLit) _ _ _ ->
+                    extractExprsFromOverLit overLit
+                SigPat _ p _   -> (extractExprsFromPat keyFunction path) p
+                _ -> pure ()
+            where
+            extractExprsFromOverLit :: HsOverLit GhcTc -> IO ()
+            extractExprsFromOverLit (OverLit _ _ e) = processExpr keyFunction path (noLoc e)
+
+            extractExprsFromHsConPatDetails :: Text -> Text -> HsConPatDetails GhcTc -> IO ()
+            extractExprsFromHsConPatDetails keyFunction' path' (PrefixCon args) = mapM_ (extractExprsFromPat keyFunction' path') args
+            extractExprsFromHsConPatDetails keyFunction' path' z@(RecCon (HsRecFields {})) =
+                mapM_ (extractExprsFromPat keyFunction' path') $ hsConPatArgs z
+            extractExprsFromHsConPatDetails keyFunction' path' (InfixCon p1 p2) = do
+                (extractExprsFromPat keyFunction' path') p1
+                (extractExprsFromPat keyFunction' path') p2
+
+        extractExprFromApplicativeArg :: Text -> Text -> ApplicativeArg GhcTc -> IO ()
+        extractExprFromApplicativeArg keyFunction path (ApplicativeArgOne _ lpat expr _ _) = do 
+            processExpr keyFunction path expr
+            extractExprsFromPat keyFunction path lpat
+        extractExprFromApplicativeArg keyFunction path (ApplicativeArgMany _ exprLStmt _ lpat) = do
+            mapM_ (extractExprsFromStmtLRHsExpr keyFunction path) (map (unLoc) exprLStmt)
+            extractExprsFromPat keyFunction path lpat
+
+        extractExprsFromSplice :: HsSplice GhcTc -> [LHsExpr GhcTc]
+        extractExprsFromSplice (HsTypedSplice _ _ _ e) = [e]
+        extractExprsFromSplice (HsUntypedSplice _ _ _ e) = [e]
+        extractExprsFromSplice (HsQuasiQuote _ _ _ _ _) = []
+        extractExprsFromSplice (HsSpliced _ _ _) = []
+        extractExprsFromSplice _ = []
+
+        processXXExpr :: Text -> Text -> XXExpr GhcTc -> IO ()
+        processXXExpr keyFunction path xxExpr = 
+            -- In GHC 8.10.7, XXExpr GhcTc might be NoExtCon or a specific wrapper type
+            -- For now, we'll just skip processing these extension points
+            pure ()
+
 #endif
         getDataTypeDetails :: Text -> Text -> LHsExpr GhcTc -> IO ()
 #if __GLASGOW_HASKELL__ >= 900 
@@ -1112,13 +1425,6 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             mapM_ (extractExprsFromStmtLRHsExpr keyFunction path) (map (unLoc) exprLStmt)
             extractExprsFromPat keyFunction path lpat
 
-        extractExprsFromSplice :: HsSplice GhcTc -> [LHsExpr GhcTc]
-        extractExprsFromSplice (HsTypedSplice _ _ _ e) = [e]
-        extractExprsFromSplice (HsUntypedSplice _ _ _ e) = [e]
-        extractExprsFromSplice (HsQuasiQuote _ _ _ _ _) = []
-        extractExprsFromSplice (HsSpliced _ _ _) = []
-        extractExprsFromSplice _ = []
-
         processXXExpr :: Text -> Text -> XXExprGhcTc -> IO ()
         processXXExpr keyFunction path (WrapExpr (HsWrap hsWrapper hsExpr)) =
             processExpr keyFunction path (wrapXRec @(GhcTc) hsExpr)
@@ -1134,3 +1440,10 @@ getLoc'   = (showSDocUnsafe . ppr . la2r . getLoc)
 getLocTC' = (showSDocUnsafe . ppr . getLoc)
 getLoc' = (showSDocUnsafe . ppr . getLoc)
 #endif
+
+extractExprsFromSplice :: HsSplice GhcTc -> [LHsExpr GhcTc]
+extractExprsFromSplice (HsTypedSplice _ _ _ e) = [e]
+extractExprsFromSplice (HsUntypedSplice _ _ _ e) = [e]
+extractExprsFromSplice (HsQuasiQuote _ _ _ _ _) = []
+extractExprsFromSplice (HsSpliced _ _ _) = []
+extractExprsFromSplice _ = []
