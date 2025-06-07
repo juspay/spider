@@ -242,14 +242,9 @@ import System.Directory.Internal.Prelude (
 import Prelude hiding (id, mapM, mapM_,log)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
-import qualified Network.WebSockets as WS
-import Network.Socket (withSocketsDo)
 import GHC.IO (unsafePerformIO)
-import qualified Network.Socket as NS
-import qualified Network.Socket.ByteString as NSB
 import System.Directory (createDirectoryIfMissing)
-import Data.Hashable (hash)
-
+import Socket
 
 plugin :: Plugin
 plugin =
@@ -268,45 +263,6 @@ removeIfExists fileName = removeFile fileName `catch` handleExists
         | isDoesNotExistError e = return ()
         | otherwise = throwIO e
 
-fdepSocketPath :: Maybe FilePath
-fdepSocketPath = unsafePerformIO $ lookupEnv "FDEP_SOCKET_PATH"
-
-connectToUnixSocket :: FilePath -> IO NS.Socket
-connectToUnixSocket socketPath = do
-    sock <- NS.socket NS.AF_UNIX NS.Stream NS.defaultProtocol
-    NS.connect sock (NS.SockAddrUnix socketPath)
-    return sock
-
-sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
-sendFileToWebSocketServer cliOptions path data_ =
-    -- Use the Unix Domain Socket implementation
-    sendViaUnixSocket cliOptions path data_
-
-sendViaUnixSocket :: CliOptions -> Text -> Text -> IO ()
-sendViaUnixSocket cliOptions path data_ = do
-    -- Create message with path as header for routing
-    let message = encodeUtf8 $ path <> "****" <> data_
-    
-    -- Get socket path from environment or config
-    let socketPathToUse = fromMaybe (FieldInspector.Types.path cliOptions) fdepSocketPath
-    
-    -- Try to send data
-    res <- try $ do
-        sock <- connectToUnixSocket socketPathToUse
-        NSB.sendAll sock (message)
-        NS.close sock
-    
-    case res of
-        Left (err :: SomeException) -> do
-            appendFile "error.log" ((T.unpack path) <> "," <> (T.unpack data_) <> "\n")
-            let errorDir = "fdep_recovery"
-            createDirectoryIfMissing True errorDir
-            let timestamp = show $ hash $ T.unpack path
-            appendFile (errorDir <> "/" <> timestamp <> ".json") (T.unpack data_ <> "\n")
-    
-        Right _ -> 
-            print $ "Successfully sent data to " <> path
-
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcEnv = do
     _ <- liftIO $
@@ -323,7 +279,7 @@ collectTypesTC opts modSummary tcEnv = do
                         binds = bagToList $ tcg_binds tcEnv
                     -- createDirectoryIfMissing True path
                     functionVsUpdates <- getAllTypeManipulations binds
-                    sendFileToWebSocketServer cliOptions (T.pack $ "/" <> (modulePath) <> ".typeUpdates.json") (decodeUtf8 $ toStrict $ A.encode functionVsUpdates)
+                    sendViaUnixSocket (path cliOptions) (T.pack $ "/" <> (modulePath) <> ".typeUpdates.json") (decodeUtf8 $ toStrict $ A.encode functionVsUpdates)
                     -- DBS.writeFile ((modulePath) <> ".typeUpdates.json") (toStrict $ encodePretty functionVsUpdates)
     return tcEnv
 

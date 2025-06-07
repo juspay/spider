@@ -8,3 +8,4 @@ packages:
   ./endpoints
   ./warner
   ./keyLookupTracker
+  ./socket_lib
