@@ -48,10 +48,9 @@ library
                 , extra
                 , time
                 , text
-                , websockets
-                , network
-                , hashable
+                , socket-lib
                 , directory
+                , async
     hs-source-dirs:   src
     default-language: Haskell2010
 

@@ -96,8 +96,6 @@ import qualified ApiContract.Plugin as ApiContract
 -- import qualified Fdep.Plugin as Fdep
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
-import qualified Network.WebSockets as WS
-import Network.Socket (withSocketsDo)
 import Text.Read (readMaybe)
 import GHC.IO (unsafePerformIO)
 import Data.Binary
@@ -105,10 +103,8 @@ import Control.DeepSeq
 import GHC.Generics (Generic)
 import Control.Reference (biplateRef, (^?))
 import Data.Generics.Uniplate.Data ()
-import qualified Network.Socket as NS
-import qualified Network.Socket.ByteString as NSB
 import System.Directory (createDirectoryIfMissing)
-import Data.Hashable (hash)
+import Socket
 
 plugin :: Plugin
 plugin = (defaultPlugin{
@@ -184,47 +180,6 @@ pprTyCon = ppr
 pprDataCon :: Name -> SDoc
 pprDataCon = ppr
 
-fdepSocketPath :: Maybe FilePath
-fdepSocketPath = unsafePerformIO $ lookupEnv "FDEP_SOCKET_PATH"
-
--- Connect to Unix Domain Socket
-connectToUnixSocket :: FilePath -> IO NS.Socket
-connectToUnixSocket socketPath = do
-    sock <- NS.socket NS.AF_UNIX NS.Stream NS.defaultProtocol
-    NS.connect sock (NS.SockAddrUnix socketPath)
-    return sock
-
-
-sendFileToWebSocketServer :: CliOptions -> Text -> _ -> IO ()
-sendFileToWebSocketServer cliOptions path data_ =
-    -- Use the Unix Domain Socket implementation
-    sendViaUnixSocket cliOptions path data_
-
-sendViaUnixSocket :: CliOptions -> Text -> Text -> IO ()
-sendViaUnixSocket cliOptions path data_ = do
-    -- Create message with path as header for routing
-    let message = encodeUtf8 $ path <> "****" <> data_
-    
-    -- Get socket path from environment or config
-    let socketPathToUse = fromMaybe (FieldInspector.Types.path cliOptions) fdepSocketPath
-    
-    -- Try to send data
-    res <- try $ do
-        sock <- connectToUnixSocket socketPathToUse
-        NSB.sendAll sock (message)
-        NS.close sock
-    
-    case res of
-        Left (err :: SomeException) -> do
-            appendFile "error.log" ((T.unpack path) <> "," <> (T.unpack data_) <> "\n")
-            let errorDir = "fdep_recovery"
-            createDirectoryIfMissing True errorDir
-            let timestamp = show $ hash $ T.unpack path
-            appendFile (errorDir <> "/" <> timestamp <> ".json") (T.unpack data_ <> "\n")
-    
-        Right _ -> 
-            print $ "Successfully sent data to " <> path
-
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False,api_conteact=Just True}
 
@@ -245,7 +200,7 @@ collectTypeInfoParser opts modSummary hpm = do
                 -- createDirectoryIfMissing True path_
                 types <- mapM (pure . getTypeInfo moduleName') (hsmodDecls hm_module)
                 -- DBS.writeFile (modulePath <> ".type.parser.json") (toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
-                sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types.parser.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
+                sendViaUnixSocket (path cliOptions) (T.pack $ "/" <> modulePath <> ".types.parser.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
     pure hpm
 
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
@@ -264,7 +219,7 @@ collectTypesTC opts modSummary tcg = do
         -- liftIO $ createDirectoryIfMissing True path_
         typeDefs <- extractTypeInfo tcg
         -- liftIO $ forkIO $ DBS.writeFile (modulePath <> ".type.typechecker.json") =<< (pure $ DBS.toStrict $ A.encode $ Map.fromList typeDefs)
-        liftIO $ sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".type.typechecker.json") =<< (pure $ decodeUtf8 $ BL.toStrict $ A.encode $ Map.fromList typeDefs)
+        liftIO $ sendViaUnixSocket (path cliOptions) (T.pack $ "/" <> modulePath <> ".type.typechecker.json") =<< (pure $ decodeUtf8 $ BL.toStrict $ A.encode $ Map.fromList typeDefs)
     pure tcg
 
 getTypeInfo :: String -> LHsDecl GhcPs -> [(String, TypeInfo)]
