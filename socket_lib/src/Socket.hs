@@ -56,11 +56,11 @@ sendViaUnixSocket socketPath path data_ =
     let socketPathToUse = fromMaybe (socketPath) fdepSocketPath
     in sendPathPerformAction (unpack path) socketPathToUse (\sock -> NSB.sendAll sock (encodeUtf8 $ data_ <> "\n"))
 
-transformPayload :: (Show a) => Text -> Text -> a -> Text -> Text
+transformPayload :: (Show a) => Text -> Text -> a -> Value -> Text
 transformPayload path key payload_type value = 
 #if __GLASGOW_HASKELL__ >= 900
-        (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String key), ((HM.fromString $ show payload_type), String value)])
+        (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String key), ((HM.fromString $ show payload_type), value)])
 #else
-        (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String key), ((pack $ show payload_type), String value)])
+        (decodeUtf8 $ toStrict $ Data.Aeson.encode $ Object $ HM.fromList [("key", String key), ((pack $ show payload_type), value)])
 #endif
     
