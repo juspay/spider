@@ -67,7 +67,7 @@ library
     -- other-extensions:
 
     -- Other library packages from which modules are imported.
-    build-depends:    base,network,text
+    build-depends:    base,network,text,aeson,unordered-containers,bytestring
 
     -- Directories containing source files.
     hs-source-dirs:   src
