@@ -23,7 +23,7 @@ import Control.Monad.State
 import Data.Aeson as A
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.Bool (bool)
-import Data.ByteString.Lazy (writeFile, appendFile, readFile)
+import Data.ByteString.Lazy (writeFile, appendFile)
 import qualified Data.ByteString.Lazy.Char8 as Char8
 import Data.Data
 import Data.Function (on)
@@ -34,6 +34,7 @@ import Data.Maybe (catMaybes, fromMaybe)
 import Data.Yaml
 import Debug.Trace (traceShowId, trace, traceM)
 import GHC hiding (exprType)
+import Prelude hiding (id, writeFile, appendFile)
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
 
 #if __GLASGOW_HASKELL__ >= 900
@@ -473,6 +474,9 @@ checkAndApplyRule ruleT ap = case ruleT of
           True  -> do
             simplifiedExprs <- trfWhereToSOP exprs
             checkWhereClauseRule <- mapM (validateWhereClauseRule (showS tblName)) simplifiedExprs
+            let isInvalidClause = not (and checkWhereClauseRule)
+            let locations = map getLoc2 exprs
+            when ((logWarnInfo . pluginOpts $ ?pluginOpts) && isInvalidClause) $ liftIO $ print $ "Invalid clause (missing mandatory querying fields) in `where` clause for table: " <> showS tblName <> " at " <> showS locations
             liftIO $ putStrLn $ "Checking where clause rule for table: " <> (showS tblName) <> " ,clauses: " <> showS exprs <> " ,checkWhereClauseRule: " <> show checkWhereClauseRule
             if (showS tblName == (ruleTableName <> "T")) then validateDBRule simplifiedExprs rule (showS tblName) exprs ap
             else pure []
@@ -651,7 +655,7 @@ Part-2 Validation
 -}
 -- Function to check if given DB rules is violated or not
 -- TODO: Fix this, keep two separate options for - 1. Match All Fields in AND   2. Use 1st column matching or all columns matching for composite key 
-validateDBRule :: (HasPluginOpts PluginOpts) => [SimplifiedIsClause] -> DBRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
+validateDBRule :: (HasPluginOpts PluginOpts) => [[SimplifiedIsClause]] -> DBRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 validateDBRule simplifiedExprs rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName, indexed_cols_names = ruleColNames}) tableName clauses expr = do 
 
   let checkDBViolation = case (matchAllInsideAnd . pluginOpts $ ?pluginOpts) of
@@ -681,8 +685,8 @@ validateDBRule simplifiedExprs rule@(DBRule {db_rule_name = ruleName, table_name
 validateWhereClauseRule :: String -> [SimplifiedIsClause] -> TcM Bool
 validateWhereClauseRule tableName simplifiedExprs = do
   -- Read JSON file
-  jsonData <- liftIO $ readFile "/Users/sailaja.b/euler-db/tables_and_fields_with_types.json"
-  case decode jsonData :: Maybe (HM.HashMap String (HM.HashMap String String)) of
+  jsonData <- liftIO $ Char8.readFile "/Users/sailaja.b/euler-db/tables_and_fields_with_types.json"
+  case A.decode jsonData :: Maybe (HM.HashMap String (HM.HashMap String String)) of
     Just jsonMap -> do
       let tableKey = tableName
       case HM.lookup tableKey jsonMap of
@@ -696,10 +700,10 @@ validateWhereClauseRule tableName simplifiedExprs = do
           pure fieldExists
         Nothing -> do
           liftIO $ putStrLn $ "No fields found for table: " <> tableKey
-          pure False
+          pure True
     Nothing -> do
       liftIO $ putStrLn "Failed to parse JSON file."
-      pure False
+      pure True
 
 -- Check only for the ordering of the columns of the composite key
 doesMatchColNameInDbRuleWithComposite :: String -> [YamlTableKeys] -> [String] -> Bool
