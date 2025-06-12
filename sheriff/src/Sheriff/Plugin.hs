@@ -5,51 +5,35 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeSynonymInstances #-}
-{-# LANGUAGE FlexibleContexts #-}
 
 module Sheriff.Plugin (plugin) where
 
 -- Sheriff imports
-import Control.Exception (IOException, catch) 
 import Sheriff.CommonTypes
 import Sheriff.Patterns
 import Sheriff.Rules
 import Sheriff.Types
 import Sheriff.TypesUtils
 import Sheriff.Utils
-import Text.Regex.TDFA ((=~))
 -- GHC imports
 import Control.Applicative ((<|>))
 import Control.Monad (foldM, when)
 import Control.Monad.IO.Class (MonadIO (..))
 import Control.Monad.State
-import Control.Reference (biplateRef, (^?))
-import Data.Aeson as A 
-import qualified Data.Aeson.KeyMap as KM
-import Data.Function (on, id)
+import Data.Aeson as A
 import Data.Aeson.Encode.Pretty (encodePretty)
 import Data.Bool (bool)
 import Data.ByteString.Lazy (writeFile, appendFile, readFile)
 import qualified Data.ByteString.Lazy.Char8 as Char8
 import Data.Data
 import Data.Function (on)
-import Data.Functor.Identity (runIdentity)
 import qualified Data.HashMap.Strict as HM
 import Data.List (nub, sortBy, groupBy, find, isInfixOf, isSuffixOf, isPrefixOf)
 import Data.List.Extra (splitOn)
-import qualified Data.Map as Map
-import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
-import Data.Typeable (typeOf)
-import Data.Yaml hiding (decode)
-import qualified Data.Text as T
+import Data.Maybe (catMaybes, fromMaybe)
+import Data.Yaml
 import Debug.Trace (traceShowId, trace, traceM)
 import GHC hiding (exprType)
-import GHC.Types.TypeEnv (typeEnvElts)
-import Prelude hiding (id, writeFile, appendFile, readFile)
-import Text.Show.Pretty (ppShow) 
-import Data.Data (Data, toConstr, gmapQ)
-import Data.Generics (everything, mkQ)
-import Language.Haskell.Exts (parseFile, prettyPrint, ParseResult(..))
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
 
 #if __GLASGOW_HASKELL__ >= 900
@@ -59,7 +43,6 @@ import GHC.Core.InstEnv
 import GHC.Core.TyCo.Rep
 import GHC.Data.Bag
 import GHC.HsToCore.Monad
-import GHC.Hs.Expr (HsExpr(..))
 import GHC.HsToCore.Expr
 import GHC.Plugins hiding ((<>), getHscEnv, purePlugin)
 import GHC.Tc.Types
@@ -84,8 +67,6 @@ import TcType
 import TyCoRep
 #endif
 
--- type VarBindingMap = Map.Map String (LHsExpr GhcTc)
-
 plugin :: Plugin
 plugin = defaultPlugin {
       typeCheckResultAction = sheriff
@@ -94,10 +75,6 @@ plugin = defaultPlugin {
 
 purePlugin :: [CommandLineOption] -> IO PluginRecompile
 purePlugin _ = return NoForceRecompile
-
-
-
-
 
 --------------------------- Core Logic ---------------------------
 
@@ -142,7 +119,6 @@ type SheriffTcM = StateT (HM.HashMap NameModuleValue NameModuleValue) TcM
 
 sheriff :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 sheriff opts modSummary tcEnv = do
-  
   -- STAGE-1
   let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
       pluginOpts@PluginOpts{..} = decodeAndUpdateOpts opts defaultPluginOpts
@@ -164,8 +140,6 @@ sheriff opts modSummary tcEnv = do
                 when failOnFileNotFound $ addErr (mkInvalidYamlFileErr (show err))
                 pure []
               Right (YamlTables tables) -> pure $ (map yamlToDbRule tables)
-
-
   -- Check the parsed rules yaml file.  If failed, throw file error if configured.
   configuredRules <- case parsedRulesYaml of
                 Left err -> do
@@ -201,61 +175,7 @@ sheriff opts modSummary tcEnv = do
   insts <- tcg_insts . env_gbl <$> getEnv
   let namesModTuple = concatMap (\inst -> let clsName = className (is_cls inst) in (is_dfun_name inst, clsName) : fmap (\clsMethod -> (varName clsMethod, clsName)) (classMethods $ is_cls inst)) insts
       nameModMap = foldr (\(name, clsName) r -> HM.insert (NMV_Name name) (NMV_ClassModule clsName (getModuleName clsName)) r) HM.empty namesModTuple
-  -- let binds = bagToList $ tcg_binds tcEnv
-  -- liftIO $ putStrLn ("AST of binds:\n" ++ ppShow binds)
-  -- liftIO $ putStrLn ("Extracted bind names: " ++ OP.showSDocUnsafe (OP.ppr binds))
-
-  -- let mymAction = do
-  --       results <- forM binds extractExprFromBind
-  --       return (results)
   
-  -- let (extractedAll, finalState) = runMyM mymAction
-
-  -- let jsonFilePath = "/Users/sailaja.b/spider/tree.json"
-
-  -- Read the JSON file
-  -- jsonData <- liftIO (Char8.readFile jsonFilePath `catch` handleReadError)
-  -- let parsedData = eitherDecode jsonData :: Either String FunctionMap
-
-  -- case parsedData of
-  --     Right functionMap -> do
-  --       let filteredEntries = filterEntries functionMap
-  --       forM_ (HM.toList filteredEntries) $ \(key, functionEntry) -> do
-  --         let codeContent = code functionEntry
-  --         -- let codeContent = "res <- findOneRow\n                dbConf meshConfig\n      $          [Is DB.filterGroupId (Eq groupId),\n                 Is DB.dimensionValue (Eq dimension)]\n       toDomainAll res parseTenantConfigFilter\n         ! #function_name \"getTenantConfigFilterByGroupIdAndDimensionValue\"\n         ! #parser_name \"parseTenantConfigFilter\"" :: String
-          
-  --         -- let regex1 = "findOneRow" :: String
-  --         -- let regex2 = "findOneRow[[:space:]]+([^[:space:]]+)" :: String
-  --         -- let regex3 = "findOneRow[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)" :: String
-  --         -- let regex4 = "findOneRow[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+\\[([[:print:][:space:]]*)\\]" :: String
-  --         let regexFlexible = "(findOneRow|findAllRows)[[:space:]]+([^[:space:]]+)[[:space:]]+([^[:space:]]+)[[:space:]]+.*[[:space:]]*\\[([[:print:][:space:]]*)\\]" :: String
-  --         -- Test each regex pattern
-  --         -- let matches1 = codeContent =~ regex1 :: [[String]]
-  --         -- let matches2 = codeContent =~ regex2 :: [[String]]
-  --         -- let matches3 = codeContent =~ regex3 :: [[String]]
-  --         -- let matches4 = codeContent =~ regex4 :: [[String]]
-  --         let matches5 = codeContent =~ regexFlexible :: [[String]]
-          
-  --         -- Print results
-  --         -- liftIO $ putStrLn $ "Matches with Regex 1: " ++ show matches1
-  --         -- liftIO $ putStrLn $ "Matches with Regex 2: " ++ show matches2
-  --         -- liftIO $ putStrLn $ "Matches with Regex 3: " ++ show matches3
-  --         -- liftIO $ putStrLn $ "Matches with Regex 4: " ++ show matches4
-  --         let firstElements = map (\innerList -> case innerList of
-  --                                                 (a:_) -> a
-  --                                                 [] -> "No match") matches5
-  --         liftIO $ putStrLn $ "Function Name: " ++ key ++ " ,First elements: " ++ show firstElements
-    
-  --     Left err -> liftIO $ putStrLn $ "Failed to parse JSON: " ++ err
-    
-  -- Example: Extract specific data from the FunctionMap
-  -- let extractedData = fromMaybe HM.empty (decode jsonData :: Maybe FunctionMap)
-  -- liftIO $ putStrLn $ "Extracted data: " ++ show extractedData
-
-
-  -- liftIO $ putStrLn $ "📍 Final state: " ++ show finalState
-  -- liftIO $ putStrLn $ "📌 Extracted expressions: " ++ OP.showSDocUnsafe (OP.ppr extractedAll)
-
   rawErrors <- concat <$> (mapM (loopOverModBinds finalSheriffRules) $ bagToList $ tcg_binds tcEnv)
   (rawInfiniteRecursionErrors, _) <- flip runStateT nameModMap $ concat <$> (mapM (checkInfiniteRecursion True infRule) $ bagToList $ tcg_binds tcEnv)
   
@@ -278,230 +198,8 @@ sheriff opts modSummary tcEnv = do
 
   return tcEnv
 
-handleReadError :: IOException -> IO Char8.ByteString
-handleReadError e = do
-  putStrLn $ "c " ++ show e
-  return Char8.empty
 
--- filterEntries :: HM.HashMap String FunctionEntry -> HM.HashMap String FunctionEntry
--- filterEntries functionMap =
---   HM.filter containsFindFunctions functionMap
---   where
---     containsFindFunctions :: FunctionEntry -> Bool
---     containsFindFunctions entry =
---       case toJSON entry of
---         Object obj ->  -- Ensure the JSON value is an Object
---           case KM.lookup "functions_it_is_calling" obj of
---             Just (Array functions) ->
---               any (\func -> func == "findOneRow" || func == "findAllRows") functions
---             _ -> False
---         _ -> False  -- Handle cases where the JSON value is not an Object
-
-type TableMap = Map.Map String String
-type ClauseMap = Map.Map String String
-
-
-data MyState = MyState
-  { tableMap  :: TableMap
-  , clauseMap :: ClauseMap
-  } deriving (Show)
-
-type MyM = State MyState
-
-runMyM :: MyM a -> (a, MyState)
-runMyM action = runState action initialMyState
-
-initialMyState :: MyState
-initialMyState = MyState Map.empty Map.empty
-
-extractExprFromBind :: LHsBindLR GhcTc GhcTc -> MyM (Maybe (String, String, String))
-extractExprFromBind (L loc bind) = do
-  traceM "extractExprFromBind called"
-  myMap <- get
-  case bind of
-    FunBind { fun_matches = MG { mg_alts = L _ matches } } -> do
-      traceM "Matched FunBind"
-      results <- forM matches $ \(L _ match) -> case match of
-        Match { m_grhss = GRHSs _ grhss _ } -> do
-          innerResults <- forM grhss $ \(L _ grhs) -> case grhs of
-            GRHS _ _ body -> do
-              let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
-              extracted <- mapM (\expr -> extractQueryInfo expr (L loc bind)) exprs
-              traceM $ "body from FunBind: " ++ OP.showSDocUnsafe (OP.ppr body) ++ "exprs from FunBind: " ++ OP.showSDocUnsafe (OP.ppr exprs) ++ "\n📌 Query Info:\n" ++ unlines (map showTriple (catMaybes extracted))
-              pure (catMaybes extracted)
-          pure (concat innerResults)
-      pure $ listToMaybe (concat results)
-
-    PatBind { pat_rhs = GRHSs _ grhss _ } -> do
-      traceM "Matched PatBind" 
-      results <- forM grhss $ \(L _ grhs) -> case grhs of
-        GRHS _ _ body -> do
-          let exprs = body ^? biplateRef :: [LHsExpr GhcTc]
-          extracted <- mapM (\expr -> extractQueryInfo expr (L loc bind)) exprs
-          traceM $ "body from FunBind: " ++ OP.showSDocUnsafe (OP.ppr body) ++ "exprs from PatBind: " ++ OP.showSDocUnsafe (OP.ppr exprs) ++ "\n📌 Query Info:\n" ++ unlines (map showTriple (catMaybes extracted))
-          pure (catMaybes extracted)
-      pure $ listToMaybe (concat results)
-
-    AbsBinds { abs_binds = binds } -> do
-      traceM "Matched AbsBinds"
-      results <- mapM extractExprFromBind (bagToList binds)
-      pure $ listToMaybe (catMaybes results)
-
-    _ -> do
-      traceM "No matching bind constructor (not FunBind or PatBind)"
-      pure Nothing
-
-extractQueryInfo :: LHsExpr GhcTc -> LHsBindLR GhcTc GhcTc -> MyM (Maybe (String, String, String))
-extractQueryInfo expr bindings = do
-  traceM ("🔍 Called extractQueryInfo with expr: " ++ OP.showSDocUnsafe (OP.ppr expr))
-  (fn, args) <- flattenHsAppM expr
-  let fnName = OP.showSDocUnsafe (OP.ppr fn)
-  if fnName `elem` ["findOneRow", "findAllRows"] && length args == 3
-    then do
-      let clause = OP.showSDocUnsafe (OP.ppr (args !! 2))
-      let typeStr = show (typeOf (unLoc (args !! 2)))
-      let unlocatedBindings = [unLoc bindings]
-      let isWhereClause = hasIsOrEmptyList (args !! 2)
-      clauseMapVal <- gets clauseMap
-      let whereClause = if isWhereClause
-                        then clause
-                        else fromMaybe "<unknown_clause" (Map.lookup clause clauseMapVal)
-      traceM ("clausee: " ++ clause ++ " :: whereClause: " ++ show whereClause)
-      tableNameMap <- gets tableMap
-      let key = OP.showSDocUnsafe (OP.ppr (args !! 0))
-          tableName = fromMaybe "<unknown_table" (Map.lookup key tableNameMap)
-      traceM ("✅ Matched query function.\nFunction: " ++ fnName ++ "\nTable Name: " ++ tableName ++ "\nClause: " ++ whereClause ++ "\n tableNameMap: " ++ show tableNameMap ++ "\n clauseMapVal: " ++ show clauseMapVal)
-      pure $ Just (fnName, tableName, whereClause)
-    else do
-      traceM ("⚠️ Skipping: fnName = " ++ fnName ++ ", args = " ++ show (length args))
-      pure Nothing
-
-hasIsOrEmptyList :: LHsExpr GhcTc -> Bool
-hasIsOrEmptyList expr =
-  trace "📍 Entering hasIsOrEmptyList" $
-  let expr' = stripExpr expr
-      core = unLoc expr'
-  in trace ("🔍 unLoc expr': " ++ showSDocUnsafe (ppr core) ++ " , Tyoe of expr :" ++ show (typeOf expr)) $
-     case core of
-       ExplicitList _ [] -> trace "Matched: Empty list" True
-       ExplicitList _ xs -> trace ("Checking list of length " ++ show (length xs)) $ any hasIsOrEmptyList xs
-
-       HsApp _ fun arg ->
-         let funStr = showSDocUnsafe (ppr (unLoc fun))
-             matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
-             isListCons = funStr == ":" || funStr == "[]"
-         in trace ("Matched: HsApp, head string: " ++ funStr ++ ", matches? " ++ show matches ++ ", isListCons? " ++ show isListCons) $
-              matches || isListCons || hasIsOrEmptyList fun || hasIsOrEmptyList arg
-       OpApp _ fun op arg ->
-         let funStr = showSDocUnsafe (ppr (unLoc fun))
-             opStr  = showSDocUnsafe (ppr (unLoc op))
-             argStr = showSDocUnsafe (ppr (unLoc arg))
-             matches = any (`isPrefixOf` funStr) ["Is", "And", "Or"]
-             isListCons = funStr == ":" || funStr == "[]"
-         in trace ("Matched: OpApp, fun: " ++ funStr ++ ", op: " ++ opStr ++ ", arg: " ++ argStr ++
-                   ", matches? " ++ show matches ++ ", isListCons? " ++ show isListCons) $
-              matches || isListCons || hasIsOrEmptyList fun || hasIsOrEmptyList op || hasIsOrEmptyList arg
-
-       HsPar _ inner -> trace "Matched: HsPar" $ hasIsOrEmptyList inner
-
-       XExpr (WrapExpr innerExpr) ->
-         case innerExpr of
-           HsWrap _ exprInner ->
-             trace ("Matched: XExpr WrapExpr with location " ++ showSDocUnsafe (ppr exprInner)) $
-               hasIsOrEmptyList (noLocA exprInner)
-
-       XExpr _ -> trace "XExpr case: cannot handle yet" False
-
-       other -> trace ("🛑 we came to other case: " ++ showSDocUnsafe (ppr other)) False
--- unwrapExpr :: LHsExpr GhcTc -> LHsExpr GhcTc
--- unwrapExpr lexpr =
---   case unLoc lexpr of
---     HsWrap _ inner -> noLocA inner -- inner :: HsExpr GhcTc
---     other          -> lexpr
-
--- unwrapExprFromHsExpr :: HsExpr GhcTc -> HsExpr GhcTc
--- unwrapExprFromHsExpr (HsWrap _ inner) = unwrapExprFromHsExpr inner
--- unwrapExprFromHsExpr expr             = expr
-
-
-
-flattenHsAppM :: LHsExpr GhcTc -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
-flattenHsAppM expr = do
-  traceM $ "🧾 Received expr: " ++ OP.showSDocUnsafe (OP.ppr expr)
-  let doStmts = case expr of
-        L _ (HsDo _ _ (L _ stmts)) -> stmts
-        _                          -> []
-
-  forM_ doStmts $ \stmt -> case stmt of
-    L _ (BindStmt _ (L _ (VarPat _ (L _ varName))) rhsExpr) -> do   -- To get dbConfig (Table Name)
-      traceM $ "📦 RHS Expr: " ++ OP.showSDocUnsafe (OP.ppr rhsExpr)
-      let normalizedExpr = stripExpr rhsExpr
-      case normalizedExpr of
-        L _ (HsAppType _ (L _ (HsVar _ (L _ fnName))) (HsWC _ innerType))
-          | occNameString (occName fnName) `elem` ["getEulerDbConf", "getEulerPsqlDbConf"] -> do
-              let lhsVarStr = OP.showSDocUnsafe (OP.ppr varName)
-                  typeStr = case innerType of
-                              L _ (HsTyVar _ _ (L _ name)) -> occNameString (occName name)
-                              _                            -> "unknown_type"
-              traceM $ "📥 Inserting into map: " ++ lhsVarStr ++ " -> " ++ typeStr
-              modify $ \s -> s { tableMap = Map.insert lhsVarStr typeStr (tableMap s) } -- Map Insertion (if dbcongig1 <- getEulerDbConf @orderReferenceT) , ["dbcongig1", "orderReferenceT"] get inserted
-        _ -> pure ()
-    -- To get where clause => 
-    -- 1. Written in let statement => let whereclause = [Is..]
-    -- 2. Directly Passed to select functions => findonerow tablename [Is..]
-    -- 3. Passed as a parameter to the function => fun1 whereClause = do
-    --                                             findonerow tableame whereClause
-    -- 4. A local function or local value defined using a where clause  
-    L _ (LetStmt _ localBindsL) ->  
-      (case localBindsL of
-        HsValBinds _ valBinds -> 
-          case valBinds of
-            XValBindsLR (NValBinds bindList _) -> do
-              traceM "🔍 Processing LetStmt -> HsValBinds -> XValBindsLR"
-              forM_ bindList $ \(recFlag, bindBag) -> do
-                traceM $ "🌀 Processing bind list with RecFlag: " ++ showSDocUnsafe (ppr recFlag) ++ " ,bindBag: " ++ showSDocUnsafe (ppr bindBag)
-                let binds = bagToList bindBag
-                traceM $ "🔍 Number of binds in bindBag: " ++ show (length binds)
-                if null binds
-                  then traceM "⚠️ bindBag is empty – nothing to process"
-                  else forM_ (bagToList bindBag) $ \(L _ bind) -> do
-                    traceM $ "🔍 bind constructor: " ++ showConstr (toConstr bind)
-                    case bind of
-                         FunBind { fun_id = L _ varName
-                                 , fun_matches = MG _ (L _ [L _ (Match _ _ _ (GRHSs _ [L _ (GRHS _ [] body)] _) )]) _
-                                 } -> do
-                           traceM $ "📦 Found FunBind with var: " ++ showSDocUnsafe (ppr varName)
-                           traceM $ "📦 Let RHS: " ++ showSDocUnsafe (ppr body)
-                           let normalizedExpr = stripExpr body
-                               varStr = showSDocUnsafe (ppr varName)
-                           traceM $ "🧹 Normalized RHS: " ++ showSDocUnsafe (ppr normalizedExpr)
-                           let result = hasIsOrEmptyList normalizedExpr
-                           traceM $ "🧪 hasIsOrEmptyList result: " ++ show result
-                           when result $ do 
-                             traceM $ "✅ Match: RHS has 'is' or '[]', recording clause for: " ++ varStr
-                             modify $ \s -> s { clauseMap = Map.insert varStr (showSDocUnsafe (ppr normalizedExpr)) (clauseMap s) }
-                         _ -> traceM "⛔ Skipping non-PatBind or unhandled bind pattern"
-            _ -> traceM "⚠️ valBinds is not XValBindsLR -> skipping"
-        _ -> pure ())
-
-    _ -> pure ()
-
-  go expr []
-  where
-    go :: LHsExpr GhcTc -> [LHsExpr GhcTc] -> MyM (HsExpr GhcTc, [LHsExpr GhcTc])
-    go (L _ (HsApp _ f x)) args = go f (x : args)
-    go (L _ f) args = pure (f, args)
-
-
-stripExpr :: LHsExpr GhcTc -> LHsExpr GhcTc
-stripExpr (L l (HsPar _ e))               = stripExpr e
-stripExpr (L l (HsAppType x e t))         = L l (HsAppType x (stripExpr e) t)
-stripExpr (L l (XExpr (WrapExpr (HsWrap _ e)))) = stripExpr (L l e)
-stripExpr other                           = other
-
-showTriple :: (String, String, String) -> String
-showTriple (a, b, c) = "(" ++ a ++ ", " ++ b ++ ", " ++ c ++ ")" 
-
+--------------------------- Infinite Recursion Detection Logic ---------------------------
 {-
 
   1. Check if bind is AbsBind, add a mapping from mono to poly Var and recurse for binds
