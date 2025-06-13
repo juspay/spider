@@ -691,7 +691,13 @@ validateWhereClauseRule rule tableName clauses = do
       case HM.lookup tableKey jsonMap of
         Just fieldsMap -> do
           let fieldNames = HM.keys fieldsMap
-          let matchingFields = filter (\field -> "disable" `isInfixOf` field || "enable" `isInfixOf` field) fieldNames
+          let isBoolField field = case HM.lookup field fieldsMap of
+                                    Just value -> "Bool" `isInfixOf` value
+                                    _ -> False
+          let matchingFields = filter (\field -> ("disable" `isInfixOf` field || "enable" `isInfixOf` field) && isBoolField field) fieldNames
+        
+          -- let fieldNames = HM.keys fieldsMap
+          -- let matchingFields = filter (\field -> "disable" `isInfixOf` field || "enable" `isInfixOf` field) fieldNames
           liftIO $ putStrLn $ "Matching fields for " <> tableKey <> ": " <> show matchingFields
           violations <- catMaybes <$> mapM (checkWhereClauseViolation matchingFields) simplifiedExprs
           pure violations
@@ -706,7 +712,7 @@ validateWhereClauseRule rule tableName clauses = do
   where
     checkWhereClauseViolation :: [String] -> [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
     checkWhereClauseViolation matchingFields sop = do
-      let isWhereClauseViolation (cls, colName, _) = not (any (\field -> field == colName) matchingFields)
+      let isWhereClauseViolation (cls, colName, _) = any (\field -> field == colName) matchingFields
       case find isWhereClauseViolation sop of
         Nothing -> pure Nothing
         Just (clause, colName, _) -> pure $ Just (clause, WhereClauseViolationDetected tableName matchingFields rule)
