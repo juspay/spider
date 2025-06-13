@@ -191,6 +191,32 @@ instance FromJSON FunctionRule where
                 fn_rule_ignore_functions <- o .:? "fn_rule_ignore_functions" .!= (fn_rule_ignore_functions defaultFunctionRule)
                 return FunctionRule {..}
 
+data WhereClauseRule = 
+  WhereClauseRule
+    {
+      where_clause_rule_name             :: String,
+      where_clause_rule_fixes            :: Suggestions,
+      where_clause_rule_ignore_modules   :: Modules,
+      where_clause_rule_check_modules    :: Modules
+    }
+  deriving (Show, Eq)
+
+defaultWhereClauseRule :: WhereClauseRule
+defaultWhereClauseRule = WhereClauseRule {
+    where_clause_rule_name             = "WhereClauseRule",
+    where_clause_rule_fixes            = ["You Might want to include an mandatory column in the `where` clause of the query."],
+    where_clause_rule_ignore_modules   = [],
+    where_clause_rule_check_modules    = ["*"]
+  }
+
+instance FromJSON WhereClauseRule where
+  parseJSON = withObject "WhereClauseRule" $ \o -> do
+                where_clause_rule_name             <- o .:  "where_clause_rule_name"
+                where_clause_rule_fixes            <- o .:  "where_clause_rule_fixes"
+                where_clause_rule_ignore_modules   <- o .:? "where_clause_rule_ignore_modules"   .!= (where_clause_rule_ignore_modules defaultWhereClauseRule)
+                where_clause_rule_check_modules    <- o .:? "where_clause_rule_check_modules"    .!= (where_clause_rule_check_modules defaultWhereClauseRule)
+                return WhereClauseRule {..}
+
 data InfiniteRecursionRule = 
   InfiniteRecursionRule
     {
@@ -316,6 +342,7 @@ data Rule =
     DBRuleT DBRule
   | FunctionRuleT FunctionRule
   | InfiniteRecursionRuleT InfiniteRecursionRule
+  | WhereClauseRuleT WhereClauseRule
   | GeneralRuleT GeneralRule
   deriving (Show, Eq)  
 
@@ -344,15 +371,17 @@ data Violation =
   | FnUseBlocked String FunctionRule
   | FnSigBlocked String String FunctionRule
   | InfiniteRecursionDetected InfiniteRecursionRule
+  | WhereClauseViolationDetected String [String] WhereClauseRule
   | NoViolation
   deriving (Eq)
 
 instance Show Violation where
   show violation = case violation of
-    (ArgTypeBlocked typ exprTy ruleFnName rule)      -> "Use of '" <> ruleFnName <> "' on '" <> typ <> "' is not allowed in the overall expression type '" <> exprTy <> "'."
-    (FnBlockedInArg (fnName, typ) ruleFnName _ rule) -> "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> ruleFnName <> "' is not allowed."
-    (FnUseBlocked ruleFnName rule)                   -> "Use of '" <> ruleFnName <> "' in the code is not allowed."
-    (FnSigBlocked ruleFnName ruleFnSig rule)         -> "Use of '" <> ruleFnName <> "' with signature '" <> ruleFnSig <> "' is not allowed in the code."
-    (NonIndexedDBColumn colName tableName _)         -> "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
-    (InfiniteRecursionDetected _)                    -> "Infinite recursion detected in expression"
-    NoViolation                                      -> "NoViolation"
+    (ArgTypeBlocked typ exprTy ruleFnName rule)                     -> "Use of '" <> ruleFnName <> "' on '" <> typ <> "' is not allowed in the overall expression type '" <> exprTy <> "'."
+    (FnBlockedInArg (fnName, typ) ruleFnName _ rule)                -> "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> ruleFnName <> "' is not allowed."
+    (FnUseBlocked ruleFnName rule)                                  -> "Use of '" <> ruleFnName <> "' in the code is not allowed."
+    (FnSigBlocked ruleFnName ruleFnSig rule)                        -> "Use of '" <> ruleFnName <> "' with signature '" <> ruleFnSig <> "' is not allowed in the code."
+    (NonIndexedDBColumn colName tableName _)                        -> "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
+    (InfiniteRecursionDetected _)                                   -> "Infinite recursion detected in expression"
+    (WhereClauseViolationDetected tableName colNames _)             -> "Where clause rule violation: Missing mandatory querying fields on table '" <> tableName <> "' for column '" <> show colNames <> "'."
+    NoViolation                                                     -> "NoViolation"

@@ -30,7 +30,7 @@ import Data.Function (on)
 import qualified Data.HashMap.Strict as HM
 import Data.List (nub, sortBy, groupBy, find, isInfixOf, isSuffixOf, isPrefixOf)
 import Data.List.Extra (splitOn)
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import Data.Yaml
 import Debug.Trace (traceShowId, trace, traceM)
 import GHC hiding (exprType)
@@ -470,16 +470,15 @@ checkAndApplyRule ruleT ap = case ruleT of
   DBRuleT rule@(DBRule {table_name = ruleTableName}) ->
     case ap of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
+        case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
+          True  -> validateDBRule rule (showS tblName) exprs ap
+          False -> pure []
+      _ -> pure []
+  WhereClauseRuleT rule ->
+    case ap of
+      (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
         case (showS ty == "Clause") of
-          True  -> do
-            simplifiedExprs <- trfWhereToSOP exprs
-            checkWhereClauseRule <- mapM (validateWhereClauseRule (showS tblName)) simplifiedExprs
-            let isInvalidClause = not (and checkWhereClauseRule)
-            let locations = map getLoc2 exprs
-            when ((logWarnInfo . pluginOpts $ ?pluginOpts) && isInvalidClause) $ liftIO $ print $ "Invalid clause (missing mandatory querying fields) in `where` clause for table: " <> showS tblName <> " at " <> showS locations
-            liftIO $ putStrLn $ "Checking where clause rule for table: " <> (showS tblName) <> " ,clauses: " <> showS exprs <> " ,checkWhereClauseRule: " <> show checkWhereClauseRule
-            if (showS tblName == (ruleTableName <> "T")) then validateDBRule simplifiedExprs rule (showS tblName) exprs ap
-            else pure []
+          True -> validateWhereClauseRule rule (showS tblName) exprs
           False -> pure []
       _ -> pure []
   FunctionRuleT rule@(FunctionRule {fn_name = ruleFnNames, arg_no}) -> do
@@ -655,9 +654,9 @@ Part-2 Validation
 -}
 -- Function to check if given DB rules is violated or not
 -- TODO: Fix this, keep two separate options for - 1. Match All Fields in AND   2. Use 1st column matching or all columns matching for composite key 
-validateDBRule :: (HasPluginOpts PluginOpts) => [[SimplifiedIsClause]] -> DBRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
-validateDBRule simplifiedExprs rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName, indexed_cols_names = ruleColNames}) tableName clauses expr = do 
-
+validateDBRule :: (HasPluginOpts PluginOpts) => DBRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
+validateDBRule rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName, indexed_cols_names = ruleColNames}) tableName clauses expr = do 
+  simplifiedExprs <- trfWhereToSOP clauses
   let checkDBViolation = case (matchAllInsideAnd . pluginOpts $ ?pluginOpts) of
                           True  -> checkDBViolationMatchAll
                           False -> checkDBViolationWithoutMatchAll
@@ -682,28 +681,35 @@ validateDBRule simplifiedExprs rule@(DBRule {db_rule_name = ruleName, table_name
                   [] -> pure Nothing
                   ((clause, colName, tableName) : _) -> pure $ Just (clause, NonIndexedDBColumn colName tableName rule)
 
-validateWhereClauseRule :: String -> [SimplifiedIsClause] -> TcM Bool
-validateWhereClauseRule tableName simplifiedExprs = do
-  -- Read JSON file
-  jsonData <- liftIO $ Char8.readFile "/Users/sailaja.b/euler-db/tables_and_fields_with_types.json"
+validateWhereClauseRule ::  (HasPluginOpts PluginOpts) => WhereClauseRule -> String -> [LHsExpr GhcTc] -> TcM ([(LHsExpr GhcTc, Violation)])
+validateWhereClauseRule rule tableName clauses = do
+  simplifiedExprs <- trfWhereToSOP clauses
+  jsonData <- liftIO $ Char8.readFile "tables_and_fields_with_types.json"
   case A.decode jsonData :: Maybe (HM.HashMap String (HM.HashMap String String)) of
     Just jsonMap -> do
       let tableKey = tableName
       case HM.lookup tableKey jsonMap of
         Just fieldsMap -> do
-          -- Extract field names from the nested structure
           let fieldNames = HM.keys fieldsMap
           let matchingFields = filter (\field -> "disable" `isInfixOf` field || "enable" `isInfixOf` field) fieldNames
           liftIO $ putStrLn $ "Matching fields for " <> tableKey <> ": " <> show matchingFields
-          -- Check if any matching field exists in simplifiedExprs
-          let fieldExists = any (\(_, colName, _) -> any (\field -> field == colName) matchingFields) simplifiedExprs
-          pure fieldExists
+          violations <- catMaybes <$> mapM (checkWhereClauseViolation matchingFields) simplifiedExprs
+          pure violations
         Nothing -> do
           liftIO $ putStrLn $ "No fields found for table: " <> tableKey
-          pure True
+          let violations = map (\clause -> (clause, WhereClauseViolationDetected tableName [] rule)) clauses
+          pure violations
     Nothing -> do
       liftIO $ putStrLn "Failed to parse JSON file."
-      pure True
+      let violations = map (\clause -> (clause, WhereClauseViolationDetected tableName [] rule)) clauses
+      pure violations
+  where
+    checkWhereClauseViolation :: [String] -> [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
+    checkWhereClauseViolation matchingFields sop = do
+      let isWhereClauseViolation (cls, colName, _) = not (any (\field -> field == colName) matchingFields)
+      case find isWhereClauseViolation sop of
+        Nothing -> pure Nothing
+        Just (clause, colName, _) -> pure $ Just (clause, WhereClauseViolationDetected tableName matchingFields rule)
 
 -- Check only for the ordering of the columns of the composite key
 doesMatchColNameInDbRuleWithComposite :: String -> [YamlTableKeys] -> [String] -> Bool
