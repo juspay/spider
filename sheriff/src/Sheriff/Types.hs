@@ -347,7 +347,7 @@ data Rule =
   deriving (Show, Eq)  
 
 instance FromJSON Rule where
-  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (InfiniteRecursionRuleT <$> parseJSON str) <|> (GeneralRuleT <$> parseJSON str) <|> (fail $ "Invalid Rule: " <> show str)
+  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (InfiniteRecursionRuleT <$> parseJSON str) <|> (WhereClauseRuleT <$> parseJSON str) <|>(GeneralRuleT <$> parseJSON str) <|> (fail $ "Invalid Rule: " <> show str)
 
 data LocalVar = FnArg Var | FnWhere Var | FnLocal Var
   deriving (Eq)
