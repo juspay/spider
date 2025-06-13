@@ -712,10 +712,16 @@ validateWhereClauseRule rule tableName clauses = do
   where
     checkWhereClauseViolation :: [String] -> [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
     checkWhereClauseViolation matchingFields sop = do
-      let isWhereClauseViolation (cls, colName, _) = any (\field -> field == colName) matchingFields
-      case find isWhereClauseViolation sop of
-        Nothing -> pure Nothing
-        Just (clause, colName, _) -> pure $ Just (clause, WhereClauseViolationDetected tableName matchingFields rule)
+      let matched = map (\(_, colName, _) -> colName) sop -- Extract column names from the list of clauses
+      let isWhereClauseViolation = 
+            not (null matchingFields) && all (\field -> field `notElem` matched) matchingFields -- Check if none of the matching fields are in the clause
+      
+      case sop of
+        [] -> pure Nothing -- Handle empty `sop` explicitly
+        (clause, _, _) : _ -> 
+          if isWhereClauseViolation
+            then pure $ Just (clause, WhereClauseViolationDetected tableName matchingFields rule) -- Return violation for the first clause
+            else pure Nothing -- No violation
 
 -- Check only for the ordering of the columns of the composite key
 doesMatchColNameInDbRuleWithComposite :: String -> [YamlTableKeys] -> [String] -> Bool
