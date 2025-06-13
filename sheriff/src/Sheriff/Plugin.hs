@@ -422,6 +422,7 @@ getBadFnCalls rules (FunBind{fun_matches = matches}) = do
           -- use childrenBi and then repeated children usage as per use case
           -- (exprs :: [LHsExpr GhcTc]) = traverseConditionalUni (noWhereClauseExpansion) (childrenBi match :: [LHsExpr GhcTc])
           (exprs :: [LHsExpr GhcTc]) = traverseAstConditionally match noWhereClauseExpansion
+      liftIO $ putStrLn ("exprs: " ++ showS exprs)
       concat <$> mapM (isBadExpr rules) exprs
 getBadFnCalls _ _ = pure []
 
@@ -477,6 +478,7 @@ checkAndApplyRule ruleT ap = case ruleT of
   WhereClauseRuleT rule ->
     case ap of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
+        liftIO $ putStrLn ("ap: " ++ showSDocUnsafe (ppr ap) ++ " shows ap: " ++ showS ap) 
         case (showS ty == "Clause") of
           True -> validateWhereClauseRule rule (showS tblName) exprs
           False -> pure []
@@ -713,15 +715,15 @@ validateWhereClauseRule rule tableName clauses = do
     checkWhereClauseViolation :: [String] -> [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
     checkWhereClauseViolation matchingFields sop = do
       let matched = map (\(_, colName, _) -> colName) sop -- Extract column names from the list of clauses
-      let isWhereClauseViolation = 
-            not (null matchingFields) && all (\field -> field `notElem` matched) matchingFields -- Check if none of the matching fields are in the clause
-      
-      case sop of
-        [] -> pure Nothing -- Handle empty `sop` explicitly
-        (clause, _, _) : _ -> 
-          if isWhereClauseViolation
-            then pure $ Just (clause, WhereClauseViolationDetected tableName matchingFields rule) -- Return violation for the first clause
-            else pure Nothing -- No violation
+      let isWhereClauseViolation = not (null matchingFields) && all (\field -> field `notElem` matched) matchingFields -- Check if none of the matching fields are in the clause
+      if null matchingFields 
+        then pure Nothing
+        else case sop of
+          [] -> pure Nothing 
+          (clause, _, _) : _ -> 
+            if isWhereClauseViolation
+              then pure $ Just (clause, WhereClauseViolationDetected tableName matchingFields rule) 
+              else pure Nothing 
 
 -- Check only for the ordering of the columns of the composite key
 doesMatchColNameInDbRuleWithComposite :: String -> [YamlTableKeys] -> [String] -> Bool
