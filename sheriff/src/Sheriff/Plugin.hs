@@ -15,7 +15,6 @@ import Sheriff.Rules
 import Sheriff.Types
 import Sheriff.TypesUtils
 import Sheriff.Utils
-
 -- GHC imports
 import Control.Applicative ((<|>))
 import Control.Monad (foldM, when)
@@ -31,9 +30,9 @@ import Data.Function (on)
 import qualified Data.HashMap.Strict as HM
 import Data.List (nub, sortBy, groupBy, find, isInfixOf, isSuffixOf, isPrefixOf)
 import Data.List.Extra (splitOn)
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import Data.Yaml
-import Debug.Trace (traceShowId, trace)
+import Debug.Trace (traceShowId, trace, traceM)
 import GHC hiding (exprType)
 import Prelude hiding (id, writeFile, appendFile)
 import System.Directory (createDirectoryIfMissing, getHomeDirectory)
@@ -142,7 +141,6 @@ sheriff opts modSummary tcEnv = do
                 when failOnFileNotFound $ addErr (mkInvalidYamlFileErr (show err))
                 pure []
               Right (YamlTables tables) -> pure $ (map yamlToDbRule tables)
-  
   -- Check the parsed rules yaml file.  If failed, throw file error if configured.
   configuredRules <- case parsedRulesYaml of
                 Left err -> do
@@ -200,6 +198,7 @@ sheriff opts modSummary tcEnv = do
     else pure ()
 
   return tcEnv
+
 
 --------------------------- Infinite Recursion Detection Logic ---------------------------
 {-
@@ -423,6 +422,7 @@ getBadFnCalls rules (FunBind{fun_matches = matches}) = do
           -- use childrenBi and then repeated children usage as per use case
           -- (exprs :: [LHsExpr GhcTc]) = traverseConditionalUni (noWhereClauseExpansion) (childrenBi match :: [LHsExpr GhcTc])
           (exprs :: [LHsExpr GhcTc]) = traverseAstConditionally match noWhereClauseExpansion
+      liftIO $ putStrLn ("exprs: " ++ showS exprs)
       concat <$> mapM (isBadExpr rules) exprs
 getBadFnCalls _ _ = pure []
 
@@ -473,6 +473,14 @@ checkAndApplyRule ruleT ap = case ruleT of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
         case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
           True  -> validateDBRule rule (showS tblName) exprs ap
+          False -> pure []
+      _ -> pure []
+  WhereClauseRuleT rule ->
+    case ap of
+      (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
+        liftIO $ putStrLn ("ap: " ++ showSDocUnsafe (ppr ap) ++ " shows ap: " ++ showS ap) 
+        case (showS ty == "Clause") of
+          True -> validateWhereClauseRule rule (showS tblName) exprs
           False -> pure []
       _ -> pure []
   FunctionRuleT rule@(FunctionRule {fn_name = ruleFnNames, arg_no}) -> do
@@ -649,7 +657,7 @@ Part-2 Validation
 -- Function to check if given DB rules is violated or not
 -- TODO: Fix this, keep two separate options for - 1. Match All Fields in AND   2. Use 1st column matching or all columns matching for composite key 
 validateDBRule :: (HasPluginOpts PluginOpts) => DBRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
-validateDBRule rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName, indexed_cols_names = ruleColNames}) tableName clauses expr = do
+validateDBRule rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName, indexed_cols_names = ruleColNames}) tableName clauses expr = do 
   simplifiedExprs <- trfWhereToSOP clauses
   let checkDBViolation = case (matchAllInsideAnd . pluginOpts $ ?pluginOpts) of
                           True  -> checkDBViolationMatchAll
@@ -657,7 +665,7 @@ validateDBRule rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName
   violations <- catMaybes <$> mapM checkDBViolation simplifiedExprs
   pure violations
   where
-    -- Since we need all columns to be indexed, we need to check for the columns in the order of composite key
+    -- Since we need all columns to be indexed, we need to check for the columns in the order of composite ke
     checkDBViolationMatchAll :: [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
     checkDBViolationMatchAll sop = do
       let isDbViolation (cls, colName, tableName) = (ruleTableName == tableName) && not (doesMatchColNameInDbRuleWithComposite colName ruleColNames (map (\(_, col, _) -> col) sop))
@@ -674,6 +682,48 @@ validateDBRule rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName
         False -> case sop of
                   [] -> pure Nothing
                   ((clause, colName, tableName) : _) -> pure $ Just (clause, NonIndexedDBColumn colName tableName rule)
+
+validateWhereClauseRule ::  (HasPluginOpts PluginOpts) => WhereClauseRule -> String -> [LHsExpr GhcTc] -> TcM ([(LHsExpr GhcTc, Violation)])
+validateWhereClauseRule rule tableName clauses = do
+  simplifiedExprs <- trfWhereToSOP clauses
+  jsonData <- liftIO $ Char8.readFile "tables_and_fields_with_types.json"
+  case A.decode jsonData :: Maybe (HM.HashMap String (HM.HashMap String String)) of
+    Just jsonMap -> do
+      let tableKey = tableName
+      case HM.lookup tableKey jsonMap of
+        Just fieldsMap -> do
+          let fieldNames = HM.keys fieldsMap
+          let isBoolField field = case HM.lookup field fieldsMap of
+                                    Just value -> "Bool" `isInfixOf` value
+                                    _ -> False
+          let matchingFields = filter (\field -> ("disable" `isInfixOf` field || "enable" `isInfixOf` field) && isBoolField field) fieldNames
+        
+          -- let fieldNames = HM.keys fieldsMap
+          -- let matchingFields = filter (\field -> "disable" `isInfixOf` field || "enable" `isInfixOf` field) fieldNames
+          liftIO $ putStrLn $ "Matching fields for " <> tableKey <> ": " <> show matchingFields
+          violations <- catMaybes <$> mapM (checkWhereClauseViolation matchingFields) simplifiedExprs
+          pure violations
+        Nothing -> do
+          liftIO $ putStrLn $ "No fields found for table: " <> tableKey
+          let violations = map (\clause -> (clause, WhereClauseViolationDetected tableName [] rule)) clauses
+          pure violations
+    Nothing -> do
+      liftIO $ putStrLn "Failed to parse JSON file."
+      let violations = map (\clause -> (clause, WhereClauseViolationDetected tableName [] rule)) clauses
+      pure violations
+  where
+    checkWhereClauseViolation :: [String] -> [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
+    checkWhereClauseViolation matchingFields sop = do
+      let matched = map (\(_, colName, _) -> colName) sop -- Extract column names from the list of clauses
+      let isWhereClauseViolation = not (null matchingFields) && all (\field -> field `notElem` matched) matchingFields -- Check if none of the matching fields are in the clause
+      if null matchingFields 
+        then pure Nothing
+        else case sop of
+          [] -> pure Nothing 
+          (clause, _, _) : _ -> 
+            if isWhereClauseViolation
+              then pure $ Just (clause, WhereClauseViolationDetected tableName matchingFields rule) 
+              else pure Nothing 
 
 -- Check only for the ordering of the columns of the composite key
 doesMatchColNameInDbRuleWithComposite :: String -> [YamlTableKeys] -> [String] -> Bool
