@@ -713,18 +713,19 @@ validateWhereClauseRule rule tableName clauses = do
   where
     checkWhereClauseViolation :: String -> [String] -> [[SimplifiedIsClause]] -> TcM (Maybe (LHsExpr GhcTc, Violation))
     checkWhereClauseViolation tableKey matchingFields sopList = do
-      let matched = concatMap (map (\(_, colName, _) -> colName)) sopList -- Extract column names from all clauses
-      let isWhereClauseViolation = not (null matchingFields) && all (\field -> field `notElem` matched) matchingFields -- Check if none of the matching fields are in the clause
+      let matched = concatMap (map (\(_, colName, _) -> colName)) sopList 
+      let isWhereClauseViolation = not (null matchingFields) && all (\field -> field `notElem` matched) matchingFields 
       liftIO $ putStrLn $ "tableKey: " <> tableKey <> ", Matched columns: " <> show matched <> ", Is violation: " <> show isWhereClauseViolation
       if null matchingFields 
         then pure Nothing
-        else case concat sopList of -- Flatten the nested list structure
+        else case concat sopList of
           [] -> pure Nothing
-          ((clause, _, _) : _) -> -- Match on the flattened list
+          ((clause, _, _) : _) -> 
             if isWhereClauseViolation
               -- then pure $ Just (clause, WhereClauseViolationDetected tableName matchingFields rule)
               then pure Nothing
               else pure Nothing
+
 -- Check only for the ordering of the columns of the composite key
 doesMatchColNameInDbRuleWithComposite :: String -> [YamlTableKeys] -> [String] -> Bool
 doesMatchColNameInDbRuleWithComposite _ [] _ = False
@@ -772,6 +773,10 @@ trfWhereToSOP (clause : ls) = do
       case curr of
         Nothing -> pure rem
         Just (tblName, colName) -> pure $ fmap (\lst -> (clause, tblName, colName) : lst) rem
+    ("getField", [L _ (HsOverLit _ (OverLit {ol_val = HsIsString _ colName}))]) -> do
+      -- Handle `getField @"columnName"` syntax
+      rem <- trfWhereToSOP ls
+      pure $ fmap (\lst -> (clause, "UnknownTable", unpackFS colName) : lst) rem
     (fn, _) -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ print $ "Invalid/unknown clause in `where` clause : " <> fn <> " at " <> (showS . getLoc2 $ clause)) >> trfWhereToSOP ls
 
 -- Get table field name and table name for the `Se.Is` clause
