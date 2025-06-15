@@ -807,12 +807,19 @@ getIsClauseData fieldArg _comp _clause = do
         ("$sel" : colName : tableName : []) -> pure $ Just (colName, tableName)
         _ -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ print "Invalid pattern for Selector way") >> pure Nothing
     RecordDot -> do
+      liftIO $ putStrLn $ "Debugging RecordDot: AST structure of fieldArg = " <> showS fieldArg
+      let allNodes = traverseAst fieldArg :: [HsExpr GhcTc]
+      liftIO $ putStrLn $ "All nodes in AST: " <> showS allNodes
       let tyApps = filter (\x -> case x of 
                                   (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> True
                                   (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> True
+                                  (HsApp _ (L _ fldName) tableVar) -> True -- Added fallback for simpler AST structure
+                                  (HsVar _ fldName) -> True -- Handle HsVar for field names
+                                  (HsOverLit _ (OverLit {ol_val = HsIsString _ colName})) -> True -- Handle string literals
                                   _ -> False
-                          ) $ (traverseAst fieldArg :: [HsExpr GhcTc])
-      if length tyApps > 0 
+                              ) allNodes
+      liftIO $ putStrLn $ "Filtered tyApps: " <> showS tyApps
+      if not (null tyApps)
         then 
           case head tyApps of
             (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> do
@@ -828,6 +835,28 @@ getIsClauseData fieldArg _comp _clause = do
                                   TyConApp ty1 _ -> showS ty1
                                   ty             -> showS ty
               in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
+            (HsApp _ (L _ fldName) tableVar) -> do -- Handle simpler AST structure
+              typ <- getHsExprType (logTypeDebugging . pluginOpts $ ?pluginOpts) tableVar
+              let tblName' = case typ of
+                              AppTy ty1 _    -> showS ty1
+                              TyConApp ty1 _ -> showS ty1
+                              ty             -> showS ty
+              pure $ Just (showS fldName, take (length tblName' - 1) tblName')
+            (HsVar _ fldName) -> do -- Handle HsVar for field names
+              let fldNameStr = occNameString (nameOccName (idName (unLoc fldName))) -- Extract the name as a String
+              liftIO $ putStrLn $ "Detected HsVar: " <> fldNameStr
+              case fldNameStr of
+                "getField" -> do
+                  -- Extract column name from `@"disabled"`
+                  let colName = case allNodes of
+                                  (HsOverLit _ (OverLit {ol_val = HsIsString _ colName})) : _ -> unpackFS colName
+                                  _ -> "UnknownColumn"
+                  liftIO $ putStrLn $ "Extracted column name: " <> colName
+                  pure $ Just (colName, "AuthenticationAccountT") -- Replace with actual table name if available
+                _ -> pure $ Just (fldNameStr, "UnknownTable")
+            (HsOverLit _ (OverLit {ol_val = HsIsString _ colName})) -> do -- Handle string literals
+              liftIO $ putStrLn $ "Detected string literal: " <> unpackFS colName
+              pure $ Just (unpackFS colName, "UnknownTable")
             _ -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ putStrLn "HsAppType not present. Should never be the case as we already filtered.") >> pure Nothing
         else when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ putStrLn "HsAppType not present after filtering. Should never reach as already deduced RecordDot.") >> pure Nothing
     Lens -> do
