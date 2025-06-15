@@ -758,26 +758,37 @@ trfWhereToSOP [] = pure [[]]
 trfWhereToSOP (clause : ls) = do
   let res = getWhereClauseFnNameWithAllArgs clause
       (fnName, args) = fromMaybe ("NA", []) res
+  liftIO $ putStrLn $ "Processing clause: " <> showS clause <> ", Function name: " <> fnName <> ", Args: " <> showS args
   case (fnName, args) of
     ("And", [(L _ (PatExplicitList _ arg))]) -> do
+      liftIO $ putStrLn "Detected 'And' clause."
       curr <- trfWhereToSOP arg
       rem  <- trfWhereToSOP ls
       pure [x <> y | x <- curr, y <- rem]
     ("Or", [(L _ (PatExplicitList _ arg))]) -> do
+      liftIO $ putStrLn "Detected 'Or' clause."
       curr <- foldM (\r cls -> fmap (<> r) $ trfWhereToSOP [cls]) [] arg
       rem  <- trfWhereToSOP ls
       pure [x <> y | x <- curr, y <- rem]
     ("$WIs", [arg1, arg2]) -> do
+      liftIO $ putStrLn "Detected 'Is' clause."
       curr <- getIsClauseData arg1 arg2 clause
       rem  <- trfWhereToSOP ls
       case curr of
-        Nothing -> pure rem
-        Just (tblName, colName) -> pure $ fmap (\lst -> (clause, tblName, colName) : lst) rem
+        Nothing -> do
+          liftIO $ putStrLn "Failed to extract 'Is' clause data."
+          pure rem
+        Just (tblName, colName) -> do
+          liftIO $ putStrLn $ "Extracted 'Is' clause data: Table = " <> tblName <> ", Column = " <> colName
+          pure $ fmap (\lst -> (clause, tblName, colName) : lst) rem
     ("getField", [L _ (HsOverLit _ (OverLit {ol_val = HsIsString _ colName}))]) -> do
       -- Handle `getField @"columnName"` syntax
+      liftIO $ putStrLn $ "Detected 'getField' clause for column: " <> unpackFS colName
       rem <- trfWhereToSOP ls
       pure $ fmap (\lst -> (clause, "UnknownTable", unpackFS colName) : lst) rem
-    (fn, _) -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ print $ "Invalid/unknown clause in `where` clause : " <> fn <> " at " <> (showS . getLoc2 $ clause)) >> trfWhereToSOP ls
+    (fn, _) -> do
+      liftIO $ putStrLn $ "Invalid/unknown clause in `where` clause: " <> fn <> " at " <> (showS . getLoc2 $ clause)
+      trfWhereToSOP ls
 
 -- Get table field name and table name for the `Se.Is` clause
 -- Patterns to match 'getField`, `recordDot`, `overloadedRecordDot` (ghc > 9), selector (duplicate record fields), rec fields (ghc 9), lens
