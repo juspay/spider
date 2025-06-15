@@ -186,3 +186,18 @@ rules:
     db_rule_fixes: 
       - "You might want to include an indexed column in the `where` clause of the query."
     db_rule_exceptions: []
+
+  - where_clause_rule_name: "DefaultWhereClauseRule"
+    where_clause_rule_fixes: 
+      - "You might want to include a mandatory column in the `where` clause of the query."
+    where_clause_rule_ignore_modules: []
+    where_clause_rule_check_modules:
+      - "*"
+    query_functions_to_check: 
+      - findOneRow
+      - findOne
+      - findAll
+      - findAllRows
+      - findAllRowsWithLimit
+      - findAllWithLimit
+      - findAllWithLimitAndOffset
