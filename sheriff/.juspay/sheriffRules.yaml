@@ -193,3 +193,11 @@ rules:
     where_clause_rule_ignore_modules: []
     where_clause_rule_check_modules:
       - "*"
+    query_functions_to_check: 
+      - findOneRow
+      - findOne
+      - findAll
+      - findAllRows
+      - findAllRowsWithLimit
+      - findAllWithLimit
+      - findAllWithLimitAndOffset

@@ -197,7 +197,8 @@ data WhereClauseRule =
       where_clause_rule_name             :: String,
       where_clause_rule_fixes            :: Suggestions,
       where_clause_rule_ignore_modules   :: Modules,
-      where_clause_rule_check_modules    :: Modules
+      where_clause_rule_check_modules    :: Modules,
+      query_functions_to_check           :: [String]
     }
   deriving (Show, Eq)
 
@@ -206,7 +207,8 @@ defaultWhereClauseRule = WhereClauseRule {
     where_clause_rule_name             = "WhereClauseRule",
     where_clause_rule_fixes            = ["You Might want to include an mandatory column in the `where` clause of the query."],
     where_clause_rule_ignore_modules   = [],
-    where_clause_rule_check_modules    = ["*"]
+    where_clause_rule_check_modules    = ["*"],
+    query_functions_to_check           = ["find", "findOne", "findoneRow" , "findAllRows"]
   }
 
 instance FromJSON WhereClauseRule where
@@ -215,6 +217,7 @@ instance FromJSON WhereClauseRule where
                 where_clause_rule_fixes            <- o .:  "where_clause_rule_fixes"
                 where_clause_rule_ignore_modules   <- o .:? "where_clause_rule_ignore_modules"   .!= (where_clause_rule_ignore_modules defaultWhereClauseRule)
                 where_clause_rule_check_modules    <- o .:? "where_clause_rule_check_modules"    .!= (where_clause_rule_check_modules defaultWhereClauseRule)
+                query_functions_to_check           <- o .:? "query_functions_to_check"           .!= (query_functions_to_check defaultWhereClauseRule)
                 return WhereClauseRule {..}
 
 data InfiniteRecursionRule = 
