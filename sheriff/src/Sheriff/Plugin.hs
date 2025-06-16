@@ -863,9 +863,40 @@ getIsClauseData fieldArg _comp _clause = do
                                     let directFldNameStr = occNameString (nameOccName (idName (unLoc directFldName)))
                                     in trace ("Matched HsVar directly: Field name = " <> directFldNameStr) directFldNameStr
                   
-                                  -- Default case: No match found
-                                  _ -> trace "No matching case found: Defaulting to UnknownColumn" "UnknownColumn"
+                                  -- Case 4: Handle HsApp (Application)
+                                  (HsApp _ func arg) : _ ->
+                                    let funcStr = showS func
+                                        argStr = showS arg
+                                    in trace ("Matched HsApp: Function = " <> funcStr <> ", Argument = " <> argStr) "UnknownColumn1"
                   
+                                  -- Case 5: Handle HsAppType (Type Application)
+                                  (HsAppType _ func arg) : _ ->
+                                    let funcStr = showS func
+                                        argStr = showS arg
+                                    in trace ("Matched HsAppType: Function = " <> funcStr <> ", Argument = " <> argStr) "UnknownColumn2"
+                  
+                                  -- Case 6: Handle HsPar (Parenthesized Expression)
+                                  (HsPar _ expr) : _ ->
+                                    let exprStr = showS expr
+                                    in trace ("Matched HsPar: Expression = " <> exprStr) "UnknownColumn3"
+                  
+                                  -- Case 7: Handle HsTick (Profiling Tick)
+                                  (HsTick _ _ expr) : _ ->
+                                    let exprStr = showS expr
+                                    in trace ("Matched HsTick: Expression = " <> exprStr) "UnknownColumn4"
+                  
+                                  -- Case 8: Handle HsLam (Lambda Expression)
+                                  (HsLam _ matchGroup) : _ ->
+                                    let matchGroupStr = "MatchGroup with " <> show (length (mg_alts matchGroup)) <> " alternatives"
+                                    in trace ("Matched HsLam: " <> matchGroupStr) "UnknownColumn5"
+                  
+                                  -- Case 9: Handle HsCase (Case Expression)
+                                  (HsCase _ expr matches) : _ ->
+                                    let exprStr = showS expr
+                                        matchesStr = "MatchGroup with " <> show (length (mg_alts matches)) <> " alternatives"
+                                    in trace ("Matched HsCase: Expression = " <> exprStr <> ", Matches = " <> matchesStr) "UnknownColumn6"
+                                  -- Default case: No match found
+                                  _ -> trace ("No matching case found. Nodes in AST: " <> showS allNodes <> ". Defaulting to UnknownColumn") "UnknownColumn7"
                   liftIO $ putStrLn $ "Extracted column name: " <> colName
                   pure $ Just (colName, "AuthenticationAccountT") -- Replace with actual table name if available
                 _ -> pure $ Just (fldNameStr, "UnknownTable")
