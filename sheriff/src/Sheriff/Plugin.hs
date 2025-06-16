@@ -454,14 +454,20 @@ extractFunctionName expr = case unLoc expr of
 
 -- Simplifies few things and handles some final transformations
 isBadExpr :: (HasPluginOpts PluginOpts) => Rules -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
-isBadExpr rules ap@(L _ (HsVar _ v)) = isBadExprHelper rules ap (extractFunctionName ap)
-isBadExpr rules ap@(L _ (HsApp _ funl funr)) = isBadExprHelper rules ap (extractFunctionName ap)
+isBadExpr rules ap@(L _ (HsVar _ v)) = do
+  let fnName = extractFunctionName ap
+  liftIO $ putStrLn $ "Detected HsVar function name: " <> fromMaybe "Unknown" fnName 
+  isBadExprHelper rules ap fnName
+isBadExpr rules ap@(L _ (HsApp _ funl funr)) = do
+  let fnName = extractFunctionName funl
+  liftIO $ putStrLn $ "Detected HsApp function name: " <> fromMaybe "Unknown" fnName
+  isBadExprHelper rules ap fnName
 isBadExpr rules ap@(L _ (PatExplicitList _ _)) = isBadExprHelper rules ap (extractFunctionName ap)
 isBadExpr rules ap@(L loc (PatHsWrap _ expr)) = isBadExpr rules (L loc expr) >>= mapM (\(x, y) -> trfViolationErrorInfo y ap x >>= \z -> pure (x, z))
 isBadExpr rules ap@(L loc (OpApp _ lfun op rfun)) = do
   case showS op of
     "($)" -> isBadExpr rules (L loc (HsApp noExtFieldOrAnn lfun rfun)) >>= mapM (\(x, y) -> trfViolationErrorInfo y ap x >>= \z -> pure (x, z))
-    _ -> isBadExprHelper rules ap (extractFunctionName ap)
+    _ -> isBadExprHelper rules ap Nothing
 #if __GLASGOW_HASKELL__ >= 900
 isBadExpr rules ap@(L loc (PatHsExpansion orig expanded)) = do
   case (orig, expanded) of
@@ -792,11 +798,11 @@ trfWhereToSOP (clause : ls) = do
         Just (tblName, colName) -> do
           liftIO $ putStrLn $ "Extracted 'Is' clause data: Table = " <> tblName <> ", Column = " <> colName
           pure $ fmap (\lst -> (clause, tblName, colName) : lst) rem
-    ("getField", [L _ (HsOverLit _ (OverLit {ol_val = HsIsString _ colName}))]) -> do
+    ("getField", a ) -> do
       -- Handle `getField @"columnName"` syntax
-      liftIO $ putStrLn $ "Detected 'getField' clause for column: " <> unpackFS colName
-      rem <- trfWhereToSOP ls
-      pure $ fmap (\lst -> (clause, "UnknownTable", unpackFS colName) : lst) rem
+      liftIO $ putStrLn $ "Detected 'getField' clause for column: " <> showS a
+      -- rem <- trfWhereToSOP []
+      pure []
     (fn, _) -> do
       liftIO $ putStrLn $ "Invalid/unknown clause in `where` clause: " <> fn <> " at " <> (showS . getLoc2 $ clause)
       trfWhereToSOP ls
