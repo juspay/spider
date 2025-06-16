@@ -848,21 +848,24 @@ getIsClauseData fieldArg _comp _clause = do
               case fldNameStr of
                 "getField" -> do
                   let colName = case allNodes of
-                                  -- Case 1: Handle HsOverLit with HsIsString
                                   (HsOverLit _ (OverLit {ol_val = HsIsString _ colName})) : _ ->
                                     let extractedColName = unpackFS colName
                                     in trace ("Matched HsOverLit (HsIsString): Extracted column name = " <> extractedColName) extractedColName
                   
-                  
-                                  -- Case 3: Handle HsVar directly
                                   (HsVar _ directFldName) : _ ->
                                     let directFldNameStr = occNameString (nameOccName (idName (unLoc directFldName)))
                                     in trace ("Matched HsVar directly: Field name = " <> directFldNameStr) directFldNameStr
                   
                                   (HsPar _ expr) : _ ->
-                                    let exprStr = showS expr
+                                    -- Helper function to recursively unwrap expressions
+                                    let recUnwrap :: LHsExpr GhcTc -> LHsExpr GhcTc
+                                        recUnwrap expr = case unLoc expr of
+                                          HsPar _ innerExpr -> recUnwrap innerExpr
+                                          other -> expr
+                                  
+                                        exprStr = showS expr
                                         debugExpr = showS (unLoc expr) -- Log the structure of unLoc expr
-                                        innerColName = (case unLoc expr of
+                                        innerColName = (case unLoc (recUnwrap expr) of
                                           -- Match HsOverLit directly
                                           HsOverLit _ (OverLit {ol_val = HsIsString _ colName}) ->
                                             let extractedColName = unpackFS colName
@@ -878,11 +881,23 @@ getIsClauseData fieldArg _comp _clause = do
                                             let extractedColName = occNameString (nameOccName (idName (unLoc name)))
                                             in trace ("Inner Matched HsVar: Extracted column name = " <> extractedColName) extractedColName
                                   
+                                          -- Match HsApp (function application)
+                                          HsApp _ func arg ->
+                                            let funcStr = showS func
+                                                argStr = showS arg
+                                            in case unLoc (recUnwrap func) of
+                                              HsVar _ name | occNameString (nameOccName (idName (unLoc name))) == "getField" ->
+                                                case unLoc (recUnwrap arg) of
+                                                  HsLit _ (HsString _ colName) ->
+                                                    let extractedColName = unpackFS colName
+                                                    in trace ("Inner Matched HsApp (getField): Extracted column name = " <> extractedColName) extractedColName
+                                                  _ -> trace ("Inner Argument of getField is not a string literal. Defaulting to UnknownColumn") "UnknownColumn"
+                                              _ -> trace ("Inner Function is not getField. Defaulting to UnknownColumn") "UnknownColumn"
+                                  
                                           -- Default case for unmatched patterns
                                           _ -> trace ("Inner No matching case found for unLoc expr: " <> debugExpr <> ". Defaulting to UnknownColumn") "UnknownColumn"
                                           )
                                     in trace ("Matched HsPar: Expression = " <> exprStr <> ", Inner column name = " <> innerColName) innerColName
-                                  -- Default case: No match found
                                   _ -> trace ("No matching case found. Nodes in AST: " <> showS allNodes <> ". Defaulting to UnknownColumn") "UnknownColumn7"
                   liftIO $ putStrLn $ "Extracted column name: " <> colName
                   pure $ Just (colName, "AuthenticationAccountT") -- Replace with actual table name if available
