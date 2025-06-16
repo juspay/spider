@@ -441,16 +441,27 @@ noGivenFunctionCallExpansion fnName expr = case expr of
         Just (lVar, _) -> matchNamesWithModuleName (getLocatedVarNameWithModuleName lVar) fnName AsteriskInSecond -- (getOccString . varName . unLoc $ lVar) == fnName
         Nothing -> False
 
+extractFunctionName :: LHsExpr GhcTc -> Maybe String
+extractFunctionName expr = case unLoc expr of
+  -- Match HsVar directly
+  HsVar _ name -> Just $ occNameString (nameOccName (idName (unLoc name)))
+
+  -- Match HsApp (function application)
+  HsApp _ func _ -> extractFunctionName func
+
+  -- Default case: No match
+  _ -> Nothing
+
 -- Simplifies few things and handles some final transformations
 isBadExpr :: (HasPluginOpts PluginOpts) => Rules -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
-isBadExpr rules ap@(L _ (HsVar _ v)) = isBadExprHelper rules ap
-isBadExpr rules ap@(L _ (HsApp _ funl funr)) = isBadExprHelper rules ap
-isBadExpr rules ap@(L _ (PatExplicitList _ _)) = isBadExprHelper rules ap
+isBadExpr rules ap@(L _ (HsVar _ v)) = isBadExprHelper rules ap (extractFunctionName ap)
+isBadExpr rules ap@(L _ (HsApp _ funl funr)) = isBadExprHelper rules ap (extractFunctionName ap)
+isBadExpr rules ap@(L _ (PatExplicitList _ _)) = isBadExprHelper rules ap (extractFunctionName ap)
 isBadExpr rules ap@(L loc (PatHsWrap _ expr)) = isBadExpr rules (L loc expr) >>= mapM (\(x, y) -> trfViolationErrorInfo y ap x >>= \z -> pure (x, z))
 isBadExpr rules ap@(L loc (OpApp _ lfun op rfun)) = do
   case showS op of
     "($)" -> isBadExpr rules (L loc (HsApp noExtFieldOrAnn lfun rfun)) >>= mapM (\(x, y) -> trfViolationErrorInfo y ap x >>= \z -> pure (x, z))
-    _ -> isBadExprHelper rules ap
+    _ -> isBadExprHelper rules ap (extractFunctionName ap)
 #if __GLASGOW_HASKELL__ >= 900
 isBadExpr rules ap@(L loc (PatHsExpansion orig expanded)) = do
   case (orig, expanded) of
@@ -462,12 +473,12 @@ isBadExpr rules ap@(L loc (PatHsExpansion orig expanded)) = do
 isBadExpr rules ap = pure []
 
 -- Calls checkAndApplyRule, can be used to directly call without simplifier if needed
-isBadExprHelper :: (HasPluginOpts PluginOpts) => Rules -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
-isBadExprHelper rules ap = concat <$> mapM (\rule -> checkAndApplyRule rule ap) rules
+isBadExprHelper :: (HasPluginOpts PluginOpts) => Rules -> LHsExpr GhcTc -> Maybe String -> TcM [(LHsExpr GhcTc, Violation)]
+isBadExprHelper rules ap fnName = concat <$> mapM (\rule -> checkAndApplyRule rule ap fnName) rules
 
 -- Check if a particular rule applies to given expr
-checkAndApplyRule :: (HasPluginOpts PluginOpts) => Rule -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
-checkAndApplyRule ruleT ap = case ruleT of
+checkAndApplyRule :: (HasPluginOpts PluginOpts) => Rule -> LHsExpr GhcTc -> Maybe String -> TcM ([(LHsExpr GhcTc, Violation)])
+checkAndApplyRule ruleT ap fnName = case ruleT of
   DBRuleT rule@(DBRule {table_name = ruleTableName}) ->
     case ap of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
@@ -480,7 +491,7 @@ checkAndApplyRule ruleT ap = case ruleT of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
         -- liftIO $ putStrLn ("ap: " ++ showSDocUnsafe (ppr ap) ++ " shows ap: " ++ showS ap) 
         case (showS ty == "Clause") of
-          True -> validateWhereClauseRule rule (showS tblName) exprs
+          True -> validateWhereClauseRule rule (showS tblName) exprs fnName
           False -> pure []
       _ -> pure []
   FunctionRuleT rule@(FunctionRule {fn_name = ruleFnNames, arg_no}) -> do
@@ -683,12 +694,12 @@ validateDBRule rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName
                   [] -> pure Nothing
                   ((clause, colName, tableName) : _) -> pure $ Just (clause, NonIndexedDBColumn colName tableName rule)
 
-validateWhereClauseRule :: (HasPluginOpts PluginOpts) => WhereClauseRule -> String -> [LHsExpr GhcTc] -> TcM ([(LHsExpr GhcTc, Violation)])
-validateWhereClauseRule rule tableName clauses = do
+validateWhereClauseRule :: (HasPluginOpts PluginOpts) => WhereClauseRule -> String -> [LHsExpr GhcTc] -> Maybe String -> TcM ([(LHsExpr GhcTc, Violation)])
+validateWhereClauseRule rule tableName clauses fnName = do
   liftIO $ putStrLn $ "Validating WhereClauseRule for table: " <> tableName <> " with clauses: " <> showS clauses
   simplifiedExprs <- trfWhereToSOP clauses
   let matched = concatMap (map (\(_, colName, _) -> colName)) simplifiedExprs -- Extract column names from all clauses
-  liftIO $ putStrLn $ "tableKey: " <> tableName <> ", Matched columns: " <> show matched
+  liftIO $ putStrLn $ "tableKey: " <> tableName <> ", Matched columns: " <> show matched <> ", fnName: " <> fromMaybe "" fnName
   jsonData <- liftIO $ Char8.readFile "tables_and_fields_with_types.json"
   case A.decode jsonData :: Maybe (HM.HashMap String (HM.HashMap String String)) of
     Just jsonMap -> do
