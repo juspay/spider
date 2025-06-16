@@ -861,18 +861,31 @@ getIsClauseData fieldArg _comp _clause = do
                   
                                   (HsPar _ expr) : _ ->
                                     let exprStr = showS expr
-                                        innerColName = case unLoc expr of
+                                        innerColName = (case unLoc expr of
                                           -- Match HsOverLit directly
                                           HsOverLit _ (OverLit {ol_val = HsIsString _ colName}) ->
                                             let extractedColName = unpackFS colName
                                             in trace ("Inner Matched HsOverLit (HsIsString): Extracted column name = " <> extractedColName) extractedColName
-                                  
+                                    
+                                          -- Match HsLit directly
                                           HsLit _ (HsString _ colName) ->
                                             let extractedColName = unpackFS colName
                                             in trace ("Inner Matched HsLit (HsString): Extracted column name = " <> extractedColName) extractedColName
-                                  
+                                    
+                                          -- Match HsVar directly
+                                          HsVar _ name ->
+                                            let extractedColName = occNameString (nameOccName (idName (unLoc name)))
+                                            in trace ("Inner Matched HsVar: Extracted column name = " <> extractedColName) extractedColName
+                                    
+                                          -- Match HsApp (function application)
+                                          HsApp _ func arg ->
+                                            let funcStr = showS func
+                                                argStr = showS arg
+                                            in trace ("Inner Matched HsApp: Function = " <> funcStr <> ", Argument = " <> argStr) "UnknownColumn"
+                                    
                                           -- Default case for unmatched patterns
                                           _ -> trace ("Inner No matching case found for HsPar. Defaulting to UnknownColumn") "UnknownColumn"
+                                          )
                                     in trace ("Matched HsPar: Expression = " <> exprStr <> ", Inner column name = " <> innerColName) innerColName
                                   -- Default case: No match found
                                   _ -> trace ("No matching case found. Nodes in AST: " <> showS allNodes <> ". Defaulting to UnknownColumn") "UnknownColumn7"
