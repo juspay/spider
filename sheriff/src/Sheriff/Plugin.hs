@@ -847,10 +847,25 @@ getIsClauseData fieldArg _comp _clause = do
               liftIO $ putStrLn $ "Detected HsVar: " <> fldNameStr
               case fldNameStr of
                 "getField" -> do
-                  -- Extract column name from `@"disabled"`
                   let colName = case allNodes of
-                                  (HsOverLit _ (OverLit {ol_val = HsIsString _ colName})) : _ -> unpackFS colName
-                                  _ -> "UnknownColumn"
+                                  -- Case 1: Handle HsOverLit with HsIsString
+                                  (HsOverLit _ (OverLit {ol_val = HsIsString _ colName})) : _ ->
+                                    let extractedColName = unpackFS colName
+                                    in trace ("Matched HsOverLit (HsIsString): Extracted column name = " <> extractedColName) extractedColName
+                  
+                                  -- Case 2: Handle HsLit with HsString
+                                  (HsLit _ (HsString _ colName)) : _ ->
+                                    let extractedColName = unpackFS colName
+                                    in trace ("Matched HsLit (HsString): Extracted column name = " <> extractedColName) extractedColName
+                  
+                                  -- Case 3: Handle HsVar directly
+                                  (HsVar _ directFldName) : _ ->
+                                    let directFldNameStr = occNameString (nameOccName (idName (unLoc directFldName)))
+                                    in trace ("Matched HsVar directly: Field name = " <> directFldNameStr) directFldNameStr
+                  
+                                  -- Default case: No match found
+                                  _ -> trace "No matching case found: Defaulting to UnknownColumn" "UnknownColumn"
+                  
                   liftIO $ putStrLn $ "Extracted column name: " <> colName
                   pure $ Just (colName, "AuthenticationAccountT") -- Replace with actual table name if available
                 _ -> pure $ Just (fldNameStr, "UnknownTable")
