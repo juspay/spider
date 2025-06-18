@@ -490,7 +490,7 @@ checkAndApplyRule ruleT ap fnName = case ruleT of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
         case (showS ty == "Clause" && showS tblName == (ruleTableName <> "T")) of
           True  -> validateDBRule rule (showS tblName) exprs ap
-          False -> pure []
+          False -> pure [] 
       _ -> pure []
   WhereClauseRuleT rule ->
     case ap of
