@@ -6,8 +6,8 @@ import Data.Text
 
 data CliOptions = CliOptions {
     path :: FilePath,
-    port :: Int,
-    host :: String,
+    port :: Int,             -- Keep for backward compatibility
+    host :: String,          -- Keep for backward compatibility
     log :: Bool,
     tc_funcs :: Maybe Bool
 } deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)

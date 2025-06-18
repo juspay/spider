@@ -12,6 +12,7 @@
 
 module Endpoints.Plugin where
 
+import Socket
 #if __GLASGOW_HASKELL__ >= 900
 import GHC
 import GHC.Data.FastString (unpackFS)
@@ -57,15 +58,13 @@ import Data.Generics.Uniplate.Data ()
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
 import Prelude hiding (log)
-import qualified Network.WebSockets as WS
 import Control.Exception
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import qualified Data.List.Extra as Data.List
-import Network.Socket (withSocketsDo)
 import Data.Maybe
 import System.Environment (lookupEnv)
-import Text.Read (readMaybe)
 import Data.List.Extra (intercalate, isSuffixOf, replace, splitOn,groupBy)
+import System.Directory (createDirectoryIfMissing)
 
 plugin :: Plugin
 plugin =
@@ -75,8 +74,6 @@ plugin =
         , typeCheckResultAction = collectTypesTC
         }
 
-websocketPort :: Maybe Int
-websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
 
 shouldLog :: Bool
 shouldLog = readBool $ unsafePerformIO $ lookupEnv "ENABLE_LOGS"
@@ -86,33 +83,6 @@ shouldLog = readBool $ unsafePerformIO $ lookupEnv "ENABLE_LOGS"
     readBool (Just "True") = True
     readBool (Just "TRUE") = True
     readBool _ = False
-
-
-websocketHost :: Maybe String
-websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
-
--- cachedTypes :: MVar (HM.KeyMap Type)
--- cachedTypes = unsafePerformIO (newMVar mempty)
-
-sendFileToWebSocketServer :: (WS.WebSocketsData a) => CliOptions -> T.Text -> a -> IO ()
-sendFileToWebSocketServer cliOptions path data_ =
-    withSocketsDo $ do
-        eres <- try $
-            WS.runClient
-                (fromMaybe (host cliOptions) websocketHost)
-                (fromMaybe (port cliOptions) websocketPort)
-                (T.unpack path)
-                (\conn -> do
-                    res <- try $ WS.sendTextData conn data_
-                    case res of
-                        Left (err :: SomeException) ->
-                            when (shouldLog || log cliOptions) $ print err
-                        Right _ -> pure ()
-                )
-        case eres of
-            Left (err :: SomeException) ->
-                when (shouldLog || log cliOptions) $ print err
-            Right _ -> pure ()
 
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False}
@@ -143,7 +113,7 @@ collectTypesTC opts modSummary tcg = do
                 parsedEndpoints <-  processServantApis $ concat servantAPIs
                 -- createDirectoryIfMissing True path
                 -- DBS.writeFile (modulePath <> ".api-spec.json") (DBS.toStrict $ encode $ parsedEndpoints)
-                sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".module_apis.json") (decodeUtf8 $ (DBS.toStrict $ encode $ parsedEndpoints))
+                sendViaUnixSocket prefixPath (T.pack $ "/" <> modulePath <> ".module_apis.json") (decodeUtf8 $ (DBS.toStrict $ encode $ parsedEndpoints))
     return tcg
 
 mergeEndpoints x = x

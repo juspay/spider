@@ -242,12 +242,9 @@ import System.Directory.Internal.Prelude (
 import Prelude hiding (id, mapM, mapM_,log)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
-import qualified Network.WebSockets as WS
-import Network.Socket (withSocketsDo)
-import Text.Read (readMaybe)
 import GHC.IO (unsafePerformIO)
-
-
+import System.Directory (createDirectoryIfMissing)
+import Socket
 
 plugin :: Plugin
 plugin =
@@ -266,33 +263,6 @@ removeIfExists fileName = removeFile fileName `catch` handleExists
         | isDoesNotExistError e = return ()
         | otherwise = throwIO e
 
-websocketPort :: Maybe Int
-websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
-
-websocketHost :: Maybe String
-websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
-
-
-sendFileToWebSocketServer :: CliOptions -> Text -> Text -> IO ()
-sendFileToWebSocketServer cliOptions path data_ =
-    withSocketsDo $ do
-        eres <- try $
-            WS.runClient
-                (fromMaybe (host cliOptions) websocketHost)
-                (fromMaybe (port cliOptions) websocketPort)
-                (T.unpack path)
-                (\conn -> do
-                    res <- try $ WS.sendTextData conn data_
-                    case res of
-                        Left (err :: SomeException) ->
-                            when (log cliOptions) $ print err
-                        Right _ -> pure ()
-                )
-        case eres of
-            Left (err :: SomeException) ->
-                when (log cliOptions) $ print err
-            Right _ -> pure ()
-
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcEnv = do
     _ <- liftIO $
@@ -309,7 +279,7 @@ collectTypesTC opts modSummary tcEnv = do
                         binds = bagToList $ tcg_binds tcEnv
                     -- createDirectoryIfMissing True path
                     functionVsUpdates <- getAllTypeManipulations binds
-                    sendFileToWebSocketServer cliOptions (T.pack $ "/" <> (modulePath) <> ".typeUpdates.json") (decodeUtf8 $ toStrict $ A.encode functionVsUpdates)
+                    sendViaUnixSocket (path cliOptions) (T.pack $ "/" <> (modulePath) <> ".typeUpdates.json") (decodeUtf8 $ toStrict $ A.encode functionVsUpdates)
                     -- DBS.writeFile ((modulePath) <> ".typeUpdates.json") (toStrict $ encodePretty functionVsUpdates)
     return tcEnv
 

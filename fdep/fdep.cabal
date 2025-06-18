@@ -48,8 +48,9 @@ library
                 , extra
                 , time
                 , text
-                , websockets
-                , network
+                , socket-lib
+                , directory
+                , async
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -61,6 +62,6 @@ test-suite fdep-test
     main-is:          Main.hs
     build-depends:
         fdep
-        , record-hasfield
         , text
+        , record-hasfield
     ghc-options: -fplugin=Fdep.Plugin -fplugin-opt=Fdep.Plugin:{"path":"./tmp/fdep/","port":9898,"host":"localhost","log":true,"tc_funcs":false}

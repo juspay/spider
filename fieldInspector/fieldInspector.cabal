@@ -114,12 +114,11 @@ common common-options
         , typelet
         , record-hasfield
         , text
-        , websockets
         , binary
         , references
         , uniplate
         , api-contract
-        , network
+        , socket-lib
         -- , fdep
 
 library

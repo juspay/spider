@@ -20,9 +20,9 @@ import Data.List.Extra (intercalate, splitOn)
 import System.Directory (createDirectoryIfMissing)
 import Data.ByteString.Lazy (toStrict)
 import KeyLookupTracker.Types (KeyLookupRules(..), Rules(..), PluginOpts(..), defaultPluginOpts)
-import GHC.Tc.Utils.Monad
 
 #if __GLASGOW_HASKELL__ >= 900
+import GHC.Tc.Utils.Monad
 import GHC.Data.Bag
 import GHC.Plugins hiding ((<>), getHscEnv, purePlugin)
 import GHC.Tc.Types

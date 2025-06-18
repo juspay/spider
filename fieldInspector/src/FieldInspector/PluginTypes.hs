@@ -96,8 +96,6 @@ import qualified ApiContract.Plugin as ApiContract
 -- import qualified Fdep.Plugin as Fdep
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
-import qualified Network.WebSockets as WS
-import Network.Socket (withSocketsDo)
 import Text.Read (readMaybe)
 import GHC.IO (unsafePerformIO)
 import Data.Binary
@@ -105,6 +103,8 @@ import Control.DeepSeq
 import GHC.Generics (Generic)
 import Control.Reference (biplateRef, (^?))
 import Data.Generics.Uniplate.Data ()
+import System.Directory (createDirectoryIfMissing)
+import Socket
 
 plugin :: Plugin
 plugin = (defaultPlugin{
@@ -180,32 +180,6 @@ pprTyCon = ppr
 pprDataCon :: Name -> SDoc
 pprDataCon = ppr
 
-websocketPort :: Maybe Int
-websocketPort = maybe Nothing (readMaybe) $ unsafePerformIO $ lookupEnv "SERVER_PORT"
-
-websocketHost :: Maybe String
-websocketHost = unsafePerformIO $ lookupEnv "SERVER_HOST"
-
-sendFileToWebSocketServer :: CliOptions -> Text -> Text -> IO ()
-sendFileToWebSocketServer cliOptions path data_ =
-    withSocketsDo $ do
-        eres <- try $
-            WS.runClient
-                (fromMaybe (host cliOptions) websocketHost)
-                (fromMaybe (port cliOptions) websocketPort)
-                (T.unpack path)
-                (\conn -> do
-                    res <- try $ WS.sendTextData conn data_
-                    case res of
-                        Left (err :: SomeException) ->
-                            when (log cliOptions) $ print err
-                        Right _ -> pure ()
-                )
-        case eres of
-            Left (err :: SomeException) ->
-                when (log cliOptions) $ print err
-            Right _ -> pure ()
-
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False,api_conteact=Just True}
 
@@ -226,7 +200,7 @@ collectTypeInfoParser opts modSummary hpm = do
                 -- createDirectoryIfMissing True path_
                 types <- mapM (pure . getTypeInfo moduleName') (hsmodDecls hm_module)
                 -- DBS.writeFile (modulePath <> ".type.parser.json") (toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
-                sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".types.parser.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
+                sendViaUnixSocket (path cliOptions) (T.pack $ "/" <> modulePath <> ".types.parser.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
     pure hpm
 
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
@@ -245,7 +219,7 @@ collectTypesTC opts modSummary tcg = do
         -- liftIO $ createDirectoryIfMissing True path_
         typeDefs <- extractTypeInfo tcg
         -- liftIO $ forkIO $ DBS.writeFile (modulePath <> ".type.typechecker.json") =<< (pure $ DBS.toStrict $ A.encode $ Map.fromList typeDefs)
-        liftIO $ sendFileToWebSocketServer cliOptions (T.pack $ "/" <> modulePath <> ".type.typechecker.json") =<< (pure $ decodeUtf8 $ BL.toStrict $ A.encode $ Map.fromList typeDefs)
+        liftIO $ sendViaUnixSocket (path cliOptions) (T.pack $ "/" <> modulePath <> ".type.typechecker.json") =<< (pure $ decodeUtf8 $ BL.toStrict $ A.encode $ Map.fromList typeDefs)
     pure tcg
 
 getTypeInfo :: String -> LHsDecl GhcPs -> [(String, TypeInfo)]
