@@ -495,7 +495,7 @@ checkAndApplyRule ruleT ap fnName = case ruleT of
   WhereClauseRuleT rule ->
     case ap of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
-        -- liftIO $ putStrLn ("ap: " ++ showSDocUnsafe (ppr ap) ++ " shows ap: " ++ showS ap) 
+        liftIO $ putStrLn ("fnName: " ++ show fnName  ++ " exprs: " ++showS  exprs) 
         case (showS ty == "Clause") of
           True -> validateWhereClauseRule rule (showS tblName) exprs fnName
           False -> pure []
