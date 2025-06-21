@@ -99,5 +99,5 @@ test-suite socket-lib-test
 
     -- Test dependencies.
     build-depends:
-        base ^>=4.16.4.0,
+        base,
         socket-lib

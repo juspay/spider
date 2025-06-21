@@ -7,7 +7,6 @@
 
 module Fdep.Plugin (plugin,collectDecls) where
 
-import Control.Concurrent.Async (async)
 import Socket
 -- import Control.Concurrent ( forkIO )
 import Control.Exception (SomeException, try)
@@ -510,7 +509,7 @@ instance Show PayloadType where
 loopOverLHsBindLR :: CliOptions -> _ -> (Maybe Text) -> Text -> LHsBindLR GhcTc GhcTc -> IO ()
 loopOverLHsBindLR cliOptions con mParentName path (L _ AbsBinds{abs_binds = binds}) =
     void $ mapM (loopOverLHsBindLR cliOptions con mParentName path) $ bagToList binds
-loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = void $ async $ do
+loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
     let typesUsed = (map varType $ (bind ^? biplateRef :: [Var])) <> (map idType $ (bind ^? biplateRef :: [Id])) <> (bind ^? biplateRef :: [Type])
     case bind of
 #if __GLASGOW_HASKELL__ >= 900
