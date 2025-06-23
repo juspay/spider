@@ -105,19 +105,19 @@ common common-options
         , universum
         , streamly-core
         , data-default
-        , large-records
-        , large-generics
-        , large-anon
-        , ghc-hasfield-plugin
+        -- , large-records
+        -- , large-generics
+        -- , large-anon
+        -- , ghc-hasfield-plugin
         , record-dot-preprocessor
         , ghc-tcplugin-api
-        , typelet
-        , record-hasfield
+        -- , typelet
+        -- , record-hasfield
         , text
         , binary
         , references
         , uniplate
-        , api-contract
+        -- , api-contract
         , socket-lib
         -- , fdep
 

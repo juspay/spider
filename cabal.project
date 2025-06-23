@@ -3,7 +3,6 @@ packages:
   ./fieldInspector
   ./sheriff
   ./paymentFlow
-  ./api-contract
   ./dc
   ./endpoints
   ./warner

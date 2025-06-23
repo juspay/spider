@@ -88,11 +88,11 @@ import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude hiding (mapM, mapM_,log)
 import Prelude hiding (id, mapM_,log)
 import Control.Exception (evaluate)
-import qualified Data.Record.Plugin as DRP
-import qualified Data.Record.Anon.Plugin as DRAP
-import qualified Data.Record.Plugin.HasFieldPattern as DRPH
+-- import qualified Data.Record.Plugin as DRP
+-- import qualified Data.Record.Anon.Plugin as DRAP
+-- import qualified Data.Record.Plugin.HasFieldPattern as DRPH
 import qualified RecordDotPreprocessor as RDP
-import qualified ApiContract.Plugin as ApiContract
+-- import qualified ApiContract.Plugin as ApiContract
 -- import qualified Fdep.Plugin as Fdep
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
@@ -113,14 +113,14 @@ plugin = (defaultPlugin{
         , parsedResultAction = collectTypeInfoParser
         , typeCheckResultAction = collectTypesTC
         })
-#if defined(ENABLE_API_CONTRACT_PLUGINS)
-        <> ApiContract.plugin
-#endif
-#if defined(ENABLE_LR_PLUGINS)
-        <> DRP.plugin
-        <> DRAP.plugin
-        <> DRPH.plugin
-#endif
+-- #if defined(ENABLE_API_CONTRACT_PLUGINS)
+--         <> ApiContract.plugin
+-- #endif
+-- #if defined(ENABLE_LR_PLUGINS)
+--         <> DRP.plugin
+--         <> DRAP.plugin
+--         <> DRPH.plugin
+-- #endif
         <> RDP.plugin
 
 instance Semigroup Plugin where

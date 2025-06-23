@@ -10,10 +10,10 @@
     nixpkgs.url = "github:nixos/nixpkgs/75a52265bda7fd25e06e3a67dee3f0354e73243c";
     classyplate.url = "github:eswar2001/classyplate/a360f56820df6ca5284091f318bcddcd3e065243";
     references.url = "github:eswar2001/references/120ae7826a7af01a527817952ad0c3f5ef08efd0";
-    beam.url = "github:juspay/beam/c4f86057db76640245c3d1fde040176c53e9b9a3";
-    beam.flake = false;
-    large-records.url = "github:eswar2001/large-records/ghc928-qualified-prelude";
-    large-records.inputs.beam.follows = "beam";
+    # beam.url = "github:juspay/beam/c4f86057db76640245c3d1fde040176c53e9b9a3";
+    # beam.flake = false;
+    # large-records.url = "github:eswar2001/large-records/ghc928-qualified-prelude";
+    # large-records.inputs.beam.follows = "beam";
     ghc928.url = "github:eswar2001/ghc/de_sugar_plugin_support";
     ghc928.flake = false;
 
@@ -116,7 +116,7 @@
           imports = [
             inputs.references.haskellFlakeProjectModules.output
             inputs.classyplate.haskellFlakeProjectModules.output
-            inputs.large-records.haskellFlakeProjectModules.output
+            # inputs.large-records.haskellFlakeProjectModules.output
           ];
           packages = {
             streamly-core.source = inputs.streamly + /core;
