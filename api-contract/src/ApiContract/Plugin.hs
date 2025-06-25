@@ -101,7 +101,7 @@ import Control.Exception (evaluate)
 import qualified Data.Record.Plugin as DRP
 import qualified Data.Record.Anon.Plugin as DRAP
 import qualified Data.Record.Plugin.HasFieldPattern as DRPH
-import qualified RecordDotPreprocessor as RDP
+-- import qualified RecordDotPreprocessor as RDP
 import qualified Data.Yaml as YAML
 import Control.Monad (foldM)
 import Data.Char

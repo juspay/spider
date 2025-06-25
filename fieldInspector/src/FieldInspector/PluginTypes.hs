@@ -91,7 +91,7 @@ import Control.Exception (evaluate)
 -- import qualified Data.Record.Plugin as DRP
 -- import qualified Data.Record.Anon.Plugin as DRAP
 -- import qualified Data.Record.Plugin.HasFieldPattern as DRPH
-import qualified RecordDotPreprocessor as RDP
+-- import qualified RecordDotPreprocessor as RDP
 -- import qualified ApiContract.Plugin as ApiContract
 -- import qualified Fdep.Plugin as Fdep
 import qualified Data.ByteString.Lazy as BL
@@ -121,7 +121,7 @@ plugin = (defaultPlugin{
 --         <> DRAP.plugin
 --         <> DRPH.plugin
 -- #endif
-        <> RDP.plugin
+        -- <> RDP.plugin
 
 instance Semigroup Plugin where
   p <> q = defaultPlugin {
