@@ -8,7 +8,6 @@
 module Fdep.Plugin (plugin,collectDecls) where
 
 import Socket
--- import Control.Concurrent ( forkIO )
 import Control.Exception (SomeException, try)
 import Control.Monad (void, when)
 import Control.Reference (biplateRef, (^?))

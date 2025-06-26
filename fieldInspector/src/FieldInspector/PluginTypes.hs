@@ -185,7 +185,7 @@ defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=Fals
 
 collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectTypeInfoParser opts modSummary hpm = do
-    _ <- liftIO $ forkIO $
+    _ <- liftIO $
             do
                 let cliOptions = case opts of
                                 [] ->  defaultCliOptions
@@ -218,7 +218,6 @@ collectTypesTC opts modSummary tcg = do
             path_ = (intercalate "/" . init . splitOn "/") modulePath
         -- liftIO $ createDirectoryIfMissing True path_
         typeDefs <- extractTypeInfo tcg
-        -- liftIO $ forkIO $ DBS.writeFile (modulePath <> ".type.typechecker.json") =<< (pure $ DBS.toStrict $ A.encode $ Map.fromList typeDefs)
         liftIO $ sendViaUnixSocket (path cliOptions) (T.pack $ "/" <> modulePath <> ".type.typechecker.json") =<< (pure $ decodeUtf8 $ BL.toStrict $ A.encode $ Map.fromList typeDefs)
     pure tcg
 

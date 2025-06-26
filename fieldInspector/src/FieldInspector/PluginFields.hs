@@ -234,7 +234,6 @@ import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude (
     catMaybes,
     catch,
-    forkIO,
     isDoesNotExistError,
     on,
     throwIO,
@@ -266,7 +265,6 @@ removeIfExists fileName = removeFile fileName `catch` handleExists
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcEnv = do
     _ <- liftIO $
-            forkIO $
                 do
                     let cliOptions = case opts of
                                         [] ->  defaultCliOptions
