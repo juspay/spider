@@ -1,10 +1,6 @@
 packages:
   ./fdep
   ./fieldInspector
-  ./sheriff
-  ./paymentFlow
-  ./dc
   ./endpoints
   ./warner
-  ./keyLookupTracker
   ./socket_lib

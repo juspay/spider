@@ -94,23 +94,6 @@
         "type": "github"
       }
     },
-    "ghc8-beam": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1689929344,
-        "narHash": "sha256-uE2/Hq8u9+BjABrM9m6qV+H/88aGnRRzhsE0k8QKSL0=",
-        "owner": "juspay",
-        "repo": "beam",
-        "rev": "e50e6dc6a5a83c4c0c50183416fad33084c81d9e",
-        "type": "github"
-      },
-      "original": {
-        "owner": "juspay",
-        "repo": "beam",
-        "rev": "e50e6dc6a5a83c4c0c50183416fad33084c81d9e",
-        "type": "github"
-      }
-    },
     "ghc8-classyplate": {
       "flake": false,
       "locked": {
@@ -128,40 +111,6 @@
         "type": "github"
       }
     },
-    "ghc8-ghc-hasfield-plugin": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1658487566,
-        "narHash": "sha256-pZ6kFNfRtBWWqJ3zZSJhZQz7hcdgTdpkqUbzRCuRSl8=",
-        "owner": "juspay",
-        "repo": "ghc-hasfield-plugin",
-        "rev": "d82ac5a6c0ad643eebe2b9b32c91f6523d3f30dc",
-        "type": "github"
-      },
-      "original": {
-        "owner": "juspay",
-        "repo": "ghc-hasfield-plugin",
-        "rev": "d82ac5a6c0ad643eebe2b9b32c91f6523d3f30dc",
-        "type": "github"
-      }
-    },
-    "ghc8-large-records": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1719312727,
-        "narHash": "sha256-NLs4yiUh4vNf4sqOQUUTCr0Fpld1y6ZyZJNhqSTzAI0=",
-        "owner": "eswar2001",
-        "repo": "large-records",
-        "rev": "e393f4501d76a98b4482b0a5b35d120ae70e5dd3",
-        "type": "github"
-      },
-      "original": {
-        "owner": "eswar2001",
-        "repo": "large-records",
-        "rev": "e393f4501d76a98b4482b0a5b35d120ae70e5dd3",
-        "type": "github"
-      }
-    },
     "ghc8-nixpkgs": {
       "locked": {
         "lastModified": 1643795778,
@@ -175,23 +124,6 @@
         "owner": "nixos",
         "repo": "nixpkgs",
         "rev": "43e3b6af08f29c4447a6073e3d5b86a4f45dd420",
-        "type": "github"
-      }
-    },
-    "ghc8-record-dot-preprocessor": {
-      "flake": false,
-      "locked": {
-        "lastModified": 1644582826,
-        "narHash": "sha256-BXprRyjI4ZTG+Orz858xmttiC8O0yuubaaKmeRAL/UY=",
-        "owner": "ndmitchell",
-        "repo": "record-dot-preprocessor",
-        "rev": "99452d27f35ea1ff677be9af570d834e8fab4caf",
-        "type": "github"
-      },
-      "original": {
-        "owner": "ndmitchell",
-        "repo": "record-dot-preprocessor",
-        "rev": "99452d27f35ea1ff677be9af570d834e8fab4caf",
         "type": "github"
       }
     },
@@ -442,12 +374,8 @@
       "inputs": {
         "classyplate": "classyplate",
         "flake-parts": "flake-parts_2",
-        "ghc8-beam": "ghc8-beam",
         "ghc8-classyplate": "ghc8-classyplate",
-        "ghc8-ghc-hasfield-plugin": "ghc8-ghc-hasfield-plugin",
-        "ghc8-large-records": "ghc8-large-records",
         "ghc8-nixpkgs": "ghc8-nixpkgs",
-        "ghc8-record-dot-preprocessor": "ghc8-record-dot-preprocessor",
         "ghc8-references": "ghc8-references",
         "ghc928": "ghc928",
         "haskell-flake": "haskell-flake_3",

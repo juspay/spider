@@ -19,18 +19,18 @@
 
     # ghc 8.10.7 packages
     ghc8-nixpkgs.url = "github:nixos/nixpkgs/43e3b6af08f29c4447a6073e3d5b86a4f45dd420";
-    ghc8-beam.url = "github:juspay/beam/e50e6dc6a5a83c4c0c50183416fad33084c81d9e";
-    ghc8-beam.flake = false;
+    # ghc8-beam.url = "github:juspay/beam/e50e6dc6a5a83c4c0c50183416fad33084c81d9e";
+    # ghc8-beam.flake = false;
     ghc8-classyplate.url = "github:Chaitanya-nair/classyplate/46f5e0e7073e1d047f70473bf3c75366a613bfeb";
     ghc8-classyplate.flake = false;
     ghc8-references.url = "github:eswar2001/references/35912f3cc72b67fa63a8d59d634401b79796469e";
     ghc8-references.flake = true;
-    ghc8-ghc-hasfield-plugin.url = "github:juspay/ghc-hasfield-plugin/d82ac5a6c0ad643eebe2b9b32c91f6523d3f30dc";
-    ghc8-ghc-hasfield-plugin.flake = false;
-    ghc8-large-records.url = "github:eswar2001/large-records/e393f4501d76a98b4482b0a5b35d120ae70e5dd3";
-    ghc8-large-records.flake = false;
-    ghc8-record-dot-preprocessor.url = "github:ndmitchell/record-dot-preprocessor/99452d27f35ea1ff677be9af570d834e8fab4caf";
-    ghc8-record-dot-preprocessor.flake = false;
+    # ghc8-ghc-hasfield-plugin.url = "github:juspay/ghc-hasfield-plugin/d82ac5a6c0ad643eebe2b9b32c91f6523d3f30dc";
+    # ghc8-ghc-hasfield-plugin.flake = false;
+    # ghc8-large-records.url = "github:eswar2001/large-records/e393f4501d76a98b4482b0a5b35d120ae70e5dd3";
+    # ghc8-large-records.flake = false;
+    # ghc8-record-dot-preprocessor.url = "github:ndmitchell/record-dot-preprocessor/99452d27f35ea1ff677be9af570d834e8fab4caf";
+    # ghc8-record-dot-preprocessor.flake = false;
   };
   outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
     flake-parts.lib.mkFlake { inherit inputs; } ({ withSystem, ...}: {
@@ -70,15 +70,15 @@
           ];
           packages = {
             classyplate.source = inputs.ghc8-classyplate;
-            ghc-hasfield-plugin.source = inputs.ghc8-ghc-hasfield-plugin;
-            large-records.source = inputs.ghc8-large-records + /large-records;
-            large-generics.source = inputs.ghc8-large-records + /large-generics;
-            large-anon.source = inputs.ghc8-large-records + /large-anon;
-            ghc-tcplugin-api.source = "0.7.1.0";
-            typelet.source = inputs.ghc8-large-records + /typelet;
-            record-dot-preprocessor.source = inputs.ghc8-record-dot-preprocessor;
+            # ghc-hasfield-plugin.source = inputs.ghc8-ghc-hasfield-plugin;
+            # large-records.source = inputs.ghc8-large-records + /large-records;
+            # large-generics.source = inputs.ghc8-large-records + /large-generics;
+            # large-anon.source = inputs.ghc8-large-records + /large-anon;
+            # ghc-tcplugin-api.source = "0.7.1.0";
+            # typelet.source = inputs.ghc8-large-records + /typelet;
+            # record-dot-preprocessor.source = inputs.ghc8-record-dot-preprocessor;
             streamly-core.source = inputs.streamly + /core;
-            beam-core.source = inputs.ghc8-beam + /beam-core;
+            # beam-core.source = inputs.ghc8-beam + /beam-core;
           };
           settings = {
             beam-core.jailbreak = true;
