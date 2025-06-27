@@ -1032,51 +1032,64 @@ getFnNameAndTypeableExprWithAllArgs _ = Nothing
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
 getFnNameWithAllArgs expr = case expr of
   L loc (HsVar _ v) -> 
+    trace ("getFnNameWithAllArgs: Detected HsVar with name = " <> showS v) $
     Just (getLocated v loc, [])
 
   L _ (HsConLikeOut _ cl) -> 
+    trace "getFnNameWithAllArgs: Detected HsConLikeOut" $
     (\clId -> (noExprLoc clId, [])) <$> conLikeWrapId cl
 
   L _ (HsAppType _ expr _) -> 
+    trace "getFnNameWithAllArgs: Detected HsAppType" $
     getFnNameWithAllArgs expr
 
   L _ (HsApp _ (L loc (HsVar _ v)) funr) -> 
+    trace ("getFnNameWithAllArgs: Detected HsApp with HsVar function name = " <> showS v) $
     Just (getLocated v loc, [funr])
 
   L _ (HsPar _ expr) -> 
+    trace "getFnNameWithAllArgs: Detected HsPar" $
     getFnNameWithAllArgs expr
 
   L _ (HsApp _ funl funr) -> 
+    trace "getFnNameWithAllArgs: Detected HsApp with nested function application" $
     case getFnNameWithAllArgs funl of
       Nothing -> trace "getFnNameWithAllArgs: No function name found in nested HsApp" Nothing
       Just (fnName, ls) -> 
+        trace ("getFnNameWithAllArgs: Found function name = " <> showS fnName <> " with arguments = " <> showS ls) $
         Just (fnName, ls ++ [funr])
 
   L loc (OpApp _ funl op funr) -> 
+    trace ("getFnNameWithAllArgs: Detected OpApp with operator = " <> showS op) $
     case showS op of
       "($)" -> 
+        trace "getFnNameWithAllArgs: Detected ($) operator, treating as HsApp" $
         getFnNameWithAllArgs (L loc (HsApp noExtFieldOrAnn funl funr))
       _ -> trace "getFnNameWithAllArgs: Unsupported operator, returning Nothing" Nothing
 
   L loc ap@(PatHsWrap _ expr) -> 
+    trace "getFnNameWithAllArgs: Detected PatHsWrap" $
     getFnNameWithAllArgs (L loc expr)
 
 #if __GLASGOW_HASKELL__ >= 900
   L loc ap@(PatHsExpansion orig expanded) -> 
+    trace "getFnNameWithAllArgs: Detected PatHsExpansion" $
     case (orig, expanded) of
       ((OpApp _ _ op _), (HsApp _ (L _ (HsApp _ op' funl)) funr)) -> 
         case showS op of
           "($)" -> 
+            trace "getFnNameWithAllArgs: Detected ($) operator in PatHsExpansion, treating as HsApp" $
             getFnNameWithAllArgs (L loc (HsApp noExtFieldOrAnn funl funr))
           _ -> 
+            trace "getFnNameWithAllArgs: Unsupported operator in PatHsExpansion, processing expanded expression" $
             getFnNameWithAllArgs (L loc expanded)
       _ -> 
+        trace "getFnNameWithAllArgs: Processing expanded expression in PatHsExpansion" $
         getFnNameWithAllArgs (L loc expanded)
 #endif
 
   _ -> 
     trace "getFnNameWithAllArgs: No matching case found, returning Nothing" Nothing
-
 --------------------------- Sheriff Plugin Utils ---------------------------
 -- Transform the FnBlockedInArg Violation with correct expression 
 trfViolationErrorInfo :: (HasPluginOpts PluginOpts) => Violation -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM Violation
