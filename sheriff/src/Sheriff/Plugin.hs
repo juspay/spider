@@ -480,14 +480,14 @@ checkAndApplyRule ruleT ap = case ruleT of
     case ap of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
           if showS ty == "Clause"
-            then case getFnName ap of
+            then case getFnNameWithAllArgs ap of
+              Just (fnLocatedVar,_) -> do
+                let fnName = getLocatedVarNameWithModuleName fnLocatedVar
+                validateWhereClauseRule rule (showS tblName) exprs fnName
               Nothing -> do
                 liftIO $ putStrLn "No function name found, skipping processing."
                 liftIO $ putStrLn $ "Debug: Raw expression = " <> showSDocUnsafe (ppr ap)
                 pure [] -- Handle the absence of a function name gracefully
-              Just fnLocatedVar -> do
-                let fnName = getLocatedVarNameWithModuleName fnLocatedVar
-                validateWhereClauseRule rule (showS tblName) exprs fnName
             else pure []
       _ -> pure []
   FunctionRuleT rule@(FunctionRule {fn_name = ruleFnNames, arg_no}) -> do
@@ -1028,64 +1028,6 @@ getFnNameAndTypeableExprWithAllArgs _ = Nothing
 
 -- TODO: Verify the correctness of this function before moving it to utils
 -- Get function name with all it's arguments
-
-getFnName :: LHsExpr GhcTc -> Maybe (Located Var)
-getFnName expr = case expr of
-  L loc (HsVar _ v) -> 
-    trace ("getFnName: Detected HsVar with name = " <> showS v) $
-    Just (getLocated v loc)
-
-  L _ (HsConLikeOut _ cl) -> 
-    trace "getFnName: Detected HsConLikeOut" $
-    (\clId -> noExprLoc clId) <$> conLikeWrapId cl
-
-  L _ (HsAppType _ expr _) -> 
-    trace "getFnName: Detected HsAppType" $
-    getFnName expr
-
-  L _ (HsApp _ (L loc (HsVar _ v)) _) -> 
-    trace ("getFnName: Detected HsApp with HsVar function name = " <> showS v) $
-    Just (getLocated v loc)
-
-  L _ (HsPar _ expr) -> 
-    trace "getFnName: Detected HsPar" $
-    getFnName expr
-
-  L _ (HsApp _ funl _) -> 
-    trace "getFnName: Detected HsApp with nested function application" $
-    getFnName funl
-
-  L loc (OpApp _ funl op _) -> 
-    trace ("getFnName: Detected OpApp with operator = " <> showS op) $
-    case showS op of
-      "($)" -> 
-        trace "getFnName: Detected ($) operator, treating as HsApp" $
-        getFnName (L loc (HsApp noExtFieldOrAnn funl funl))
-      _ -> trace "getFnName: Unsupported operator, returning Nothing" Nothing
-
-  L loc ap@(PatHsWrap _ expr) -> 
-    trace "getFnName: Detected PatHsWrap" $
-    getFnName (L loc expr)
-
-#if __GLASGOW_HASKELL__ >= 900
-  L loc ap@(PatHsExpansion orig expanded) -> 
-    trace "getFnName: Detected PatHsExpansion" $
-    case (orig, expanded) of
-      ((OpApp _ _ op _), (HsApp _ (L _ (HsApp _ op' funl)) _)) -> 
-        case showS op of
-          "($)" -> 
-            trace "getFnName: Detected ($) operator in PatHsExpansion, treating as HsApp" $
-            getFnName (L loc (HsApp noExtFieldOrAnn funl funl))
-          _ -> 
-            trace "getFnName: Unsupported operator in PatHsExpansion, processing expanded expression" $
-            getFnName (L loc expanded)
-      _ -> 
-        trace "getFnName: Processing expanded expression in PatHsExpansion" $
-        getFnName (L loc expanded)
-#endif
-
-  _ -> 
-    trace "getFnName: No matching case found, returning Nothing" Nothing
 
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
 getFnNameWithAllArgs expr = case expr of
