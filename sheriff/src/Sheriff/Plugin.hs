@@ -167,7 +167,7 @@ sheriff opts modSummary tcEnv = do
       infRule = case find isInfiniteRecursionRule globalRules of
                   Just (InfiniteRecursionRuleT r) -> r
                   _ -> defaultInfiniteRecursionRuleT
-  liftIO $ putStrLn $ "finalSheriffRules: " <> show finalSheriffRules
+  -- liftIO $ putStrLn $ "finalSheriffRules: " <> show finalSheriffRules
 
   when logDebugInfo $ liftIO $ print globalRules
   when logDebugInfo $ liftIO $ print globalExceptionRules
@@ -479,12 +479,15 @@ checkAndApplyRule ruleT ap = case ruleT of
   WhereClauseRuleT rule ->
     case ap of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
-        case (showS ty == "Clause") of
-          True -> do
-            let fnLocatedVar = fromMaybe (error "No function name found") $ getFnName ap
-                fnName    = getLocatedVarNameWithModuleName fnLocatedVar
-            validateWhereClauseRule rule (showS tblName) exprs fnName
-          False -> pure []
+              if showS ty == "Clause"
+                then case getFnName ap of
+                  Nothing -> do
+                    liftIO $ putStrLn "No function name found, skipping processing."
+                    pure [] -- Handle the absence of a function name gracefully
+                  Just fnLocatedVar -> do
+                    let fnName = getLocatedVarNameWithModuleName fnLocatedVar
+                    validateWhereClauseRule rule (showS tblName) exprs fnName
+                else pure []
       _ -> pure []
   FunctionRuleT rule@(FunctionRule {fn_name = ruleFnNames, arg_no}) -> do
     let res = getFnNameWithAllArgs ap
