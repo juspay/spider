@@ -1045,7 +1045,7 @@ getFnNameWithAllArgs expr = case expr of
 
   L _ (HsApp _ (L loc (HsVar _ v)) funr) -> 
     trace ("getFnNameWithAllArgs: Detected HsApp with HsVar function name = " <> showS v) $
-    Nothing
+    Just (getLocated v loc, [funr])
 
   L _ (HsPar _ expr) -> 
     trace "getFnNameWithAllArgs: Detected HsPar" $
@@ -1057,7 +1057,7 @@ getFnNameWithAllArgs expr = case expr of
       Nothing -> trace "getFnNameWithAllArgs: No function name found in nested HsApp" Nothing
       Just (fnName, ls) -> 
         trace ("getFnNameWithAllArgs: Found function name = " <> showS fnName <> " with arguments = " <> showS ls) $
-        Nothing
+        Just (fnName, ls ++ [funr])
 
   L loc (OpApp _ funl op funr) -> 
     trace ("getFnNameWithAllArgs: Detected OpApp with operator = " <> showS op) $
