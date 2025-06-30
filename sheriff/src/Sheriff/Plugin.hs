@@ -469,14 +469,30 @@ isBadExprHelper rules ap = concat <$> mapM (\rule -> checkAndApplyRule rule ap) 
 -- Collect all function names in the given expression
 collectFnNames :: LHsExpr GhcTc -> [String]
 collectFnNames expr = case expr of
-  L _ (HsVar _ v) -> [showS v] -- Collect the function name
-  L _ (HsApp _ funl funr) -> collectFnNames funl ++ collectFnNames funr -- Traverse both sides of the application
-  L _ (HsPar _ expr) -> collectFnNames expr -- Handle parentheses
-  L _ (OpApp _ funl op funr) -> collectFnNames funl ++ [showS op] ++ collectFnNames funr -- Handle operators
-  L _ (HsAppType _ expr _) -> collectFnNames expr -- Handle type applications
-  L loc (PatHsWrap _ expr) -> collectFnNames (L loc expr) -- Handle wrapped patterns
-  L _ (HsConLikeOut _ cl) -> [showS cl] -- Collect constructor-like outputs
-  _ -> [] -- For other cases, return an empty list
+  L _ (HsVar _ v) -> 
+    let fnName = showS v
+    in trace ("collectFnNames: Detected HsVar with name = " <> fnName) [fnName] -- Log detected function name
+  L _ (HsApp _ funl funr) -> 
+    trace "collectFnNames: Detected HsApp, traversing both sides" $
+    collectFnNames funl ++ collectFnNames funr -- Traverse both sides of the application
+  L _ (HsPar _ expr) -> 
+    trace "collectFnNames: Detected HsPar, traversing inner expression" $
+    collectFnNames expr -- Handle parentheses
+  L _ (OpApp _ funl op funr) -> 
+    let opName = showS op
+    in trace ("collectFnNames: Detected OpApp with operator = " <> opName) $
+       collectFnNames funl ++ [opName] ++ collectFnNames funr -- Handle operators
+  L _ (HsAppType _ expr _) -> 
+    trace "collectFnNames: Detected HsAppType, traversing inner expression" $
+    collectFnNames expr -- Handle type applications
+  L loc (PatHsWrap _ innerExpr) -> 
+    trace "collectFnNames: Detected PatHsWrap, traversing wrapped expression" $
+    collectFnNames (L loc innerExpr) -- Handle wrapped patterns
+  L _ (HsConLikeOut _ cl) -> 
+    let conName = showS cl
+    in trace ("collectFnNames: Detected HsConLikeOut with name = " <> conName) [conName] -- Collect constructor-like outputs
+  _ -> 
+    trace "collectFnNames: No matching case found, returning empty list" [] -- For other cases, return an empty list
 
 -- Check if a particular rule applies to given expr
 checkAndApplyRule :: (HasPluginOpts PluginOpts) => Rule -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
@@ -1050,27 +1066,27 @@ getFnNameAndTypeableExprWithAllArgs _ = Nothing
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
 getFnNameWithAllArgs expr = case expr of
   L loc (HsVar _ v) -> 
-    trace ("getFnNameWithAllArgs: Detected HsVar with name = " <> showS v) $
+    -- trace ("getFnNameWithAllArgs: Detected HsVar with name = " <> showS v) $
     Just (getLocated v loc, [])
 
   L _ (HsConLikeOut _ cl) -> 
-    trace "getFnNameWithAllArgs: Detected HsConLikeOut" $
+    -- trace "getFnNameWithAllArgs: Detected HsConLikeOut" $
     (\clId -> (noExprLoc clId, [])) <$> conLikeWrapId cl
 
   L _ (HsAppType _ expr _) -> 
-    trace "getFnNameWithAllArgs: Detected HsAppType" $
+    -- trace "getFnNameWithAllArgs: Detected HsAppType" $
     getFnNameWithAllArgs expr
 
   L _ (HsApp _ (L loc (HsVar _ v)) funr) -> 
-    trace ("getFnNameWithAllArgs: Detected HsApp with HsVar function name = " <> showS v) $
+    -- trace ("getFnNameWithAllArgs: Detected HsApp with HsVar function name = " <> showS v) $
     Just (getLocated v loc, [funr])
 
   L _ (HsPar _ expr) -> 
-    trace "getFnNameWithAllArgs: Detected HsPar" $
+    -- trace "getFnNameWithAllArgs: Detected HsPar" $
     getFnNameWithAllArgs expr
 
   L _ (HsApp _ funl funr) -> 
-    trace "getFnNameWithAllArgs: Detected HsApp with nested function application" $
+    -- trace "getFnNameWithAllArgs: Detected HsApp with nested function application" $
     case getFnNameWithAllArgs funl of
       Nothing -> trace "getFnNameWithAllArgs: No function name found in nested HsApp" Nothing
       Just (fnName, ls) -> 
@@ -1078,15 +1094,15 @@ getFnNameWithAllArgs expr = case expr of
         Just (fnName, ls ++ [funr])
 
   L loc (OpApp _ funl op funr) -> 
-    trace ("getFnNameWithAllArgs: Detected OpApp with operator = " <> showS op) $
+    -- trace ("getFnNameWithAllArgs: Detected OpApp with operator = " <> showS op) $
     case showS op of
       "($)" -> 
-        trace "getFnNameWithAllArgs: Detected ($) operator, treating as HsApp" $
+        -- trace "getFnNameWithAllArgs: Detected ($) operator, treating as HsApp" $
         getFnNameWithAllArgs (L loc (HsApp noExtFieldOrAnn funl funr))
       _ -> trace "getFnNameWithAllArgs: Unsupported operator, returning Nothing" Nothing
 
   L loc ap@(PatHsWrap _ expr) -> 
-    trace "getFnNameWithAllArgs: Detected PatHsWrap" $
+    -- trace "getFnNameWithAllArgs: Detected PatHsWrap" $
     getFnNameWithAllArgs (L loc expr)
 
 #if __GLASGOW_HASKELL__ >= 900
