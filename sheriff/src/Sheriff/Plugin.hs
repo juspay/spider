@@ -466,6 +466,18 @@ isBadExpr rules ap = pure []
 isBadExprHelper :: (HasPluginOpts PluginOpts) => Rules -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
 isBadExprHelper rules ap = concat <$> mapM (\rule -> checkAndApplyRule rule ap) rules
 
+-- Collect all function names in the given expression
+collectFnNames :: LHsExpr GhcTc -> [String]
+collectFnNames expr = case expr of
+  L _ (HsVar _ v) -> [showS v] -- Collect the function name
+  L _ (HsApp _ funl funr) -> collectFnNames funl ++ collectFnNames funr -- Traverse both sides of the application
+  L _ (HsPar _ expr) -> collectFnNames expr -- Handle parentheses
+  L _ (OpApp _ funl op funr) -> collectFnNames funl ++ [showS op] ++ collectFnNames funr -- Handle operators
+  L _ (HsAppType _ expr _) -> collectFnNames expr -- Handle type applications
+  L loc (PatHsWrap _ expr) -> collectFnNames (L loc expr) -- Handle wrapped patterns
+  L _ (HsConLikeOut _ cl) -> [showS cl] -- Collect constructor-like outputs
+  _ -> [] -- For other cases, return an empty list
+
 -- Check if a particular rule applies to given expr
 checkAndApplyRule :: (HasPluginOpts PluginOpts) => Rule -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
 checkAndApplyRule ruleT ap = case ruleT of
@@ -483,6 +495,8 @@ checkAndApplyRule ruleT ap = case ruleT of
             then case exprs of
               (firstExpr:_) -> do
                 liftIO $ putStrLn $ "Debug: Extracting first expression from list = " <> showSDocUnsafe (ppr firstExpr)
+                let fnNames = collectFnNames firstExpr
+                liftIO $ putStrLn $ "Debug: Collected function names = " <> show fnNames
                 case getFnNameWithAllArgs firstExpr of
                   Just (fnLocatedVar, _) -> do
                     let fnName = getLocatedVarNameWithModuleName fnLocatedVar
@@ -507,7 +521,6 @@ checkAndApplyRule ruleT ap = case ruleT of
           Nothing -> pure []
   InfiniteRecursionRuleT rule -> pure [] --TODO: Add handling of infinite recursion rule
   GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
-
 --------------------------- Function Rule Validation Logic ---------------------------
 {-
 
