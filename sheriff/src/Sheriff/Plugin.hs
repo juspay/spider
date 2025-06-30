@@ -480,15 +480,20 @@ checkAndApplyRule ruleT ap = case ruleT of
     case ap of
       (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
           if showS ty == "Clause"
-            then case getFnNameWithAllArgs ap of
-              Just (fnLocatedVar,_) -> do
-                let fnName = getLocatedVarNameWithModuleName fnLocatedVar
-                validateWhereClauseRule rule (showS tblName) exprs fnName
-              Nothing -> do
-                liftIO $ putStrLn "No function name found, skipping processing."
-                liftIO $ putStrLn $ "Debug: Raw expression = " <> showSDocUnsafe (ppr ap)
-                pure [] -- Handle the absence of a function name gracefully
-            else pure []
+            then case exprs of
+              (firstExpr:_) -> do
+                liftIO $ putStrLn $ "Debug: Extracting first expression from list = " <> showSDocUnsafe (ppr firstExpr)
+                case getFnNameWithAllArgs firstExpr of
+                  Just (fnLocatedVar, _) -> do
+                    let fnName = getLocatedVarNameWithModuleName fnLocatedVar
+                    validateWhereClauseRule rule (showS tblName) exprs fnName
+                  Nothing -> do
+                    liftIO $ putStrLn "No function name found, skipping processing."
+                    pure []
+              [] -> do
+                liftIO $ putStrLn "Debug: Empty expression list, skipping processing."
+                pure []
+          else pure []
       _ -> pure []
   FunctionRuleT rule@(FunctionRule {fn_name = ruleFnNames, arg_no}) -> do
     let res = getFnNameWithAllArgs ap
