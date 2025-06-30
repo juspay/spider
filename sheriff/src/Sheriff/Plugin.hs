@@ -505,26 +505,35 @@ checkAndApplyRule ruleT ap = case ruleT of
           False -> pure [] 
       _ -> pure []
   WhereClauseRuleT rule ->
-    case ap of
-      (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
-          if showS ty == "Clause"
-            then case exprs of
-              (firstExpr:_) -> do
-                liftIO $ putStrLn $ "Debug: Extracting first expression from list = " <> showSDocUnsafe (ppr firstExpr)
-                let fnNames = collectFnNames firstExpr
-                liftIO $ putStrLn $ "Debug: Collected function names = " <> show fnNames
-                case getFnNameWithAllArgs firstExpr of
-                  Just (fnLocatedVar, _) -> do
-                    let fnName = getLocatedVarNameWithModuleName fnLocatedVar
-                    validateWhereClauseRule rule (showS tblName) exprs fnName
-                  Nothing -> do
-                    liftIO $ putStrLn "No function name found, skipping processing."
-                    pure []
-              [] -> do
-                liftIO $ putStrLn "Debug: Empty expression list, skipping processing."
-                pure []
-          else pure []
-      _ -> pure []
+      case ap of
+        (L _ (PatExplicitList (TyConApp ty [_, tblName]) exprs)) -> do
+            if showS ty == "Clause" then
+              case exprs of
+                [] -> do
+                  liftIO $ putStrLn "Debug: Empty expression list, skipping processing."
+                  pure []
+                _ -> do
+                  liftIO $ putStrLn $ "Debug: Processing all expressions in the list = " <> showSDocUnsafe (ppr exprs)
+                  -- Iterate over all expressions in the list and collect results
+                  results <- forM exprs $ \expr -> do
+                    liftIO $ putStrLn $ "Debug: Extracting expression = " <> showSDocUnsafe (ppr expr)
+                    
+                    -- Collect function names from the current expression
+                    let fnNames = collectFnNames expr
+                    liftIO $ putStrLn $ "Debug: Collected function names = " <> show fnNames
+                    
+                    -- Process the current expression to extract the function name and validate the rule
+                    case getFnNameWithAllArgs expr of
+                      Just (fnLocatedVar, _) -> do
+                        let fnName = getLocatedVarNameWithModuleName fnLocatedVar
+                        liftIO $ putStrLn $ "Debug: Extracted function name = " <> fnName
+                        validateWhereClauseRule rule (showS tblName) exprs fnName
+                      Nothing -> do
+                        liftIO $ putStrLn "No function name found, skipping processing."
+                        pure [] -- Return an empty list for this expression
+                  pure (concat results) -- Combine all results into a single list
+            else pure []
+        _ -> pure []
   FunctionRuleT rule@(FunctionRule {fn_name = ruleFnNames, arg_no}) -> do
     let res = getFnNameWithAllArgs ap
     case res of
