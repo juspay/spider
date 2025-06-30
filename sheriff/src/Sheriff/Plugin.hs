@@ -519,11 +519,11 @@ checkAndApplyRule ruleT ap = case ruleT of
                     liftIO $ putStrLn $ "Debug: Extracting expression = " <> showSDocUnsafe (ppr expr)
                     
                     -- Collect function names from the current expression
-                    let fnNames = collectFnNames expr
+                    let fnNames = collectFnNames ap
                     liftIO $ putStrLn $ "Debug: Collected function names = " <> show fnNames
                     
                     -- Process the current expression to extract the function name and validate the rule
-                    case getFnNameWithAllArgs expr of
+                    case getFnNameWithAllArgs ap of
                       Just (fnLocatedVar, _) -> do
                         let fnName = getLocatedVarNameWithModuleName fnLocatedVar
                         liftIO $ putStrLn $ "Debug: Extracted function name = " <> fnName
