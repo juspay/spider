@@ -96,7 +96,7 @@ collectTypesTC opts modSummary tcg = do
                                     Just (val :: CliOptions) -> val
                                     Nothing -> defaultCliOptions
     dflags <- getDynFlags
-    _ <- liftIO $
+    _ <- liftIO $ (forkWrap) $
             do
                 let prefixPath = (path $ cliOptions)
                     moduleName' = moduleNameString $ GhcPlugins.moduleName $ ms_mod modSummary

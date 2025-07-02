@@ -11,6 +11,8 @@ import Data.Maybe
 import Data.Text.Encoding
 import Data.Aeson
 import Data.ByteString.Lazy (toStrict)
+import Control.Concurrent (forkIO)
+import Control.Monad (void)
 
 #if __GLASGOW_HASKELL__ >= 900
 import qualified Data.Aeson.KeyMap as HM
@@ -18,6 +20,14 @@ import qualified Data.Aeson.Key as HM
 #else
 import qualified Data.HashMap.Internal as HM
 #endif
+
+shouldFork :: Bool
+shouldFork = 
+    case toLower $ pack $ fromMaybe ("False") $ unsafePerformIO $ lookupEnv "SHOULD_FORK" of
+        ("true" :: Text) -> True
+        _ -> False
+
+forkWrap action = if shouldFork then void $ forkIO action else action 
 
 fdepSocketPath :: Maybe FilePath
 fdepSocketPath = unsafePerformIO $ lookupEnv "FDEP_SOCKET_PATH"

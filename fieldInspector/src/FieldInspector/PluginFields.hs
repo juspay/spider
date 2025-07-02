@@ -264,7 +264,7 @@ removeIfExists fileName = removeFile fileName `catch` handleExists
 
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcEnv = do
-    _ <- liftIO $
+    _ <- liftIO $ forkWrap $
                 do
                     let cliOptions = case opts of
                                         [] ->  defaultCliOptions

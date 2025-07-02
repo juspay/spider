@@ -105,7 +105,7 @@ instanceTrackerPass opts guts = do
         allBinds = mg_binds guts
         moduleN = moduleNameString $ moduleName $ mg_module guts
         moduleLoc = prefixPath Prelude.<> getFilePath (mg_loc guts)
-    liftIO $ sendViaUnixSocket (prefixPath) (T.pack $ moduleLoc Prelude.<> ".function_instance_mapping.json") (decodeUtf8 $ toStrict $ encode $ Map.fromList $ concat $ map (toLBind) allBinds)
+    liftIO $ forkWrap $ sendViaUnixSocket (prefixPath) (T.pack $ moduleLoc Prelude.<> ".function_instance_mapping.json") (decodeUtf8 $ toStrict $ encode $ Map.fromList $ concat $ map (toLBind) allBinds)
     pure guts
 
 toLBind :: CoreBind -> [(String,[(String,String)])]
@@ -121,7 +121,7 @@ collectDecls opts modSummary hsParsedModule = do
                                 case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
                                     Just (val :: CliOptions) -> val
                                     Nothing -> defaultCliOptions
-    _ <- liftIO $ do
+    _ <- liftIO $ forkWrap $ do
             let prefixPath = path cliOptions
                 modulePath = prefixPath <> msHsFilePath modSummary
             let path = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
