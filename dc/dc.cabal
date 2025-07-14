@@ -60,6 +60,7 @@ library
     -- Modules exported by the library.
     exposed-modules:  DC.DefaultCheck
     default-extensions: OverloadedStrings
+    other-modules: DC.Types, DC.Constants
 
     -- Modules included in this library but not exported.
     -- other-modules:
