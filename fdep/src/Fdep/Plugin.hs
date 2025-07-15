@@ -773,6 +773,9 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             void $ mapM (processPendingSplice keyFunction path) pending
         processExpr keyFunction path (L _ (ArithSeq _ Nothing arithSeqInfo)) =
             processArithSeqInfo keyFunction path arithSeqInfo
+        processExpr keyFunction path (L _ (ArithSeq _ (Just x) arithSeqInfo)) = do
+            processArithSeqInfo keyFunction path arithSeqInfo
+            processSynExpr keyFunction path x
         processExpr keyFunction path x@(L _ (HsRecFld _ exprLStmt)) =
             getDataTypeDetails keyFunction path x
         processExpr keyFunction path (L _ (HsRnBracketOut _ bracket pending)) = pure ()
