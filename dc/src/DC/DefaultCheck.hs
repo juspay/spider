@@ -70,8 +70,8 @@ checkIntegrity opts modSummary tcEnv = do
         let path = (intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
         liftIO $ createDirectoryIfMissing True path
         getAllUpdatesLi <- mapM (loopOverLHsBindLR pathsTobeChecked conf moduleName') (bagToList $ tcg_binds tcEnv)
-        let getAllUpdatesList = fst <$> getAllUpdatesLi
-            getAllFuns = HM.unions $ snd <$> getAllUpdatesLi
+        let getAllUpdatesList = (\(_,x,_) -> x) <$> getAllUpdatesLi
+            getAllFuns = HM.unions $ (\(_,_,x) -> x) <$> getAllUpdatesLi
         let res = foldl (\(UpdateInfo acc1 acc2 acc3 acc4 acc5 acc6) (UpdateInfo x y z z1 z2 otherFuns) -> UpdateInfo ((acc1) ++ (changeModName moduleName' <$> x)) ((acc2) ++ (changeModName moduleName' <$> y)) ((acc3) ++ (changeModName moduleName' <$> z)) ((acc4) ++ (changeModName moduleName' <$> z1)) ((acc5) ++ (changeModName moduleName' <$> z2)) ((acc6) ++ (changeModName moduleName' <$> otherFuns))) (UpdateInfo [] [] [] [] [] []) $ catMaybes getAllUpdatesList
         let combination = lookUpAndConcat getAllFuns
             allRes = getAllRes conf moduleName' combination res
@@ -79,11 +79,15 @@ checkIntegrity opts modSummary tcEnv = do
         !exprs <- mapM (loopOverLHsBindLRTot pathsTobeChecked conf path allRes moduleName') (bagToList $ tcg_binds tcEnv)
         case conf of
           FieldsCheck _ -> do
+            -- let exprsk = foldl (\acc (val) -> acc ++ getErrorrs val ) [] (allFailuresRecords allRes)
+            -- let allErrs = concat $ getErrorrs <$> (\(x,_,_) -> x) <$> getAllUpdatesLi
             let exprsC = foldl (\acc (val) -> acc ++ getErrorrs val ) [] exprs
             addErrs $ map (mkGhcCompileError) (exprsC)
+
           FunctionCheck (FunctionCheckConfig{..}) -> do
             if moduleName' == moduleNameToCheck then do
-              let exprsC = foldl (\acc (val) -> acc ++ getErrorrs val ) [] exprs
+              let allErrs = concat $ getErrorrs <$> (\(x,_,_) -> x) <$> getAllUpdatesLi
+              let exprsC = foldl (\acc (val) -> acc ++ getErrorrs val ) allErrs exprs
               addErrs $ map (mkGhcCompileError) (exprsC)
             else do
               let exprsC = foldl (\acc (val) -> HM.union acc (getFuncs val) ) HM.empty exprs
@@ -174,16 +178,21 @@ loopOverLHsBindLRTot allPaths conf path allFuns moduleName' vals@(L _ AbsBinds {
           let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (bagToList binds ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
           let funName =  map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ vals) False )  (getFunctionName vals)
           let val = map (\(upType,listY) -> (createUpdateInfo upType $ map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ vals) False) listY)) allFunsWithFailure
-          allC <- nub <$> (mapM (loopOverModBinds allPaths conf path allLetPats allFuns moduleName' val) allVals)
+          allC <- nub <$> (mapM (loopOverModBinds allPaths conf path allLetPats allFuns moduleName' val []) allVals)
           let allV = foldl (\acc (val1) -> acc ++ getErrorrs val1 ) [] allC
           -- liftIO $ print (allC, allV, funName)
           pure $ if null allV then Functions HM.empty else Functions (foldl (\acc val1 -> HM.insert val1 allV acc) HM.empty (name <$> funName))
     FieldsCheck (EnumCheck{..}) -> do
       let allVals = ((bagToList binds ^? biplateRef :: [LHsExpr GhcTc]))
+      let allValsTypes = mapMaybe getExprTypeAsType allVals
+      let isF = any (\val -> isInfixOf val (showSDocUnsafe $ ppr vals) ) enumList && (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))
+      let funName = map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc vals) isF ) (getFunctionName vals)
+      let fname = name <$> funName
+      -- let errors = if isF then [CompileError "" "" (show fname) (getLocGhc vals)] else []
       allFunsWithFailure <- mapM (getFunctionNameIfFailure allPaths conf recordType enumList enumType fieldType moduleName') (bagToList binds ^? biplateRef)
       let val = map (\(upType,listY) -> (createUpdateInfo upType $ map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ vals) False) listY)) allFunsWithFailure
       let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (bagToList binds ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
-      allC <- nub <$> (mapM (loopOverModBinds allPaths conf path allLetPats allFuns moduleName' val) allVals)
+      allC <- nub <$> (mapM (loopOverModBinds allPaths conf path allLetPats allFuns moduleName' val (fname)) allVals)
       case conf of
         FieldsCheck _ -> pure $ Errors $ foldl (\acc (vals1) -> acc ++ getErrorrs vals1 ) [] allC
         -- FunctionCheck _ -> do
@@ -200,12 +209,12 @@ createUpdateInfo UpdateWithFailure list = UpdateInfo [] [] list [] [] []
 createUpdateInfo Default list = UpdateInfo [] [] list [] [] []
 createUpdateInfo _ _ = UpdateInfo [] [] [] [] [] []
 
-loopOverModBinds :: [String] -> CheckerConfig -> String -> HM.HashMap String [FunctionInfo] -> UpdateInfo -> String -> [UpdateInfo] -> LHsExpr GhcTc -> TcM ErrorCase
-loopOverModBinds allPaths checkerCase path allFUnsInside allFuns moduleName' allPatsList (L _ (HsCase _ _ exprLStmt)) = do
+loopOverModBinds :: [String] -> CheckerConfig -> String -> HM.HashMap String [FunctionInfo] -> UpdateInfo -> String -> [UpdateInfo] -> [String] -> LHsExpr GhcTc  -> TcM ErrorCase
+loopOverModBinds allPaths checkerCase path allFUnsInside allFuns moduleName' allPatsList funName (L _ (HsCase _ _ exprLStmt)) = do
     -- liftIO $ print ("val",allFuns)
-    allFunsPats <- mapM (loopOverPats allPaths checkerCase path allFUnsInside allFuns moduleName' allPatsList) $ map unLoc $ unLoc $ mg_alts exprLStmt
+    allFunsPats <- mapM (loopOverPats allPaths checkerCase path allFUnsInside allFuns moduleName' funName allPatsList) $ map unLoc $ unLoc $ mg_alts exprLStmt
     pure $ Errors $ foldl (\acc (val) -> acc ++ getErrorrs val ) [] allFunsPats
-loopOverModBinds _ _ _ _ _ _ _ _ = do
+loopOverModBinds _ _ _ _ _ _ _ _ _ = do
     pure $ Errors []
 
 getAllEnums :: LHsExpr GhcTc -> Maybe String
@@ -213,20 +222,26 @@ getAllEnums (L _ (HsConLikeOut _ liter)) = Just $ showSDocUnsafe $ ppr liter
 getAllEnums (L _ _) = Nothing 
 
 
-loopOverPats :: [String] -> CheckerConfig -> String -> HM.HashMap String [FunctionInfo] -> UpdateInfo -> String -> [UpdateInfo] -> Match GhcTc (LHsExpr GhcTc)  -> TcM ErrorCase
-loopOverPats allPaths checkerCase path allFUnsInsid allFunsWithFailure moduleName' allPatsList match  = do
+loopOverPats :: [String] -> CheckerConfig -> String -> HM.HashMap String [FunctionInfo] -> UpdateInfo -> String -> [String] -> [UpdateInfo] -> Match GhcTc (LHsExpr GhcTc)  -> TcM ErrorCase
+loopOverPats allPaths checkerCase path allFUnsInsid allFunsWithFailure moduleName' funName allPatsList match  = do
   case checkerCase of
     FieldsCheck (EnumCheck{..}) -> do
       let normalBinds = (\(GRHS _ _ stmt )-> stmt ) <$> unLoc <$> (grhssGRHSs $ m_grhss match)
           argBinds = m_pats match
-          checker = any (\x -> isVarPatExprBool x) (normalBinds ^? biplateRef :: [LHsExpr GhcTc] )
-      if checker then pure $ Errors [] else 
-        let a = any isVarPat argBinds
-        in if a then do
-          -- liftIO $ (print (showSDocUnsafe $ ppr normalBind, showSDocUnsafe $ ppr normalBinds ))
+          checker = filter (\x -> isVarPatExprBool x) (normalBinds ^? biplateRef :: [LHsExpr GhcTc] )
+      -- liftIO $ (print (showSDocUnsafe $ ppr checker))
+      let checkAVoided = HM.lookup moduleName' =<< avoidedFunsByModule
+      if not $ null checker && (any (\x-> not $ x `elem` (fromMaybe [] checkAVoided)) funName && (not $ "Gateway" `isPrefixOf` moduleName') ) then pure $ Errors [] else 
+        let a = filter isVarPat argBinds
+        in if not $ null a then do
           let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (normalBinds ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
           let allFUnsInside = HM.union allLetPats allFUnsInsid
               allFuns = concat $ map processExpr (normalBinds ^? biplateRef)
+          let allValsTypes = mapMaybe getExprTypeAsType (normalBinds ^? biplateRef)
+          let isF = any (\val -> isInfixOf val (showSDocUnsafe $ ppr normalBinds) ) enumList && (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))
+          -- liftIO $ (print ((showSDocUnsafe $ ppr a), showSDocUnsafe $ ppr normalBinds, isF, any (\val -> isInfixOf val (showSDocUnsafe $ ppr normalBinds) ) enumList, (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))))
+          -- let funName = map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ a) isF ) (getFunctionName a)
+          let errors = if isF then [CompileError "" "" (showSDocUnsafe $ ppr a) (getLocGhc $ head argBinds)] else []
           check <- mapM (\x -> case HM.lookup (mkStringFromFunctionInfo x) allFUnsInside of
                               Nothing -> throwErrorRules x allPaths path moduleName' allFunsWithFailure allPatsList
                               Just val -> do
@@ -237,7 +252,7 @@ loopOverPats allPaths checkerCase path allFUnsInsid allFunsWithFailure moduleNam
                               --    then pure $ name x `elem` (name <$> allFunsWithFailure) && module_name x `elem` (module_name <$> allFunsWithFailure)
                               --      else checkInOtherMods x) allFuns
           if ((not $ null (catMaybes check)))
-              then pure $ Errors $ (\x -> CompileError "" "" x (getLocGhc $ head argBinds)) <$> (catMaybes check)
+              then pure $ Errors $ errors ++ ((\x -> CompileError "" "" x (getLocGhc $ head argBinds)) <$> (catMaybes check))
           else do
               processedPats <- mapM (\x -> do
                               allCHecks <- liftIO $ mapM (checkInOtherModsWithoutError allPaths checkerCase moduleName') x
@@ -253,13 +268,13 @@ loopOverPats allPaths checkerCase path allFUnsInsid allFunsWithFailure moduleNam
           -- liftIO $ print $ ("check",a, allFunsUpds, toConstr <$> unLoc <$> normalBinds, showSDocUnsafe $ ppr normalBinds, allVals, allFuns)
           -- allFunsWithFailure <- mapM getAndPut allFuns
           -- liftIO $ print ("Checker", allPatsList)
-              pure $ Errors $
-                  if CreateWithFailure `elem` allFunsUpds
+              pure $ Errors $ errors ++
+                  (if CreateWithFailure `elem` allFunsUpds
                       then [CompileError "" "" (createError ++ show allFunsUpds) (getLocGhc $ head argBinds)]
                   else if UpdateWithFailure `elem` allFunsUpds
                       then [CompileError "" "" (updateError ++ show allFunsUpds) (getLocGhc $ head argBinds)]
                   else if b then [CompileError "" "" defaultCase (getLocGhc $ head argBinds)]
-                  else []
+                  else [])
         else pure $ Errors []
     FunctionCheck (FunctionCheckConfig{..}) -> do
       let normalBinds = (\(GRHS _ _ stmt )-> stmt ) <$> unLoc <$> (grhssGRHSs $ m_grhss match)
@@ -315,7 +330,7 @@ throwErrorRules ::
   -> UpdateInfo
   -> [UpdateInfo]
   -> TcM (Maybe [Char])
-throwErrorRules x allPaths path moduleName' (UpdateInfo _ _ upFails cFails _ _) _  = do
+throwErrorRules x allPaths path moduleName' (UpdateInfo _ _ upFails cFails aFails _) _  = do
     -- liftIO $  print ("Checking " ++ name x ++ show x)
     if module_name x ==  moduleName' || "_in" == module_name x then
       pure $ if( name x `elem` (name <$> cFails) && module_name x `elem` (module_name <$> cFails)) then
@@ -324,9 +339,9 @@ throwErrorRules x allPaths path moduleName' (UpdateInfo _ _ upFails cFails _ _) 
         else if name x `elem` ((name <$> upFails)) && module_name x `elem` ((module_name <$> upFails)) then
         --   || (name x `elem` (concat $ map (\x -> name <$> x) $ updatedRecordsFun <$> allPatsList)) then
         Just (updateError ++ show (name x ++ show (name <$> upFails)))
-        -- else if name x `elem` (name <$> functions) && module_name x `elem` (module_name <$> functions)
-        --   || (name x `elem` (concat $ map (\x -> name <$> x) $ updatedFailurs <$> allPatsList)) then
-        --   Just defaultCase
+        else if name x `elem` (name <$> aFails) && module_name x `elem` (module_name <$> aFails) then
+          -- || (name x `elem` (concat $ map (\x -> name <$> x) $ updatedFailurs <$> allPatsList)) then
+          Just defaultCase
         else Nothing
     else checkInOtherMods allPaths path x
 
@@ -892,7 +907,7 @@ getFunctionNameIfFailure allPaths checkerCase recordType enumList enumType field
 --     else if any (\val -> isInfixOf val (showSDocUnsafe $ ppr x)) enumList && any (\val -> isInfixOf enumType val ) allValsTypes then (Default, funName)  else (NoChange,[])
 getFunctionNameIfFailure _ _ _ _ _ _hasFld _ _ = pure $ (NoChange,[])
 
-loopOverLHsBindLR :: [String] -> CheckerConfig -> String -> LHsBindLR GhcTc GhcTc  -> TcM ((Maybe UpdateInfo), (HM.HashMap String [FunctionInfo]))
+loopOverLHsBindLR :: [String] -> CheckerConfig -> String -> LHsBindLR GhcTc GhcTc  -> TcM (ErrorCase,  (Maybe UpdateInfo), (HM.HashMap String [FunctionInfo]))
 loopOverLHsBindLR allPaths checkerCase moduleName' x@(L _ AbsBinds {abs_binds = binds1}) = do
   case checkerCase of
     FieldsCheck (EnumCheck{..})   -> do
@@ -916,8 +931,9 @@ loopOverLHsBindLR allPaths checkerCase moduleName' x@(L _ AbsBinds {abs_binds = 
         allRecordUpdsAndCrea <- mapM (\val -> getAllNeededFunOuter recordType enumList enumType fieldType isF x  allBinds processedPats val ) filteredAllVals
         let allNrFuns = concat $ snd <$> allRecordUpdsAndCrea
         let allRecordUpdsAndCreate = concat $ fst <$> allRecordUpdsAndCrea
+        -- let errors = if any (\val -> val==Default) allRecordUpdsAndCreate then [CompileError "" "" (show allRecordUpdsAndCreate) (getLocGhc x)] else []
         -- liftIO $ print ("FInal", allRecordUpdsAndCreate)
-        pure $ (if any (\val -> val==CreateWithFailure) allRecordUpdsAndCreate
+        pure $ (Errors [], if any (\val -> val==CreateWithFailure) allRecordUpdsAndCreate
             then Just $ UpdateInfo [] [] [] funName [] []
             else if any (\val -> val==UpdateWithFailure) allRecordUpdsAndCreate
             then Just $ UpdateInfo [] [] funName [] [] []
@@ -936,7 +952,8 @@ loopOverLHsBindLR allPaths checkerCase moduleName' x@(L _ AbsBinds {abs_binds = 
         allRecordUpdsAndCrea <- mapM (getDataTypeDetails recordType enumList enumType fieldType processedPats allBinds) $ allVals ^? biplateRef
         let fname = name <$> funName
         let allRecordUpdsAndCreate = catMaybes allRecordUpdsAndCrea
-        pure $ (if any (\val -> val==CreateWithFailure) allRecordUpdsAndCreate
+        -- let errors = if any (\val -> val==Default) allRecordUpdsAndCreate then [CompileError "" "" (show allRecordUpdsAndCreate) (getLocGhc x)] else []
+        pure $ (Errors [] , if any (\val -> val==CreateWithFailure) allRecordUpdsAndCreate
             then Just $ UpdateInfo [] [] [] funName [] []
             else if any (\val -> val==UpdateWithFailure) allRecordUpdsAndCreate
             then Just $ UpdateInfo [] [] funName [] [] []
@@ -961,11 +978,11 @@ loopOverLHsBindLR allPaths checkerCase moduleName' x@(L _ AbsBinds {abs_binds = 
                  (pure $ Just $ UpdateInfo [] [] [] [] [] funName)
                  (pure Nothing)
          )
-      pure (first,  foldl (\acc val -> HM.insert (val) (nub allNrFuns) acc) HM.empty fname)
+      pure (Errors [], first,  foldl (\acc val -> HM.insert (val) (nub allNrFuns) acc) HM.empty fname)
 
 
 --   liftIO $ print (allLetPats, showSDocUnsafe $ ppr binds1)
-loopOverLHsBindLR _ _ _ _ = pure (Nothing, HM.empty)
+loopOverLHsBindLR _ _ _ _ = pure (Errors [], Nothing, HM.empty)
 
 processHsCase :: LHsExpr GhcTc -> Bool
 processHsCase (L _ (HsCase _ _ _)) = True

@@ -39,6 +39,7 @@ data EnumCheck =
     , enumType :: String
     , recordType :: String
     , fieldType :: String
+    , avoidedFunsByModule :: Maybe (HM.HashMap String [String])
     }
   deriving (Generic, Show, Eq, Ord)
   deriving (ToJSON, FromJSON)
