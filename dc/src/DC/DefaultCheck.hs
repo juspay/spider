@@ -188,13 +188,16 @@ loopOverLHsBindLRTot allPaths conf path allFuns moduleName' vals@(L _ AbsBinds {
       let isF = any (\val -> isInfixOf val (showSDocUnsafe $ ppr vals) ) enumList && (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))
       let funName = map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc vals) isF ) (getFunctionName vals)
       let fname = name <$> funName
+      let checkAVoided = HM.lookup moduleName' =<< avoidedFunsByModule
+      if (any (\x-> not $ x `elem` (fromMaybe [] checkAVoided)) fname && (not $ "Gateway" `isPrefixOf` moduleName') ) then pure $ Errors []
       -- let errors = if isF then [CompileError "" "" (show fname) (getLocGhc vals)] else []
-      allFunsWithFailure <- mapM (getFunctionNameIfFailure allPaths conf recordType enumList enumType fieldType moduleName') (bagToList binds ^? biplateRef)
-      let val = map (\(upType,listY) -> (createUpdateInfo upType $ map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ vals) False) listY)) allFunsWithFailure
-      let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (bagToList binds ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
-      allC <- nub <$> (mapM (loopOverModBinds allPaths conf path allLetPats allFuns moduleName' val (fname)) allVals)
-      case conf of
-        FieldsCheck _ -> pure $ Errors $ foldl (\acc (vals1) -> acc ++ getErrorrs vals1 ) [] allC
+      else do
+        allFunsWithFailure <- mapM (getFunctionNameIfFailure allPaths conf recordType enumList enumType fieldType moduleName') (bagToList binds ^? biplateRef)
+        let val = map (\(upType,listY) -> (createUpdateInfo upType $ map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ vals) False) listY)) allFunsWithFailure
+        let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (bagToList binds ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
+        allC <- nub <$> (mapM (loopOverModBinds allPaths conf path allLetPats allFuns moduleName' val (fname)) allVals)
+        case conf of
+          FieldsCheck _ -> pure $ Errors $ foldl (\acc (vals1) -> acc ++ getErrorrs vals1 ) [] allC
         -- FunctionCheck _ -> do
         --   let allV = foldl (\acc (vals1) -> acc ++ getErrorrs vals1 ) [] allC
         --   -- liftIO $ print (allC, allV, funName)
