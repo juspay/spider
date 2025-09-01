@@ -33,7 +33,6 @@ import qualified Data.List.Extra as Data.List
 import qualified Data.Map as Map
 import qualified Data.Text as T
 import qualified Prelude as P
-import Socket
 import System.Environment (lookupEnv)
 import TcRnMonad
 #if __GLASGOW_HASKELL__ >= 900
