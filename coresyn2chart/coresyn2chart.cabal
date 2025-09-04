@@ -52,7 +52,6 @@ common common-options
         , time
         , async
         , cryptonite
-        , hasbolt
         , universum
         , data-default
 

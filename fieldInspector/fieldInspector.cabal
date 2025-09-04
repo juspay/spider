@@ -101,7 +101,6 @@ common common-options
         , time
         , async
         , cryptonite
-        , hasbolt
         , universum
         , streamly-core
         , data-default
