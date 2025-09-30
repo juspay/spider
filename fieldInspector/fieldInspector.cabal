@@ -125,7 +125,7 @@ library
     import:           common-options
 
     -- Modules exported by the library.
-    exposed-modules:  FieldInspector.PluginFields,FieldInspector.PluginTypes,FieldInspector.Group,FieldInspector.Types
+    exposed-modules:  FieldInspector.PluginFields,FieldInspector.PluginTypes,FieldInspector.Group,FieldInspector.Types,FieldInspector.PluginTypesPlain
 
     -- Directories containing source files.
     hs-source-dirs:   src
