@@ -38,6 +38,8 @@ data EnumCheck =
     { enumList :: [String]
     , enumType :: String
     , recordType :: String
+    , gatewayModules :: String
+    , avoidedModules :: Maybe [String]
     , fieldType :: String
     , avoidedFunsByModule :: Maybe (HM.HashMap String [String])
     }
