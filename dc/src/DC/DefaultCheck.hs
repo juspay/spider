@@ -261,7 +261,7 @@ loopOverPats allPaths checkerCase path allFUnsInsid allFunsWithFailure moduleNam
           -- liftIO $ (print ((showSDocUnsafe $ ppr a), showSDocUnsafe $ ppr normalBinds, isF, any (\val -> isInfixOf val (showSDocUnsafe $ ppr normalBinds) ) enumList, (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))))
           -- let funName = map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ a) isF ) (getFunctionName a)
           -- liftIO $ print (isF, (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes))))
-          let errors = if isF then [CompileError "" "" (defaultCase ++ "CCC" ++ (showSDocUnsafe $ ppr a)) (getLocGhc $ head argBinds)] else []
+          let errors = if isF then [CompileError "" "" (defaultCase) (getLocGhc $ head argBinds)] else []
           check <- mapM (\x -> case HM.lookup (mkStringFromFunctionInfo x) allFUnsInside of
                               Nothing -> throwErrorRules x allPaths path moduleName' allFunsWithFailure allPatsList
                               Just val -> do
