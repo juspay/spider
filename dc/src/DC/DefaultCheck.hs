@@ -120,13 +120,13 @@ getAllRes conf  moduleName' combination res =
           else if any (\x -> name x `elem` (name <$> createdFailurs res) ) val
               then acc{createdFailurs = nub $ createdFailurs acc ++ ([FunctionInfo "" moduleName' key "" False])}
           else if any (\x -> name x `elem` (name <$> createdRecordsFun res)) val
-              then if any (\x -> name x `elem` enumList) val
+              then if any (\x -> name x `elem` (concat $ enumList <$> recordCheck)) val
                   then
                   acc{createdFailurs = nub $ createdFailurs acc ++ ([FunctionInfo "" moduleName' key "" False])}
                   else
                   acc{createdRecordsFun = nub $ createdRecordsFun acc ++ ([FunctionInfo "" moduleName' key "" False])}
           else if any (\x -> name x `elem` (name <$> updatedRecordsFun res) ) val
-              then if any (\x -> name x `elem` enumList) val
+              then if any (\x -> name x `elem` (concat $ enumList <$> recordCheck)) val
                   then
                   acc{updatedFailurs = nub $ updatedFailurs acc ++ ([FunctionInfo "" moduleName' key "" False])}
                   else acc{updatedRecordsFun = nub $ updatedRecordsFun acc ++ ([FunctionInfo "" moduleName' key "" False])}
@@ -179,7 +179,7 @@ loopOverLHsBindLRTot allPaths conf path allFuns moduleName' vals@(L _ AbsBinds {
             else pure $ Errors []
         else do
           let allVals = ((bagToList binds ^? biplateRef :: [LHsExpr GhcTc]))
-          allFunsWithFailure <- mapM (getFunctionNameIfFailure allPaths conf "" [] "" "" moduleName') (bagToList binds ^? biplateRef)
+          allFunsWithFailure <- mapM (getFunctionNameIfFailure allPaths conf ([RecordType "" "" [] ""]) moduleName') (bagToList binds ^? biplateRef)
           let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (bagToList binds ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
           let funName =  map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ vals) False )  (getFunctionName vals)
           let val = map (\(upType,listY) -> (createUpdateInfo upType $ map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ vals) False) listY)) allFunsWithFailure
@@ -190,7 +190,7 @@ loopOverLHsBindLRTot allPaths conf path allFuns moduleName' vals@(L _ AbsBinds {
     FieldsCheck (EnumCheck{..}) -> do
       let allVals = ((bagToList binds ^? biplateRef :: [LHsExpr GhcTc]))
       let allValsTypes = mapMaybe getExprTypeAsType allVals
-      let isF = any (\val -> isInfixOf val (showSDocUnsafe $ ppr vals) ) enumList && (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))
+      let isF = any (\perRecord -> any (\val -> isInfixOf val (showSDocUnsafe $ ppr vals) ) (enumList perRecord) && (Just $ enumType perRecord) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))) recordCheck
       let funName = map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc vals) isF ) (getFunctionName vals)
       let fname = name <$> funName
       let checkAVoided = HM.lookup moduleName' =<< avoidedFunsByModule
@@ -199,7 +199,7 @@ loopOverLHsBindLRTot allPaths conf path allFuns moduleName' vals@(L _ AbsBinds {
       -- if (any (\x-> x `elem` (fromMaybe [] checkAVoided)) fname ) then pure $ Errors []
       -- let errors = if isF then [CompileError "" "" (show fname) (getLocGhc vals)] else []
       else do
-        allFunsWithFailure <- mapM (getFunctionNameIfFailure allPaths conf recordType enumList enumType fieldType moduleName') (bagToList binds ^? biplateRef)
+        allFunsWithFailure <- mapM (getFunctionNameIfFailure allPaths conf recordCheck moduleName') (bagToList binds ^? biplateRef)
         let val = map (\(upType,listY) -> (createUpdateInfo upType $ map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ vals) False) listY)) allFunsWithFailure
         let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (bagToList binds ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
         allC <- nub <$> (mapM (loopOverModBinds allPaths conf path allLetPats allFuns moduleName' val (fname)) allVals)
@@ -257,7 +257,7 @@ loopOverPats allPaths checkerCase path allFUnsInsid allFunsWithFailure moduleNam
           let allValsTypes = mapMaybe getExprTypeAsType (normalBinds ^? biplateRef)
           --     filterLit = filter (not . isLit) (normalBinds ^? biplateRef)
           -- liftIO $ print $ (showSDocUnsafe $ ppr filterLit, showSDocUnsafe $ ppr allValsTypes)
-          let isF = (any (\val -> isInfixOf val (showSDocUnsafe $ ppr normalBinds) ) enumList && (not $ isInfixOf "PendingVBV" (showSDocUnsafe $ ppr normalBinds)) ) && ((Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes))))
+          let isF = any (\perRecord -> (any (\val -> isInfixOf val (showSDocUnsafe $ ppr normalBinds) ) (enumList perRecord) && (not $ isInfixOf "PendingVBV" (showSDocUnsafe $ ppr normalBinds)) ) && ((Just $ enumType perRecord) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes))))) recordCheck
           -- liftIO $ (print ((showSDocUnsafe $ ppr a), showSDocUnsafe $ ppr normalBinds, isF, any (\val -> isInfixOf val (showSDocUnsafe $ ppr normalBinds) ) enumList, (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))))
           -- let funName = map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ a) isF ) (getFunctionName a)
           -- liftIO $ print (isF, (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes))))
@@ -281,9 +281,9 @@ loopOverPats allPaths checkerCase path allFUnsInsid allFunsWithFailure moduleNam
               let allNeeded = mapMaybe getExprTypeWithName $ normalBinds ^? biplateRef
                   allVals = fst <$> allNeeded
                   allEnums = catMaybes $ snd <$> allNeeded
-                  b = (any (\x -> x `elem` (splitOn " " $ showSDocUnsafe $ ppr match)) (allFailureNames) ||  any (\x -> x `elem` allEnums) ["FAILURE", "SUCCESS"]) && (any (\x -> recordType `isInfixOf` (replace enumType "" x)) (allVals) || recordType == "ALL") && any (\x -> enumType `isInfixOf` x) allVals
+                  b = any (\perRecord -> (any (\x -> x `elem` (splitOn " " $ showSDocUnsafe $ ppr match)) (allFailureNames) ||  any (\x -> x `elem` allEnums) ["FAILURE", "SUCCESS"]) && (any (\x -> (recordType perRecord) `isInfixOf` (replace (enumType perRecord) "" x)) (allVals) || (recordType perRecord) == "ALL") && any (\x -> (enumType perRecord) `isInfixOf` x) allVals) recordCheck
               -- liftIO $ print (show (any (\x -> x `elem` (splitOn " " $ showSDocUnsafe $ ppr match)) (allFailureNames)), any (\x -> x `elem` allEnums) ["FAILURE", "SUCCESS"],any (\x -> recordType `isInfixOf` (replace enumType "" x)) (allVals),  any (\x -> enumType `isInfixOf` x) allVals)
-              allFunsUpd <- mapM (getDataTypeDetails recordType enumList enumType fieldType processedPats []) ( (match ^? biplateRef))
+              allFunsUpd <- mapM (getDataTypeDetails recordCheck processedPats []) ( (match ^? biplateRef))
               let allFunsUpds = catMaybes allFunsUpd
           -- liftIO $ print $ ("TypesInfo ", allFuns) 
           -- liftIO $ print $ ("check",a, allFunsUpds, toConstr <$> unLoc <$> normalBinds, showSDocUnsafe $ ppr normalBinds, allVals, allFuns)
@@ -625,23 +625,23 @@ getExprTypeAsType (L _ (HsConLikeOut _ (RealDataCon idT))) = Just $ idType $ dat
 -- getExprTypeAsType (L _ (HsConLikeOut _ (PatSynCon id))) = Just $ showSDocUnsafe $ ppr $ idType $ dataConWrapId id
 getExprTypeAsType (L _ _)=  Nothing
 
-getDataTypeDetails :: String -> [String] -> String -> String -> HM.HashMap String Bool -> [String] -> HsExpr GhcTc -> TcM (Maybe TypeOfUpdate)
+getDataTypeDetails :: [RecordType] -> HM.HashMap String Bool -> [String] -> HsExpr GhcTc -> TcM (Maybe TypeOfUpdate)
 #if __GLASGOW_HASKELL__ >= 900
-getDataTypeDetails recordType enumList enumType fieldType allLetPats allArgs (RecordCon _ iD rcon_flds) = pure $ if recordType `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr $ conLikeType (GHC.unXRec @(GhcTc) iD))) || recordType == "ALL" then Just (extractRecordBinds rcon_flds allLetPats allArgs enumList fieldType enumType) else Nothing
+getDataTypeDetails recordTypeArr allLetPats allArgs (RecordCon _ iD rcon_flds) = pure $ if any (\perRecord -> (recordType perRecord) `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr $ conLikeType (GHC.unXRec @(GhcTc) iD))) || recordType perRecord == "ALL") recordTypeArr then Just (extractRecordBinds rcon_flds allLetPats allArgs recordTypeArr) else Nothing
 #else
-getDataTypeDetails recordType enumList _ fieldType allLetPats allArgs (RecordCon _ iD rcon_flds) = pure $ if recordType `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr $ idType $ unLoc iD)) || recordType == "ALL" then Just (extractRecordBinds rcon_flds allLetPats allArgs enumList fieldType enumType) else Nothing
+getDataTypeDetails recordTypeArr allLetPats allArgs (RecordCon _ iD rcon_flds) = pure $ if any (\perRecord -> (recordType perRecord) `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr $ idType $ unLoc iD)) || recordType perRecord == "ALL") recordTypeArr then Just (extractRecordBinds rcon_flds allLetPats allArgs enumList fieldType enumType) else Nothing
 #endif
-getDataTypeDetails recordType enumList enumType fieldType allLetPats allArgs (RecordUpd _ rupd_expr rupd_flds) = 
+getDataTypeDetails recordTypeArr allLetPats allArgs (RecordUpd _ rupd_expr rupd_flds) = 
   let allVals = mapMaybe getExprTypeAsType $ rupd_expr ^? biplateRef
-  in pure $ if any (\x -> recordType `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr x))) allVals || recordType == "ALL" then Just (getFieldUpdates rupd_flds allLetPats allArgs enumList fieldType enumType) else Nothing
-getDataTypeDetails recordType enumList _ _ allLetPats allArgs x@(OpApp _ funl funm _) = do
+  in pure $ if any (\x -> any (\perRecord -> (recordType perRecord) `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr x))) recordTypeArr) allVals || any (\perRecord -> recordType perRecord == "ALL") recordTypeArr then Just (getFieldUpdates rupd_flds allLetPats allArgs recordTypeArr) else Nothing
+getDataTypeDetails recordTypeArr allLetPats allArgs x@(OpApp _ funl funm _) = do
     -- trace (show (showSDocUnsafe $ ppr x, showSDocUnsafe $ ppr funl,showSDocUnsafe $ ppr funm, showSDocUnsafe $ ppr funr)) Nothing
     if (showSDocUnsafe $ ppr funm) == "(#)"
         then do
             let allVals = mapMaybe getExprTypeAsType $ funl ^? biplateRef
-            if any (\val -> recordType `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr val))) allVals || recordType == "ALL"
+            if any (\perRecord -> any (\val -> (recordType perRecord) `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr val))) allVals || (recordType perRecord) == "ALL") recordTypeArr
                 then do
-                    let allOps = mapMaybe (splitOnOpAp enumList allLetPats allArgs) (x ^? biplateRef)
+                    let allOps = mapMaybe (splitOnOpAp recordTypeArr allLetPats allArgs) (x ^? biplateRef)
                     -- liftIO $ print ("Proper ," ++ (show allOps)) 
                     pure $ if UpdateWithFailure `elem` allOps then Just UpdateWithFailure else if Update `elem` allOps then Just Update else Nothing
             else do
@@ -650,11 +650,11 @@ getDataTypeDetails recordType enumList _ _ allLetPats allArgs x@(OpApp _ funl fu
     else do
         -- liftIO $ print ("Seconf ," ++ (showSDocUnsafe $ ppr funm))
         pure Nothing
-getDataTypeDetails recordType enumList enumType fieldType _ _ pat@(HsApp _ app1 (L _ _)) = do
+getDataTypeDetails recordTypeArr _ _ pat@(HsApp _ app1 (L _ _)) = do
     if "Set" `isInfixOf` (showSDocUnsafe $ ppr app1) then do
       let allVals = mapMaybe getExprTypeAsType $ pat ^? biplateRef
-      pure $ if (recordType `isInfixOf` (showSDocUnsafe $ ppr allVals) || recordType == "ALL") && (fieldType `isInfixOf` (showSDocUnsafe $ ppr pat) || fieldType == "ALL") && enumType `isInfixOf` (showSDocUnsafe $ ppr allVals)
-        then if any (\x -> x `isInfixOf` (showSDocUnsafe $ ppr pat)) enumList then
+      pure $ if any (\perRecord -> ((recordType perRecord) `isInfixOf` (showSDocUnsafe $ ppr allVals) || (recordType perRecord) == "ALL") && ((fieldType perRecord) `isInfixOf` (showSDocUnsafe $ ppr pat) || (fieldType perRecord) == "ALL") && (enumType perRecord) `isInfixOf` (showSDocUnsafe $ ppr allVals)) recordTypeArr
+        then if any (\x -> x `isInfixOf` (showSDocUnsafe $ ppr pat)) (concat $ enumList <$> recordTypeArr) then
             Just UpdateWithFailure
             else Just Update
             else Nothing
@@ -662,13 +662,13 @@ getDataTypeDetails recordType enumList enumType fieldType _ _ pat@(HsApp _ app1 
     else pure Nothing
     -- if showSDocUnsafe $ ppr app1 
     -- pure Nothing
-getDataTypeDetails recordType enumList enumType fieldType allLetPats _ (HsPar _ (L _ pat)) = do
+getDataTypeDetails recordTypeArr allLetPats _ (HsPar _ (L _ pat)) = do
     -- liftIO $ print (allLetPats)
     if "setField" `isInfixOf` (showSDocUnsafe $ ppr pat) then do
       let allVals = mapMaybe getExprTypeAsType $ pat ^? biplateRef
           allInnerVals = concat $ map processExpr (pat ^? biplateRef)
-      pure $ if (recordType `isInfixOf` (showSDocUnsafe $ ppr allVals) || recordType == "ALL") && (fieldType `isInfixOf` (showSDocUnsafe $ ppr pat) || fieldType == "ALL") && enumType `isInfixOf` (showSDocUnsafe $ ppr allVals)
-        then if any (\x -> x `isInfixOf` (showSDocUnsafe $ ppr pat)) enumList then
+      pure $ if any (\perRecord -> ((recordType perRecord) `isInfixOf` (showSDocUnsafe $ ppr allVals) || (recordType perRecord) == "ALL") && ((fieldType perRecord) `isInfixOf` (showSDocUnsafe $ ppr pat) || (fieldType perRecord) == "ALL") && (enumType perRecord) `isInfixOf` (showSDocUnsafe $ ppr allVals)) recordTypeArr
+        then if any (\x -> x `isInfixOf` (showSDocUnsafe $ ppr pat)) (concat $ enumList <$> recordTypeArr) then
             Just UpdateWithFailure
             else do
               let allPosibleVals = 
@@ -679,16 +679,16 @@ getDataTypeDetails recordType enumList enumType fieldType allLetPats _ (HsPar _ 
                else Just Update
             else Nothing
     else pure Nothing
-getDataTypeDetails _ _ _ _ _ _ (_) = do
+getDataTypeDetails _ _ _ (_) = do
     -- liftIO $ print (toConstr app1, showSDocUnsafe $ ppr app1)
     pure Nothing
 
-splitOnOpAp :: [String] -> HM.HashMap String Bool -> [String] -> HsExpr GhcTc -> Maybe TypeOfUpdate
-splitOnOpAp enumList allLetPats _ (OpApp _ left op right) =
+splitOnOpAp :: [RecordType] -> HM.HashMap String Bool -> [String] -> HsExpr GhcTc -> Maybe TypeOfUpdate
+splitOnOpAp recordTypeArr allLetPats _ (OpApp _ left op right) =
     if (showSDocUnsafe $ ppr op) `elem` ["(%~)","(.~)"] then
       if (showSDocUnsafe $ ppr left) == "_status" then do
           let allVals = concat $ map processExpr (right ^? biplateRef)
-          if any (\x -> x `isInfixOf` (showSDocUnsafe $ ppr right)) enumList then Just UpdateWithFailure
+          if any (\x -> x `isInfixOf` (showSDocUnsafe $ ppr right)) (concat $ enumList <$> recordTypeArr) then Just UpdateWithFailure
           else do
             let allPosibleVals =
                  map (\x -> case HM.lookup (mkStringFromFunctionInfo x) allLetPats of
@@ -730,8 +730,8 @@ conLikeType (PatSynCon pat_syn)    = patSynResultType pat_syn
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
-getFieldUpdates :: Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> HM.HashMap String Bool -> [String] -> [String] -> String -> String -> TypeOfUpdate
-getFieldUpdates fields allLetPats allArgs enumList fieldType enumType =
+getFieldUpdates :: Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> HM.HashMap String Bool -> [String] -> [RecordType] -> TypeOfUpdate
+getFieldUpdates fields allLetPats allArgs recordTypeArr =
   case fields of
     Left x -> 
       let allUpdates = map extractField x
@@ -749,8 +749,8 @@ getFieldUpdates fields allLetPats allArgs enumList fieldType enumType =
     extractField (L _ (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr})) =
         let allNrFuns = nub $ ((concatMap processExpr (map noLocA $ expr ^? biplateRef)))
             allValsTypes = mapMaybe getExprType (expr ^? biplateRef)
-        in if (isInfixOf fieldType (showSDocUnsafe $ ppr lbl) || fieldType == "ALL") && ((Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))) then
-          if any (\x -> isInfixOf x (showSDocUnsafe $ ppr expr)) enumList then
+        in if any (\perRecord -> (isInfixOf (fieldType perRecord) (showSDocUnsafe $ ppr lbl) || (fieldType perRecord) == "ALL") && ((Just (enumType perRecord)) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes))))) recordTypeArr then
+          if any (\x -> isInfixOf x (showSDocUnsafe $ ppr expr)) (concat $ enumList <$> recordTypeArr) then
             UpdateWithFailure
           else if any (\x -> isInfixOf x (showSDocUnsafe $ ppr expr)) allArgs then
             Update
@@ -766,8 +766,8 @@ getFieldUpdates fields allLetPats allArgs enumList fieldType enumType =
     extractField' ((HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr})) =
         let allNrFuns = nub $ ((concatMap processExpr (map noLocA $ expr ^? biplateRef)))
             allValsTypes = mapMaybe getExprType (expr ^? biplateRef)
-        in if isInfixOf fieldType (showSDocUnsafe $ ppr lbl) || fieldType == "ALL" && ((Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))) then
-          if any (\x -> isInfixOf x (showSDocUnsafe $ ppr expr)) enumList then
+        in if any (\perRecord -> isInfixOf (fieldType perRecord) (showSDocUnsafe $ ppr lbl) || (fieldType perRecord) == "ALL" && ((Just (enumType perRecord)) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes))))) recordTypeArr then
+          if any (\x -> isInfixOf x (showSDocUnsafe $ ppr expr))  (concat $ enumList <$> recordTypeArr) then
             UpdateWithFailure
           else if any (\x -> isInfixOf x (showSDocUnsafe $ ppr expr)) allArgs then
             Update
@@ -806,8 +806,8 @@ getFieldUpdates fields allLetPats allArgs enumList fieldType enumType =
         else NoChange
 #endif
 
-extractRecordBinds :: HsRecFields GhcTc (LHsExpr GhcTc) -> HM.HashMap String Bool -> [String] -> [String] -> String -> String -> TypeOfUpdate
-extractRecordBinds (HsRecFields{rec_flds = fields}) allLetPats allArgs enumList fieldType enumType =
+extractRecordBinds :: HsRecFields GhcTc (LHsExpr GhcTc) -> HM.HashMap String Bool -> [String] -> [RecordType] -> TypeOfUpdate
+extractRecordBinds (HsRecFields{rec_flds = fields}) allLetPats allArgs recordTypeArr =
     let allUpdates = map extractField fields
     in if CreateWithFailure `elem` allUpdates then CreateWithFailure 
        else if Create `elem` allUpdates then Create
@@ -821,8 +821,8 @@ extractRecordBinds (HsRecFields{rec_flds = fields}) allLetPats allArgs enumList 
         let allNrFuns = nub $ ((concatMap processExpr (map noLoc $ expr ^? biplateRef)))
 #endif
         let allValsTypes = mapMaybe getExprType (expr ^? biplateRef)
-        if isInfixOf fieldType (showSDocUnsafe $ ppr lbl) || fieldType == "ALL" && ((Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))) then
-          if any (\x -> isInfixOf x (showSDocUnsafe $ ppr expr)) enumList then
+        if any (\perRecord -> isInfixOf (fieldType perRecord) (showSDocUnsafe $ ppr lbl) || (fieldType perRecord) == "ALL" && ((Just (enumType perRecord)) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes))))) recordTypeArr then
+          if any (\x -> isInfixOf x (showSDocUnsafe $ ppr expr)) (concat $ enumList <$> recordTypeArr) then
             CreateWithFailure
           else if any (\x -> isInfixOf x (showSDocUnsafe $ ppr expr)) allArgs then
             Create
@@ -848,23 +848,23 @@ getFunctionName (L _ (PatBind{})) = [""]
 getFunctionName (L _ (AbsBinds{abs_binds = binds})) = concatMap getFunctionName $ bagToList binds
 getFunctionName _ = []
 
-getFunctionNameIfFailure :: [String] -> CheckerConfig -> String -> [String] -> String -> String -> String -> LHsBindLR GhcTc GhcTc -> TcM (TypeOfUpdate, [String])
+getFunctionNameIfFailure :: [String] -> CheckerConfig -> [RecordType] -> String -> LHsBindLR GhcTc GhcTc -> TcM (TypeOfUpdate, [String])
 #if __GLASGOW_HASKELL__ < 900
-getFunctionNameIfFailure allPaths checkerCase recordType enumList enumType fieldType moduleName' (L _ x@(FunBind _ idT _ _ _)) = do
+getFunctionNameIfFailure allPaths checkerCase recordType moduleName' (L _ x@(FunBind _ idT _ _ _)) = do
 #else
-getFunctionNameIfFailure allPaths checkerCase recordType enumList enumType fieldType moduleName' (L _ x@(FunBind _ idT _ _)) = do
+getFunctionNameIfFailure allPaths checkerCase recordTypeArr moduleName' (L _ x@(FunBind _ idT _ _)) = do
 #endif
   let allValsTypes = mapMaybe getExprType (x ^? biplateRef)
   let allVals = (map unLoc (x ^? biplateRef :: [LHsExpr GhcTc]))
   let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (x ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
   processedPats <- mapM (\funInfo -> do
-                    if any (\val -> val  `elem` enumList) (name <$> funInfo) then pure True
+                    if any (\val -> val  `elem` (concat $ enumList <$> recordTypeArr)) (name <$> funInfo) then pure True
                      else do
                         allCHecks <- liftIO $ mapM (checkInOtherModsWithoutError allPaths checkerCase moduleName') funInfo
                         pure $ any (==True) allCHecks) allLetPats
   let allBinds = concat $ mapMaybe loopOverFunBind (x ^? biplateRef :: [LHsBindLR GhcTc GhcTc])
       funName = [nameStableString $ getName idT]
-  (allRecordUpdsAndCrea) <- mapM (getDataTypeDetails recordType enumList enumType fieldType processedPats allBinds) $ allVals
+  (allRecordUpdsAndCrea) <- mapM (getDataTypeDetails recordTypeArr processedPats allBinds) $ allVals
   let allRecordUpdsAndCreate = catMaybes allRecordUpdsAndCrea
   pure $ if any (\val -> val==CreateWithFailure) allRecordUpdsAndCreate
     then (CreateWithFailure, funName)
@@ -876,21 +876,21 @@ getFunctionNameIfFailure allPaths checkerCase recordType enumList enumType field
     then (Update, funName)
     else if any (\val -> val==Default) allRecordUpdsAndCreate
     then (Default, funName)
-    else if any (\val -> isInfixOf val (showSDocUnsafe $ ppr x) ) enumList && (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))
+    else if any (\perRecord -> any (\val -> isInfixOf val (showSDocUnsafe $ ppr x) ) (enumList perRecord) && (Just (enumType perRecord)) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))) recordTypeArr
           then (Default, funName)
     else (NoChange,[])
-getFunctionNameIfFailure allPaths checkerCase recordType enumList enumType fieldType moduleName' (L _ x@(VarBind{var_id = var})) = do
+getFunctionNameIfFailure allPaths checkerCase recordTypeArr moduleName' (L _ x@(VarBind{var_id = var})) = do
   let allValsTypes = mapMaybe getExprType (x ^? biplateRef)
   let allVals = (map unLoc (x ^? biplateRef :: [LHsExpr GhcTc]))
   let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (x ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
   processedPats <- mapM (\funInfo -> do
-                    if any (\val -> val  `elem` enumList) (name <$> funInfo) then pure True
+                    if any (\val -> val  `elem` (concat $ enumList <$> recordTypeArr)) (name <$> funInfo) then pure True
                      else do
                         allCHecks <- liftIO $ mapM (checkInOtherModsWithoutError allPaths checkerCase moduleName') funInfo
                         pure $ any (==True) allCHecks) allLetPats
   let allBinds = concat $ mapMaybe loopOverFunBind (x ^? biplateRef :: [LHsBindLR GhcTc GhcTc])
       funName = [nameStableString $ varName var]
-  (allRecordUpdsAndCrea) <- mapM (getDataTypeDetails recordType enumList enumType fieldType processedPats allBinds) $ allVals
+  (allRecordUpdsAndCrea) <- mapM (getDataTypeDetails recordTypeArr processedPats allBinds) $ allVals
   let allRecordUpdsAndCreate = catMaybes allRecordUpdsAndCrea
   pure $ if any (\val -> val==CreateWithFailure) allRecordUpdsAndCreate
     then (CreateWithFailure, funName)
@@ -902,21 +902,21 @@ getFunctionNameIfFailure allPaths checkerCase recordType enumList enumType field
     then (Update, funName)
     else if any (\val -> val==Default) allRecordUpdsAndCreate
     then (Default, funName)
-    else if any (\val -> isInfixOf val (showSDocUnsafe $ ppr x) ) enumList && (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))
+    else if any(\perRecord -> any (\val -> isInfixOf val (showSDocUnsafe $ ppr x) ) (enumList perRecord) && (Just (enumType perRecord)) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))) recordTypeArr
           then (Default, funName)
     else (NoChange,[])
-getFunctionNameIfFailure allPaths checkerCase recordType enumList enumType fieldType moduleName' (L _ x@(AbsBinds{abs_binds = binds})) = do
+getFunctionNameIfFailure allPaths checkerCase recordTypeArr moduleName' (L _ x@(AbsBinds{abs_binds = binds})) = do
   let allValsTypes = mapMaybe getExprType (x ^? biplateRef)
   let allVals = (map unLoc (bagToList binds ^? biplateRef :: [LHsExpr GhcTc]))
   let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (bagToList binds ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
   processedPats <- mapM (\funInfo -> do
-                    if any (\val -> val  `elem` enumList) (name <$> funInfo) then pure True
+                    if any (\val -> val  `elem` (concat $ enumList <$> recordTypeArr)) (name <$> funInfo) then pure True
                      else do
                         allCHecks <- liftIO $ mapM (checkInOtherModsWithoutError allPaths checkerCase moduleName') funInfo
                         pure $ any (==True) allCHecks) allLetPats
   let allBinds = concat $ mapMaybe loopOverFunBind (bagToList binds ^? biplateRef :: [LHsBindLR GhcTc GhcTc])
       funName = concatMap getFunctionName $ bagToList binds
-  (allRecordUpdsAndCrea) <- mapM (getDataTypeDetails recordType enumList enumType fieldType processedPats allBinds) $ allVals
+  (allRecordUpdsAndCrea) <- mapM (getDataTypeDetails recordTypeArr processedPats allBinds) $ allVals
   let allRecordUpdsAndCreate = catMaybes allRecordUpdsAndCrea
   pure $ if any (\val -> val==CreateWithFailure) allRecordUpdsAndCreate
     then (CreateWithFailure, funName)
@@ -928,13 +928,13 @@ getFunctionNameIfFailure allPaths checkerCase recordType enumList enumType field
     then (Update, funName)
     else if any (\val -> val==Default) allRecordUpdsAndCreate
     then (Default, funName)
-    else if any (\val -> isInfixOf val (showSDocUnsafe $ ppr x) ) enumList && (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))
+    else if any (\perRecord -> any (\val -> isInfixOf val (showSDocUnsafe $ ppr x) ) (enumList perRecord) && (Just (enumType perRecord)) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))) recordTypeArr
           then (Default, funName)
     else (NoChange,[])
 --   pure $ if any (\(x,y) -> y==True) allRecordUpdsAndCreate then (Update, funName)
 --     else if any (\(x,y) -> x==True) allRecordUpdsAndCreate then (Create, funName)
 --     else if any (\val -> isInfixOf val (showSDocUnsafe $ ppr x)) enumList && any (\val -> isInfixOf enumType val ) allValsTypes then (Default, funName)  else (NoChange,[])
-getFunctionNameIfFailure _ _ _ _ _ _hasFld _ _ = pure $ (NoChange,[])
+getFunctionNameIfFailure _ _ _hasFld _ _ = pure $ (NoChange,[])
 
 loopOverLHsBindLR :: [String] -> CheckerConfig -> String -> LHsBindLR GhcTc GhcTc  -> TcM ((Maybe UpdateInfo), (HM.HashMap String [FunctionInfo]))
 loopOverLHsBindLR allPaths checkerCase moduleName' x@(L _ AbsBinds {abs_binds = binds1}) = do
@@ -945,12 +945,12 @@ loopOverLHsBindLR allPaths checkerCase moduleName' x@(L _ AbsBinds {abs_binds = 
     --   liftIO (print (showSDocUnsafe $ ppr binds1, "and",  showSDocUnsafe $ ppr binds))
       let allVals = binds -- ((binds ^? biplateRef :: [LHsExpr GhcTc]))
       let allValsTypes = mapMaybe getExprTypeAsType allVals
-          isF = any (\val -> isInfixOf val (showSDocUnsafe $ ppr x) ) enumList && (Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))
+          isF = any (\perRecord -> any (\val -> isInfixOf val (showSDocUnsafe $ ppr x) ) (enumList perRecord) && (Just $ enumType perRecord) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))) recordCheck
       -- liftIO $ print $ "Started loopOverLHsBindLR 1" ++ show isF
       let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (bagToList binds1 ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
       -- liftIO $ print $ "Started loopOverLHsBindLR 2" ++ show allLetPats
       processedPats <- mapM (\(funInfo :: [FunctionInfo]) ->
-                        if any (\val -> val  `elem` enumList) (name <$> funInfo) then pure True
+                        if any (\val -> val  `elem` (concat $ enumList <$> recordCheck)) (name <$> funInfo) then pure True
                         else do
                             allCHecks <- liftIO $ mapM (checkInOtherModsWithoutError allPaths checkerCase moduleName') funInfo
                             pure $ any (==True) allCHecks) allLetPats
@@ -960,7 +960,7 @@ loopOverLHsBindLR allPaths checkerCase moduleName' x@(L _ AbsBinds {abs_binds = 
       let funName = map (\y -> transformFromNameStableString y (showSDocUnsafe $ ppr $ getLoc $ x) isF ) (getFunctionName x)
       if length filteredAllVals > 0 then do
         let fname = name <$> funName
-        allRecordUpdsAndCrea <- mapM (\val -> getAllNeededFunOuter recordType enumList enumType fieldType isF x  allBinds processedPats val ) filteredAllVals
+        allRecordUpdsAndCrea <- mapM (\val -> getAllNeededFunOuter recordCheck isF x  allBinds processedPats val ) filteredAllVals
         let allNrFuns = concat $ snd <$> allRecordUpdsAndCrea
         let allRecordUpdsAndCreate = concat $ fst <$> allRecordUpdsAndCrea
         -- let errors = if any (\val -> val==Default) allRecordUpdsAndCreate then [CompileError "" "" (show allRecordUpdsAndCreate) (getLocGhc x)] else []
@@ -981,7 +981,7 @@ loopOverLHsBindLR allPaths checkerCase moduleName' x@(L _ AbsBinds {abs_binds = 
 
       else do
         let allNrFuns = nub $ ((concatMap processExpr allVals))
-        allRecordUpdsAndCrea <- mapM (getDataTypeDetails recordType enumList enumType fieldType processedPats allBinds) $ allVals ^? biplateRef
+        allRecordUpdsAndCrea <- mapM (getDataTypeDetails recordCheck processedPats allBinds) $ allVals ^? biplateRef
         let fname = name <$> funName
         let allRecordUpdsAndCreate = catMaybes allRecordUpdsAndCrea
         -- let errors = if any (\val -> val==Default) allRecordUpdsAndCreate then [CompileError "" "" (show allRecordUpdsAndCreate) (getLocGhc x)] else []
@@ -1020,17 +1020,17 @@ processHsCase :: LHsExpr GhcTc -> Bool
 processHsCase (L _ (HsCase _ _ _)) = True
 processHsCase _ = False
 
-getAllNeededFunOuter :: String -> [String] -> String -> String -> Bool -> LHsBindLR GhcTc GhcTc -> [String] -> HM.HashMap String Bool -> LHsExpr GhcTc -> TcM ([TypeOfUpdate], [FunctionInfo])
-getAllNeededFunOuter recordType enumList enumType fieldType isF x allBinds processedPats (L _ (HsCase _ _ exprLStmt)) = do
-    allRecordUpdsAndCrea <- mapM (getAllNeededFun recordType enumList enumType fieldType isF x allBinds processedPats) $ map unLoc $ unLoc $ mg_alts exprLStmt
+getAllNeededFunOuter :: [RecordType] -> Bool -> LHsBindLR GhcTc GhcTc -> [String] -> HM.HashMap String Bool -> LHsExpr GhcTc -> TcM ([TypeOfUpdate], [FunctionInfo])
+getAllNeededFunOuter recordTypeArr isF x allBinds processedPats (L _ (HsCase _ _ exprLStmt)) = do
+    allRecordUpdsAndCrea <- mapM (getAllNeededFun recordTypeArr isF x allBinds processedPats) $ map unLoc $ unLoc $ mg_alts exprLStmt
     -- liftIO $ print (concat allRecordUpdsAndCrea)
     pure $ (concat $ fst <$> allRecordUpdsAndCrea, concat $ snd <$> allRecordUpdsAndCrea)
-getAllNeededFunOuter _ _ _ _ _ _ _ _ _ =  pure ([], [])
+getAllNeededFunOuter _ _ _ _ _ _ =  pure ([], [])
 
     -- pure $ catMaybes $ allRecordUpdsAndCrea
 
-getAllNeededFun :: String -> [String] -> String -> String -> Bool ->  LHsBindLR GhcTc GhcTc -> [String] -> HM.HashMap String Bool -> Match GhcTc (LHsExpr GhcTc) -> TcM ([TypeOfUpdate], [FunctionInfo])
-getAllNeededFun recordType enumList enumType fieldType _ _ allBinds processedPats match = do
+getAllNeededFun :: [RecordType] -> Bool ->  LHsBindLR GhcTc GhcTc -> [String] -> HM.HashMap String Bool -> Match GhcTc (LHsExpr GhcTc) -> TcM ([TypeOfUpdate], [FunctionInfo])
+getAllNeededFun recordTypeArr _ _ allBinds processedPats match = do
   let normalBinds = (\(GRHS _ _ stmt )-> stmt ) <$> unLoc <$> (grhssGRHSs $ m_grhss match)
       argBinds = m_pats match
       a = any isVarPat argBinds
@@ -1038,7 +1038,7 @@ getAllNeededFun recordType enumList enumType fieldType _ _ allBinds processedPat
   if checker then pure ([], []) else
     if a then do
         let allNrFuns = nub $ concatMap processExpr (normalBinds ^? biplateRef :: [LHsExpr GhcTc] )
-        allRecordUpdsAndCrea <- mapM (getDataTypeDetails recordType enumList enumType fieldType processedPats allBinds) $ normalBinds ^? biplateRef
+        allRecordUpdsAndCrea <- mapM (getDataTypeDetails recordTypeArr processedPats allBinds) $ normalBinds ^? biplateRef
         -- liftIO $ print (checker, a, showSDocUnsafe $ ppr argBinds, showSDocUnsafe $ ppr match, catMaybes allRecordUpdsAndCrea)
         pure $ (catMaybes allRecordUpdsAndCrea, allNrFuns)
     else pure ([], [])

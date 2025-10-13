@@ -35,14 +35,22 @@ instance FromJSON PluginOpts where
 
 data EnumCheck =
   EnumCheck
-    { enumList :: [String]
-    , enumType :: String
-    , recordType :: String
+    { 
+      recordCheck :: [RecordType]
     , gatewayModules :: String
     , avoidedModules :: Maybe [String]
-    , fieldType :: String
     , avoidedFunsByModule :: Maybe (HM.HashMap String [String])
     }
+  deriving (Generic, Show, Eq, Ord)
+  deriving (ToJSON, FromJSON)
+
+data RecordType = 
+  RecordType {
+    recordType :: String
+    , enumType :: String
+    , enumList :: [String]
+    , fieldType :: String
+  }
   deriving (Generic, Show, Eq, Ord)
   deriving (ToJSON, FromJSON)
 
