@@ -10,18 +10,23 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Yaml (decodeFileEither, ParseException)
+import System.Directory (doesFileExist)
 import UnusedFieldChecker.Types
 
 loadExclusionConfig :: FilePath -> IO ExclusionConfig
 loadExclusionConfig configPath = do
-    result <- decodeFileEither configPath
-    case result of
-        Left err -> do
-            putStrLn $ "Warning: Failed to parse " ++ configPath ++ ": " ++ show err
-            return emptyExclusionConfig
-        Right config -> do
-            putStrLn $ "Loaded exclusion config from: " ++ configPath
-            return config
+    exists <- doesFileExist configPath
+    if not exists
+        then return emptyExclusionConfig
+        else do
+            result <- decodeFileEither configPath
+            case result of
+                Left err -> do
+                    putStrLn $ "Warning: Failed to parse " ++ configPath ++ ": " ++ show err
+                    return emptyExclusionConfig
+                Right config -> do
+                    putStrLn $ "Loaded exclusion config from: " ++ configPath
+                    return config
 
 isFieldExcluded :: ExclusionConfig -> FieldDefinition -> Bool
 isFieldExcluded ExclusionConfig{..} FieldDefinition{..} =
