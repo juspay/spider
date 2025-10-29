@@ -14,11 +14,13 @@ import GHC.Core.TyCon
 import qualified GHC.Core.TyCo.Rep as TyCo
 import GHC.Core.Type
 import GHC.Data.Bag
+import GHC.Data.FastString
 import GHC.Driver.Plugins
 import GHC.Driver.Session
 import GHC.Hs
 import GHC.Tc.Types
 import GHC.Types.Error
+import GHC.Types.FieldLabel
 import GHC.Types.Name
 import GHC.Types.SrcLoc
 import GHC.Types.Var
@@ -189,21 +191,29 @@ extractUsagesFromGRHS modName (L _ (GRHS _ _ body)) =
     extractUsagesFromExpr modName body
 
 extractUsagesFromPat :: Text -> LPat GhcTc -> TcM [FieldUsage]
-extractUsagesFromPat modName (L loc pat) = case pat of
+extractUsagesFromPat modName lpat = case unLoc lpat of
 #if __GLASGOW_HASKELL__ >= 900
-    ConPat _ _ details -> extractUsagesFromConPatDetails modName loc details
+    ConPat _ _ details -> extractUsagesFromConPatDetails modName (getLoc lpat) details
 #else
-    ConPatOut{pat_args = details} -> extractUsagesFromConPatDetails modName loc details
+    ConPatOut{pat_args = details} -> extractUsagesFromConPatDetails modName (getLoc lpat) details
 #endif
     _ -> return []
 
+#if __GLASGOW_HASKELL__ >= 900
+extractUsagesFromConPatDetails :: Text -> SrcSpanAnnA -> HsConPatDetails GhcTc -> TcM [FieldUsage]
+#else
 extractUsagesFromConPatDetails :: Text -> SrcSpan -> HsConPatDetails GhcTc -> TcM [FieldUsage]
+#endif
 extractUsagesFromConPatDetails modName loc details = case details of
     RecCon (HsRecFields fields _) -> 
         concat <$> mapM (extractUsageFromRecField modName loc PatternMatch) fields
     _ -> return []
 
+#if __GLASGOW_HASKELL__ >= 900
+extractUsageFromRecField :: Text -> SrcSpanAnnA -> UsageType -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
+#else
 extractUsageFromRecField :: Text -> SrcSpan -> UsageType -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
+#endif
 extractUsageFromRecField modName loc usageType (L _ HsRecField{hsRecFieldLbl = lbl}) = do
     let fieldName = pack $ showSDocUnsafe $ ppr lbl
         location = pack $ showSDocUnsafe $ ppr loc
@@ -216,7 +226,10 @@ extractUsageFromRecField modName loc usageType (L _ HsRecField{hsRecFieldLbl = l
         }]
 
 extractUsagesFromExpr :: Text -> LHsExpr GhcTc -> TcM [FieldUsage]
-extractUsagesFromExpr modName (L loc expr) = case expr of
+extractUsagesFromExpr modName lexpr = 
+    let loc = getLoc lexpr
+        expr = unLoc lexpr
+    in case expr of
     RecordCon{rcon_flds = HsRecFields fields _} ->
         concat <$> mapM (extractUsageFromRecFieldExpr modName loc RecordConstruct) fields
     
@@ -268,17 +281,36 @@ extractUsagesFromExpr modName (L loc expr) = case expr of
     _ -> return []
 
 #if __GLASGOW_HASKELL__ >= 900
-extractUsagesFromRecordUpdate :: Text -> SrcSpan -> Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> TcM [FieldUsage]
+extractUsagesFromRecordUpdate :: Text -> SrcSpanAnnA -> Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> TcM [FieldUsage]
 extractUsagesFromRecordUpdate modName loc (Left fields) =
-    concat <$> mapM (extractUsageFromRecFieldExpr modName loc RecordUpdate) fields
-extractUsagesFromRecordUpdate modName loc (Right _) = return []
+    -- For regular field updates, extract field names
+    concat <$> mapM (extractUsageFromRecUpdField modName loc RecordUpdate) fields
+extractUsagesFromRecordUpdate modName loc (Right _) = return []  -- Projection updates not yet supported
+
+extractUsageFromRecUpdField :: Text -> SrcSpanAnnA -> UsageType -> LHsRecUpdField GhcTc -> TcM [FieldUsage]
+extractUsageFromRecUpdField modName loc usageType (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg}) = do
+    let fieldName = pack $ showSDocUnsafe $ ppr lbl
+        location = pack $ showSDocUnsafe $ ppr loc
+        usage = FieldUsage
+            { fieldUsageName = fieldName
+            , fieldUsageType = usageType
+            , fieldUsageTypeName = ""
+            , fieldUsageModule = modName
+            , fieldUsageLocation = location
+            }
+    argUsages <- extractUsagesFromExpr modName arg
+    return $ usage : argUsages
 #else
 extractUsagesFromRecordUpdate :: Text -> SrcSpan -> [LHsRecUpdField GhcTc] -> TcM [FieldUsage]
 extractUsagesFromRecordUpdate modName loc fields =
     concat <$> mapM (extractUsageFromRecFieldExpr modName loc RecordUpdate) fields
 #endif
 
+#if __GLASGOW_HASKELL__ >= 900
+extractUsageFromRecFieldExpr :: Text -> SrcSpanAnnA -> UsageType -> LHsRecField GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+#else
 extractUsageFromRecFieldExpr :: Text -> SrcSpan -> UsageType -> LHsRecField GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+#endif
 extractUsageFromRecFieldExpr modName loc usageType (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg}) = do
     let fieldName = pack $ showSDocUnsafe $ ppr lbl
         location = pack $ showSDocUnsafe $ ppr loc
