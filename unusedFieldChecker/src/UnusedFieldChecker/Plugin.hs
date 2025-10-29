@@ -11,7 +11,7 @@ module UnusedFieldChecker.Plugin (plugin) where
 import GHC
 import GHC.Core.DataCon
 import GHC.Core.TyCon
-import GHC.Core.TyCo.Rep
+import qualified GHC.Core.TyCo.Rep as TyCo
 import GHC.Core.Type
 import GHC.Data.Bag
 import GHC.Driver.Plugins
@@ -121,8 +121,13 @@ extractFieldsFromDataCon modName typeName dc = do
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
         then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
             let fieldName = pack $ unpackFS $ flLabel label
-                fieldTypeStr = pack $ showSDocUnsafe $ ppr $ scaledThing fieldType
-                isMaybe = isMaybeType (scaledThing fieldType)
+#if __GLASGOW_HASKELL__ >= 900
+                fieldTypeStr = pack $ showSDocUnsafe $ ppr $ TyCo.scaledThing fieldType
+                isMaybe = isMaybeType (TyCo.scaledThing fieldType)
+#else
+                fieldTypeStr = pack $ showSDocUnsafe $ ppr fieldType
+                isMaybe = isMaybeType fieldType
+#endif
                 location = pack $ showSDocUnsafe $ ppr $ getSrcSpan $ getName dc
             
             return FieldDefinition
@@ -322,11 +327,3 @@ extractTyCons tcEnv =
         not (isClassTyCon tc) &&
         not (isPromotedDataCon tc) &&
         not (isTcTyCon tc)
-
-#if __GLASGOW_HASKELL__ >= 900
-scaledThing :: Scaled a -> a
-scaledThing (Scaled _ t) = t
-#else
-scaledThing :: a -> a
-scaledThing = id
-#endif
