@@ -16,7 +16,7 @@ This tool helps developers maintain cleaner code by ensuring all required data f
 
 ## Usage
 
-Add this to your `ghc-options` in cabal and mention `unusedFieldChecker` in `build-depends`:
+Add `unusedFieldChecker` to your `build-depends` and add the plugin to your `ghc-options`:
 
 ```cabal
 build-depends:
@@ -24,17 +24,27 @@ build-depends:
     unusedFieldChecker,
     ...
 
-ghc-options: -fplugin=UnusedFieldChecker.Plugin
-```
-
-### Plugin Options
-
-You can provide flags to the plugin as follows:
-
-```cabal
 ghc-options:
     -fplugin=UnusedFieldChecker.Plugin
-    -fplugin-opt=UnusedFieldChecker.Plugin:'{"path":"/tmp/unusedFieldChecker/","port":4445,"host":"::1","log":false,"exclusionConfigFile":"UnusedFieldChecker.yaml"}'
+    -fplugin-opt=UnusedFieldChecker.Plugin:'{"path":"./tmp/unusedFieldChecker/","port":4446,"host":"::1","log":false,"exclusionConfigFile":"UnusedFieldChecker.yaml"}'
+```
+
+### Integration with common-lang
+
+Add to your common-lang stanza in both Local and production flags:
+
+```cabal
+common common-lang
+  if flag(Local)
+    ghc-options:
+      ...
+      -fplugin=UnusedFieldChecker.Plugin
+      -fplugin-opt=UnusedFieldChecker.Plugin:'{"path":"./tmp/unusedFieldChecker/","port":4446,"host":"::1","log":false,"exclusionConfigFile":"UnusedFieldChecker.yaml"}'
+  else
+    ghc-options:
+      ...
+      -fplugin=UnusedFieldChecker.Plugin
+      -fplugin-opt=UnusedFieldChecker.Plugin:'{"path":"./tmp/unusedFieldChecker/","port":4446,"host":"::1","log":false,"exclusionConfigFile":"UnusedFieldChecker.yaml"}'
 ```
 
 **Configuration Options:**
