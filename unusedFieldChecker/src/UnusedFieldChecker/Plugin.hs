@@ -25,7 +25,7 @@ import GHC.Types.Var
 import GHC.Unit.Module.ModGuts
 import GHC.Unit.Module.ModSummary
 import GHC.Utils.Error
-import GHC.Utils.Outputable
+import GHC.Utils.Outputable hiding ((<>))
 #else
 import Bag
 import DataCon
@@ -72,7 +72,7 @@ collectFieldInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEn
 collectFieldInfo opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
         modulePath = path cliOptions </> msHsFilePath modSummary
-        modName = pack $ moduleNameString $ moduleName $ ms_mod modSummary
+        modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
     
     fieldDefs <- extractFieldDefinitions modName tcEnv
     
@@ -142,9 +142,15 @@ extractFieldsFromDataCon modName typeName dc = do
 
 isMaybeType :: Type -> Bool
 isMaybeType ty = case ty of
+#if __GLASGOW_HASKELL__ >= 900
+    TyCo.TyConApp tc _ -> 
+        let tcName = getOccString (getName tc)
+        in tcName == "Maybe"
+#else
     TyConApp tc _ -> 
         let tcName = getOccString (getName tc)
         in tcName == "Maybe"
+#endif
     _ -> False
 
 extractFieldUsages :: Text -> TcGblEnv -> TcM [FieldUsage]
