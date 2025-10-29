@@ -62,22 +62,28 @@ import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import System.Directory (createDirectoryIfMissing, doesFileExist, listDirectory)
 import System.FilePath ((</>), takeExtension)
 import UnusedFieldChecker.Types
+import UnusedFieldChecker.Validator
+import UnusedFieldChecker.Config
 import Socket (sendViaUnixSocket)
+
+#if __GLASGOW_HASKELL__ < 900
+import ErrUtils (mkErrMsg)
+import TcRnMonad (addErrs)
+#endif
 
 plugin :: Plugin
 plugin = defaultPlugin
-    { typeCheckResultAction = collectFieldInfo
+    { typeCheckResultAction = collectAndValidateFieldInfo
     , pluginRecompile = \_ -> return NoForceRecompile
     }
 
-collectFieldInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
-collectFieldInfo opts modSummary tcEnv = do
+collectAndValidateFieldInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
+collectAndValidateFieldInfo opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
         modulePath = path cliOptions </> msHsFilePath modSummary
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
     
     fieldDefs <- extractFieldDefinitions modName tcEnv
-    
     fieldUsages <- extractFieldUsages modName tcEnv
     
     let moduleInfo = ModuleFieldInfo
@@ -86,6 +92,7 @@ collectFieldInfo opts modSummary tcEnv = do
             , moduleName = modName
             }
     
+    -- Save field info for cross-module analysis
     liftIO $ do
         let outputPath = path cliOptions
         createDirectoryIfMissing True outputPath
@@ -93,7 +100,42 @@ collectFieldInfo opts modSummary tcEnv = do
                          (pack $ "/" <> modulePath <> ".fieldInfo.json")
                          (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
     
+    -- Perform immediate validation for fields defined in this module
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    
+    let aggregated = aggregateFieldInfo [moduleInfo]
+        validationResult = validateFieldsWithExclusions exclusionConfig aggregated
+        errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+    
+    -- Report errors
+    when (not $ null errors) $ do
+        let errMsgs = map makeError errors
+#if __GLASGOW_HASKELL__ >= 900
+        liftIO $ putStrLn $ "UnusedFieldChecker: Found " ++ show (length errors) ++ " unused non-Maybe fields"
+        mapM_ (\(loc, msg, _) -> liftIO $ putStrLn $ unpack msg) errors
+#else
+        addErrs errMsgs
+#endif
+    
     return tcEnv
+  where
+#if __GLASGOW_HASKELL__ >= 900
+    makeError :: (Text, Text, Text) -> (SrcSpan, SDoc)
+    makeError (locStr, msg, _) = 
+        let loc = parseLocation locStr
+        in (loc, text $ unpack msg)
+    
+    parseLocation :: Text -> SrcSpan
+    parseLocation _ = noSrcSpan  -- Simplified for now
+#else
+    makeError :: (Text, Text, Text) -> (SrcSpan, SDoc)
+    makeError (locStr, msg, _) = 
+        let loc = parseLocation locStr
+        in (loc, text $ unpack msg)
+    
+    parseLocation :: Text -> SrcSpan
+    parseLocation _ = noSrcSpan  -- Simplified for now
+#endif
 
 parseCliOptions :: [CommandLineOption] -> CliOptions
 parseCliOptions [] = defaultCliOptions
