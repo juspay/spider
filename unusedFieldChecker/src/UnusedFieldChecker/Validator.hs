@@ -90,11 +90,18 @@ reportUnusedFields fields = map generateError fields
     generateError :: FieldDefinition -> (Text, Text, Text)
     generateError FieldDefinition{..} =
         let errorMsg = T.concat
-                [ "Field '"
-                , fieldDefName
-                , "' in type '"
-                , fieldDefTypeName
-                , "' is never used and is not a Maybe type. "
-                , "Either use this field or make it a Maybe type."
+                [ "\n"
+                , "Unused field detected:\n"
+                , "  Field: ", fieldDefName, "\n"
+                , "  Type: ", fieldDefTypeName, "\n"
+                , "  Field Type: ", fieldDefType, "\n"
+                , "  Module: ", fieldDefModule, "\n"
+                , "\n"
+                , "This non-Maybe field is defined but never used in the codebase.\n"
+                , "\n"
+                , "Suggested fixes:\n"
+                , "  1. Use this field somewhere in your code\n"
+                , "  2. Change the field type to 'Maybe ", fieldDefType, "' if it's optional\n"
+                , "  3. Add it to the exclusion config (UnusedFieldChecker.yaml) if intentionally unused\n"
                 ]
         in (fieldDefLocation, errorMsg, fieldDefModule)

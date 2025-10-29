@@ -7,6 +7,8 @@
 
 module UnusedFieldChecker.Plugin (plugin) where
 
+import Prelude hiding (log)
+
 #if __GLASGOW_HASKELL__ >= 900
 import GHC
 import GHC.Core.DataCon
@@ -19,6 +21,7 @@ import GHC.Driver.Plugins
 import GHC.Driver.Session
 import GHC.Hs
 import GHC.Tc.Types
+import GHC.Tc.Utils.Monad (addMessages)
 import GHC.Types.Error
 import GHC.Types.FieldLabel
 import GHC.Types.Name
@@ -28,6 +31,7 @@ import GHC.Unit.Module.ModGuts
 import GHC.Unit.Module.ModSummary
 import GHC.Utils.Error
 import GHC.Utils.Outputable hiding ((<>))
+import qualified GHC.Utils.Error as Err
 #else
 import Bag
 import DataCon
@@ -74,6 +78,7 @@ import TcRnMonad (addErrs)
 plugin :: Plugin
 plugin = defaultPlugin
     { typeCheckResultAction = collectAndValidateFieldInfo
+    , interfaceLoadAction = performCrossModuleValidation
     , pluginRecompile = \_ -> return NoForceRecompile
     }
 
@@ -83,8 +88,21 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
         modulePath = path cliOptions </> msHsFilePath modSummary
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
     
+    liftIO $ when (log cliOptions) $ 
+        putStrLn $ "UnusedFieldChecker: Processing module " ++ T.unpack modName
+    
     fieldDefs <- extractFieldDefinitions modName tcEnv
     fieldUsages <- extractFieldUsages modName tcEnv
+    
+    liftIO $ when (log cliOptions) $ do
+        putStrLn $ "  Found " ++ show (length fieldDefs) ++ " field definitions"
+        putStrLn $ "  Found " ++ show (length fieldUsages) ++ " field usages"
+        forM_ fieldDefs $ \def -> 
+            putStrLn $ "    Def: " ++ T.unpack (fieldDefTypeName def) ++ "." ++ T.unpack (fieldDefName def) ++ 
+                      " (Maybe: " ++ show (fieldDefIsMaybe def) ++ ")"
+        forM_ fieldUsages $ \usage ->
+            putStrLn $ "    Usage: " ++ T.unpack (fieldUsageName usage) ++ 
+                      " (" ++ show (fieldUsageType usage) ++ ")"
     
     let moduleInfo = ModuleFieldInfo
             { moduleFieldDefs = fieldDefs
@@ -109,11 +127,15 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
     
     -- Report errors
     when (not $ null errors) $ do
-        let errMsgs = map makeError errors
 #if __GLASGOW_HASKELL__ >= 900
-        liftIO $ putStrLn $ "UnusedFieldChecker: Found " ++ show (length errors) ++ " unused non-Maybe fields"
-        mapM_ (\(loc, msg, _) -> liftIO $ putStrLn $ unpack msg) errors
+        let errMsgs = map makeError errors
+            msgEnvelopes = map mkErrorMsg errMsgs
+            msgs = mkMessages $ listToBag msgEnvelopes
+        addMessages msgs
+        liftIO $ when (log cliOptions) $ 
+            putStrLn $ "UnusedFieldChecker: Found " ++ show (length errors) ++ " unused non-Maybe fields"
 #else
+        let errMsgs = map makeError errors
         addErrs errMsgs
 #endif
     
@@ -125,8 +147,25 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
         let loc = parseLocation locStr
         in (loc, text $ unpack msg)
     
+    mkErrorMsg :: (SrcSpan, SDoc) -> MsgEnvelope DecoratedSDoc
+    mkErrorMsg (loc, msg) = 
+        Err.mkMsgEnvelope loc neverQualify msg
+    
     parseLocation :: Text -> SrcSpan
-    parseLocation _ = noSrcSpan  -- Simplified for now
+    parseLocation locStr = 
+        case T.splitOn ":" locStr of
+            [file, line, col] -> 
+                case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
+                    (Just l, Just c) -> 
+                        let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
+                        in mkSrcSpan srcLoc srcLoc
+                    _ -> noSrcSpan
+            _ -> noSrcSpan
+      where
+        readMaybe :: Read a => String -> Maybe a
+        readMaybe s = case reads s of
+            [(x, "")] -> Just x
+            _ -> Nothing
 #else
     makeError :: (Text, Text, Text) -> (SrcSpan, SDoc)
     makeError (locStr, msg, _) = 
@@ -134,7 +173,20 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
         in (loc, text $ unpack msg)
     
     parseLocation :: Text -> SrcSpan
-    parseLocation _ = noSrcSpan  -- Simplified for now
+    parseLocation locStr = 
+        case T.splitOn ":" locStr of
+            [file, line, col] -> 
+                case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
+                    (Just l, Just c) -> 
+                        let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
+                        in mkSrcSpan srcLoc srcLoc
+                    _ -> noSrcSpan
+            _ -> noSrcSpan
+      where
+        readMaybe :: Read a => String -> Maybe a
+        readMaybe s = case reads s of
+            [(x, "")] -> Just x
+            _ -> Nothing
 #endif
 
 parseCliOptions :: [CommandLineOption] -> CliOptions
@@ -407,3 +459,65 @@ extractTyCons tcEnv =
         not (isClassTyCon tc) &&
         not (isPromotedDataCon tc) &&
         not (isTcTyCon tc)
+
+-- Cross-module validation that runs after all modules are compiled
+performCrossModuleValidation :: [CommandLineOption] -> ModIface -> IfM lcl ModIface
+performCrossModuleValidation opts modIface = do
+    let cliOptions = parseCliOptions opts
+    
+    liftIO $ when (log cliOptions) $
+        putStrLn "UnusedFieldChecker: Performing cross-module validation..."
+    
+    -- Read all saved field info files
+    allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
+    
+    liftIO $ when (log cliOptions) $ do
+        putStrLn $ "  Loaded " ++ show (length allModuleInfos) ++ " module field info files"
+        putStrLn $ "  Total field definitions: " ++ show (sum $ map (length . moduleFieldDefs) allModuleInfos)
+        putStrLn $ "  Total field usages: " ++ show (sum $ map (length . moduleFieldUsages) allModuleInfos)
+    
+    -- Aggregate all field information across modules
+    let aggregated = aggregateFieldInfo allModuleInfos
+    
+    -- Load exclusion config and validate
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    let validationResult = validateFieldsWithExclusions exclusionConfig aggregated
+        unusedFields = unusedNonMaybeFields validationResult
+    
+    liftIO $ when (log cliOptions) $ do
+        putStrLn $ "  Unused non-Maybe fields: " ++ show (length unusedFields)
+        forM_ unusedFields $ \field ->
+            putStrLn $ "    " ++ T.unpack (fieldDefTypeName field) ++ "." ++ 
+                      T.unpack (fieldDefName field) ++ " in " ++ T.unpack (fieldDefModule field)
+    
+    -- Note: We cannot report errors here as this hook doesn't support error reporting
+    -- The per-module validation in typeCheckResultAction will catch most issues
+    -- This cross-module validation is mainly for logging and future enhancements
+    
+    return modIface
+
+-- Load all field info JSON files from the output directory
+loadAllFieldInfo :: FilePath -> IO [ModuleFieldInfo]
+loadAllFieldInfo outputPath = do
+    exists <- doesFileExist outputPath
+    if not exists
+        then return []
+        else do
+            files <- listDirectory outputPath
+            let jsonFiles = filter (\f -> takeExtension f == ".json") files
+            catMaybes <$> mapM (loadFieldInfoFile outputPath) jsonFiles
+
+-- Load a single field info JSON file
+loadFieldInfoFile :: FilePath -> FilePath -> IO (Maybe ModuleFieldInfo)
+loadFieldInfoFile outputPath filename = do
+    let fullPath = outputPath </> filename
+    exists <- doesFileExist fullPath
+    if not exists
+        then return Nothing
+        else do
+            content <- BS.readFile fullPath
+            case decode (BL.fromStrict content) of
+                Just info -> return (Just info)
+                Nothing -> do
+                    putStrLn $ "Warning: Failed to parse " ++ fullPath
+                    return Nothing
