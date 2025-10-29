@@ -9,6 +9,7 @@ import Data.Text (Text)
 import qualified Data.Map as Map
 import Control.DeepSeq
 import GHC.Generics (Generic)
+import Prelude hiding (log)
 
 data CliOptions = CliOptions
     { path :: FilePath
