@@ -1,0 +1,38 @@
+# UnusedFieldChecker Configuration File
+# This file allows you to exclude specific fields from unused field validation
+# for backward compatibility purposes.
+
+exclusions:
+  # Example 1: Exclude specific fields in a type
+  - module: "MyModule.Types"
+    dataType: "User"
+    fields:
+      - "legacyField1"
+      - "legacyField2"
+      - "deprecatedUserId"
+  
+  # Example 2: Exclude all fields in a specific type
+  - module: "Legacy.OldTypes"
+    dataType: "OldConfig"
+    fields: []  # Empty list means exclude ALL fields in this type
+  
+  # Example 3: Use wildcards for module matching
+  - module: "MyApp.Legacy.*"  # Matches MyApp.Legacy.Types, MyApp.Legacy.Models, etc.
+    dataType: "LegacyData"
+    fields:
+      - "oldField"
+  
+  # Example 4: Exclude fields across all modules (use with caution!)
+  - module: "*"
+    dataType: "GlobalConfig"
+    fields:
+      - "internalField"
+
+# Notes:
+# - Module names should be fully qualified (e.g., "MyApp.Types.User")
+# - Module wildcards: Use "Module.*" to match all submodules
+# - Use "*" for module to match all modules (not recommended except for specific cases)
+# - Data type names should match exactly (case-sensitive)
+# - Field names should match exactly (case-sensitive)
+# - Empty fields list ([]) means exclude ALL fields in that type
+# - Fields listed here will NOT trigger compilation errors even if unused and non-Maybe

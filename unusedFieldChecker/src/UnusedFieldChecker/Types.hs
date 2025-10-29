@@ -1,0 +1,84 @@
+{-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DeriveAnyClass #-}
+
+module UnusedFieldChecker.Types where
+
+import Data.Aeson
+import Data.Binary
+import Data.Text (Text)
+import qualified Data.Map as Map
+import Control.DeepSeq
+import GHC.Generics (Generic)
+
+data CliOptions = CliOptions
+    { path :: FilePath
+    , port :: Int
+    , host :: String
+    , log :: Bool
+    , exclusionConfigFile :: FilePath
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+defaultCliOptions :: CliOptions
+defaultCliOptions = CliOptions
+    { path = "/tmp/unusedFieldChecker/"
+    , port = 4445
+    , host = "::1"
+    , log = False
+    , exclusionConfigFile = "UnusedFieldChecker.yaml"
+    }
+
+data FieldDefinition = FieldDefinition
+    { fieldDefName :: Text  
+    , fieldDefType :: Text
+    , fieldDefTypeName :: Text
+    , fieldDefIsMaybe :: Bool
+    , fieldDefModule :: Text
+    , fieldDefLocation :: Text
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+data UsageType
+    = FieldAccess  
+    | PatternMatch 
+    | RecordConstruct 
+    | RecordUpdate 
+    deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+data FieldUsage = FieldUsage
+    { fieldUsageName :: Text 
+    , fieldUsageType :: UsageType
+    , fieldUsageTypeName :: Text 
+    , fieldUsageModule :: Text
+    , fieldUsageLocation :: Text
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+data ModuleFieldInfo = ModuleFieldInfo
+    { moduleFieldDefs :: [FieldDefinition]
+    , moduleFieldUsages :: [FieldUsage]
+    , moduleName :: Text
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+data AggregatedFieldInfo = AggregatedFieldInfo
+    { allFieldDefs :: Map.Map Text [FieldDefinition] 
+    , allFieldUsages :: Map.Map Text [FieldUsage] 
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+
+data ValidationResult = ValidationResult
+    { unusedNonMaybeFields :: [FieldDefinition]
+    , unusedMaybeFields :: [FieldDefinition]
+    , usedFields :: [FieldDefinition]
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+data ExclusionRule = ExclusionRule
+    { exclModule :: Text 
+    , exclDataType :: Text 
+    , exclFields :: [Text]
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+
+data ExclusionConfig = ExclusionConfig
+    { exclusions :: [ExclusionRule]
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+emptyExclusionConfig :: ExclusionConfig
+emptyExclusionConfig = ExclusionConfig { exclusions = [] }
