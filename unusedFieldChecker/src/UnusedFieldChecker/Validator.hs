@@ -51,12 +51,17 @@ validateFields AggregatedFieldInfo{..} =
                     -> ([FieldDefinition], [FieldDefinition], [FieldDefinition])
     categorizeField (unusedMaybe, unusedNonMaybe, used) fieldDef =
         let fieldName = fieldDefName fieldDef
-            isUsed = Map.member fieldName allFieldUsages
+            isUsed = case Map.lookup fieldName allFieldUsages of
+                Nothing -> False
+                Just usages -> any isRealUsage usages
         in if isUsed
             then (unusedMaybe, unusedNonMaybe, fieldDef : used)
             else if fieldDefIsMaybe fieldDef
                 then (fieldDef : unusedMaybe, unusedNonMaybe, used)
                 else (unusedMaybe, fieldDef : unusedNonMaybe, used)
+      where
+        -- All usage types now count as real usage
+        isRealUsage _ = True
 
 validateFieldsWithExclusions :: ExclusionConfig -> AggregatedFieldInfo -> ValidationResult
 validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
@@ -77,12 +82,17 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
                     -> ([FieldDefinition], [FieldDefinition], [FieldDefinition])
     categorizeField (unusedMaybe, unusedNonMaybe, used) fieldDef =
         let fieldName = fieldDefName fieldDef
-            isUsed = Map.member fieldName allFieldUsages
+            isUsed = case Map.lookup fieldName allFieldUsages of
+                Nothing -> False
+                Just usages -> any isRealUsage usages
         in if isUsed
             then (unusedMaybe, unusedNonMaybe, fieldDef : used)
             else if fieldDefIsMaybe fieldDef
                 then (fieldDef : unusedMaybe, unusedNonMaybe, used)
                 else (unusedMaybe, fieldDef : unusedNonMaybe, used)
+      where
+        -- All usage types now count as real usage
+        isRealUsage _ = True
 
 reportUnusedFields :: [FieldDefinition] -> [(Text, Text, Text)]
 reportUnusedFields fields = map generateError fields

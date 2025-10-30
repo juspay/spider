@@ -57,7 +57,8 @@ import Data.Aeson (decode, encode)
 import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
-import Data.List (foldl', nub)
+import Data.Char (isLower)
+import Data.List (foldl', nub, isPrefixOf)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import Data.Text (Text, pack, unpack)
@@ -88,21 +89,14 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
         modulePath = path cliOptions </> msHsFilePath modSummary
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
     
-    liftIO $ when (log cliOptions) $ 
-        putStrLn $ "UnusedFieldChecker: Processing module " ++ T.unpack modName
-    
     fieldDefs <- extractFieldDefinitions modName tcEnv
     fieldUsages <- extractFieldUsages modName tcEnv
     
-    liftIO $ when (log cliOptions) $ do
-        putStrLn $ "  Found " ++ show (length fieldDefs) ++ " field definitions"
-        putStrLn $ "  Found " ++ show (length fieldUsages) ++ " field usages"
-        forM_ fieldDefs $ \def -> 
-            putStrLn $ "    Def: " ++ T.unpack (fieldDefTypeName def) ++ "." ++ T.unpack (fieldDefName def) ++ 
-                      " (Maybe: " ++ show (fieldDefIsMaybe def) ++ ")"
+    -- Simple output: just field names and usage types
+    liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
+        putStrLn $ "\n[" ++ T.unpack modName ++ "] Field Usages:"
         forM_ fieldUsages $ \usage ->
-            putStrLn $ "    Usage: " ++ T.unpack (fieldUsageName usage) ++ 
-                      " (" ++ show (fieldUsageType usage) ++ ")"
+            putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage)
     
     let moduleInfo = ModuleFieldInfo
             { moduleFieldDefs = fieldDefs
@@ -132,8 +126,6 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
             msgEnvelopes = map mkErrorMsg errMsgs
             msgs = mkMessages $ listToBag msgEnvelopes
         addMessages msgs
-        liftIO $ when (log cliOptions) $ 
-            putStrLn $ "UnusedFieldChecker: Found " ++ show (length errors) ++ " unused non-Maybe fields"
 #else
         let errMsgs = map makeError errors
         addErrs errMsgs
@@ -255,12 +247,13 @@ extractFieldUsages modName tcEnv = do
     concat <$> mapM (extractUsagesFromBind modName) binds
 
 extractUsagesFromBind :: Text -> LHsBindLR GhcTc GhcTc -> TcM [FieldUsage]
-extractUsagesFromBind modName (L _ bind) = case bind of
-    FunBind{fun_matches = matches} -> 
-        extractUsagesFromMatchGroup modName matches
-    AbsBinds{abs_binds = binds} ->
-        concat <$> mapM (extractUsagesFromBind modName) (bagToList binds)
-    _ -> return []
+extractUsagesFromBind modName lbind@(L loc bind) = do
+    case bind of
+        FunBind{fun_matches = matches} -> 
+            extractUsagesFromMatchGroup modName matches
+        AbsBinds{abs_binds = binds} ->
+            concat <$> mapM (extractUsagesFromBind modName) (bagToList binds)
+        _ -> return []
 
 extractUsagesFromMatchGroup :: Text -> MatchGroup GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
 #if __GLASGOW_HASKELL__ >= 900
@@ -295,22 +288,51 @@ extractUsagesFromPat modName lpat = case unLoc lpat of
 
 #if __GLASGOW_HASKELL__ >= 900
 extractUsagesFromConPatDetails :: Text -> SrcSpanAnnA -> HsConPatDetails GhcTc -> TcM [FieldUsage]
+extractUsagesFromConPatDetails modName loc details = case details of
+    RecCon (HsRecFields fields dotdot) -> do
+        -- Check for RecordWildCards (..)
+        let wildcardUsages = case dotdot of
+                Just _ -> [FieldUsage
+                    { fieldUsageName = ".."
+                    , fieldUsageType = RecordWildCards
+                    , fieldUsageTypeName = ""
+                    , fieldUsageModule = modName
+                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                    }]
+                Nothing -> []
+        fieldUsages <- concat <$> mapM (extractUsageFromRecField modName loc) fields
+        return $ wildcardUsages ++ fieldUsages
+    _ -> return []
 #else
 extractUsagesFromConPatDetails :: Text -> SrcSpan -> HsConPatDetails GhcTc -> TcM [FieldUsage]
-#endif
 extractUsagesFromConPatDetails modName loc details = case details of
-    RecCon (HsRecFields fields _) -> 
-        concat <$> mapM (extractUsageFromRecField modName loc PatternMatch) fields
+    RecCon (HsRecFields fields dotdot) -> do
+        -- Check for RecordWildCards (..)
+        let wildcardUsages = case dotdot of
+                Just _ -> [FieldUsage
+                    { fieldUsageName = ".."
+                    , fieldUsageType = RecordWildCards
+                    , fieldUsageTypeName = ""
+                    , fieldUsageModule = modName
+                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                    }]
+                Nothing -> []
+        fieldUsages <- concat <$> mapM (extractUsageFromRecField modName loc) fields
+        return $ wildcardUsages ++ fieldUsages
     _ -> return []
+#endif
 
 #if __GLASGOW_HASKELL__ >= 900
-extractUsageFromRecField :: Text -> SrcSpanAnnA -> UsageType -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
+extractUsageFromRecField :: Text -> SrcSpanAnnA -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
+extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg, hsRecPun = pun}) = do
 #else
-extractUsageFromRecField :: Text -> SrcSpan -> UsageType -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
+extractUsageFromRecField :: Text -> SrcSpan -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
+extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg, hsRecPun = pun}) = do
 #endif
-extractUsageFromRecField modName loc usageType (L _ HsRecField{hsRecFieldLbl = lbl}) = do
     let fieldName = pack $ showSDocUnsafe $ ppr lbl
         location = pack $ showSDocUnsafe $ ppr loc
+        -- Determine usage type: NamedFieldPuns if punned, otherwise PatternMatch
+        usageType = if pun then NamedFieldPuns else PatternMatch
     return [FieldUsage
         { fieldUsageName = fieldName
         , fieldUsageType = usageType
@@ -331,11 +353,11 @@ extractUsagesFromExpr modName lexpr =
         extractUsagesFromRecordUpdate modName loc fields
     
 #if __GLASGOW_HASKELL__ >= 900
-    HsGetField{} -> do
-        let fieldName = pack $ showSDocUnsafe $ ppr expr
+    HsGetField _ _ (L _ (HsFieldLabel _ (L _ field))) -> do
+        let fieldName = pack $ unpackFS field
         return [FieldUsage
             { fieldUsageName = fieldName
-            , fieldUsageType = FieldAccess
+            , fieldUsageType = RecordDotSyntax
             , fieldUsageTypeName = ""
             , fieldUsageModule = modName
             , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
@@ -343,9 +365,126 @@ extractUsagesFromExpr modName lexpr =
 #endif
     
     HsApp _ e1 e2 -> do
+        -- Check for various field access patterns
+        let (fieldAccessUsage, usageType) = case unLoc e1 of
+                -- Regular accessor function: fieldName record
+                HsVar _ (L _ varId) -> 
+                    let varName = pack $ getOccString varId
+                    in if not (T.null varName) && isLower (T.head varName)
+                        then ([FieldUsage
+                            { fieldUsageName = varName
+                            , fieldUsageType = AccessorFunction
+                            , fieldUsageTypeName = ""
+                            , fieldUsageModule = modName
+                            , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                            }], AccessorFunction)
+                        else ([], AccessorFunction)
+                
+                -- HasFieldOverloaded: getField @"fieldName" record
+                HsAppType _ (L _ (HsVar _ (L _ varId))) _ ->
+                    let varName = pack $ getOccString varId
+                    in if varName == "getField"
+                        then case unLoc e2 of
+                            HsVar _ (L _ _) -> 
+                                -- Extract field name from type application
+                                let fieldName = extractFieldNameFromTypeApp e1
+                                in if not (T.null fieldName)
+                                    then ([FieldUsage
+                                        { fieldUsageName = fieldName
+                                        , fieldUsageType = HasFieldOverloaded
+                                        , fieldUsageTypeName = ""
+                                        , fieldUsageModule = modName
+                                        , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                                        }], HasFieldOverloaded)
+                                    else ([], AccessorFunction)
+                            _ -> ([], AccessorFunction)
+                        else ([], AccessorFunction)
+                
+                -- Lens operators: record ^. lens or record ^. field @"name"
+                OpApp _ _ (L _ (HsVar _ (L _ opId))) _ ->
+                    let opName = pack $ getOccString opId
+                    in if opName == "^."
+                        then case unLoc e2 of
+                            -- Simple lens: record ^. fieldLens
+                            HsVar _ (L _ lensId) ->
+                                let lensName = pack $ getOccString lensId
+                                in ([FieldUsage
+                                    { fieldUsageName = lensName
+                                    , fieldUsageType = LensesOptics
+                                    , fieldUsageTypeName = ""
+                                    , fieldUsageModule = modName
+                                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                                    }], LensesOptics)
+                            
+                            -- Generic lens: record ^. field @"name"
+                            HsAppType _ (L _ (HsVar _ (L _ fieldId))) _ ->
+                                let fieldFuncName = pack $ getOccString fieldId
+                                in if fieldFuncName == "field"
+                                    then let fieldName = extractFieldNameFromTypeApp e2
+                                        in if not (T.null fieldName)
+                                            then ([FieldUsage
+                                                { fieldUsageName = fieldName
+                                                , fieldUsageType = GenericReflection
+                                                , fieldUsageTypeName = ""
+                                                , fieldUsageModule = modName
+                                                , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                                                }], GenericReflection)
+                                            else ([], LensesOptics)
+                                    else ([], LensesOptics)
+                            _ -> ([], LensesOptics)
+                        else ([], AccessorFunction)
+                
+                _ -> ([], AccessorFunction)
+        
+        -- Check for function composition: (field1 . field2 . field3)
+        compositionUsages <- extractFunctionComposition modName loc e1
+        
+        -- Check for SYB operations: gmapQ, gmapT, etc.
+        sybUsages <- extractSYBUsage modName loc e1 e2
+        
         u1 <- extractUsagesFromExpr modName e1
         u2 <- extractUsagesFromExpr modName e2
-        return $ u1 ++ u2
+        return $ fieldAccessUsage ++ compositionUsages ++ sybUsages ++ u1 ++ u2
+    
+    -- OpApp for infix operators (lens, composition, etc.)
+    OpApp _ e1 (L _ (HsVar _ (L _ opId))) e2 -> do
+        let opName = pack $ getOccString opId
+        opUsages <- case opName of
+            -- Lens view: record ^. lens
+            "^." -> do
+                lensUsages <- extractLensUsage modName loc e2
+                return lensUsages
+            
+            -- Function composition: field1 . field2
+            "." -> do
+                compUsages <- extractCompositionFields modName loc e1 e2
+                return compUsages
+            
+            -- Lens set: record & lens .~ value
+            ".~" -> do
+                lensUsages <- extractLensUsage modName loc e1
+                return lensUsages
+            
+            "&" -> do
+                -- record & lens .~ value pattern
+                return []
+            
+            _ -> return []
+        
+        u1 <- extractUsagesFromExpr modName e1
+        u2 <- extractUsagesFromExpr modName e2
+        return $ opUsages ++ u1 ++ u2
+    
+    -- Type application for HasField and generic-lens
+    HsAppType _ e1 _ -> do
+        typeAppUsages <- extractTypeApplicationUsage modName loc expr
+        u1 <- extractUsagesFromExpr modName e1
+        return $ typeAppUsages ++ u1
+    
+    -- Template Haskell splices
+    HsSpliceE _ splice -> do
+        thUsages <- extractTemplateHaskellUsage modName loc splice
+        return thUsages
     
     HsLet _ binds body -> do
         bindUsages <- extractUsagesFromLocalBinds modName binds
@@ -377,9 +516,8 @@ extractUsagesFromExpr modName lexpr =
 #if __GLASGOW_HASKELL__ >= 900
 extractUsagesFromRecordUpdate :: Text -> SrcSpanAnnA -> Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> TcM [FieldUsage]
 extractUsagesFromRecordUpdate modName loc (Left fields) =
-    -- For regular field updates, extract field names
     concat <$> mapM (extractUsageFromRecUpdField modName loc RecordUpdate) fields
-extractUsagesFromRecordUpdate modName loc (Right _) = return []  -- Projection updates not yet supported
+extractUsagesFromRecordUpdate modName loc (Right _) = return []
 
 extractUsageFromRecUpdField :: Text -> SrcSpanAnnA -> UsageType -> LHsRecUpdField GhcTc -> TcM [FieldUsage]
 extractUsageFromRecUpdField modName loc usageType (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg}) = do
@@ -460,43 +598,15 @@ extractTyCons tcEnv =
         not (isPromotedDataCon tc) &&
         not (isTcTyCon tc)
 
--- Cross-module validation that runs after all modules are compiled
 performCrossModuleValidation :: [CommandLineOption] -> ModIface -> IfM lcl ModIface
 performCrossModuleValidation opts modIface = do
     let cliOptions = parseCliOptions opts
-    
-    liftIO $ when (log cliOptions) $
-        putStrLn "UnusedFieldChecker: Performing cross-module validation..."
-    
-    -- Read all saved field info files
     allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
-    
-    liftIO $ when (log cliOptions) $ do
-        putStrLn $ "  Loaded " ++ show (length allModuleInfos) ++ " module field info files"
-        putStrLn $ "  Total field definitions: " ++ show (sum $ map (length . moduleFieldDefs) allModuleInfos)
-        putStrLn $ "  Total field usages: " ++ show (sum $ map (length . moduleFieldUsages) allModuleInfos)
-    
-    -- Aggregate all field information across modules
     let aggregated = aggregateFieldInfo allModuleInfos
-    
-    -- Load exclusion config and validate
     exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
     let validationResult = validateFieldsWithExclusions exclusionConfig aggregated
-        unusedFields = unusedNonMaybeFields validationResult
-    
-    liftIO $ when (log cliOptions) $ do
-        putStrLn $ "  Unused non-Maybe fields: " ++ show (length unusedFields)
-        forM_ unusedFields $ \field ->
-            putStrLn $ "    " ++ T.unpack (fieldDefTypeName field) ++ "." ++ 
-                      T.unpack (fieldDefName field) ++ " in " ++ T.unpack (fieldDefModule field)
-    
-    -- Note: We cannot report errors here as this hook doesn't support error reporting
-    -- The per-module validation in typeCheckResultAction will catch most issues
-    -- This cross-module validation is mainly for logging and future enhancements
-    
     return modIface
 
--- Load all field info JSON files from the output directory
 loadAllFieldInfo :: FilePath -> IO [ModuleFieldInfo]
 loadAllFieldInfo outputPath = do
     exists <- doesFileExist outputPath
@@ -521,3 +631,215 @@ loadFieldInfoFile outputPath filename = do
                 Nothing -> do
                     putStrLn $ "Warning: Failed to parse " ++ fullPath
                     return Nothing
+
+#if __GLASGOW_HASKELL__ >= 900
+extractFieldNameFromTypeApp :: LHsExpr GhcTc -> Text
+extractFieldNameFromTypeApp lexpr = 
+    -- Simplified implementation: extract from the pretty-printed representation
+    let exprStr = pack $ showSDocUnsafe $ ppr lexpr
+    in if "\"" `T.isInfixOf` exprStr
+        then case T.splitOn "\"" exprStr of
+            (_:fieldName:_) -> fieldName
+            _ -> ""
+        else ""
+#else
+extractFieldNameFromTypeApp :: LHsExpr GhcTc -> Text
+extractFieldNameFromTypeApp _ = ""
+#endif
+
+-- Extract function composition patterns: (field1 . field2 . field3)
+#if __GLASGOW_HASKELL__ >= 900
+extractFunctionComposition :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractFunctionComposition modName loc lexpr = case unLoc lexpr of
+    OpApp _ e1 (L _ (HsVar _ (L _ opId))) e2 -> do
+        let opName = pack $ getOccString opId
+        if opName == "."
+            then do
+                -- Check if both sides are field accessors
+                let fields = extractComposedFields e1 ++ extractComposedFields e2
+                return $ map (\fieldName -> FieldUsage
+                    { fieldUsageName = fieldName
+                    , fieldUsageType = FunctionComposition
+                    , fieldUsageTypeName = ""
+                    , fieldUsageModule = modName
+                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                    }) fields
+            else return []
+    _ -> return []
+  where
+    extractComposedFields :: LHsExpr GhcTc -> [Text]
+    extractComposedFields (L _ expr) = case expr of
+        HsVar _ (L _ varId) ->
+            let varName = pack $ getOccString varId
+            in if not (T.null varName) && isLower (T.head varName)
+                then [varName]
+                else []
+        OpApp _ e1 (L _ (HsVar _ (L _ opId))) e2 ->
+            let opName = pack $ getOccString opId
+            in if opName == "."
+                then extractComposedFields e1 ++ extractComposedFields e2
+                else []
+        HsPar _ e -> extractComposedFields e
+        _ -> []
+#else
+extractFunctionComposition :: Text -> SrcSpan -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractFunctionComposition modName loc lexpr = return []
+#endif
+
+-- Extract lens usage from expressions
+#if __GLASGOW_HASKELL__ >= 900
+extractLensUsage :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractLensUsage modName loc lexpr = case unLoc lexpr of
+    HsVar _ (L _ varId) ->
+        let varName = pack $ getOccString varId
+        in if not (T.null varName) && isLower (T.head varName)
+            then return [FieldUsage
+                { fieldUsageName = varName
+                , fieldUsageType = LensesOptics
+                , fieldUsageTypeName = ""
+                , fieldUsageModule = modName
+                , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                }]
+            else return []
+    
+    -- Composed lenses: lens1 . lens2 . lens3
+    OpApp _ e1 (L _ (HsVar _ (L _ opId))) e2 -> do
+        let opName = pack $ getOccString opId
+        if opName == "."
+            then do
+                u1 <- extractLensUsage modName loc e1
+                u2 <- extractLensUsage modName loc e2
+                return $ u1 ++ u2
+            else return []
+    
+    -- Generic lens with type application: field @"name"
+    HsAppType _ (L _ (HsVar _ (L _ varId))) _ ->
+        let varName = pack $ getOccString varId
+        in if varName == "field"
+            then let fieldName = extractFieldNameFromTypeApp lexpr
+                in if not (T.null fieldName)
+                    then return [FieldUsage
+                        { fieldUsageName = fieldName
+                        , fieldUsageType = GenericReflection
+                        , fieldUsageTypeName = ""
+                        , fieldUsageModule = modName
+                        , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                        }]
+                    else return []
+            else return []
+    
+    _ -> return []
+#else
+extractLensUsage :: Text -> SrcSpan -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractLensUsage modName loc lexpr = return []
+#endif
+
+-- Extract composition fields for function composition operator
+#if __GLASGOW_HASKELL__ >= 900
+extractCompositionFields :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractCompositionFields modName loc e1 e2 = do
+    let fields1 = getFieldAccessors e1
+        fields2 = getFieldAccessors e2
+        allFields = fields1 ++ fields2
+    return $ map (\fieldName -> FieldUsage
+        { fieldUsageName = fieldName
+        , fieldUsageType = FunctionComposition
+        , fieldUsageTypeName = ""
+        , fieldUsageModule = modName
+        , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+        }) allFields
+  where
+    getFieldAccessors :: LHsExpr GhcTc -> [Text]
+    getFieldAccessors (L _ expr) = case expr of
+        HsVar _ (L _ varId) ->
+            let varName = pack $ getOccString varId
+            in if not (T.null varName) && isLower (T.head varName)
+                then [varName]
+                else []
+        OpApp _ e1' (L _ (HsVar _ (L _ opId))) e2' ->
+            let opName = pack $ getOccString opId
+            in if opName == "."
+                then getFieldAccessors e1' ++ getFieldAccessors e2'
+                else []
+        HsPar _ e -> getFieldAccessors e
+        _ -> []
+#else
+extractCompositionFields :: Text -> SrcSpan -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractCompositionFields modName loc e1 e2 = return []
+#endif
+
+-- Extract SYB (Scrap Your Boilerplate) usage patterns
+#if __GLASGOW_HASKELL__ >= 900
+extractSYBUsage :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractSYBUsage modName loc e1 e2 = case unLoc e1 of
+    HsVar _ (L _ varId) ->
+        let varName = pack $ getOccString varId
+        in if varName `elem` ["gmapQ", "gmapT", "gmapM", "gmapQl", "gmapQr", "gmapQi"]
+            then return [FieldUsage
+                { fieldUsageName = varName
+                , fieldUsageType = DataSYB
+                , fieldUsageTypeName = ""
+                , fieldUsageModule = modName
+                , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                }]
+            else return []
+    _ -> return []
+#else
+extractSYBUsage :: Text -> SrcSpan -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractSYBUsage modName loc e1 e2 = return []
+#endif
+
+-- Extract type application usage (HasField, generic-lens)
+#if __GLASGOW_HASKELL__ >= 900
+extractTypeApplicationUsage :: Text -> SrcSpanAnnA -> HsExpr GhcTc -> TcM [FieldUsage]
+extractTypeApplicationUsage modName loc expr = case expr of
+    HsAppType _ (L _ (HsVar _ (L _ varId))) _ ->
+        let varName = pack $ getOccString varId
+        in if varName == "getField"
+            then let fieldName = extractFieldNameFromTypeApp (L loc expr)
+                in if not (T.null fieldName)
+                    then return [FieldUsage
+                        { fieldUsageName = fieldName
+                        , fieldUsageType = HasFieldOverloaded
+                        , fieldUsageTypeName = ""
+                        , fieldUsageModule = modName
+                        , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                        }]
+                    else return []
+            else if varName == "field"
+                then let fieldName = extractFieldNameFromTypeApp (L loc expr)
+                    in if not (T.null fieldName)
+                        then return [FieldUsage
+                            { fieldUsageName = fieldName
+                            , fieldUsageType = GenericReflection
+                            , fieldUsageTypeName = ""
+                            , fieldUsageModule = modName
+                            , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                            }]
+                        else return []
+                else return []
+    _ -> return []
+#else
+extractTypeApplicationUsage :: Text -> SrcSpan -> HsExpr GhcTc -> TcM [FieldUsage]
+extractTypeApplicationUsage modName loc expr = return []
+#endif
+
+-- Extract Template Haskell usage patterns
+#if __GLASGOW_HASKELL__ >= 900
+extractTemplateHaskellUsage :: Text -> SrcSpanAnnA -> HsSplice GhcTc -> TcM [FieldUsage]
+extractTemplateHaskellUsage modName loc splice = do
+    -- Check if the splice contains reify or other TH operations on types
+    let spliceStr = pack $ showSDocUnsafe $ ppr splice
+    if "reify" `T.isInfixOf` spliceStr
+        then return [FieldUsage
+            { fieldUsageName = "reify"
+            , fieldUsageType = TemplateHaskell
+            , fieldUsageTypeName = ""
+            , fieldUsageModule = modName
+            , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+            }]
+        else return []
+#else
+extractTemplateHaskellUsage :: Text -> SrcSpan -> HsSplice GhcTc -> TcM [FieldUsage]
+extractTemplateHaskellUsage modName loc splice = return []
+#endif

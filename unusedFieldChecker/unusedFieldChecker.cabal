@@ -43,7 +43,11 @@ test-suite unusedFieldChecker-test
     main-is:          Main.hs
     build-depends:
         base >=4.7 && <5,
-        unusedFieldChecker
+        unusedFieldChecker,
+        lens,
+        generic-lens,
+        syb,
+        template-haskell
 
     hs-source-dirs:   test
     default-language: Haskell2010
@@ -52,4 +56,4 @@ test-suite unusedFieldChecker-test
         -rtsopts 
         -with-rtsopts=-N
         -fplugin=UnusedFieldChecker.Plugin
-        -fplugin-opt=UnusedFieldChecker.Plugin:'{"path":"./tmp/unusedFieldChecker/","port":4446,"host":"::1","log":false,"exclusionConfigFile":"UnusedFieldChecker.yaml"}'
+        -fplugin-opt=UnusedFieldChecker.Plugin:{"path":"./tmp/unusedFieldChecker/","port":4446,"host":"::1","log":true,"exclusionConfigFile":"UnusedFieldChecker.yaml"}
