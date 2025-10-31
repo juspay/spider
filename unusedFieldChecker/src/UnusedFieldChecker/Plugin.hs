@@ -61,6 +61,7 @@ import Data.Char (isLower)
 import Data.List (foldl', nub, isPrefixOf)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
+import qualified Data.Set as Set
 import Data.Text (Text, pack, unpack)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
@@ -99,8 +100,15 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
                 putStrLn $ "[UnusedFieldChecker] Skipping excluded module: " ++ T.unpack modName
             return tcEnv
         else do
+            -- Extract field definitions first
             fieldDefs <- extractFieldDefinitions modName tcEnv
-            fieldUsages <- extractFieldUsages modName tcEnv
+            
+            -- Build field registry from current module and load cross-module fields
+            allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
+            let fieldRegistry = buildFieldNameRegistry (fieldDefs : map moduleFieldDefs allModuleInfos)
+            
+            -- Extract field usages with the registry to filter out non-fields
+            fieldUsages <- extractFieldUsagesWithRegistry modName tcEnv fieldRegistry
             
             -- Simple output: just field names and usage types
             liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
@@ -249,10 +257,74 @@ isMaybeType ty = case ty of
 #endif
     _ -> False
 
+-- Build a registry of all known field names from field definitions
+buildFieldNameRegistry :: [[FieldDefinition]] -> Set.Set Text
+buildFieldNameRegistry fieldDefLists =
+    Set.fromList $ concatMap (map fieldDefName) fieldDefLists
+
+-- Extract field usages with filtering based on field registry
+extractFieldUsagesWithRegistry :: Text -> TcGblEnv -> Set.Set Text -> TcM [FieldUsage]
+extractFieldUsagesWithRegistry modName tcEnv fieldRegistry = do
+    let binds = bagToList $ tcg_binds tcEnv
+    allUsages <- concat <$> mapM (extractUsagesFromBindWithRegistry modName fieldRegistry) binds
+    -- Filter to only include usages that are in the field registry
+    return $ filter (isFieldUsage fieldRegistry) allUsages
+  where
+    isFieldUsage :: Set.Set Text -> FieldUsage -> Bool
+    isFieldUsage registry usage =
+        case fieldUsageType usage of
+            -- Always include these usage types as they are explicitly field-related
+            RecordConstruct -> True
+            RecordUpdate -> True
+            PatternMatch -> True
+            NamedFieldPuns -> True
+            RecordWildCards -> True
+            RecordDotSyntax -> True
+            -- For accessor functions and other types, check if the name is in the registry
+            AccessorFunction -> fieldUsageName usage `Set.member` registry
+            FunctionComposition -> fieldUsageName usage `Set.member` registry
+            LensesOptics -> fieldUsageName usage `Set.member` registry
+            HasFieldOverloaded -> True  -- These are explicitly field accesses
+            GenericReflection -> True   -- These are explicitly field accesses
+            TemplateHaskell -> False    -- TH is not field-specific
+            DerivedInstances -> False   -- Derived instances are not field-specific
+            DataSYB -> False            -- SYB is not field-specific
+
 extractFieldUsages :: Text -> TcGblEnv -> TcM [FieldUsage]
 extractFieldUsages modName tcEnv = do
     let binds = bagToList $ tcg_binds tcEnv
     concat <$> mapM (extractUsagesFromBind modName) binds
+
+extractUsagesFromBindWithRegistry :: Text -> Set.Set Text -> LHsBindLR GhcTc GhcTc -> TcM [FieldUsage]
+extractUsagesFromBindWithRegistry modName fieldRegistry lbind@(L loc bind) = do
+    case bind of
+        FunBind{fun_matches = matches} -> 
+            extractUsagesFromMatchGroupWithRegistry modName fieldRegistry matches
+        AbsBinds{abs_binds = binds} ->
+            concat <$> mapM (extractUsagesFromBindWithRegistry modName fieldRegistry) (bagToList binds)
+        _ -> return []
+
+extractUsagesFromMatchGroupWithRegistry :: Text -> Set.Set Text -> MatchGroup GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+#if __GLASGOW_HASKELL__ >= 900
+extractUsagesFromMatchGroupWithRegistry modName fieldRegistry (MG _ (L _ matches) _) =
+#else
+extractUsagesFromMatchGroupWithRegistry modName fieldRegistry (MG _ (L _ matches) _ _) =
+#endif
+    concat <$> mapM (extractUsagesFromMatchWithRegistry modName fieldRegistry) matches
+
+extractUsagesFromMatchWithRegistry :: Text -> Set.Set Text -> LMatch GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromMatchWithRegistry modName fieldRegistry (L _ match) = do
+    patUsages <- concat <$> mapM (extractUsagesFromPat modName) (m_pats match)
+    exprUsages <- extractUsagesFromGRHSsWithRegistry modName fieldRegistry (m_grhss match)
+    return $ patUsages ++ exprUsages
+
+extractUsagesFromGRHSsWithRegistry :: Text -> Set.Set Text -> GRHSs GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromGRHSsWithRegistry modName fieldRegistry (GRHSs _ grhss _) =
+    concat <$> mapM (extractUsagesFromGRHSWithRegistry modName fieldRegistry) grhss
+
+extractUsagesFromGRHSWithRegistry :: Text -> Set.Set Text -> LGRHS GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromGRHSWithRegistry modName fieldRegistry (L _ (GRHS _ _ body)) =
+    extractUsagesFromExpr modName body
 
 extractUsagesFromBind :: Text -> LHsBindLR GhcTc GhcTc -> TcM [FieldUsage]
 extractUsagesFromBind modName lbind@(L loc bind) = do
