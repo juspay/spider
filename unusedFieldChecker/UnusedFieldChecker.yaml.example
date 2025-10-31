@@ -1,7 +1,34 @@
 # UnusedFieldChecker Configuration File
-# This file allows you to exclude specific fields from unused field validation
-# for backward compatibility purposes.
+# This file allows you to:
+# 1. Exclude specific fields from unused field validation
+# 2. Exclude entire files/modules from being checked
+# 3. Only check specific files/modules (whitelist mode)
 
+# ============================================================================
+# FILE-LEVEL EXCLUSIONS
+# ============================================================================
+
+# Exclude specific files/modules from being checked entirely
+# Supports wildcards: "Module.*" matches all submodules, "*.Internal" matches any module ending with .Internal
+excludeFiles:
+  # - "MyApp.Legacy.OldTypes"
+  # - "MyApp.Generated.*"
+  # - "*.Internal"
+
+# Optional: Only check these files/modules (whitelist mode)
+# If this is set, ONLY these files will be checked (excludeFiles will be ignored)
+# Leave commented out to check all files except those in excludeFiles
+# includeFiles:
+#   - "MyApp.Core.*"
+#   - "MyApp.API.Types"
+#   - "MyApp.Domain.*"
+
+# ============================================================================
+# FIELD-LEVEL EXCLUSIONS
+# ============================================================================
+
+# Exclude specific fields from unused field validation
+# This is useful for backward compatibility with legacy code
 exclusions:
   # Example 1: Exclude specific fields in a type
   - module: "MyModule.Types"

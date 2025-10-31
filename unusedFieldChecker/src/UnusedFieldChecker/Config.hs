@@ -4,6 +4,7 @@
 module UnusedFieldChecker.Config
     ( loadExclusionConfig
     , isFieldExcluded
+    , isModuleExcluded
     ) where
 
 import Control.Monad.IO.Class (liftIO)
@@ -54,3 +55,20 @@ isFieldExcluded ExclusionConfig{..} FieldDefinition{..} =
     fieldMatches :: [Text] -> Text -> Bool
     fieldMatches [] _ = True
     fieldMatches fields fieldName = fieldName `elem` fields
+
+isModuleExcluded :: ExclusionConfig -> Text -> Bool
+isModuleExcluded ExclusionConfig{..} modName =
+    case includeFiles of
+        Just includes -> not (any (`matchesPattern` modName) includes)
+        Nothing -> any (`matchesPattern` modName) excludeFiles
+  where
+    matchesPattern :: Text -> Text -> Bool
+    matchesPattern pattern modName
+        | pattern == "*" = True
+        | T.isSuffixOf ".*" pattern = 
+            let prefix = T.dropEnd 2 pattern
+            in prefix `T.isPrefixOf` modName
+        | T.isPrefixOf "*." pattern =
+            let suffix = T.drop 1 pattern
+            in suffix `T.isSuffixOf` modName
+        | otherwise = pattern == modName

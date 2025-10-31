@@ -89,49 +89,57 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
         modulePath = path cliOptions </> msHsFilePath modSummary
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
     
-    fieldDefs <- extractFieldDefinitions modName tcEnv
-    fieldUsages <- extractFieldUsages modName tcEnv
-    
-    -- Simple output: just field names and usage types
-    liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
-        putStrLn $ "\n[" ++ T.unpack modName ++ "] Field Usages:"
-        forM_ fieldUsages $ \usage ->
-            putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage)
-    
-    let moduleInfo = ModuleFieldInfo
-            { moduleFieldDefs = fieldDefs
-            , moduleFieldUsages = fieldUsages
-            , moduleName = modName
-            }
-    
-    -- Save field info for cross-module analysis
-    liftIO $ do
-        let outputPath = path cliOptions
-        createDirectoryIfMissing True outputPath
-        sendViaUnixSocket outputPath 
-                         (pack $ "/" <> modulePath <> ".fieldInfo.json")
-                         (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
-    
-    -- Perform immediate validation for fields defined in this module
+    -- Load exclusion config and check if this module should be excluded
     exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
     
-    let aggregated = aggregateFieldInfo [moduleInfo]
-        validationResult = validateFieldsWithExclusions exclusionConfig aggregated
-        errors = reportUnusedFields (unusedNonMaybeFields validationResult)
-    
-    -- Report errors
-    when (not $ null errors) $ do
+    if isModuleExcluded exclusionConfig modName
+        then do
+            -- Skip processing this module entirely
+            liftIO $ when (log cliOptions) $
+                putStrLn $ "[UnusedFieldChecker] Skipping excluded module: " ++ T.unpack modName
+            return tcEnv
+        else do
+            fieldDefs <- extractFieldDefinitions modName tcEnv
+            fieldUsages <- extractFieldUsages modName tcEnv
+            
+            -- Simple output: just field names and usage types
+            liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
+                putStrLn $ "\n[" ++ T.unpack modName ++ "] Field Usages:"
+                forM_ fieldUsages $ \usage ->
+                    putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage)
+            
+            let moduleInfo = ModuleFieldInfo
+                    { moduleFieldDefs = fieldDefs
+                    , moduleFieldUsages = fieldUsages
+                    , moduleName = modName
+                    }
+            
+            -- Save field info for cross-module analysis
+            liftIO $ do
+                let outputPath = path cliOptions
+                createDirectoryIfMissing True outputPath
+                sendViaUnixSocket outputPath 
+                                 (pack $ "/" <> modulePath <> ".fieldInfo.json")
+                                 (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
+            
+            -- Perform immediate validation for fields defined in this module
+            let aggregated = aggregateFieldInfo [moduleInfo]
+                validationResult = validateFieldsWithExclusions exclusionConfig aggregated
+                errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+            
+            -- Report errors
+            when (not $ null errors) $ do
 #if __GLASGOW_HASKELL__ >= 900
-        let errMsgs = map makeError errors
-            msgEnvelopes = map mkErrorMsg errMsgs
-            msgs = mkMessages $ listToBag msgEnvelopes
-        addMessages msgs
+                let errMsgs = map makeError errors
+                    msgEnvelopes = map mkErrorMsg errMsgs
+                    msgs = mkMessages $ listToBag msgEnvelopes
+                addMessages msgs
 #else
-        let errMsgs = map makeError errors
-        addErrs errMsgs
+                let errMsgs = map makeError errors
+                addErrs errMsgs
 #endif
-    
-    return tcEnv
+            
+            return tcEnv
   where
 #if __GLASGOW_HASKELL__ >= 900
     makeError :: (Text, Text, Text) -> (SrcSpan, SDoc)
