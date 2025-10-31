@@ -29,12 +29,14 @@ defaultCliOptions = CliOptions
     }
 
 data FieldDefinition = FieldDefinition
-    { fieldDefName :: Text  
+    { fieldDefName :: Text
     , fieldDefType :: Text
     , fieldDefTypeName :: Text
     , fieldDefIsMaybe :: Bool
     , fieldDefModule :: Text
     , fieldDefLocation :: Text
+    , fieldDefPackageName :: Text
+    , fieldDefFullyQualifiedType :: Text  -- moduleName.typeName
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 data UsageType

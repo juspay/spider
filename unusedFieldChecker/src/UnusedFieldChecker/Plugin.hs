@@ -105,8 +105,8 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
             
             -- Build field registry from current module and load cross-module fields
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
-            let fieldRegistry = buildFieldNameRegistry (fieldDefs : map moduleFieldDefs allModuleInfos)
-            
+            let fieldRegistry = buildFieldRegistry exclusionConfig (fieldDefs : map moduleFieldDefs allModuleInfos)
+
             -- Extract field usages with the registry to filter out non-fields
             fieldUsages <- extractFieldUsagesWithRegistry modName tcEnv fieldRegistry
             
@@ -221,7 +221,9 @@ extractFieldsFromDataCon :: Text -> Text -> DataCon -> TcM [FieldDefinition]
 extractFieldsFromDataCon modName typeName dc = do
     let fieldLabels = dataConFieldLabels dc
         fieldTypes = dataConRepArgTys dc
-    
+        dcName = getName dc
+        tyConName = getName $ dataConTyCon dc
+
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
         then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
             let fieldName = pack $ unpackFS $ flLabel label
@@ -232,8 +234,20 @@ extractFieldsFromDataCon modName typeName dc = do
                 fieldTypeStr = pack $ showSDocUnsafe $ ppr fieldType
                 isMaybe = isMaybeType fieldType
 #endif
-                location = pack $ showSDocUnsafe $ ppr $ getSrcSpan $ getName dc
-            
+                location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
+
+                -- Extract package name from the type constructor
+                packageName = case nameModule_maybe tyConName of
+#if __GLASGOW_HASKELL__ >= 900
+                    Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnit mod
+#else
+                    Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnitId mod
+#endif
+                    Nothing -> "this"
+
+                -- Create fully qualified type name
+                fullyQualifiedType = modName <> "." <> typeName
+
             return FieldDefinition
                 { fieldDefName = fieldName
                 , fieldDefType = fieldTypeStr
@@ -241,6 +255,8 @@ extractFieldsFromDataCon modName typeName dc = do
                 , fieldDefIsMaybe = isMaybe
                 , fieldDefModule = modName
                 , fieldDefLocation = location
+                , fieldDefPackageName = packageName
+                , fieldDefFullyQualifiedType = fullyQualifiedType
                 }
         else return []
 
@@ -257,20 +273,42 @@ isMaybeType ty = case ty of
 #endif
     _ -> False
 
--- Build a registry of all known field names from field definitions
-buildFieldNameRegistry :: [[FieldDefinition]] -> Set.Set Text
-buildFieldNameRegistry fieldDefLists =
-    Set.fromList $ concatMap (map fieldDefName) fieldDefLists
+-- Build a type-aware registry of field definitions from allowed modules only
+buildFieldRegistry :: ExclusionConfig -> [[FieldDefinition]] -> Map.Map Text [FieldDefinition]
+buildFieldRegistry exclusionConfig fieldDefLists =
+    let allDefs = concat fieldDefLists
+        allowedDefs = filter (isFromAllowedModule exclusionConfig) allDefs
+    in foldl' (\acc def ->
+        Map.insertWith (++) (fieldDefName def) [def] acc
+        ) Map.empty allowedDefs
+  where
+    -- Check if a field definition is from an allowed module
+    isFromAllowedModule :: ExclusionConfig -> FieldDefinition -> Bool
+    isFromAllowedModule ExclusionConfig{..} FieldDefinition{..} =
+        case includeFiles of
+            Just includes -> any (`matchesPattern` fieldDefModule) includes
+            Nothing -> not (any (`matchesPattern` fieldDefModule) excludeFiles)
+      where
+        matchesPattern :: Text -> Text -> Bool
+        matchesPattern pattern modName
+            | pattern == "*" = True
+            | T.isSuffixOf ".*" pattern =
+                let prefix = T.dropEnd 2 pattern
+                in prefix `T.isPrefixOf` modName
+            | T.isPrefixOf "*." pattern =
+                let suffix = T.drop 1 pattern
+                in suffix `T.isSuffixOf` modName
+            | otherwise = pattern == modName
 
 -- Extract field usages with filtering based on field registry
-extractFieldUsagesWithRegistry :: Text -> TcGblEnv -> Set.Set Text -> TcM [FieldUsage]
+extractFieldUsagesWithRegistry :: Text -> TcGblEnv -> Map.Map Text [FieldDefinition] -> TcM [FieldUsage]
 extractFieldUsagesWithRegistry modName tcEnv fieldRegistry = do
     let binds = bagToList $ tcg_binds tcEnv
     allUsages <- concat <$> mapM (extractUsagesFromBindWithRegistry modName fieldRegistry) binds
-    -- Filter to only include usages that are in the field registry
+    -- Filter to only include usages that correspond to fields in allowed modules
     return $ filter (isFieldUsage fieldRegistry) allUsages
   where
-    isFieldUsage :: Set.Set Text -> FieldUsage -> Bool
+    isFieldUsage :: Map.Map Text [FieldDefinition] -> FieldUsage -> Bool
     isFieldUsage registry usage =
         case fieldUsageType usage of
             -- Always include these usage types as they are explicitly field-related
@@ -280,12 +318,12 @@ extractFieldUsagesWithRegistry modName tcEnv fieldRegistry = do
             NamedFieldPuns -> True
             RecordWildCards -> True
             RecordDotSyntax -> True
-            -- For accessor functions and other types, check if the name is in the registry
-            AccessorFunction -> fieldUsageName usage `Set.member` registry
-            FunctionComposition -> fieldUsageName usage `Set.member` registry
-            LensesOptics -> fieldUsageName usage `Set.member` registry
             HasFieldOverloaded -> True  -- These are explicitly field accesses
             GenericReflection -> True   -- These are explicitly field accesses
+            -- For accessor functions and other types, check if the name corresponds to allowed fields
+            AccessorFunction -> fieldUsageName usage `Map.member` registry
+            FunctionComposition -> fieldUsageName usage `Map.member` registry
+            LensesOptics -> fieldUsageName usage `Map.member` registry
             TemplateHaskell -> False    -- TH is not field-specific
             DerivedInstances -> False   -- Derived instances are not field-specific
             DataSYB -> False            -- SYB is not field-specific
@@ -295,16 +333,16 @@ extractFieldUsages modName tcEnv = do
     let binds = bagToList $ tcg_binds tcEnv
     concat <$> mapM (extractUsagesFromBind modName) binds
 
-extractUsagesFromBindWithRegistry :: Text -> Set.Set Text -> LHsBindLR GhcTc GhcTc -> TcM [FieldUsage]
+extractUsagesFromBindWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> LHsBindLR GhcTc GhcTc -> TcM [FieldUsage]
 extractUsagesFromBindWithRegistry modName fieldRegistry lbind@(L loc bind) = do
     case bind of
-        FunBind{fun_matches = matches} -> 
+        FunBind{fun_matches = matches} ->
             extractUsagesFromMatchGroupWithRegistry modName fieldRegistry matches
         AbsBinds{abs_binds = binds} ->
             concat <$> mapM (extractUsagesFromBindWithRegistry modName fieldRegistry) (bagToList binds)
         _ -> return []
 
-extractUsagesFromMatchGroupWithRegistry :: Text -> Set.Set Text -> MatchGroup GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromMatchGroupWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> MatchGroup GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
 #if __GLASGOW_HASKELL__ >= 900
 extractUsagesFromMatchGroupWithRegistry modName fieldRegistry (MG _ (L _ matches) _) =
 #else
@@ -312,17 +350,17 @@ extractUsagesFromMatchGroupWithRegistry modName fieldRegistry (MG _ (L _ matches
 #endif
     concat <$> mapM (extractUsagesFromMatchWithRegistry modName fieldRegistry) matches
 
-extractUsagesFromMatchWithRegistry :: Text -> Set.Set Text -> LMatch GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromMatchWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> LMatch GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
 extractUsagesFromMatchWithRegistry modName fieldRegistry (L _ match) = do
     patUsages <- concat <$> mapM (extractUsagesFromPat modName) (m_pats match)
     exprUsages <- extractUsagesFromGRHSsWithRegistry modName fieldRegistry (m_grhss match)
     return $ patUsages ++ exprUsages
 
-extractUsagesFromGRHSsWithRegistry :: Text -> Set.Set Text -> GRHSs GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromGRHSsWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> GRHSs GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
 extractUsagesFromGRHSsWithRegistry modName fieldRegistry (GRHSs _ grhss _) =
     concat <$> mapM (extractUsagesFromGRHSWithRegistry modName fieldRegistry) grhss
 
-extractUsagesFromGRHSWithRegistry :: Text -> Set.Set Text -> LGRHS GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromGRHSWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> LGRHS GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
 extractUsagesFromGRHSWithRegistry modName fieldRegistry (L _ (GRHS _ _ body)) =
     extractUsagesFromExpr modName body
 
@@ -590,7 +628,17 @@ extractUsagesFromExpr modName lexpr =
     
     HsPar _ e ->
         extractUsagesFromExpr modName e
-    
+
+    -- Handle lambda expressions
+    HsLam _ matches ->
+        extractUsagesFromMatchGroup modName matches
+
+    -- Handle other common expression types that might contain field accesses
+    HsVar _ _ -> return []  -- Variable references handled elsewhere
+    HsLit _ _ -> return []  -- Literals don't contain field accesses
+    HsOverLit _ _ -> return []  -- Overloaded literals don't contain field accesses
+
+    -- Catch-all for any remaining expression types - traverse recursively
     _ -> return []
 
 #if __GLASGOW_HASKELL__ >= 900
