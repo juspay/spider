@@ -8,35 +8,35 @@ category:           Development
 build-type:         Simple
 
 library
-    exposed-modules:
-        UnusedFieldChecker.Plugin
-        UnusedFieldChecker.Types
-        UnusedFieldChecker.Validator
-        UnusedFieldChecker.Config
-
-    build-depends:
-        base >=4.7 && <5,
-        ghc >=8.8 && <9.11,
-        aeson,
-        text,
-        containers,
-        bytestring,
-        directory,
-        filepath,
-        aeson-pretty,
-        extra,
-        binary,
-        deepseq,
-        socket-lib,
-        yaml
-
-    hs-source-dirs:   src
-    default-language: Haskell2010
-    ghc-options:
-        -Wall
-        -Wno-orphans
-        -Wno-unused-imports
-        -Wno-unused-top-binds
+  exposed-modules:
+      UnusedFieldChecker.Plugin
+      UnusedFieldChecker.Types
+      UnusedFieldChecker.Validator
+      UnusedFieldChecker.Config
+      UnusedFieldChecker.DefinitionExtractor
+      UnusedFieldChecker.UsageExtractor
+  build-depends:
+      base >=4.7 && <5,
+      ghc >=8.8 && <9.11,
+      aeson,
+      text,
+      containers,
+      bytestring,
+      directory,
+      filepath,
+      aeson-pretty,
+      extra,
+      binary,
+      deepseq,
+      socket-lib,
+      yaml
+  hs-source-dirs:   src
+  default-language: Haskell2010
+  ghc-options:
+      -Wall
+      -Wno-orphans
+      -Wno-unused-imports
+      -Wno-unused-top-binds
 
 test-suite unusedFieldChecker-test
     type:             exitcode-stdio-1.0
@@ -48,7 +48,6 @@ test-suite unusedFieldChecker-test
         generic-lens,
         syb,
         template-haskell
-
     hs-source-dirs:   test
     default-language: Haskell2010
     ghc-options:      

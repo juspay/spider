@@ -122,12 +122,21 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
         isRealUsageOfThisField :: FieldDefinition -> FieldUsage -> Bool
         isRealUsageOfThisField fieldDef usage =
             let fieldName = fieldDefName fieldDef
-                typeName = fieldDefTypeName fieldDef
-                defModule = fieldDefModule fieldDef
+                defTypeConstructor = fieldDefTypeConstructor fieldDef
                 usageName = fieldUsageName usage
+                usageTypeConstructor = fieldUsageTypeConstructor usage
+
+                -- Names must match
+                nameMatches = usageName == fieldName
+
+                -- Type constructors should match (when available)
+                typeMatches = case (usageTypeConstructor, defTypeConstructor) of
+                    ("", _) -> True  -- Unknown type in usage, conservatively match
+                    (_, "") -> True  -- Unknown type in definition, conservatively match
+                    (usageType, defType) -> usageType == defType
 
                 -- For explicit record operations, we can be confident it's the right field
-                isDefinitelyThisField = case fieldUsageType usage of
+                isExplicitRecordOp = case fieldUsageType usage of
                     -- These usage types are explicit about which record they're accessing
                     RecordConstruct -> True
                     RecordUpdate -> True
@@ -135,28 +144,20 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
                     NamedFieldPuns -> True
                     RecordWildCards -> True
                     RecordDotSyntax -> True
-                    HasFieldOverloaded -> True
+                    HasFieldOverloaded -> True  -- From Core-level HasField detection
                     GenericReflection -> True
 
-                    -- For these, we need to check if the usage could reasonably be this field
-                    AccessorFunction ->
-                        -- This is tricky - we can't easily determine which type's field is being accessed
-                        -- For now, conservatively assume it could be this field if names match
-                        -- and the usage is from the same module or imported module
-                        usageName == fieldName
-
-                    FunctionComposition ->
-                        usageName == fieldName
-
-                    LensesOptics ->
-                        usageName == fieldName
+                    -- For these, we need type matching to be sure
+                    AccessorFunction -> typeMatches
+                    FunctionComposition -> typeMatches
+                    LensesOptics -> typeMatches
 
                     -- These are not field-specific
                     TemplateHaskell -> False
                     DerivedInstances -> False
                     DataSYB -> False
 
-            in isDefinitelyThisField
+            in nameMatches && (isExplicitRecordOp || typeMatches)
 
 reportUnusedFields :: [FieldDefinition] -> [(Text, Text, Text)]
 reportUnusedFields fields = map generateError fields

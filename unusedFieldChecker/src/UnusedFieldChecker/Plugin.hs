@@ -12,6 +12,7 @@ import Prelude hiding (log)
 #if __GLASGOW_HASKELL__ >= 900
 import GHC
 import GHC.Core.DataCon
+import GHC.Core.Opt.Monad
 import GHC.Core.TyCon
 import qualified GHC.Core.TyCo.Rep as TyCo
 import GHC.Core.Type
@@ -26,19 +27,24 @@ import GHC.Types.Error
 import GHC.Types.FieldLabel
 import GHC.Types.Name
 import GHC.Types.SrcLoc
-import GHC.Types.Var
 import GHC.Unit.Module.ModGuts
 import GHC.Unit.Module.ModSummary
+import GHC.Unit.Types (moduleName)
 import GHC.Utils.Error
 import GHC.Utils.Outputable hiding ((<>))
 import qualified GHC.Utils.Error as Err
 #else
 import Bag
+import CoreMonad
 import DataCon
 import DynFlags
+import ErrUtils (mkErrMsg)
+import FastString
+import FieldLabel
 import GHC
 import GhcPlugins hiding ((<>))
 import HsSyn
+import Module (moduleName)
 import Name
 import Outputable
 import Plugins
@@ -48,7 +54,6 @@ import TcRnTypes
 import TyCon
 import TyCoRep
 import Type
-import Var
 #endif
 
 import Control.Monad (forM, forM_, when)
@@ -58,10 +63,9 @@ import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isLower)
-import Data.List (foldl', nub, isPrefixOf)
+import Data.List (foldl', nub)
 import qualified Data.Map as Map
-import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
-import qualified Data.Set as Set
+import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text, pack, unpack)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
@@ -70,19 +74,155 @@ import System.FilePath ((</>), takeExtension)
 import UnusedFieldChecker.Types
 import UnusedFieldChecker.Validator
 import UnusedFieldChecker.Config
+import UnusedFieldChecker.DefinitionExtractor
+import UnusedFieldChecker.UsageExtractor
 import Socket (sendViaUnixSocket)
 
 #if __GLASGOW_HASKELL__ < 900
-import ErrUtils (mkErrMsg)
 import TcRnMonad (addErrs)
 #endif
 
 plugin :: Plugin
 plugin = defaultPlugin
-    { typeCheckResultAction = collectAndValidateFieldInfo
+    { typeCheckResultAction = collectFieldDefinitionsOnly
+    , installCoreToDos = installFieldUsageAnalysis
     , interfaceLoadAction = performCrossModuleValidation
     , pluginRecompile = \_ -> return NoForceRecompile
     }
+
+-- | Collect field definitions from type-checked code
+collectFieldDefinitionsOnly :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
+collectFieldDefinitionsOnly opts modSummary tcEnv = do
+    let cliOptions = parseCliOptions opts
+        modulePath = path cliOptions </> msHsFilePath modSummary
+        modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
+    
+    -- Load exclusion config and check if this module should be excluded
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    
+    if isModuleExcluded exclusionConfig modName
+        then do
+            liftIO $ when (log cliOptions) $
+                putStrLn $ "[UnusedFieldChecker] Skipping excluded module: " ++ T.unpack modName
+            return tcEnv
+        else do
+            -- Extract field definitions
+            fieldDefs <- extractFieldDefinitions modName tcEnv
+            
+            liftIO $ when (log cliOptions && not (null fieldDefs)) $ do
+                putStrLn $ "\n[" ++ T.unpack modName ++ "] Field Definitions: " ++ show (length fieldDefs)
+            
+            -- Save definitions (usages will be collected at Core level)
+            let moduleInfo = ModuleFieldInfo
+                    { moduleFieldDefs = fieldDefs
+                    , moduleFieldUsages = []  -- Will be populated by Core analysis
+                    , moduleName = modName
+                    }
+            
+            liftIO $ do
+                let outputPath = path cliOptions
+                createDirectoryIfMissing True outputPath
+                sendViaUnixSocket outputPath 
+                                 (pack $ "/" <> modulePath <> ".fieldDefs.json")
+                                 (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
+            
+            return tcEnv
+
+-- | Install Core-level field usage analysis
+#if __GLASGOW_HASKELL__ >= 900
+installFieldUsageAnalysis :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
+installFieldUsageAnalysis args todos = 
+    return (CoreDoPluginPass "UnusedFieldChecker-Usage" (extractFieldUsagesPass args) : todos)
+
+extractFieldUsagesPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
+extractFieldUsagesPass opts guts = do
+    let cliOptions = parseCliOptions opts
+        modName = pack $ moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
+        modulePath = path cliOptions </> (moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts)
+        binds = mg_binds guts
+    
+    -- Load exclusion config
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    
+    if isModuleExcluded exclusionConfig modName
+        then return guts
+        else do
+            -- Extract field usages from Core bindings
+            fieldUsages <- liftIO $ extractFieldUsagesFromCore modName binds
+            
+            liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
+                putStrLn $ "\n[" ++ T.unpack modName ++ "] Core Field Usages:"
+                forM_ fieldUsages $ \usage ->
+                    putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage) 
+                        ++ " (type: " ++ T.unpack (fieldUsageTypeConstructor usage) ++ ")"
+            
+            -- Save usages
+            let moduleInfo = ModuleFieldInfo
+                    { moduleFieldDefs = []  -- Already saved in typeCheckResultAction
+                    , moduleFieldUsages = fieldUsages
+                    , moduleName = modName
+                    }
+            
+            liftIO $ do
+                let outputPath = path cliOptions
+                createDirectoryIfMissing True outputPath
+                sendViaUnixSocket outputPath 
+                                 (pack $ "/" <> modulePath <> ".fieldUsages.json")
+                                 (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
+            
+            -- Perform validation
+            allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
+            let aggregated = aggregateFieldInfo allModuleInfos
+                validationResult = validateFieldsWithExclusions exclusionConfig aggregated
+                errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+            
+            liftIO $ when (not $ null errors) $ do
+                putStrLn $ "\n[UnusedFieldChecker] Found " ++ show (length errors) ++ " unused fields"
+            
+            return guts
+#else
+installFieldUsageAnalysis :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
+installFieldUsageAnalysis args todos = 
+    return (CoreDoPluginPass "UnusedFieldChecker-Usage" (extractFieldUsagesPass args) : todos)
+
+extractFieldUsagesPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
+extractFieldUsagesPass opts guts = do
+    let cliOptions = parseCliOptions opts
+        modName = pack $ moduleNameString $ moduleName $ mg_module guts
+        modulePath = path cliOptions </> (moduleNameString $ moduleName $ mg_module guts)
+        binds = mg_binds guts
+    
+    -- Load exclusion config
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    
+    if isModuleExcluded exclusionConfig modName
+        then return guts
+        else do
+            -- Extract field usages from Core bindings
+            fieldUsages <- liftIO $ extractFieldUsagesFromCore modName binds
+            
+            liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
+                putStrLn $ "\n[" ++ T.unpack modName ++ "] Core Field Usages:"
+                forM_ fieldUsages $ \usage ->
+                    putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage)
+                        ++ " (type: " ++ T.unpack (fieldUsageTypeConstructor usage) ++ ")"
+            
+            -- Save usages
+            let moduleInfo = ModuleFieldInfo
+                    { moduleFieldDefs = []  -- Already saved in typeCheckResultAction
+                    , moduleFieldUsages = fieldUsages
+                    , moduleName = modName
+                    }
+            
+            liftIO $ do
+                let outputPath = path cliOptions
+                createDirectoryIfMissing True outputPath
+                sendViaUnixSocket outputPath 
+                                 (pack $ "/" <> modulePath <> ".fieldUsages.json")
+                                 (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
+            
+            return guts
+#endif
 
 collectAndValidateFieldInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectAndValidateFieldInfo opts modSummary tcEnv = do
@@ -203,75 +343,6 @@ parseCliOptions (opt:_) =
     case decode (BL.fromStrict $ encodeUtf8 $ pack opt) of
         Just opts -> opts
         Nothing -> defaultCliOptions
-
-extractFieldDefinitions :: Text -> TcGblEnv -> TcM [FieldDefinition]
-extractFieldDefinitions modName tcEnv = do
-    let tyCons = extractTyCons tcEnv
-    concat <$> mapM (extractFieldsFromTyCon modName) tyCons
-
-extractFieldsFromTyCon :: Text -> TyCon -> TcM [FieldDefinition]
-extractFieldsFromTyCon modName tc
-    | isAlgTyCon tc && not (isClassTyCon tc) = do
-        let dataCons = tyConDataCons tc
-            typeName = pack $ showSDocUnsafe $ ppr $ tyConName tc
-        concat <$> mapM (extractFieldsFromDataCon modName typeName) dataCons
-    | otherwise = return []
-
-extractFieldsFromDataCon :: Text -> Text -> DataCon -> TcM [FieldDefinition]
-extractFieldsFromDataCon modName typeName dc = do
-    let fieldLabels = dataConFieldLabels dc
-        fieldTypes = dataConRepArgTys dc
-        dcName = getName dc
-        tyConName = getName $ dataConTyCon dc
-
-    if not (null fieldLabels) && length fieldLabels == length fieldTypes
-        then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
-            let fieldName = pack $ unpackFS $ flLabel label
-#if __GLASGOW_HASKELL__ >= 900
-                fieldTypeStr = pack $ showSDocUnsafe $ ppr $ TyCo.scaledThing fieldType
-                isMaybe = isMaybeType (TyCo.scaledThing fieldType)
-#else
-                fieldTypeStr = pack $ showSDocUnsafe $ ppr fieldType
-                isMaybe = isMaybeType fieldType
-#endif
-                location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
-
-                -- Extract package name from the type constructor
-                packageName = case nameModule_maybe tyConName of
-#if __GLASGOW_HASKELL__ >= 900
-                    Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnit mod
-#else
-                    Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnitId mod
-#endif
-                    Nothing -> "this"
-
-                -- Create fully qualified type name
-                fullyQualifiedType = modName <> "." <> typeName
-
-            return FieldDefinition
-                { fieldDefName = fieldName
-                , fieldDefType = fieldTypeStr
-                , fieldDefTypeName = typeName
-                , fieldDefIsMaybe = isMaybe
-                , fieldDefModule = modName
-                , fieldDefLocation = location
-                , fieldDefPackageName = packageName
-                , fieldDefFullyQualifiedType = fullyQualifiedType
-                }
-        else return []
-
-isMaybeType :: Type -> Bool
-isMaybeType ty = case ty of
-#if __GLASGOW_HASKELL__ >= 900
-    TyCo.TyConApp tc _ -> 
-        let tcName = getOccString (getName tc)
-        in tcName == "Maybe"
-#else
-    TyConApp tc _ -> 
-        let tcName = getOccString (getName tc)
-        in tcName == "Maybe"
-#endif
-    _ -> False
 
 -- Build a type-aware registry of field definitions from allowed modules only
 buildFieldRegistry :: ExclusionConfig -> [[FieldDefinition]] -> Map.Map Text [FieldDefinition]

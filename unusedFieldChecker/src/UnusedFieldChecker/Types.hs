@@ -37,6 +37,7 @@ data FieldDefinition = FieldDefinition
     , fieldDefLocation :: Text
     , fieldDefPackageName :: Text
     , fieldDefFullyQualifiedType :: Text  -- moduleName.typeName
+    , fieldDefTypeConstructor :: Text     -- Type constructor for matching
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 data UsageType
@@ -62,6 +63,7 @@ data FieldUsage = FieldUsage
     , fieldUsageTypeName :: Text 
     , fieldUsageModule :: Text
     , fieldUsageLocation :: Text
+    , fieldUsageTypeConstructor :: Text  -- Type constructor for matching
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 data ModuleFieldInfo = ModuleFieldInfo
