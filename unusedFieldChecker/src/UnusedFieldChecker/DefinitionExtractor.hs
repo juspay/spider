@@ -21,7 +21,7 @@ import GHC.Types.FieldLabel
 import GHC.Types.Name
 import GHC.Types.SrcLoc
 import GHC.Unit.Module.ModGuts
-import GHC.Unit.Types (Unit, moduleUnit)
+import GHC.Unit.Types (Unit, moduleUnit, unitString)
 import GHC.Utils.Outputable hiding ((<>))
 #else
 import DataCon
@@ -30,7 +30,7 @@ import FastString
 import FieldLabel
 import GHC
 import GhcPlugins hiding ((<>))
-import Module (moduleUnitId)
+import Module (moduleUnitId, unitIdString)
 import Name
 import Outputable
 import SrcLoc
@@ -43,6 +43,7 @@ import Type
 import Control.Monad (forM)
 import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text, pack)
+import qualified Data.Text as T
 import UnusedFieldChecker.Types
 
 -- | Extract field definitions from type-checked environment
@@ -51,37 +52,27 @@ import UnusedFieldChecker.Types
 extractFieldDefinitions :: Text -> Unit -> TcGblEnv -> TcM [FieldDefinition]
 extractFieldDefinitions modName currentPkg tcEnv = do
     let tyCons = extractTyCons tcEnv
-    concat <$> mapM (extractFieldsFromTyCon modName currentPkg) tyCons
+        currentPkgName = extractPackageName $ pack $ unitString currentPkg
+    concat <$> mapM (extractFieldsFromTyCon modName currentPkgName) tyCons
 #else
 extractFieldDefinitions :: Text -> UnitId -> TcGblEnv -> TcM [FieldDefinition]
 extractFieldDefinitions modName currentPkg tcEnv = do
     let tyCons = extractTyCons tcEnv
-    concat <$> mapM (extractFieldsFromTyCon modName currentPkg) tyCons
+        currentPkgName = extractPackageName $ pack $ unitIdString currentPkg
+    concat <$> mapM (extractFieldsFromTyCon modName currentPkgName) tyCons
 #endif
 
-#if __GLASGOW_HASKELL__ >= 900
-extractFieldsFromTyCon :: Text -> Unit -> TyCon -> TcM [FieldDefinition]
-extractFieldsFromTyCon modName currentPkg tc
+extractFieldsFromTyCon :: Text -> Text -> TyCon -> TcM [FieldDefinition]
+extractFieldsFromTyCon modName currentPkgName tc
     | isAlgTyCon tc && not (isClassTyCon tc) = do
         let dataCons = tyConDataCons tc
             typeName = pack $ showSDocUnsafe $ ppr $ tyConName tc
             typeConstructor = pack $ nameStableString $ tyConName tc
-        concat <$> mapM (extractFieldsFromDataCon modName currentPkg typeName typeConstructor) dataCons
+        concat <$> mapM (extractFieldsFromDataCon modName currentPkgName typeName typeConstructor) dataCons
     | otherwise = return []
-#else
-extractFieldsFromTyCon :: Text -> UnitId -> TyCon -> TcM [FieldDefinition]
-extractFieldsFromTyCon modName currentPkg tc
-    | isAlgTyCon tc && not (isClassTyCon tc) = do
-        let dataCons = tyConDataCons tc
-            typeName = pack $ showSDocUnsafe $ ppr $ tyConName tc
-            typeConstructor = pack $ nameStableString $ tyConName tc
-        concat <$> mapM (extractFieldsFromDataCon modName currentPkg typeName typeConstructor) dataCons
-    | otherwise = return []
-#endif
 
-#if __GLASGOW_HASKELL__ >= 900
-extractFieldsFromDataCon :: Text -> Unit -> Text -> Text -> DataCon -> TcM [FieldDefinition]
-extractFieldsFromDataCon modName currentPkg typeName typeConstructor dc = do
+extractFieldsFromDataCon :: Text -> Text -> Text -> Text -> DataCon -> TcM [FieldDefinition]
+extractFieldsFromDataCon modName currentPkgName typeName typeConstructor dc = do
     let fieldLabels = dataConFieldLabels dc
         fieldTypes = dataConRepArgTys dc
         dcName = getName dc
@@ -90,14 +81,20 @@ extractFieldsFromDataCon modName currentPkg typeName typeConstructor dc = do
     -- OPTIMIZATION: Check package FIRST, before any other work
     case nameModule_maybe tyConName of
         Just mod -> 
-            let typePackage = moduleUnit mod
-            in if typePackage /= currentPkg
+#if __GLASGOW_HASKELL__ >= 900
+            let typePackageStr = pack $ unitString $ moduleUnit mod
+#else
+            let typePackageStr = pack $ unitIdString $ moduleUnitId mod
+#endif
+                typePkgName = extractPackageName typePackageStr
+            in if typePkgName /= currentPkgName
                 then return []  -- Early exit for external packages
                 else extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
         Nothing -> 
             -- Local/this module - always include
             extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
 
+#if __GLASGOW_HASKELL__ >= 900
 extractFieldsForCurrentPackage :: Text -> Text -> Text -> [FieldLabel] -> [Scaled Type] -> Name -> Name -> TcM [FieldDefinition]
 extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName = do
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
@@ -128,21 +125,6 @@ extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fiel
                 }
         else return []
 #else
-extractFieldsFromDataCon :: Text -> UnitId -> Text -> Text -> DataCon -> TcM [FieldDefinition]
-extractFieldsFromDataCon modName currentPkg typeName typeConstructor dc = do
-    let fieldLabels = dataConFieldLabels dc
-        fieldTypes = dataConRepArgTys dc
-        dcName = getName dc
-        tyConName = getName $ dataConTyCon dc
-    case nameModule_maybe tyConName of
-        Just mod -> 
-            let typePackage = moduleUnitId mod
-            in if typePackage /= currentPkg
-                then return []  -- Early exit for external packages
-                else extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
-        Nothing -> 
-            extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
-
 extractFieldsForCurrentPackage :: Text -> Text -> Text -> [FieldLabel] -> [Type] -> Name -> Name -> TcM [FieldDefinition]
 extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName = do
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
@@ -186,6 +168,18 @@ isMaybeType ty = case ty of
         in tcName == "Maybe"
 #endif
     _ -> False
+
+
+extractPackageName :: Text -> Text
+extractPackageName unitStr =
+    let parts = T.splitOn "-" unitStr
+        nameParts = takeWhile (not . startsWithDigit) parts
+    in T.intercalate "-" nameParts
+  where
+    startsWithDigit :: Text -> Bool
+    startsWithDigit t = case T.uncons t of
+        Just (c, _) -> c >= '0' && c <= '9'
+        Nothing -> False
 
 extractTyCons :: TcGblEnv -> [TyCon]
 extractTyCons tcEnv = 
