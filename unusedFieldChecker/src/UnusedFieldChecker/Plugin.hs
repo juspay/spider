@@ -90,15 +90,13 @@ plugin = defaultPlugin
     , pluginRecompile = \_ -> return NoForceRecompile
     }
 
--- | Collect field definitions from type-checked code
 collectFieldDefinitionsOnly :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectFieldDefinitionsOnly opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
         modulePath = path cliOptions </> msHsFilePath modSummary
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
-    
-    -- Load exclusion config and check if this module should be excluded
-    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+
+    exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
     
     if isModuleExcluded exclusionConfig modName
         then do
@@ -106,16 +104,14 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
                 putStrLn $ "[UnusedFieldChecker] Skipping excluded module: " ++ T.unpack modName
             return tcEnv
         else do
-            -- Extract field definitions
             fieldDefs <- extractFieldDefinitions modName tcEnv
             
             liftIO $ when (log cliOptions && not (null fieldDefs)) $ do
                 putStrLn $ "\n[" ++ T.unpack modName ++ "] Field Definitions: " ++ show (length fieldDefs)
             
-            -- Save definitions (usages will be collected at Core level)
             let moduleInfo = ModuleFieldInfo
                     { moduleFieldDefs = fieldDefs
-                    , moduleFieldUsages = []  -- Will be populated by Core analysis
+                    , moduleFieldUsages = [] 
                     , moduleName = modName
                     }
             
@@ -128,7 +124,6 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
             
             return tcEnv
 
--- | Install Core-level field usage analysis
 #if __GLASGOW_HASKELL__ >= 900
 installFieldUsageAnalysis :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 installFieldUsageAnalysis args todos = 
@@ -140,14 +135,12 @@ extractFieldUsagesPass opts guts = do
         modName = pack $ moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
         modulePath = path cliOptions </> (moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts)
         binds = mg_binds guts
-    
-    -- Load exclusion config
-    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+
+    exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
     
     if isModuleExcluded exclusionConfig modName
         then return guts
         else do
-            -- Extract field usages from Core bindings
             fieldUsages <- liftIO $ extractFieldUsagesFromCore modName binds
             
             liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
@@ -156,7 +149,6 @@ extractFieldUsagesPass opts guts = do
                     putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage) 
                         ++ " (type: " ++ T.unpack (fieldUsageTypeConstructor usage) ++ ")"
             
-            -- Save usages
             let moduleInfo = ModuleFieldInfo
                     { moduleFieldDefs = []  -- Already saved in typeCheckResultAction
                     , moduleFieldUsages = fieldUsages
@@ -193,7 +185,7 @@ extractFieldUsagesPass opts guts = do
         binds = mg_binds guts
     
     -- Load exclusion config
-    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
     
     if isModuleExcluded exclusionConfig modName
         then return guts
@@ -231,7 +223,7 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
     
     -- Load exclusion config and check if this module should be excluded
-    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
     
     if isModuleExcluded exclusionConfig modName
         then do
@@ -436,7 +428,7 @@ extractUsagesFromGRHSWithRegistry modName fieldRegistry (L _ (GRHS _ _ body)) =
     extractUsagesFromExpr modName body
 
 extractUsagesFromBind :: Text -> LHsBindLR GhcTc GhcTc -> TcM [FieldUsage]
-extractUsagesFromBind modName lbind@(L loc bind) = do
+extractUsagesFromBind modName lbind@(L _ bind) = do
     case bind of
         FunBind{fun_matches = matches} -> 
             extractUsagesFromMatchGroup modName matches
@@ -487,6 +479,7 @@ extractUsagesFromConPatDetails modName loc details = case details of
                     , fieldUsageTypeName = ""
                     , fieldUsageModule = modName
                     , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                    , fieldUsageTypeConstructor = ""
                     }]
                 Nothing -> []
         fieldUsages <- concat <$> mapM (extractUsageFromRecField modName loc) fields
@@ -513,7 +506,7 @@ extractUsagesFromConPatDetails modName loc details = case details of
 
 #if __GLASGOW_HASKELL__ >= 900
 extractUsageFromRecField :: Text -> SrcSpanAnnA -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
-extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg, hsRecPun = pun}) = do
+extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = _, hsRecPun = pun}) = do
 #else
 extractUsageFromRecField :: Text -> SrcSpan -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
 extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg, hsRecPun = pun}) = do
@@ -528,6 +521,7 @@ extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecF
         , fieldUsageTypeName = ""
         , fieldUsageModule = modName
         , fieldUsageLocation = location
+        , fieldUsageTypeConstructor = ""
         }]
 
 extractUsagesFromExpr :: Text -> LHsExpr GhcTc -> TcM [FieldUsage]
@@ -550,29 +544,31 @@ extractUsagesFromExpr modName lexpr =
             , fieldUsageTypeName = ""
             , fieldUsageModule = modName
             , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+            , fieldUsageTypeConstructor = ""
             }]
 #endif
     
     HsApp _ e1 e2 -> do
         -- Check for various field access patterns
-        let (fieldAccessUsage, usageType) = case unLoc e1 of
+        let (fieldAccessUsage, _) = case unLoc e1 of
                 -- Regular accessor function: fieldName record
                 HsVar _ (L _ varId) -> 
-                    let varName = pack $ getOccString varId
-                    in if not (T.null varName) && isLower (T.head varName)
+                    let varName' = pack $ getOccString varId
+                    in if not (T.null varName') && isLower (T.head varName')
                         then ([FieldUsage
-                            { fieldUsageName = varName
+                            { fieldUsageName = varName'
                             , fieldUsageType = AccessorFunction
                             , fieldUsageTypeName = ""
                             , fieldUsageModule = modName
                             , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                            , fieldUsageTypeConstructor = ""
                             }], AccessorFunction)
                         else ([], AccessorFunction)
                 
                 -- HasFieldOverloaded: getField @"fieldName" record
                 HsAppType _ (L _ (HsVar _ (L _ varId))) _ ->
-                    let varName = pack $ getOccString varId
-                    in if varName == "getField"
+                    let varName' = pack $ getOccString varId
+                    in if varName' == "getField"
                         then case unLoc e2 of
                             HsVar _ (L _ _) -> 
                                 -- Extract field name from type application
@@ -584,6 +580,7 @@ extractUsagesFromExpr modName lexpr =
                                         , fieldUsageTypeName = ""
                                         , fieldUsageModule = modName
                                         , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                                        , fieldUsageTypeConstructor = ""
                                         }], HasFieldOverloaded)
                                     else ([], AccessorFunction)
                             _ -> ([], AccessorFunction)
@@ -603,6 +600,7 @@ extractUsagesFromExpr modName lexpr =
                                     , fieldUsageTypeName = ""
                                     , fieldUsageModule = modName
                                     , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                                    , fieldUsageTypeConstructor = ""
                                     }], LensesOptics)
                             
                             -- Generic lens: record ^. field @"name"
@@ -617,6 +615,7 @@ extractUsagesFromExpr modName lexpr =
                                                 , fieldUsageTypeName = ""
                                                 , fieldUsageModule = modName
                                                 , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                                                , fieldUsageTypeConstructor = ""
                                                 }], GenericReflection)
                                             else ([], LensesOptics)
                                     else ([], LensesOptics)
@@ -716,7 +715,7 @@ extractUsagesFromExpr modName lexpr =
 extractUsagesFromRecordUpdate :: Text -> SrcSpanAnnA -> Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> TcM [FieldUsage]
 extractUsagesFromRecordUpdate modName loc (Left fields) =
     concat <$> mapM (extractUsageFromRecUpdField modName loc RecordUpdate) fields
-extractUsagesFromRecordUpdate modName loc (Right _) = return []
+extractUsagesFromRecordUpdate _ _ (Right _) = return []
 
 extractUsageFromRecUpdField :: Text -> SrcSpanAnnA -> UsageType -> LHsRecUpdField GhcTc -> TcM [FieldUsage]
 extractUsageFromRecUpdField modName loc usageType (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg}) = do
@@ -728,6 +727,7 @@ extractUsageFromRecUpdField modName loc usageType (L _ HsRecField{hsRecFieldLbl 
             , fieldUsageTypeName = ""
             , fieldUsageModule = modName
             , fieldUsageLocation = location
+            , fieldUsageTypeConstructor = ""
             }
     argUsages <- extractUsagesFromExpr modName arg
     return $ usage : argUsages
@@ -802,7 +802,7 @@ performCrossModuleValidation opts modIface = do
     let cliOptions = parseCliOptions opts
     allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
     let aggregated = aggregateFieldInfo allModuleInfos
-    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
     let validationResult = validateFieldsWithExclusions exclusionConfig aggregated
     return modIface
 

@@ -3,16 +3,23 @@
 
 module UnusedFieldChecker.Config
     ( loadExclusionConfig
+    , loadExclusionConfigCached
     , isFieldExcluded
     , isModuleExcluded
     ) where
 
 import Control.Monad.IO.Class (liftIO)
+import Data.IORef
 import Data.Text (Text)
 import qualified Data.Text as T
 import Data.Yaml (decodeFileEither, ParseException)
 import System.Directory (doesFileExist)
+import System.IO.Unsafe (unsafePerformIO)
 import UnusedFieldChecker.Types
+
+{-# NOINLINE exclusionConfigCache #-}
+exclusionConfigCache :: IORef (Maybe (FilePath, ExclusionConfig))
+exclusionConfigCache = unsafePerformIO $ newIORef Nothing
 
 loadExclusionConfig :: FilePath -> IO ExclusionConfig
 loadExclusionConfig configPath = do
@@ -28,6 +35,18 @@ loadExclusionConfig configPath = do
                 Right config -> do
                     putStrLn $ "Loaded exclusion config from: " ++ configPath
                     return config
+
+loadExclusionConfigCached :: FilePath -> IO ExclusionConfig
+loadExclusionConfigCached configPath = do
+    cached <- readIORef exclusionConfigCache
+    case cached of
+        Just (cachedPath, config) | cachedPath == configPath -> 
+            return config 
+        _ -> do
+            -- Cache miss - load config and cache it
+            config <- loadExclusionConfig configPath
+            writeIORef exclusionConfigCache (Just (configPath, config))
+            return config
 
 isFieldExcluded :: ExclusionConfig -> FieldDefinition -> Bool
 isFieldExcluded ExclusionConfig{..} FieldDefinition{..} =

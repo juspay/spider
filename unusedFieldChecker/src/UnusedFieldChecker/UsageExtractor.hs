@@ -75,14 +75,20 @@ extractUsagesFromExpr modName expr = case expr of
         hasFieldUsages <- detectHasField modName func args
         return $ funcUsages ++ argUsages ++ hasFieldUsages
     
-    -- Lambda: recurse into body
-    Lam _ body -> extractUsagesFromExpr modName body
+    -- Lambda: recurse into body and check for record patterns in binder
+    Lam binder body -> do
+        bodyUsages <- extractUsagesFromExpr modName body
+        -- Check if lambda binds a record type and extracts fields
+        binderUsages <- extractUsagesFromBinder modName binder body
+        return $ binderUsages ++ bodyUsages
     
-    -- Let: extract from both binding and body
+    -- Let: extract from both binding and body, including record destructuring
     Let bind body -> do
         bindUsages <- extractUsagesFromBind modName bind
         bodyUsages <- extractUsagesFromExpr modName body
-        return $ bindUsages ++ bodyUsages
+        -- Extract field usages from let-bound record patterns
+        letPatternUsages <- extractLetPatternUsages modName bind
+        return $ bindUsages ++ bodyUsages ++ letPatternUsages
     
     -- Case: extract from scrutinee and alternatives
     Case scrut _ _ alts -> do
@@ -188,3 +194,120 @@ extractUsagesFromAlt' modName (DataAlt dataCon, boundVars, expr) = do
 
 extractUsagesFromAlt' modName (_, _, expr) = 
     extractUsagesFromExpr modName expr
+
+extractLetPatternUsages :: Text -> CoreBind -> IO [FieldUsage]
+extractLetPatternUsages modName (NonRec binder expr) = do
+    let binderType = idType binder
+    case getRecordDataCon binderType of
+        Just dataCon -> do
+            let fieldLabels = dataConFieldLabels dataCon
+                typeName = pack $ nameStableString $ tyConName $ dataConTyCon dataCon
+                typeConstructor = typeName
+            
+            fieldUsages <- extractFieldSelectorsFromExpr modName binder dataCon expr
+            return fieldUsages
+        Nothing -> return []
+
+extractLetPatternUsages modName (Rec binds) = do
+    usages <- mapM (\(binder, expr) -> extractLetPatternUsages modName (NonRec binder expr)) binds
+    return $ concat usages
+
+extractUsagesFromBinder :: Text -> Var -> CoreExpr -> IO [FieldUsage]
+extractUsagesFromBinder modName binder body = do
+    let binderType = idType binder
+    case getRecordDataCon binderType of
+        Just dataCon -> do
+            extractFieldSelectorsFromExpr modName binder dataCon body
+        Nothing -> return []
+
+getRecordDataCon :: Type -> Maybe DataCon
+getRecordDataCon ty = case splitTyConApp_maybe ty of
+    Just (tyCon, _) -> 
+        case tyConDataCons tyCon of
+            [dataCon] | not (null $ dataConFieldLabels dataCon) -> Just dataCon
+            _ -> Nothing
+    Nothing -> Nothing
+
+extractFieldSelectorsFromExpr :: Text -> Var -> DataCon -> CoreExpr -> IO [FieldUsage]
+extractFieldSelectorsFromExpr modName targetVar dataCon expr = do
+    let fieldLabels = dataConFieldLabels dataCon
+        typeName = pack $ nameStableString $ tyConName $ dataConTyCon dataCon
+        typeConstructor = typeName
+    
+    fieldUsages <- findFieldUsagesInExpr targetVar fieldLabels typeName typeConstructor expr
+    return fieldUsages
+  where
+    findFieldUsagesInExpr :: Var -> [FieldLabel] -> Text -> Text -> CoreExpr -> IO [FieldUsage]
+    findFieldUsagesInExpr var labels tName tCon e = case e of
+        Case (Var scrutVar) _ _ alts | scrutVar == var -> do
+            altUsages <- mapM (extractFieldsFromAlt labels tName tCon) alts
+            return $ concat altUsages
+        
+        -- Recurse into sub-expressions
+        App e1 e2 -> do
+            u1 <- findFieldUsagesInExpr var labels tName tCon e1
+            u2 <- findFieldUsagesInExpr var labels tName tCon e2
+            return $ u1 ++ u2
+        
+        Lam _ body -> findFieldUsagesInExpr var labels tName tCon body
+        
+        Let bind body -> do
+            bindUsages <- case bind of
+                NonRec _ bindExpr -> findFieldUsagesInExpr var labels tName tCon bindExpr
+                Rec binds' -> do
+                    usages <- mapM (\(_, bindExpr) -> findFieldUsagesInExpr var labels tName tCon bindExpr) binds'
+                    return $ concat usages
+            bodyUsages <- findFieldUsagesInExpr var labels tName tCon body
+            return $ bindUsages ++ bodyUsages
+        
+        Case scrut _ _ alts -> do
+            scrutUsages <- findFieldUsagesInExpr var labels tName tCon scrut
+            altUsages <- mapM (findFieldUsagesInAlt var labels tName tCon) alts
+            return $ scrutUsages ++ concat altUsages
+        
+        Cast e' _ -> findFieldUsagesInExpr var labels tName tCon e'
+        Tick _ e' -> findFieldUsagesInExpr var labels tName tCon e'
+        
+        _ -> return []
+    
+#if __GLASGOW_HASKELL__ >= 900
+    findFieldUsagesInAlt :: Var -> [FieldLabel] -> Text -> Text -> CoreAlt -> IO [FieldUsage]
+    findFieldUsagesInAlt var labels tName tCon (Alt _ _ expr') = 
+        findFieldUsagesInExpr var labels tName tCon expr'
+#else
+    findFieldUsagesInAlt :: Var -> [FieldLabel] -> Text -> Text -> CoreAlt -> IO [FieldUsage]
+    findFieldUsagesInAlt var labels tName tCon (_, _, expr') = 
+        findFieldUsagesInExpr var labels tName tCon expr'
+#endif
+    
+#if __GLASGOW_HASKELL__ >= 900
+    extractFieldsFromAlt :: [FieldLabel] -> Text -> Text -> CoreAlt -> IO [FieldUsage]
+    extractFieldsFromAlt labels tName tCon (Alt (DataAlt altCon) boundVars _) 
+        | altCon == dataCon = do
+            -- This alternative matches our data constructor - bound vars are fields
+            let usages = zipWith (\var label -> FieldUsage
+                    { fieldUsageName = pack $ unpackFS $ flLabel label
+                    , fieldUsageType = PatternMatch
+                    , fieldUsageTypeName = tName
+                    , fieldUsageModule = modName
+                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr var
+                    , fieldUsageTypeConstructor = tCon
+                    }) boundVars labels
+            return usages
+    extractFieldsFromAlt _ _ _ _ = return []
+#else
+    extractFieldsFromAlt :: [FieldLabel] -> Text -> Text -> CoreAlt -> IO [FieldUsage]
+    extractFieldsFromAlt labels tName tCon (DataAlt altCon, boundVars, _) 
+        | altCon == dataCon = do
+            -- This alternative matches our data constructor - bound vars are fields
+            let usages = zipWith (\var label -> FieldUsage
+                    { fieldUsageName = pack $ unpackFS $ flLabel label
+                    , fieldUsageType = PatternMatch
+                    , fieldUsageTypeName = tName
+                    , fieldUsageModule = modName
+                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr var
+                    , fieldUsageTypeConstructor = tCon
+                    }) boundVars labels
+            return usages
+    extractFieldsFromAlt _ _ _ _ = return []
+#endif
