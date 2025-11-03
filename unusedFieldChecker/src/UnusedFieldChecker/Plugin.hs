@@ -29,7 +29,7 @@ import GHC.Types.Name
 import GHC.Types.SrcLoc
 import GHC.Unit.Module.ModGuts
 import GHC.Unit.Module.ModSummary
-import GHC.Unit.Types (moduleName)
+import GHC.Unit.Types (moduleName, moduleUnit)
 import GHC.Utils.Error
 import GHC.Utils.Outputable hiding ((<>))
 import qualified GHC.Utils.Error as Err
@@ -44,7 +44,7 @@ import FieldLabel
 import GHC
 import GhcPlugins hiding ((<>))
 import HsSyn
-import Module (moduleName)
+import Module (moduleName, moduleUnitId)
 import Name
 import Outputable
 import Plugins
@@ -95,6 +95,11 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
         modulePath = path cliOptions </> msHsFilePath modSummary
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
+#if __GLASGOW_HASKELL__ >= 900
+        currentPackage = GHC.Unit.Types.moduleUnit $ ms_mod modSummary
+#else
+        currentPackage = moduleUnitId $ ms_mod modSummary
+#endif
 
     exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
     
@@ -104,7 +109,7 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
                 putStrLn $ "[UnusedFieldChecker] Skipping excluded module: " ++ T.unpack modName
             return tcEnv
         else do
-            fieldDefs <- extractFieldDefinitions modName tcEnv
+            fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
             
             liftIO $ when (log cliOptions && not (null fieldDefs)) $ do
                 putStrLn $ "\n[" ++ T.unpack modName ++ "] Field Definitions: " ++ show (length fieldDefs)
@@ -134,6 +139,7 @@ extractFieldUsagesPass opts guts = do
     let cliOptions = parseCliOptions opts
         modName = pack $ moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
         modulePath = path cliOptions </> (moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts)
+        currentPackage = GHC.Unit.Types.moduleUnit $ mg_module guts
         binds = mg_binds guts
 
     exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
@@ -141,7 +147,7 @@ extractFieldUsagesPass opts guts = do
     if isModuleExcluded exclusionConfig modName
         then return guts
         else do
-            fieldUsages <- liftIO $ extractFieldUsagesFromCore modName binds
+            fieldUsages <- liftIO $ extractFieldUsagesFromCore modName currentPackage binds
             
             liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
                 putStrLn $ "\n[" ++ T.unpack modName ++ "] Core Field Usages:"
@@ -182,6 +188,7 @@ extractFieldUsagesPass opts guts = do
     let cliOptions = parseCliOptions opts
         modName = pack $ moduleNameString $ moduleName $ mg_module guts
         modulePath = path cliOptions </> (moduleNameString $ moduleName $ mg_module guts)
+        currentPackage = moduleUnitId $ mg_module guts
         binds = mg_binds guts
     
     -- Load exclusion config
@@ -191,7 +198,7 @@ extractFieldUsagesPass opts guts = do
         then return guts
         else do
             -- Extract field usages from Core bindings
-            fieldUsages <- liftIO $ extractFieldUsagesFromCore modName binds
+            fieldUsages <- liftIO $ extractFieldUsagesFromCore modName currentPackage binds
             
             liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
                 putStrLn $ "\n[" ++ T.unpack modName ++ "] Core Field Usages:"
@@ -221,6 +228,11 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
         modulePath = path cliOptions </> msHsFilePath modSummary
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
+#if __GLASGOW_HASKELL__ >= 900
+        currentPackage = GHC.Unit.Types.moduleUnit $ ms_mod modSummary
+#else
+        currentPackage = moduleUnitId $ ms_mod modSummary
+#endif
     
     -- Load exclusion config and check if this module should be excluded
     exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
@@ -233,7 +245,7 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
             return tcEnv
         else do
             -- Extract field definitions first
-            fieldDefs <- extractFieldDefinitions modName tcEnv
+            fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
             
             -- Build field registry from current module and load cross-module fields
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)

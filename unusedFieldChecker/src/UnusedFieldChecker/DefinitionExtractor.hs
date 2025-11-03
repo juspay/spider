@@ -21,6 +21,7 @@ import GHC.Types.FieldLabel
 import GHC.Types.Name
 import GHC.Types.SrcLoc
 import GHC.Unit.Module.ModGuts
+import GHC.Unit.Types (Unit, moduleUnit)
 import GHC.Utils.Outputable hiding ((<>))
 #else
 import DataCon
@@ -29,6 +30,7 @@ import FastString
 import FieldLabel
 import GHC
 import GhcPlugins hiding ((<>))
+import Module (moduleUnitId)
 import Name
 import Outputable
 import SrcLoc
@@ -44,46 +46,70 @@ import Data.Text (Text, pack)
 import UnusedFieldChecker.Types
 
 -- | Extract field definitions from type-checked environment
-extractFieldDefinitions :: Text -> TcGblEnv -> TcM [FieldDefinition]
-extractFieldDefinitions modName tcEnv = do
+-- Only extracts definitions for types from the current package
+#if __GLASGOW_HASKELL__ >= 900
+extractFieldDefinitions :: Text -> Unit -> TcGblEnv -> TcM [FieldDefinition]
+extractFieldDefinitions modName currentPkg tcEnv = do
     let tyCons = extractTyCons tcEnv
-    concat <$> mapM (extractFieldsFromTyCon modName) tyCons
+    concat <$> mapM (extractFieldsFromTyCon modName currentPkg) tyCons
+#else
+extractFieldDefinitions :: Text -> UnitId -> TcGblEnv -> TcM [FieldDefinition]
+extractFieldDefinitions modName currentPkg tcEnv = do
+    let tyCons = extractTyCons tcEnv
+    concat <$> mapM (extractFieldsFromTyCon modName currentPkg) tyCons
+#endif
 
-extractFieldsFromTyCon :: Text -> TyCon -> TcM [FieldDefinition]
-extractFieldsFromTyCon modName tc
+#if __GLASGOW_HASKELL__ >= 900
+extractFieldsFromTyCon :: Text -> Unit -> TyCon -> TcM [FieldDefinition]
+extractFieldsFromTyCon modName currentPkg tc
     | isAlgTyCon tc && not (isClassTyCon tc) = do
         let dataCons = tyConDataCons tc
             typeName = pack $ showSDocUnsafe $ ppr $ tyConName tc
             typeConstructor = pack $ nameStableString $ tyConName tc
-        concat <$> mapM (extractFieldsFromDataCon modName typeName typeConstructor) dataCons
+        concat <$> mapM (extractFieldsFromDataCon modName currentPkg typeName typeConstructor) dataCons
     | otherwise = return []
+#else
+extractFieldsFromTyCon :: Text -> UnitId -> TyCon -> TcM [FieldDefinition]
+extractFieldsFromTyCon modName currentPkg tc
+    | isAlgTyCon tc && not (isClassTyCon tc) = do
+        let dataCons = tyConDataCons tc
+            typeName = pack $ showSDocUnsafe $ ppr $ tyConName tc
+            typeConstructor = pack $ nameStableString $ tyConName tc
+        concat <$> mapM (extractFieldsFromDataCon modName currentPkg typeName typeConstructor) dataCons
+    | otherwise = return []
+#endif
 
-extractFieldsFromDataCon :: Text -> Text -> Text -> DataCon -> TcM [FieldDefinition]
-extractFieldsFromDataCon modName typeName typeConstructor dc = do
+#if __GLASGOW_HASKELL__ >= 900
+extractFieldsFromDataCon :: Text -> Unit -> Text -> Text -> DataCon -> TcM [FieldDefinition]
+extractFieldsFromDataCon modName currentPkg typeName typeConstructor dc = do
     let fieldLabels = dataConFieldLabels dc
         fieldTypes = dataConRepArgTys dc
         dcName = getName dc
         tyConName = getName $ dataConTyCon dc
+    
+    -- OPTIMIZATION: Check package FIRST, before any other work
+    case nameModule_maybe tyConName of
+        Just mod -> 
+            let typePackage = moduleUnit mod
+            in if typePackage /= currentPkg
+                then return []  -- Early exit for external packages
+                else extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
+        Nothing -> 
+            -- Local/this module - always include
+            extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
 
+extractFieldsForCurrentPackage :: Text -> Text -> Text -> [FieldLabel] -> [Scaled Type] -> Name -> Name -> TcM [FieldDefinition]
+extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName = do
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
         then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
             let fieldName = pack $ unpackFS $ flLabel label
-#if __GLASGOW_HASKELL__ >= 900
                 fieldTypeStr = pack $ showSDocUnsafe $ ppr $ TyCo.scaledThing fieldType
                 isMaybe = isMaybeType (TyCo.scaledThing fieldType)
-#else
-                fieldTypeStr = pack $ showSDocUnsafe $ ppr fieldType
-                isMaybe = isMaybeType fieldType
-#endif
                 location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
 
                 -- Extract package name from the type constructor
                 packageName = case nameModule_maybe tyConName of
-#if __GLASGOW_HASKELL__ >= 900
                     Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnit mod
-#else
-                    Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnitId mod
-#endif
                     Nothing -> "this"
 
                 -- Create fully qualified type name
@@ -101,6 +127,52 @@ extractFieldsFromDataCon modName typeName typeConstructor dc = do
                 , fieldDefTypeConstructor = typeConstructor
                 }
         else return []
+#else
+extractFieldsFromDataCon :: Text -> UnitId -> Text -> Text -> DataCon -> TcM [FieldDefinition]
+extractFieldsFromDataCon modName currentPkg typeName typeConstructor dc = do
+    let fieldLabels = dataConFieldLabels dc
+        fieldTypes = dataConRepArgTys dc
+        dcName = getName dc
+        tyConName = getName $ dataConTyCon dc
+    case nameModule_maybe tyConName of
+        Just mod -> 
+            let typePackage = moduleUnitId mod
+            in if typePackage /= currentPkg
+                then return []  -- Early exit for external packages
+                else extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
+        Nothing -> 
+            extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
+
+extractFieldsForCurrentPackage :: Text -> Text -> Text -> [FieldLabel] -> [Type] -> Name -> Name -> TcM [FieldDefinition]
+extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName = do
+    if not (null fieldLabels) && length fieldLabels == length fieldTypes
+        then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
+            let fieldName = pack $ unpackFS $ flLabel label
+                fieldTypeStr = pack $ showSDocUnsafe $ ppr fieldType
+                isMaybe = isMaybeType fieldType
+                location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
+
+                -- Extract package name from the type constructor
+                packageName = case nameModule_maybe tyConName of
+                    Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnitId mod
+                    Nothing -> "this"
+
+                -- Create fully qualified type name
+                fullyQualifiedType = modName <> "." <> typeName
+
+            return FieldDefinition
+                { fieldDefName = fieldName
+                , fieldDefType = fieldTypeStr
+                , fieldDefTypeName = typeName
+                , fieldDefIsMaybe = isMaybe
+                , fieldDefModule = modName
+                , fieldDefLocation = location
+                , fieldDefPackageName = packageName
+                , fieldDefFullyQualifiedType = fullyQualifiedType
+                , fieldDefTypeConstructor = typeConstructor
+                }
+        else return []
+#endif
 
 isMaybeType :: Type -> Bool
 isMaybeType ty = case ty of
