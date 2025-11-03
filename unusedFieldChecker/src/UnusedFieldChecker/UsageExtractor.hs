@@ -8,6 +8,7 @@ module UnusedFieldChecker.UsageExtractor
     ) where
 
 import Prelude hiding (log)
+import UnusedFieldChecker.LibraryFilter (isLibraryTypeConstructor, isDerivedBinding)
 
 #if __GLASGOW_HASKELL__ >= 900
 import GHC.Core
@@ -49,10 +50,21 @@ extractFieldUsagesFromCore modName binds = do
 
 -- | Extract usages from a single Core binding
 extractUsagesFromBind :: Text -> CoreBind -> IO [FieldUsage]
-extractUsagesFromBind modName (NonRec _ expr) = 
-    extractUsagesFromExpr modName expr
+extractUsagesFromBind modName (NonRec binder expr) = do
+    let binderName = pack $ getOccString $ idName binder
+    
+    -- Skip derived/compiler-generated bindings entirely
+    if isDerivedBinding binderName
+        then return []
+        else extractUsagesFromExpr modName expr
+
 extractUsagesFromBind modName (Rec binds) = do
-    usages <- mapM (\(_, expr) -> extractUsagesFromExpr modName expr) binds
+    usages <- mapM (\(binder, expr) -> 
+        let binderName = pack $ getOccString $ idName binder
+        in if isDerivedBinding binderName
+            then return []
+            else extractUsagesFromExpr modName expr
+        ) binds
     return $ concat usages
 
 -- | Extract usages from a Core expression
@@ -173,13 +185,17 @@ extractUsagesFromAlt' modName (DataAlt dataCon, boundVars, expr) = do
     let typeName = pack $ nameStableString $ tyConName $ dataConTyCon dataCon
         typeConstructor = typeName
         
+        -- Check if this is a library type being pattern matched
+        isLibraryType = isLibraryTypeConstructor typeConstructor
+        
         -- Each bound variable represents a field being pattern matched
         -- We need to match these to actual field names from the data constructor
         fieldLabels = dataConFieldLabels dataCon
         
-        -- Create usages for fields that are actually bound in the pattern
-        patternUsages = if null fieldLabels
-            then []  -- Constructor has no fields
+        -- Only create pattern match usages for user-defined types
+        -- Skip library types and constructors without fields
+        patternUsages = if isLibraryType || null fieldLabels
+            then []
             else zipWith (\var label -> FieldUsage
                 { fieldUsageName = pack $ unpackFS $ flLabel label
                 , fieldUsageType = PatternMatch
