@@ -323,16 +323,23 @@ extractFieldSelectorsFromExpr modName currentPkgName targetVar dataCon expr = do
     extractFieldsFromAlt :: Text -> [FieldLabel] -> Text -> Text -> CoreAlt -> IO [FieldUsage]
     extractFieldsFromAlt currentPkgName labels tName tCon (Alt (DataAlt altCon) boundVars _) 
         | altCon == dataCon = do
-            -- This alternative matches our data constructor - bound vars are fields
-            let usages = zipWith (\var label -> FieldUsage
-                    { fieldUsageName = pack $ unpackFS $ flLabel label
-                    , fieldUsageType = PatternMatch
-                    , fieldUsageTypeName = tName
-                    , fieldUsageModule = modName
-                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr var
-                    , fieldUsageTypeConstructor = tCon
-                    }) boundVars labels
-            return usages
+            -- Filter by package - only create usages for current package types
+            let packagePattern = "$" <> currentPkgName <> "-"
+                shouldInclude = packagePattern `T.isPrefixOf` tCon
+            
+            if shouldInclude
+                then do
+                    -- This alternative matches our data constructor - bound vars are fields
+                    let usages = zipWith (\var label -> FieldUsage
+                            { fieldUsageName = pack $ unpackFS $ flLabel label
+                            , fieldUsageType = PatternMatch
+                            , fieldUsageTypeName = tName
+                            , fieldUsageModule = modName
+                            , fieldUsageLocation = pack $ showSDocUnsafe $ ppr var
+                            , fieldUsageTypeConstructor = tCon
+                            }) boundVars labels
+                    return usages
+                else return []
     extractFieldsFromAlt _ _ _ _ _ = return []
 #else
     findFieldUsagesInAlt :: Text -> Var -> [FieldLabel] -> Text -> Text -> CoreAlt -> IO [FieldUsage]
@@ -342,16 +349,23 @@ extractFieldSelectorsFromExpr modName currentPkgName targetVar dataCon expr = do
     extractFieldsFromAlt :: Text -> [FieldLabel] -> Text -> Text -> CoreAlt -> IO [FieldUsage]
     extractFieldsFromAlt currentPkgName labels tName tCon (DataAlt altCon, boundVars, _) 
         | altCon == dataCon = do
-            -- This alternative matches our data constructor - bound vars are fields
-            let usages = zipWith (\var label -> FieldUsage
-                    { fieldUsageName = pack $ unpackFS $ flLabel label
-                    , fieldUsageType = PatternMatch
-                    , fieldUsageTypeName = tName
-                    , fieldUsageModule = modName
-                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr var
-                    , fieldUsageTypeConstructor = tCon
-                    }) boundVars labels
-            return usages
+            -- Filter by package - only create usages for current package types
+            let packagePattern = "$" <> currentPkgName <> "-"
+                shouldInclude = packagePattern `T.isPrefixOf` tCon
+            
+            if shouldInclude
+                then do
+                    -- This alternative matches our data constructor - bound vars are fields
+                    let usages = zipWith (\var label -> FieldUsage
+                            { fieldUsageName = pack $ unpackFS $ flLabel label
+                            , fieldUsageType = PatternMatch
+                            , fieldUsageTypeName = tName
+                            , fieldUsageModule = modName
+                            , fieldUsageLocation = pack $ showSDocUnsafe $ ppr var
+                            , fieldUsageTypeConstructor = tCon
+                            }) boundVars labels
+                    return usages
+                else return []
     extractFieldsFromAlt _ _ _ _ _ = return []
 #endif
 
