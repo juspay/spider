@@ -171,9 +171,12 @@ extractFieldUsagesPass opts guts = do
             -- Perform validation
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
             let aggregated = aggregateFieldInfo allModuleInfos
-                validationResult = validateFieldsWithExclusions exclusionConfig aggregated
+                -- Phase 2: Use type-scoped validation when includeFiles is configured
+                validationResult = case includeFiles exclusionConfig of
+                    Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
+                    Nothing -> validateFieldsWithExclusions exclusionConfig aggregated
                 errors = reportUnusedFields (unusedNonMaybeFields validationResult)
-            
+
             -- Emit compilation errors for unused fields
             when (not $ null errors) $ do
                 liftIO $ putStrLn $ "\n[UnusedFieldChecker] Found " ++ show (length errors) ++ " unused fields"
@@ -247,9 +250,12 @@ extractFieldUsagesPass opts guts = do
             -- Perform validation
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
             let aggregated = aggregateFieldInfo allModuleInfos
-                validationResult = validateFieldsWithExclusions exclusionConfig aggregated
+                -- Phase 2: Use type-scoped validation when includeFiles is configured
+                validationResult = case includeFiles exclusionConfig of
+                    Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
+                    Nothing -> validateFieldsWithExclusions exclusionConfig aggregated
                 errors = reportUnusedFields (unusedNonMaybeFields validationResult)
-            
+
             -- Emit compilation errors for unused fields
             when (not $ null errors) $ do
                 liftIO $ putStrLn $ "\n[UnusedFieldChecker] Found " ++ show (length errors) ++ " unused fields"

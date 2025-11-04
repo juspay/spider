@@ -98,8 +98,17 @@ data ExclusionConfig = ExclusionConfig
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 emptyExclusionConfig :: ExclusionConfig
-emptyExclusionConfig = ExclusionConfig 
+emptyExclusionConfig = ExclusionConfig
     { exclusions = []
     , excludeFiles = []
     , includeFiles = Nothing
     }
+
+-- Phase 2: Track which types are used within configured modules
+data TypeUsageInModule = TypeUsageInModule
+    { typeName :: Text           -- e.g., "AdyenRefundSuccessResponse"
+    , typeModule :: Text         -- Module where type is defined
+    , usedInModule :: Text       -- Module where type is used
+    , usageLocation :: Text      -- Location where type is used
+    , typeConstructor :: Text    -- Type constructor for matching
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
