@@ -78,21 +78,12 @@ extractFieldsFromDataCon modName currentPkgName typeName typeConstructor dc = do
         dcName = getName dc
         tyConName = getName $ dataConTyCon dc
     
-    -- OPTIMIZATION: Check package FIRST, before any other work
-    case nameModule_maybe tyConName of
-        Just mod -> 
-#if __GLASGOW_HASKELL__ >= 900
-            let typePackageStr = pack $ unitString $ moduleUnit mod
-#else
-            let typePackageStr = pack $ unitIdString $ moduleUnitId mod
-#endif
-                typePkgName = extractPackageName typePackageStr
-            in if typePkgName /= currentPkgName
-                then return []  -- Early exit for external packages
-                else extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
-        Nothing -> 
-            -- Local/this module - always include
-            extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
+    let packagePattern = "$" <> currentPkgName <> "-"
+        isCurrentPackage = packagePattern `T.isPrefixOf` typeConstructor
+    
+    if not isCurrentPackage
+        then return []  -- Early exit for external packages
+        else extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
 
 #if __GLASGOW_HASKELL__ >= 900
 extractFieldsForCurrentPackage :: Text -> Text -> Text -> [FieldLabel] -> [Scaled Type] -> Name -> Name -> TcM [FieldDefinition]

@@ -209,23 +209,10 @@ extractUsagesFromAlt' modName currentPkgName (DataAlt dataCon, boundVars, expr) 
         
         -- Check if this is a library type being pattern matched
         isLibraryType = isLibraryTypeConstructor typeConstructor
-        
-        -- Each bound variable represents a field being pattern matched
-        -- We need to match these to actual field names from the data constructor
         fieldLabels = dataConFieldLabels dataCon
     
-    -- OPTIMIZATION: Check package FIRST, before creating usages
-    let shouldInclude = case nameModule_maybe tyConName of
-#if __GLASGOW_HASKELL__ >= 900
-            Just mod -> 
-                let typePkgName = extractPackageName $ pack $ unitString $ moduleUnit mod
-                in typePkgName == currentPkgName
-#else
-            Just mod -> 
-                let typePkgName = extractPackageName $ pack $ unitIdString $ moduleUnitId mod
-                in typePkgName == currentPkgName
-#endif
-            Nothing -> True
+    let packagePattern = "$" <> currentPkgName <> "-"
+        shouldInclude = packagePattern `T.isPrefixOf` typeConstructor
     
     -- Only create pattern match usages for current package types
     -- Skip library types, external packages, and constructors without fields
