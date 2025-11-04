@@ -179,7 +179,10 @@ extractFieldUsagesPass opts guts = do
                 liftIO $ putStrLn $ "\n[UnusedFieldChecker] Found " ++ show (length errors) ++ " unused fields"
                 forM_ errors $ \(locStr, msg, _) -> do
                     let srcSpan = parseLocationForCore locStr
-                    GHC.Core.Opt.Monad.putMsg (mkLocMessage SevError srcSpan (text $ T.unpack msg))
+                        errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
+                    GHC.Core.Opt.Monad.putMsg errMsg
+                -- Throw an error to fail compilation
+                liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
             
             return guts
 -- Helper function to parse location strings in CoreM context
@@ -252,7 +255,10 @@ extractFieldUsagesPass opts guts = do
                 liftIO $ putStrLn $ "\n[UnusedFieldChecker] Found " ++ show (length errors) ++ " unused fields"
                 forM_ errors $ \(locStr, msg, _) -> do
                     let srcSpan = parseLocationForCore locStr
-                    CoreMonad.putMsg (mkErrMsg srcSpan neverQualify (text $ T.unpack msg))
+                        errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
+                    CoreMonad.putMsg errMsg
+                -- Throw an error to fail compilation
+                liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
             
             return guts
 
