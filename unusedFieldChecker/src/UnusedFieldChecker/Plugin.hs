@@ -174,10 +174,31 @@ extractFieldUsagesPass opts guts = do
                 validationResult = validateFieldsWithExclusions exclusionConfig aggregated
                 errors = reportUnusedFields (unusedNonMaybeFields validationResult)
             
-            liftIO $ when (not $ null errors) $ do
-                putStrLn $ "\n[UnusedFieldChecker] Found " ++ show (length errors) ++ " unused fields"
+            -- Emit compilation errors for unused fields
+            when (not $ null errors) $ do
+                liftIO $ putStrLn $ "\n[UnusedFieldChecker] Found " ++ show (length errors) ++ " unused fields"
+                forM_ errors $ \(locStr, msg, _) -> do
+                    let srcSpan = parseLocationForCore locStr
+                    GHC.Core.Opt.Monad.putMsg (mkLocMessage SevError srcSpan (text $ T.unpack msg))
             
             return guts
+-- Helper function to parse location strings in CoreM context
+parseLocationForCore :: Text -> SrcSpan
+parseLocationForCore locStr = 
+    case T.splitOn ":" locStr of
+        [file, line, col] -> 
+            case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
+                (Just l, Just c) -> 
+                    let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
+                    in mkSrcSpan srcLoc srcLoc
+                _ -> noSrcSpan
+        _ -> noSrcSpan
+  where
+    readMaybe :: Read a => String -> Maybe a
+    readMaybe s = case reads s of
+        [(x, "")] -> Just x
+        _ -> Nothing
+
 #else
 installFieldUsageAnalysis :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
 installFieldUsageAnalysis args todos = 
@@ -220,7 +241,37 @@ extractFieldUsagesPass opts guts = do
                                  (pack $ "/" <> modulePath <> ".fieldUsages.json")
                                  (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
             
+            -- Perform validation
+            allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
+            let aggregated = aggregateFieldInfo allModuleInfos
+                validationResult = validateFieldsWithExclusions exclusionConfig aggregated
+                errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+            
+            -- Emit compilation errors for unused fields
+            when (not $ null errors) $ do
+                liftIO $ putStrLn $ "\n[UnusedFieldChecker] Found " ++ show (length errors) ++ " unused fields"
+                forM_ errors $ \(locStr, msg, _) -> do
+                    let srcSpan = parseLocationForCore locStr
+                    CoreMonad.putMsg (mkErrMsg srcSpan neverQualify (text $ T.unpack msg))
+            
             return guts
+
+-- Helper function to parse location strings in CoreM context
+parseLocationForCore :: Text -> SrcSpan
+parseLocationForCore locStr = 
+    case T.splitOn ":" locStr of
+        [file, line, col] -> 
+            case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
+                (Just l, Just c) -> 
+                    let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
+                    in mkSrcSpan srcLoc srcLoc
+                _ -> noSrcSpan
+        _ -> noSrcSpan
+  where
+    readMaybe :: Read a => String -> Maybe a
+    readMaybe s = case reads s of
+        [(x, "")] -> Just x
+        _ -> Nothing
 #endif
 
 collectAndValidateFieldInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv

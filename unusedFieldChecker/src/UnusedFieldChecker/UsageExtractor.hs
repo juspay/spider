@@ -287,8 +287,7 @@ extractFieldSelectorsFromExpr modName currentPkgName targetVar dataCon expr = do
         Case (Var scrutVar) _ _ alts | scrutVar == var -> do
             altUsages <- mapM (extractFieldsFromAlt currentPkgName labels tName tCon) alts
             return $ concat altUsages
-        
-        -- Recurse into sub-expressions
+
         App e1 e2 -> do
             u1 <- findFieldUsagesInExpr currentPkgName var labels tName tCon e1
             u2 <- findFieldUsagesInExpr currentPkgName var labels tName tCon e2
