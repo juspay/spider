@@ -50,6 +50,8 @@ import UnusedFieldChecker.Types
 extractFieldUsagesFromCore :: Text -> Unit -> [CoreBind] -> IO [FieldUsage]
 extractFieldUsagesFromCore modName currentPkg binds = do
     let currentPkgName = extractPackageName $ pack $ unitString currentPkg
+    -- DEBUG: Print the current package name
+    putStrLn $ "[DEBUG] Current package name: " ++ T.unpack currentPkgName
     allUsages <- mapM (extractUsagesFromBind modName currentPkgName) binds
     return $ concat allUsages
 
@@ -60,6 +62,8 @@ extractUsagesFromBind modName currentPkgName (NonRec binder expr) = do
 extractFieldUsagesFromCore :: Text -> UnitId -> [CoreBind] -> IO [FieldUsage]
 extractFieldUsagesFromCore modName currentPkg binds = do
     let currentPkgName = extractPackageName $ pack $ unitIdString currentPkg
+    -- DEBUG: Print the current package name
+    putStrLn $ "[DEBUG] Current package name: " ++ T.unpack currentPkgName
     allUsages <- mapM (extractUsagesFromBind modName currentPkgName) binds
     return $ concat allUsages
 
@@ -213,6 +217,9 @@ extractUsagesFromAlt' modName currentPkgName (DataAlt dataCon, boundVars, expr) 
     
     let packagePattern = "$" <> currentPkgName <> "-"
         shouldInclude = packagePattern `T.isPrefixOf` typeConstructor
+    
+    -- DEBUG: Print filtering decision
+    putStrLn $ "[DEBUG] Type: " ++ T.unpack typeConstructor ++ " | Pattern: " ++ T.unpack packagePattern ++ " | Include: " ++ show shouldInclude
     
     -- Only create pattern match usages for current package types
     -- Skip library types, external packages, and constructors without fields
