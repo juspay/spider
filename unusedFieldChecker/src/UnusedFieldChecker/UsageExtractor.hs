@@ -104,7 +104,7 @@ extractUsagesFromExpr modName currentPkgName expr = case expr of
     App func args -> do
         funcUsages <- extractUsagesFromExpr modName currentPkgName func
         argUsages <- extractUsagesFromExpr modName currentPkgName args
-        hasFieldUsages <- detectHasField modName func args
+        hasFieldUsages <- detectHasField modName currentPkgName func args
         return $ funcUsages ++ argUsages ++ hasFieldUsages
     
     -- Lambda: recurse into body and check for record patterns in binder
@@ -133,8 +133,9 @@ extractUsagesFromExpr modName currentPkgName expr = case expr of
     Tick _ expr' -> extractUsagesFromExpr modName currentPkgName expr'
 
 -- | Detect HasField constraints (the key to nested field access!)
-detectHasField :: Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
-detectHasField modName func (Var hasFieldVar)
+-- Now accepts currentPkgName for filtering
+detectHasField :: Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
+detectHasField modName currentPkgName func (Var hasFieldVar)
     | "$_sys$$dHasField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) = do
         -- Extract field info from HasField constraint
         case func of
@@ -145,18 +146,27 @@ detectHasField modName func (Var hasFieldVar)
                     typeConstructor = extractTypeConstructor recordType
                     -- Use a simple string representation for location
                     location = "HasField:" <> fieldName <> ":" <> typeName
+                    
+                    -- Filter by package
+                    packagePattern = "$" <> currentPkgName <> "-"
+                    shouldInclude = packagePattern `T.isPrefixOf` typeConstructor
                 
-                return [FieldUsage
-                    { fieldUsageName = fieldName
-                    , fieldUsageType = HasFieldOverloaded
-                    , fieldUsageTypeName = typeName
-                    , fieldUsageModule = modName
-                    , fieldUsageLocation = location
-                    , fieldUsageTypeConstructor = typeConstructor
-                    }]
+                -- DEBUG: Print filtering decision for HasField
+                putStrLn $ "[DEBUG HasField] Type: " ++ T.unpack typeConstructor ++ " | Pattern: " ++ T.unpack packagePattern ++ " | Include: " ++ show shouldInclude
+                
+                if shouldInclude
+                    then return [FieldUsage
+                        { fieldUsageName = fieldName
+                        , fieldUsageType = HasFieldOverloaded
+                        , fieldUsageTypeName = typeName
+                        , fieldUsageModule = modName
+                        , fieldUsageLocation = location
+                        , fieldUsageTypeConstructor = typeConstructor
+                        }]
+                    else return []
             _ -> return []
     | otherwise = return []
-detectHasField _ _ _ = return []
+detectHasField _ _ _ _ = return []
 
 -- | Extract field name from type-level string
 extractFieldNameFromType :: Type -> Text
