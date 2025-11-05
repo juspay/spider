@@ -181,11 +181,11 @@ extractFieldUsagesPass opts guts = do
                     Just _ -> putStrLn $ "  -> Using Phase 2 validation (validateFieldsForTypesUsedInConfiguredModules)"
                     Nothing -> putStrLn $ "  -> Using Phase 1 validation (validateFieldsWithExclusions)"
 
-            let -- Phase 2: Use type-scoped validation when includeFiles is configured
-                validationResult = case includeFiles exclusionConfig of
-                    Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
-                    Nothing -> validateFieldsWithExclusions exclusionConfig aggregated
-                errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+            -- Phase 2: Use type-scoped validation when includeFiles is configured
+            validationResult <- liftIO $ case includeFiles exclusionConfig of
+                Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
+                Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
+            let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
 
             -- Emit compilation errors for unused fields
             when (not $ null errors) $ do
@@ -270,11 +270,11 @@ extractFieldUsagesPass opts guts = do
                     Just _ -> putStrLn $ "  -> Using Phase 2 validation (validateFieldsForTypesUsedInConfiguredModules)"
                     Nothing -> putStrLn $ "  -> Using Phase 1 validation (validateFieldsWithExclusions)"
 
-            let -- Phase 2: Use type-scoped validation when includeFiles is configured
-                validationResult = case includeFiles exclusionConfig of
-                    Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
-                    Nothing -> validateFieldsWithExclusions exclusionConfig aggregated
-                errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+            -- Phase 2: Use type-scoped validation when includeFiles is configured
+            validationResult <- liftIO $ case includeFiles exclusionConfig of
+                Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
+                Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
+            let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
 
             -- Emit compilation errors for unused fields
             when (not $ null errors) $ do
