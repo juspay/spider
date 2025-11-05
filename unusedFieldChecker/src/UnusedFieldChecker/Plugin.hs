@@ -70,7 +70,7 @@ import Data.Text (Text, pack, unpack)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import System.Directory (createDirectoryIfMissing, doesFileExist, listDirectory)
-import System.FilePath ((</>), takeExtension)
+import System.FilePath ((</>), takeDirectory, takeExtension)
 import UnusedFieldChecker.Types
 import UnusedFieldChecker.Validator
 import UnusedFieldChecker.Config
@@ -123,13 +123,13 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
             
             liftIO $ do
                 let outputPath = path cliOptions
+                    fileName = modulePath <> ".fieldDefs.json"
+                    fullPath = outputPath </> fileName
                 putStrLn $ "[DEBUG SAVE] Saving field definitions to: " ++ outputPath
-                putStrLn $ "[DEBUG SAVE] Creating directory: " ++ outputPath
-                createDirectoryIfMissing True outputPath
-                let fileName = modulePath <> ".fieldDefs.json"
                 putStrLn $ "[DEBUG SAVE] Saving file: " ++ fileName
-                let fullPath = outputPath </> fileName
                 putStrLn $ "[DEBUG SAVE] Writing directly to: " ++ fullPath
+                -- Create all parent directories including subdirectories
+                createDirectoryIfMissing True (takeDirectory fullPath)
                 BL.writeFile fullPath (encodePretty moduleInfo)
                 putStrLn $ "[DEBUG SAVE] Successfully saved field definitions"
             
