@@ -918,7 +918,7 @@ performCrossModuleValidation opts modIface = do
 
 loadAllFieldInfo :: FilePath -> IO [ModuleFieldInfo]
 loadAllFieldInfo outputPath = do
-    exists <- doesFileExist outputPath
+    exists <- doesDirectoryExist outputPath
     if not exists
         then do
             putStrLn $ "[DEBUG LOAD] Output path does not exist: " ++ outputPath
