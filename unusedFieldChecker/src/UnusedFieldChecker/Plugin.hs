@@ -76,7 +76,6 @@ import UnusedFieldChecker.Validator
 import UnusedFieldChecker.Config
 import UnusedFieldChecker.DefinitionExtractor
 import UnusedFieldChecker.UsageExtractor
-import Socket (sendViaUnixSocket)
 
 #if __GLASGOW_HASKELL__ < 900
 import TcRnMonad (addErrs)
@@ -129,9 +128,9 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
                 createDirectoryIfMissing True outputPath
                 let fileName = "/" <> modulePath <> ".fieldDefs.json"
                 putStrLn $ "[DEBUG SAVE] Saving file: " ++ T.unpack (pack fileName)
-                sendViaUnixSocket outputPath
-                                 (pack fileName)
-                                 (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
+                let fullPath = outputPath </> (T.unpack $ pack fileName)
+                putStrLn $ "[DEBUG SAVE] Writing directly to: " ++ fullPath
+                BL.writeFile fullPath (encodePretty moduleInfo)
                 putStrLn $ "[DEBUG SAVE] Successfully saved field definitions"
             
             return tcEnv
@@ -173,9 +172,8 @@ extractFieldUsagesPass opts guts = do
             liftIO $ do
                 let outputPath = path cliOptions
                 createDirectoryIfMissing True outputPath
-                sendViaUnixSocket outputPath 
-                                 (pack $ "/" <> modulePath <> ".fieldUsages.json")
-                                 (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
+                let fullPath = outputPath </> (modulePath <> ".fieldUsages.json")
+                BL.writeFile fullPath (encodePretty moduleInfo)
             
             -- Perform validation
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
@@ -267,9 +265,8 @@ extractFieldUsagesPass opts guts = do
             liftIO $ do
                 let outputPath = path cliOptions
                 createDirectoryIfMissing True outputPath
-                sendViaUnixSocket outputPath 
-                                 (pack $ "/" <> modulePath <> ".fieldUsages.json")
-                                 (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
+                let fullPath = outputPath </> (modulePath <> ".fieldUsages.json")
+                BL.writeFile fullPath (encodePretty moduleInfo)
             
             -- Perform validation
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
@@ -372,9 +369,8 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
             liftIO $ do
                 let outputPath = path cliOptions
                 createDirectoryIfMissing True outputPath
-                sendViaUnixSocket outputPath 
-                                 (pack $ "/" <> modulePath <> ".fieldInfo.json")
-                                 (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
+                let fullPath = outputPath </> (modulePath <> ".fieldInfo.json")
+                BL.writeFile fullPath (encodePretty moduleInfo)
             
             -- Perform immediate validation for fields defined in this module
             let aggregated = aggregateFieldInfo [moduleInfo]
