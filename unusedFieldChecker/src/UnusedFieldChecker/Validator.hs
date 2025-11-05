@@ -13,6 +13,7 @@ import Data.List (foldl', nub)
 import qualified Data.Map as Map
 import Data.Text (Text)
 import qualified Data.Text as T
+import System.IO.Unsafe (unsafePerformIO)
 import UnusedFieldChecker.Types
 import UnusedFieldChecker.Config
 
@@ -168,7 +169,24 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
         -- Apply exclusions to field definitions
         nonExcludedDefs = filter (not . isFieldExcluded exclusionConfig) allDefs
 
+        -- Debug logging
+        _ = unsafePerformIO $ do
+            putStrLn $ "\n[DEBUG Phase 2] Total field definitions: " ++ show (length allDefs)
+            putStrLn $ "[DEBUG Phase 2] Non-excluded definitions: " ++ show (length nonExcludedDefs)
+            case includeFiles exclusionConfig of
+                Just includes -> putStrLn $ "[DEBUG Phase 2] Configured modules: " ++ show includes
+                Nothing -> putStrLn $ "[DEBUG Phase 2] No configured modules (includeFiles is Nothing)"
+
         (unusedMaybe, unusedNonMaybe, used) = foldl' categorizeField ([], [], []) nonExcludedDefs
+
+        -- More debug logging
+        _ = unsafePerformIO $ do
+            putStrLn $ "[DEBUG Phase 2] Results:"
+            putStrLn $ "  - Used fields: " ++ show (length used)
+            putStrLn $ "  - Unused Maybe fields: " ++ show (length unusedMaybe)
+            putStrLn $ "  - Unused non-Maybe fields: " ++ show (length unusedNonMaybe)
+            putStrLn $ "[DEBUG Phase 2] Unused non-Maybe fields:"
+            mapM_ (\field -> putStrLn $ "    " ++ T.unpack (fieldDefName field) ++ " :: " ++ T.unpack (fieldDefType field) ++ " (in " ++ T.unpack (fieldDefTypeName field) ++ ")") unusedNonMaybe
 
     in ValidationResult
         { unusedNonMaybeFields = nub unusedNonMaybe
@@ -201,9 +219,26 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
         let fieldName = fieldDefName fieldDef
 
             -- Check if this field has any usage within the configured modules
-            hasUsageInConfiguredModules = case Map.lookup fieldName allFieldUsages of
-                Nothing -> False
-                Just usages -> any (isUsageInConfiguredModule exclusionConfig) usages
+            (hasUsageInConfiguredModules, usageDetails) = case Map.lookup fieldName allFieldUsages of
+                Nothing -> (False, "no usages found")
+                Just usages ->
+                    let configuredUsages = filter (isUsageInConfiguredModule exclusionConfig) usages
+                        allUsageModules = map fieldUsageModule usages
+                        configuredUsageModules = map fieldUsageModule configuredUsages
+                    in (not (null configuredUsages),
+                        "total usages: " ++ show (length usages) ++
+                        ", in modules: " ++ show allUsageModules ++
+                        ", configured usages: " ++ show (length configuredUsages) ++
+                        ", configured modules: " ++ show configuredUsageModules)
+
+            -- Debug logging for first few fields
+            _ = unsafePerformIO $
+                if length (unusedMaybe ++ unusedNonMaybe ++ used) < 10  -- Only log first 10 fields
+                then putStrLn $ "    [FIELD] " ++ T.unpack fieldName ++ " :: " ++ T.unpack (fieldDefType fieldDef) ++
+                               " (isMaybe: " ++ show (fieldDefIsMaybe fieldDef) ++
+                               ", hasConfiguredUsage: " ++ show hasUsageInConfiguredModules ++
+                               ", " ++ usageDetails ++ ")"
+                else return ()
 
         in if hasUsageInConfiguredModules
             then (unusedMaybe, unusedNonMaybe, fieldDef : used)
