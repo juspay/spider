@@ -69,7 +69,7 @@ import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text, pack, unpack)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import System.Directory (createDirectoryIfMissing, doesFileExist, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory)
 import System.FilePath ((</>), takeDirectory, takeExtension)
 import UnusedFieldChecker.Types
 import UnusedFieldChecker.Validator
@@ -924,14 +924,47 @@ loadAllFieldInfo outputPath = do
             putStrLn $ "[DEBUG LOAD] Output path does not exist: " ++ outputPath
             return []
         else do
-            files <- listDirectory outputPath
-            let jsonFiles = filter (\f -> takeExtension f == ".json") files
-            putStrLn $ "[DEBUG LOAD] Found " ++ show (length jsonFiles) ++ " JSON files in " ++ outputPath
-            mapM_ (\f -> putStrLn $ "  JSON file: " ++ f) jsonFiles
-            results <- mapM (loadFieldInfoFile outputPath) jsonFiles
+            allJsonFiles <- findAllJsonFiles outputPath
+            putStrLn $ "[DEBUG LOAD] Found " ++ show (length allJsonFiles) ++ " JSON files total"
+            mapM_ (\f -> putStrLn $ "  JSON file: " ++ f) allJsonFiles
+            results <- mapM (loadFieldInfoFileAbsolute) allJsonFiles
             let loaded = catMaybes results
             putStrLn $ "[DEBUG LOAD] Successfully loaded " ++ show (length loaded) ++ " module infos"
             return loaded
+
+-- Recursively find all JSON files in directory tree
+findAllJsonFiles :: FilePath -> IO [FilePath]
+findAllJsonFiles dir = do
+    contents <- listDirectory dir
+    allFiles <- forM contents $ \item -> do
+        let fullPath = dir </> item
+        isDir <- doesDirectoryExist fullPath
+        if isDir
+            then findAllJsonFiles fullPath  -- Recurse into subdirectory
+            else if takeExtension item == ".json"
+                then return [fullPath]       -- JSON file found
+                else return []               -- Not a JSON file
+    return $ concat allFiles
+
+-- Load field info from absolute file path
+loadFieldInfoFileAbsolute :: FilePath -> IO (Maybe ModuleFieldInfo)
+loadFieldInfoFileAbsolute fullPath = do
+    exists <- doesFileExist fullPath
+    if not exists
+        then do
+            putStrLn $ "[DEBUG LOAD] File does not exist: " ++ fullPath
+            return Nothing
+        else do
+            content <- BS.readFile fullPath
+            case decode (BL.fromStrict content) of
+                Just info -> do
+                    putStrLn $ "[DEBUG LOAD] Loaded " ++ fullPath ++ " - Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
+                              " - Defs: " ++ show (length (moduleFieldDefs info)) ++
+                              " - Usages: " ++ show (length (moduleFieldUsages info))
+                    return (Just info)
+                Nothing -> do
+                    putStrLn $ "[DEBUG LOAD] Warning: Failed to parse " ++ fullPath
+                    return Nothing
 
 -- Load a single field info JSON file
 loadFieldInfoFile :: FilePath -> FilePath -> IO (Maybe ModuleFieldInfo)
