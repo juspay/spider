@@ -177,7 +177,7 @@ extractFieldUsagesPass opts guts = do
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
             liftIO $ do
                 putStrLn $ "[DEBUG] Loaded " ++ show (length allModuleInfos) ++ " module infos"
-                mapM_ (\info -> putStrLn $ "  Module: " ++ T.unpack (moduleName info) ++
+                mapM_ (\info -> putStrLn $ "  Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
                                           " - Defs: " ++ show (length (moduleFieldDefs info)) ++
                                           " - Usages: " ++ show (length (moduleFieldUsages info))) allModuleInfos
             let aggregated = aggregateFieldInfo allModuleInfos
@@ -271,7 +271,7 @@ extractFieldUsagesPass opts guts = do
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
             liftIO $ do
                 putStrLn $ "[DEBUG] Loaded " ++ show (length allModuleInfos) ++ " module infos"
-                mapM_ (\info -> putStrLn $ "  Module: " ++ T.unpack (moduleName info) ++
+                mapM_ (\info -> putStrLn $ "  Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
                                           " - Defs: " ++ show (length (moduleFieldDefs info)) ++
                                           " - Usages: " ++ show (length (moduleFieldUsages info))) allModuleInfos
             let aggregated = aggregateFieldInfo allModuleInfos
@@ -946,7 +946,7 @@ loadFieldInfoFile outputPath filename = do
             content <- BS.readFile fullPath
             case decode (BL.fromStrict content) of
                 Just info -> do
-                    putStrLn $ "[DEBUG LOAD] Loaded " ++ fullPath ++ " - Module: " ++ T.unpack (moduleName info) ++
+                    putStrLn $ "[DEBUG LOAD] Loaded " ++ fullPath ++ " - Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
                               " - Defs: " ++ show (length (moduleFieldDefs info)) ++
                               " - Usages: " ++ show (length (moduleFieldUsages info))
                     return (Just info)
