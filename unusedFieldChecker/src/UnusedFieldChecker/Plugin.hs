@@ -92,7 +92,7 @@ plugin = defaultPlugin
 collectFieldDefinitionsOnly :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectFieldDefinitionsOnly opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
-        modulePath = path cliOptions </> msHsFilePath modSummary
+        modulePath = msHsFilePath modSummary
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
 #if __GLASGOW_HASKELL__ >= 900
         currentPackage = GHC.Unit.Types.moduleUnit $ ms_mod modSummary
@@ -144,7 +144,7 @@ extractFieldUsagesPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 extractFieldUsagesPass opts guts = do
     let cliOptions = parseCliOptions opts
         modName = pack $ moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
-        modulePath = path cliOptions </> (moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts)
+        modulePath = moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
         currentPackage = GHC.Unit.Types.moduleUnit $ mg_module guts
         binds = mg_binds guts
 
@@ -236,7 +236,7 @@ extractFieldUsagesPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 extractFieldUsagesPass opts guts = do
     let cliOptions = parseCliOptions opts
         modName = pack $ moduleNameString $ moduleName $ mg_module guts
-        modulePath = path cliOptions </> (moduleNameString $ moduleName $ mg_module guts)
+        modulePath = moduleNameString $ moduleName $ mg_module guts
         currentPackage = moduleUnitId $ mg_module guts
         binds = mg_binds guts
     
