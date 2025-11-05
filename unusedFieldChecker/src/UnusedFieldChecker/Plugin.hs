@@ -122,10 +122,15 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
             
             liftIO $ do
                 let outputPath = path cliOptions
+                putStrLn $ "[DEBUG SAVE] Saving field definitions to: " ++ outputPath
+                putStrLn $ "[DEBUG SAVE] Creating directory: " ++ outputPath
                 createDirectoryIfMissing True outputPath
-                sendViaUnixSocket outputPath 
-                                 (pack $ "/" <> modulePath <> ".fieldDefs.json")
+                let fileName = "/" <> modulePath <> ".fieldDefs.json"
+                putStrLn $ "[DEBUG SAVE] Saving file: " ++ T.unpack (pack fileName)
+                sendViaUnixSocket outputPath
+                                 (pack fileName)
                                  (decodeUtf8 $ BL.toStrict $ encodePretty moduleInfo)
+                putStrLn $ "[DEBUG SAVE] Successfully saved field definitions"
             
             return tcEnv
 
@@ -170,6 +175,11 @@ extractFieldUsagesPass opts guts = do
             
             -- Perform validation
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
+            liftIO $ do
+                putStrLn $ "[DEBUG] Loaded " ++ show (length allModuleInfos) ++ " module infos"
+                mapM_ (\info -> putStrLn $ "  Module: " ++ T.unpack (moduleName info) ++
+                                          " - Defs: " ++ show (length (moduleFieldDefs info)) ++
+                                          " - Usages: " ++ show (length (moduleFieldUsages info))) allModuleInfos
             let aggregated = aggregateFieldInfo allModuleInfos
 
             -- Debug: Check exclusion config
@@ -259,6 +269,11 @@ extractFieldUsagesPass opts guts = do
             
             -- Perform validation
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
+            liftIO $ do
+                putStrLn $ "[DEBUG] Loaded " ++ show (length allModuleInfos) ++ " module infos"
+                mapM_ (\info -> putStrLn $ "  Module: " ++ T.unpack (moduleName info) ++
+                                          " - Defs: " ++ show (length (moduleFieldDefs info)) ++
+                                          " - Usages: " ++ show (length (moduleFieldUsages info))) allModuleInfos
             let aggregated = aggregateFieldInfo allModuleInfos
 
             -- Debug: Check exclusion config
@@ -905,11 +920,18 @@ loadAllFieldInfo :: FilePath -> IO [ModuleFieldInfo]
 loadAllFieldInfo outputPath = do
     exists <- doesFileExist outputPath
     if not exists
-        then return []
+        then do
+            putStrLn $ "[DEBUG LOAD] Output path does not exist: " ++ outputPath
+            return []
         else do
             files <- listDirectory outputPath
             let jsonFiles = filter (\f -> takeExtension f == ".json") files
-            catMaybes <$> mapM (loadFieldInfoFile outputPath) jsonFiles
+            putStrLn $ "[DEBUG LOAD] Found " ++ show (length jsonFiles) ++ " JSON files in " ++ outputPath
+            mapM_ (\f -> putStrLn $ "  JSON file: " ++ f) jsonFiles
+            results <- mapM (loadFieldInfoFile outputPath) jsonFiles
+            let loaded = catMaybes results
+            putStrLn $ "[DEBUG LOAD] Successfully loaded " ++ show (length loaded) ++ " module infos"
+            return loaded
 
 -- Load a single field info JSON file
 loadFieldInfoFile :: FilePath -> FilePath -> IO (Maybe ModuleFieldInfo)
@@ -917,13 +939,19 @@ loadFieldInfoFile outputPath filename = do
     let fullPath = outputPath </> filename
     exists <- doesFileExist fullPath
     if not exists
-        then return Nothing
+        then do
+            putStrLn $ "[DEBUG LOAD] File does not exist: " ++ fullPath
+            return Nothing
         else do
             content <- BS.readFile fullPath
             case decode (BL.fromStrict content) of
-                Just info -> return (Just info)
+                Just info -> do
+                    putStrLn $ "[DEBUG LOAD] Loaded " ++ fullPath ++ " - Module: " ++ T.unpack (moduleName info) ++
+                              " - Defs: " ++ show (length (moduleFieldDefs info)) ++
+                              " - Usages: " ++ show (length (moduleFieldUsages info))
+                    return (Just info)
                 Nothing -> do
-                    putStrLn $ "Warning: Failed to parse " ++ fullPath
+                    putStrLn $ "[DEBUG LOAD] Warning: Failed to parse " ++ fullPath
                     return Nothing
 
 #if __GLASGOW_HASKELL__ >= 900
