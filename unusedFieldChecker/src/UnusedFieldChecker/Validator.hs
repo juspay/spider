@@ -162,36 +162,34 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
             in nameMatches && (isExplicitRecordOp || typeMatches)
 
 -- Phase 2: Only check fields that have no usage within configured modules
-validateFieldsForTypesUsedInConfiguredModules :: ExclusionConfig -> AggregatedFieldInfo -> ValidationResult
-validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInfo{..} =
+validateFieldsForTypesUsedInConfiguredModules :: ExclusionConfig -> AggregatedFieldInfo -> IO ValidationResult
+validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInfo{..} = do
     let allDefs = concat $ Map.elems allFieldDefs
-
         -- Apply exclusions to field definitions
         nonExcludedDefs = filter (not . isFieldExcluded exclusionConfig) allDefs
 
-    in unsafePerformIO $ do
-        -- Debug logging
-        putStrLn $ "\n[DEBUG Phase 2] Total field definitions: " ++ show (length allDefs)
-        putStrLn $ "[DEBUG Phase 2] Non-excluded definitions: " ++ show (length nonExcludedDefs)
-        case includeFiles exclusionConfig of
-            Just includes -> putStrLn $ "[DEBUG Phase 2] Configured modules: " ++ show includes
-            Nothing -> putStrLn $ "[DEBUG Phase 2] No configured modules (includeFiles is Nothing)"
+    -- Debug logging
+    putStrLn $ "\n[DEBUG Phase 2] Total field definitions: " ++ show (length allDefs)
+    putStrLn $ "[DEBUG Phase 2] Non-excluded definitions: " ++ show (length nonExcludedDefs)
+    case includeFiles exclusionConfig of
+        Just includes -> putStrLn $ "[DEBUG Phase 2] Configured modules: " ++ show includes
+        Nothing -> putStrLn $ "[DEBUG Phase 2] No configured modules (includeFiles is Nothing)"
 
-        let (unusedMaybe, unusedNonMaybe, used) = foldl' categorizeField ([], [], []) nonExcludedDefs
+    let (unusedMaybe, unusedNonMaybe, used) = foldl' categorizeField ([], [], []) nonExcludedDefs
 
-        -- More debug logging
-        putStrLn $ "[DEBUG Phase 2] Results:"
-        putStrLn $ "  - Used fields: " ++ show (length used)
-        putStrLn $ "  - Unused Maybe fields: " ++ show (length unusedMaybe)
-        putStrLn $ "  - Unused non-Maybe fields: " ++ show (length unusedNonMaybe)
-        putStrLn $ "[DEBUG Phase 2] Unused non-Maybe fields:"
-        mapM_ (\field -> putStrLn $ "    " ++ T.unpack (fieldDefName field) ++ " :: " ++ T.unpack (fieldDefType field) ++ " (in " ++ T.unpack (fieldDefTypeName field) ++ ")") unusedNonMaybe
+    -- More debug logging
+    putStrLn $ "[DEBUG Phase 2] Results:"
+    putStrLn $ "  - Used fields: " ++ show (length used)
+    putStrLn $ "  - Unused Maybe fields: " ++ show (length unusedMaybe)
+    putStrLn $ "  - Unused non-Maybe fields: " ++ show (length unusedNonMaybe)
+    putStrLn $ "[DEBUG Phase 2] Unused non-Maybe fields:"
+    mapM_ (\field -> putStrLn $ "    " ++ T.unpack (fieldDefName field) ++ " :: " ++ T.unpack (fieldDefType field) ++ " (in " ++ T.unpack (fieldDefTypeName field) ++ ")") unusedNonMaybe
 
-        return $ ValidationResult
-            { unusedNonMaybeFields = nub unusedNonMaybe
-            , unusedMaybeFields = nub unusedMaybe
-            , usedFields = nub used
-            }
+    return ValidationResult
+        { unusedNonMaybeFields = nub unusedNonMaybe
+        , unusedMaybeFields = nub unusedMaybe
+        , usedFields = nub used
+        }
   where
     -- Check if a usage occurs within a configured module
     isUsageInConfiguredModule :: ExclusionConfig -> FieldUsage -> Bool
