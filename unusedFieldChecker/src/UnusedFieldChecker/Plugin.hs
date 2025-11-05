@@ -126,9 +126,9 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
                 putStrLn $ "[DEBUG SAVE] Saving field definitions to: " ++ outputPath
                 putStrLn $ "[DEBUG SAVE] Creating directory: " ++ outputPath
                 createDirectoryIfMissing True outputPath
-                let fileName = "/" <> modulePath <> ".fieldDefs.json"
-                putStrLn $ "[DEBUG SAVE] Saving file: " ++ T.unpack (pack fileName)
-                let fullPath = outputPath </> (T.unpack $ pack fileName)
+                let fileName = modulePath <> ".fieldDefs.json"
+                putStrLn $ "[DEBUG SAVE] Saving file: " ++ fileName
+                let fullPath = outputPath </> fileName
                 putStrLn $ "[DEBUG SAVE] Writing directly to: " ++ fullPath
                 BL.writeFile fullPath (encodePretty moduleInfo)
                 putStrLn $ "[DEBUG SAVE] Successfully saved field definitions"
