@@ -171,7 +171,17 @@ extractFieldUsagesPass opts guts = do
             -- Perform validation
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
             let aggregated = aggregateFieldInfo allModuleInfos
-                -- Phase 2: Use type-scoped validation when includeFiles is configured
+
+            -- Debug: Check exclusion config
+            liftIO $ do
+                putStrLn $ "\n[DEBUG CONFIG GHC 9.x] Exclusion config loaded:"
+                putStrLn $ "  includeFiles: " ++ show (includeFiles exclusionConfig)
+                putStrLn $ "  excludeFiles: " ++ show (excludeFiles exclusionConfig)
+                case includeFiles exclusionConfig of
+                    Just _ -> putStrLn $ "  -> Using Phase 2 validation (validateFieldsForTypesUsedInConfiguredModules)"
+                    Nothing -> putStrLn $ "  -> Using Phase 1 validation (validateFieldsWithExclusions)"
+
+            let -- Phase 2: Use type-scoped validation when includeFiles is configured
                 validationResult = case includeFiles exclusionConfig of
                     Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
                     Nothing -> validateFieldsWithExclusions exclusionConfig aggregated
@@ -179,7 +189,7 @@ extractFieldUsagesPass opts guts = do
 
             -- Emit compilation errors for unused fields
             when (not $ null errors) $ do
-                liftIO $ putStrLn $ "\n[UnusedFieldChecker] Found " ++ show (length errors) ++ " unused fields"
+                liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 9.x] Found " ++ show (length errors) ++ " unused fields"
                 forM_ errors $ \(locStr, msg, _) -> do
                     let srcSpan = parseLocationForCore locStr
                         errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
@@ -250,7 +260,17 @@ extractFieldUsagesPass opts guts = do
             -- Perform validation
             allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
             let aggregated = aggregateFieldInfo allModuleInfos
-                -- Phase 2: Use type-scoped validation when includeFiles is configured
+
+            -- Debug: Check exclusion config
+            liftIO $ do
+                putStrLn $ "\n[DEBUG CONFIG GHC 8.x] Exclusion config loaded:"
+                putStrLn $ "  includeFiles: " ++ show (includeFiles exclusionConfig)
+                putStrLn $ "  excludeFiles: " ++ show (excludeFiles exclusionConfig)
+                case includeFiles exclusionConfig of
+                    Just _ -> putStrLn $ "  -> Using Phase 2 validation (validateFieldsForTypesUsedInConfiguredModules)"
+                    Nothing -> putStrLn $ "  -> Using Phase 1 validation (validateFieldsWithExclusions)"
+
+            let -- Phase 2: Use type-scoped validation when includeFiles is configured
                 validationResult = case includeFiles exclusionConfig of
                     Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
                     Nothing -> validateFieldsWithExclusions exclusionConfig aggregated
@@ -258,7 +278,7 @@ extractFieldUsagesPass opts guts = do
 
             -- Emit compilation errors for unused fields
             when (not $ null errors) $ do
-                liftIO $ putStrLn $ "\n[UnusedFieldChecker] Found " ++ show (length errors) ++ " unused fields"
+                liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 8.x] Found " ++ show (length errors) ++ " unused fields"
                 forM_ errors $ \(locStr, msg, _) -> do
                     let srcSpan = parseLocationForCore locStr
                         errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
