@@ -95,13 +95,13 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
         modulePath = path cliOptions </> msHsFilePath modSummary
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
-
-    liftIO $ putStrLn $ "[DEBUG PHASE] collectFieldDefinitionsOnly called for: " ++ T.unpack modName
 #if __GLASGOW_HASKELL__ >= 900
         currentPackage = GHC.Unit.Types.moduleUnit $ ms_mod modSummary
 #else
         currentPackage = moduleUnitId $ ms_mod modSummary
 #endif
+
+    liftIO $ putStrLn $ "[DEBUG PHASE] collectFieldDefinitionsOnly called for: " ++ T.unpack modName
 
     exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
     
