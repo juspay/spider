@@ -160,19 +160,13 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
 
             in nameMatches && (isExplicitRecordOp || typeMatches)
 
--- Phase 2: Validate fields for types that are used within configured modules
+-- Phase 2: Only check fields that have no usage within configured modules
 validateFieldsForTypesUsedInConfiguredModules :: ExclusionConfig -> AggregatedFieldInfo -> ValidationResult
 validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInfo{..} =
     let allDefs = concat $ Map.elems allFieldDefs
 
-        -- Get types that are used within configured modules
-        typesUsedInConfiguredModules = getTypesUsedInConfiguredModules exclusionConfig allFieldUsages
-
-        -- Filter field definitions to only include those from types used in configured modules
-        relevantFieldDefs = filter (isFieldOfUsedType typesUsedInConfiguredModules) allDefs
-
-        -- Apply exclusions to the relevant field definitions
-        nonExcludedDefs = filter (not . isFieldExcluded exclusionConfig) relevantFieldDefs
+        -- Apply exclusions to field definitions
+        nonExcludedDefs = filter (not . isFieldExcluded exclusionConfig) allDefs
 
         (unusedMaybe, unusedNonMaybe, used) = foldl' categorizeField ([], [], []) nonExcludedDefs
 
@@ -182,14 +176,6 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
         , usedFields = nub used
         }
   where
-    -- Find all types that have field usages within configured modules
-    getTypesUsedInConfiguredModules :: ExclusionConfig -> Map.Map Text [FieldUsage] -> [Text]
-    getTypesUsedInConfiguredModules config usageMap =
-        let allUsages = concat $ Map.elems usageMap
-            configuredModuleUsages = filter (isUsageInConfiguredModule config) allUsages
-            usedTypeConstructors = map fieldUsageTypeConstructor configuredModuleUsages
-        in nub $ filter (not . T.null) usedTypeConstructors
-
     -- Check if a usage occurs within a configured module
     isUsageInConfiguredModule :: ExclusionConfig -> FieldUsage -> Bool
     isUsageInConfiguredModule ExclusionConfig{..} FieldUsage{..} =
@@ -208,67 +194,22 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
                 in suffix `T.isSuffixOf` modName
             | otherwise = pattern == modName
 
-    -- Check if a field definition belongs to a type used in configured modules
-    isFieldOfUsedType :: [Text] -> FieldDefinition -> Bool
-    isFieldOfUsedType usedTypes FieldDefinition{..} =
-        fieldDefTypeConstructor `elem` usedTypes
-
     categorizeField :: ([FieldDefinition], [FieldDefinition], [FieldDefinition])
                     -> FieldDefinition
                     -> ([FieldDefinition], [FieldDefinition], [FieldDefinition])
     categorizeField (unusedMaybe, unusedNonMaybe, used) fieldDef =
         let fieldName = fieldDefName fieldDef
 
-            -- Check if this specific field is used anywhere (not just in configured modules)
-            isUsed = case Map.lookup fieldName allFieldUsages of
+            -- Check if this field has any usage within the configured modules
+            hasUsageInConfiguredModules = case Map.lookup fieldName allFieldUsages of
                 Nothing -> False
-                Just usages -> any (isRealUsageOfThisField fieldDef) usages
-        in if isUsed
+                Just usages -> any (isUsageInConfiguredModule exclusionConfig) usages
+
+        in if hasUsageInConfiguredModules
             then (unusedMaybe, unusedNonMaybe, fieldDef : used)
             else if fieldDefIsMaybe fieldDef
                 then (fieldDef : unusedMaybe, unusedNonMaybe, used)
                 else (unusedMaybe, fieldDef : unusedNonMaybe, used)
-      where
-        -- Check if usage is actually of this specific field definition
-        isRealUsageOfThisField :: FieldDefinition -> FieldUsage -> Bool
-        isRealUsageOfThisField fieldDef usage =
-            let fieldName = fieldDefName fieldDef
-                defTypeConstructor = fieldDefTypeConstructor fieldDef
-                usageName = fieldUsageName usage
-                usageTypeConstructor = fieldUsageTypeConstructor usage
-
-                -- Names must match
-                nameMatches = usageName == fieldName
-
-                -- Type constructors should match (when available)
-                typeMatches = case (usageTypeConstructor, defTypeConstructor) of
-                    ("", _) -> True  -- Unknown type in usage, conservatively match
-                    (_, "") -> True  -- Unknown type in definition, conservatively match
-                    (usageType, defType) -> usageType == defType
-
-                -- For explicit record operations, we can be confident it's the right field
-                isExplicitRecordOp = case fieldUsageType usage of
-                    -- These usage types are explicit about which record they're accessing
-                    RecordConstruct -> True
-                    RecordUpdate -> True
-                    PatternMatch -> True
-                    NamedFieldPuns -> True
-                    RecordWildCards -> True
-                    RecordDotSyntax -> True
-                    HasFieldOverloaded -> True  -- From Core-level HasField detection
-                    GenericReflection -> True
-
-                    -- For these, we need type matching to be sure
-                    AccessorFunction -> typeMatches
-                    FunctionComposition -> typeMatches
-                    LensesOptics -> typeMatches
-
-                    -- These are not field-specific
-                    TemplateHaskell -> False
-                    DerivedInstances -> False
-                    DataSYB -> False
-
-            in nameMatches && (isExplicitRecordOp || typeMatches)
 
 reportUnusedFields :: [FieldDefinition] -> [(Text, Text, Text)]
 reportUnusedFields fields = map generateError fields
