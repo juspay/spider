@@ -51,6 +51,7 @@ import UnusedFieldChecker.Types
 extractFieldUsagesFromCore :: Text -> Unit -> [CoreBind] -> IO [FieldUsage]
 extractFieldUsagesFromCore modName currentPkg binds = do
     let currentPkgName = extractPackageName $ pack $ unitString currentPkg
+    putStrLn $ "[DEBUG PKG] Module: " ++ T.unpack modName ++ " Package: " ++ T.unpack currentPkgName
     allUsages <- mapM (extractUsagesFromBind modName currentPkgName) binds
     return $ concat allUsages
 
@@ -61,6 +62,7 @@ extractUsagesFromBind modName currentPkgName (NonRec binder expr) = do
 extractFieldUsagesFromCore :: Text -> UnitId -> [CoreBind] -> IO [FieldUsage]
 extractFieldUsagesFromCore modName currentPkg binds = do
     let currentPkgName = extractPackageName $ pack $ unitIdString currentPkg
+    putStrLn $ "[DEBUG PKG] Module: " ++ T.unpack modName ++ " Package: " ++ T.unpack currentPkgName
     allUsages <- mapM (extractUsagesFromBind modName currentPkgName) binds
     return $ concat allUsages
 
@@ -121,10 +123,14 @@ extractUsagesFromExpr modName currentPkgName expr = case expr of
     
     -- Let: extract from both binding and body, including record destructuring
     Let bind body -> do
+        liftIO $ putStrLn $ "[DEBUG LET] Processing let binding in module: " ++ T.unpack modName
         bindUsages <- extractUsagesFromBind modName currentPkgName bind
+        liftIO $ putStrLn $ "[DEBUG LET] Bind usages: " ++ show (length bindUsages)
         bodyUsages <- extractUsagesFromExpr modName currentPkgName body
+        liftIO $ putStrLn $ "[DEBUG LET] Body usages: " ++ show (length bodyUsages)
         -- Extract field usages from let-bound record patterns
         letPatternUsages <- extractLetPatternUsages modName currentPkgName bind
+        liftIO $ putStrLn $ "[DEBUG LET] Pattern usages: " ++ show (length letPatternUsages)
         return $ bindUsages ++ bodyUsages ++ letPatternUsages
     
     -- Case: extract from scrutinee and alternatives
@@ -164,21 +170,31 @@ detectHasFieldFromVar modName currentPkgName func hasFieldVar
                     typeConstructor = extractTypeConstructor recordType
                     -- Use a simple string representation for location
                     location = "HasField:" <> fieldName <> ":" <> typeName
-                    
+
                     -- Filter by package
                     packagePattern = "$" <> currentPkgName <> "-"
                     shouldInclude = packagePattern `T.isPrefixOf` typeConstructor
-                
+
+                liftIO $ putStrLn $ "[DEBUG HasField MATCH] Field: " ++ T.unpack fieldName ++
+                                   " Type: " ++ T.unpack typeName ++
+                                   " TypeConstructor: " ++ T.unpack typeConstructor
+                liftIO $ putStrLn $ "[DEBUG HasField FILTER] PackagePattern: " ++ T.unpack packagePattern ++
+                                   " ShouldInclude: " ++ show shouldInclude
+
                 if shouldInclude
-                    then return [FieldUsage
-                        { fieldUsageName = fieldName
-                        , fieldUsageType = HasFieldOverloaded
-                        , fieldUsageTypeName = typeName
-                        , fieldUsageModule = modName
-                        , fieldUsageLocation = location
-                        , fieldUsageTypeConstructor = typeConstructor
-                        }]
-                    else return []
+                    then do
+                        liftIO $ putStrLn $ "[DEBUG HasField INCLUDED] Adding usage for: " ++ T.unpack fieldName
+                        return [FieldUsage
+                            { fieldUsageName = fieldName
+                            , fieldUsageType = HasFieldOverloaded
+                            , fieldUsageTypeName = typeName
+                            , fieldUsageModule = modName
+                            , fieldUsageLocation = location
+                            , fieldUsageTypeConstructor = typeConstructor
+                            }]
+                    else do
+                        liftIO $ putStrLn $ "[DEBUG HasField FILTERED OUT] Skipping cross-package usage: " ++ T.unpack fieldName
+                        return []
             _ -> return []
     | otherwise = return []
 
