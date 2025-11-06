@@ -58,6 +58,10 @@ validateFields AggregatedFieldInfo{..} =
                 Just usages -> any isRealUsage usages
             -- Single-field records are automatically considered "used" since GHC optimizes away the accessor
             isSingleFieldRecord = fieldDefIsSingleField fieldDef
+            _ = unsafePerformIO $ when (fieldName == "notificationRequestItem") $ do
+                    putStrLn $ "[DEBUG SINGLE] Field: " ++ T.unpack fieldName ++
+                              " isSingleField: " ++ show isSingleFieldRecord ++
+                              " isUsed: " ++ show isUsed
         in if isUsed || isSingleFieldRecord
             then (unusedMaybe, unusedNonMaybe, fieldDef : used)
             else if fieldDefIsMaybe fieldDef
@@ -217,6 +221,9 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
     categorizeField (unusedMaybe, unusedNonMaybe, used) fieldDef =
         let fieldName = fieldDefName fieldDef
 
+            -- Single-field records are automatically considered "used" since GHC optimizes away the accessor
+            isSingleFieldRecord = fieldDefIsSingleField fieldDef
+
             -- Check if this field has any usage within the configured modules
             (hasUsageInConfiguredModules, usageDetails) = case Map.lookup fieldName allFieldUsages of
                 Nothing -> (False, "no usages found")
@@ -235,11 +242,12 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
                 if length (unusedMaybe ++ unusedNonMaybe ++ used) < 10  -- Only log first 10 fields
                 then putStrLn $ "    [FIELD] " ++ T.unpack fieldName ++ " :: " ++ T.unpack (fieldDefType fieldDef) ++
                                " (isMaybe: " ++ show (fieldDefIsMaybe fieldDef) ++
+                               ", isSingleField: " ++ show isSingleFieldRecord ++
                                ", hasConfiguredUsage: " ++ show hasUsageInConfiguredModules ++
                                ", " ++ usageDetails ++ ")"
                 else return ()
 
-        in if hasUsageInConfiguredModules
+        in if hasUsageInConfiguredModules || isSingleFieldRecord
             then (unusedMaybe, unusedNonMaybe, fieldDef : used)
             else if fieldDefIsMaybe fieldDef
                 then (fieldDef : unusedMaybe, unusedNonMaybe, used)
