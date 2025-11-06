@@ -9,6 +9,7 @@ module UnusedFieldChecker.Validator
     , reportUnusedFields
     ) where
 
+import Control.Monad (when)
 import Data.List (foldl', nub)
 import qualified Data.Map as Map
 import Data.Text (Text)
