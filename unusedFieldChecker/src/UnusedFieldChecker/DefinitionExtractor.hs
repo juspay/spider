@@ -94,6 +94,7 @@ extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fiel
                 fieldTypeStr = pack $ showSDocUnsafe $ ppr $ TyCo.scaledThing fieldType
                 isMaybe = isMaybeType (TyCo.scaledThing fieldType)
                 location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
+                isSingleField = length fieldLabels == 1  -- GHC optimizes away single-field accessors
 
                 -- Extract package name from the type constructor
                 packageName = case nameModule_maybe tyConName of
@@ -113,6 +114,7 @@ extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fiel
                 , fieldDefPackageName = packageName
                 , fieldDefFullyQualifiedType = fullyQualifiedType
                 , fieldDefTypeConstructor = typeConstructor
+                , fieldDefIsSingleField = isSingleField
                 }
         else return []
 #else
@@ -124,6 +126,7 @@ extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fiel
                 fieldTypeStr = pack $ showSDocUnsafe $ ppr fieldType
                 isMaybe = isMaybeType fieldType
                 location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
+                isSingleField = length fieldLabels == 1  -- GHC optimizes away single-field accessors
 
                 -- Extract package name from the type constructor
                 packageName = case nameModule_maybe tyConName of
@@ -143,6 +146,7 @@ extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fiel
                 , fieldDefPackageName = packageName
                 , fieldDefFullyQualifiedType = fullyQualifiedType
                 , fieldDefTypeConstructor = typeConstructor
+                , fieldDefIsSingleField = isSingleField
                 }
         else return []
 #endif

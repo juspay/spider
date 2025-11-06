@@ -38,6 +38,7 @@ data FieldDefinition = FieldDefinition
     , fieldDefPackageName :: Text
     , fieldDefFullyQualifiedType :: Text  -- moduleName.typeName
     , fieldDefTypeConstructor :: Text     -- Type constructor for matching
+    , fieldDefIsSingleField :: Bool       -- True if this is the only field in the record (GHC optimizes away accessor)
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 data UsageType

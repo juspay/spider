@@ -56,7 +56,9 @@ validateFields AggregatedFieldInfo{..} =
             isUsed = case Map.lookup fieldName allFieldUsages of
                 Nothing -> False
                 Just usages -> any isRealUsage usages
-        in if isUsed
+            -- Single-field records are automatically considered "used" since GHC optimizes away the accessor
+            isSingleFieldRecord = fieldDefIsSingleField fieldDef
+        in if isUsed || isSingleFieldRecord
             then (unusedMaybe, unusedNonMaybe, fieldDef : used)
             else if fieldDefIsMaybe fieldDef
                 then (fieldDef : unusedMaybe, unusedNonMaybe, used)
