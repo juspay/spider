@@ -38,6 +38,7 @@ import Type
 import Var
 #endif
 
+import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Data.List (foldl')
 import Data.Text (Text, pack)
@@ -98,6 +99,14 @@ extractUsagesFromExpr modName currentPkgName expr = case expr of
     
     -- Application: check for HasField and recurse
     App func args -> do
+        -- Debug logging for function applications
+        case func of
+            Var fv -> do
+                let funcName = pack (nameStableString $ idName fv)
+                when ("getField" `T.isInfixOf` funcName || "$sel:" `T.isInfixOf` funcName) $
+                    liftIO $ putStrLn $ "[DEBUG APP] Function app: " ++ T.unpack funcName
+            _ -> return ()
+
         funcUsages <- extractUsagesFromExpr modName currentPkgName func
         argUsages <- extractUsagesFromExpr modName currentPkgName args
         hasFieldUsages <- detectHasField modName currentPkgName func args
@@ -131,8 +140,21 @@ extractUsagesFromExpr modName currentPkgName expr = case expr of
 -- | Detect HasField constraints (the key to nested field access!)
 -- Now accepts currentPkgName for filtering
 detectHasField :: Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
-detectHasField modName currentPkgName func (Var hasFieldVar)
-    | "$_sys$$dHasField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) = do
+detectHasField modName currentPkgName func args = do
+    -- Debug: Log when we detect potential HasField usage
+    case args of
+        Var hasFieldVar -> do
+            let varName = pack (nameStableString $ idName hasFieldVar)
+            when ("$dHasField" `T.isInfixOf` varName || "getField" `T.isInfixOf` varName) $
+                liftIO $ putStrLn $ "[DEBUG HasField] Found potential HasField: " ++ T.unpack varName
+            detectHasFieldFromVar modName currentPkgName func hasFieldVar
+        _ -> return []
+
+detectHasFieldFromVar :: Text -> Text -> CoreExpr -> Id -> IO [FieldUsage]
+detectHasFieldFromVar modName currentPkgName func hasFieldVar
+    | "$_sys$$dHasField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) ||
+      "$dHasField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) ||
+      "getField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) = do
         -- Extract field info from HasField constraint
         case func of
             -- Pattern: App (App (App _ (Type fieldName)) (Type recordType)) (Type fieldType)
@@ -159,7 +181,6 @@ detectHasField modName currentPkgName func (Var hasFieldVar)
                     else return []
             _ -> return []
     | otherwise = return []
-detectHasField _ _ _ _ = return []
 
 -- | Extract field name from type-level string
 extractFieldNameFromType :: Type -> Text
