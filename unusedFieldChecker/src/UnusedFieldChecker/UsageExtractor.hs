@@ -250,11 +250,16 @@ extractUsagesFromAlt' modName currentPkgName (DataAlt dataCon, boundVars, expr) 
         tyConName = getName tc
         typeName = pack $ nameStableString tyConName
         typeConstructor = typeName
-        
+
         -- Check if this is a library type being pattern matched
         isLibraryType = isLibraryTypeConstructor typeConstructor
         fieldLabels = dataConFieldLabels dataCon
-    
+
+    when ("NotificationRequestItem" `T.isInfixOf` typeName || "NotificationItem" `T.isInfixOf` typeName) $
+        liftIO $ putStrLn $ "[DEBUG CASE] Pattern match on: " ++ T.unpack typeName ++
+                           " BoundVars: " ++ show (length boundVars) ++
+                           " FieldLabels: " ++ show (length fieldLabels)
+
     let packagePattern = "$" <> currentPkgName <> "-"
         shouldInclude = packagePattern `T.isPrefixOf` typeConstructor
     
