@@ -1082,23 +1082,17 @@ loadFieldInfoFileAbsolute outputPath fullPath = do
             putStrLn $ "[DEBUG LOAD] File does not exist: " ++ fullPath
             return Nothing
         else do
-            -- Check if JSON is stale
-            stale <- isJsonStale outputPath fullPath
-            if stale
-                then do
-                    putStrLn $ "[DEBUG LOAD] Skipping stale JSON: " ++ fullPath
+            -- Load JSON without staleness check (files are overwritten during compilation anyway)
+            content <- BS.readFile fullPath
+            case decode (BL.fromStrict content) of
+                Just info -> do
+                    putStrLn $ "[DEBUG LOAD] Loaded " ++ fullPath ++ " - Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
+                              " - Defs: " ++ show (length (moduleFieldDefs info)) ++
+                              " - Usages: " ++ show (length (moduleFieldUsages info))
+                    return (Just info)
+                Nothing -> do
+                    putStrLn $ "[DEBUG LOAD] Warning: Failed to parse " ++ fullPath
                     return Nothing
-                else do
-                    content <- BS.readFile fullPath
-                    case decode (BL.fromStrict content) of
-                        Just info -> do
-                            putStrLn $ "[DEBUG LOAD] Loaded " ++ fullPath ++ " - Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
-                                      " - Defs: " ++ show (length (moduleFieldDefs info)) ++
-                                      " - Usages: " ++ show (length (moduleFieldUsages info))
-                            return (Just info)
-                        Nothing -> do
-                            putStrLn $ "[DEBUG LOAD] Warning: Failed to parse " ++ fullPath
-                            return Nothing
 
 -- Load a single field info JSON file
 loadFieldInfoFile :: FilePath -> FilePath -> IO (Maybe ModuleFieldInfo)
