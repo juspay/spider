@@ -205,14 +205,21 @@ extractFieldUsagesPass opts guts = do
                 let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
 
                 -- Emit compilation errors for unused fields
-                when (not $ null errors) $ do
-                    liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 9.x] Found " ++ show (length errors) ++ " unused fields"
-                    forM_ errors $ \(locStr, msg, _) -> do
-                        let srcSpan = parseLocationForCore locStr
-                            errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
-                        GHC.Core.Opt.Monad.putMsg errMsg
-                    -- Throw an error to fail compilation
-                    liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                if not $ null errors
+                    then do
+                        liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 9.x] Found " ++ show (length errors) ++ " unused fields"
+                        forM_ errors $ \(locStr, msg, _) -> do
+                            let srcSpan = parseLocationForCore locStr
+                                errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
+                            GHC.Core.Opt.Monad.putMsg errMsg
+                        -- Clean up markers before failing
+                        liftIO $ cleanupCompletionMarkers (path cliOptions)
+                        -- Throw an error to fail compilation
+                        liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                    else do
+                        -- No errors - clean up and continue
+                        liftIO $ cleanupCompletionMarkers (path cliOptions)
+                        liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
 
             return guts
 -- Helper function to parse location strings in CoreM context
@@ -299,14 +306,21 @@ extractFieldUsagesPass opts guts = do
                 let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
 
                 -- Emit compilation errors for unused fields
-                when (not $ null errors) $ do
-                    liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 8.x] Found " ++ show (length errors) ++ " unused fields"
-                    forM_ errors $ \(locStr, msg, _) -> do
-                        let srcSpan = parseLocationForCore locStr
-                            errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
-                        CoreMonad.putMsg errMsg
-                    -- Throw an error to fail compilation
-                    liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                if not $ null errors
+                    then do
+                        liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 8.x] Found " ++ show (length errors) ++ " unused fields"
+                        forM_ errors $ \(locStr, msg, _) -> do
+                            let srcSpan = parseLocationForCore locStr
+                                errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
+                            CoreMonad.putMsg errMsg
+                        -- Clean up markers before failing
+                        liftIO $ cleanupCompletionMarkers (path cliOptions)
+                        -- Throw an error to fail compilation
+                        liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                    else do
+                        -- No errors - clean up and continue
+                        liftIO $ cleanupCompletionMarkers (path cliOptions)
+                        liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
 
             return guts
 
@@ -361,10 +375,6 @@ tryAcquireValidationLock outputPath = do
                     hFlush handle
                     hClose handle
                     putStrLn "[DEBUG LOCK] Acquired validation lock successfully"
-
-                    -- Clean up completion markers after validation
-                    cleanupCompletionMarkers outputPath
-
                     return True
 
 -- | Clean up completion marker files
@@ -990,11 +1000,31 @@ loadAllFieldInfo outputPath = do
         else do
             allJsonFiles <- findAllJsonFiles outputPath
             putStrLn $ "[DEBUG LOAD] Found " ++ show (length allJsonFiles) ++ " JSON files total"
-            mapM_ (\f -> putStrLn $ "  JSON file: " ++ f) allJsonFiles
             results <- mapM (loadFieldInfoFileAbsolute outputPath) allJsonFiles
             let loaded = catMaybes results
-            putStrLn $ "[DEBUG LOAD] Successfully loaded " ++ show (length loaded) ++ " module infos"
-            return loaded
+
+            -- Merge fieldDefs and fieldUsages from separate files into single ModuleFieldInfo
+            let merged = mergeModuleFieldInfos loaded
+
+            putStrLn $ "[DEBUG LOAD] Successfully loaded and merged " ++ show (length merged) ++ " module infos"
+            mapM_ (\info -> putStrLn $ "  Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
+                                      " - Defs: " ++ show (length (moduleFieldDefs info)) ++
+                                      " - Usages: " ++ show (length (moduleFieldUsages info))) merged
+            return merged
+
+-- | Merge ModuleFieldInfo entries with the same module name
+-- This combines .fieldDefs.json and .fieldUsages.json into single entries
+mergeModuleFieldInfos :: [ModuleFieldInfo] -> [ModuleFieldInfo]
+mergeModuleFieldInfos infos =
+    let grouped = Map.fromListWith combineModuleInfo [(UnusedFieldChecker.Types.moduleName info, info) | info <- infos]
+    in Map.elems grouped
+  where
+    combineModuleInfo :: ModuleFieldInfo -> ModuleFieldInfo -> ModuleFieldInfo
+    combineModuleInfo info1 info2 = ModuleFieldInfo
+        { moduleFieldDefs = moduleFieldDefs info1 ++ moduleFieldDefs info2
+        , moduleFieldUsages = moduleFieldUsages info1 ++ moduleFieldUsages info2
+        , moduleName = UnusedFieldChecker.Types.moduleName info1  -- They have the same name
+        }
 
 -- Recursively find all JSON files in directory tree
 findAllJsonFiles :: FilePath -> IO [FilePath]
