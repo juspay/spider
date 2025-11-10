@@ -182,9 +182,10 @@ extractFieldUsagesPass opts guts = do
                 putStrLn $ "[DEBUG SAVE] Saving field usages to: " ++ fullPath
                 createDirectoryIfMissing True (takeDirectory fullPath)
                 BL.writeFile fullPath (encodePretty moduleInfo)
+                putStrLn $ "[DEBUG SAVE] Successfully saved field usages"
 
-                -- Mark this module as complete
-                markModuleComplete outputPath modName
+            -- Mark this module as complete
+            liftIO $ markModuleComplete (path cliOptions) modName
 
             -- Try to trigger validation if all modules are complete
             shouldValidate <- liftIO $ tryAcquireValidationLock (path cliOptions)
@@ -275,9 +276,10 @@ extractFieldUsagesPass opts guts = do
                 putStrLn $ "[DEBUG SAVE] Saving field usages to: " ++ fullPath
                 createDirectoryIfMissing True (takeDirectory fullPath)
                 BL.writeFile fullPath (encodePretty moduleInfo)
+                putStrLn $ "[DEBUG SAVE] Successfully saved field usages"
 
-                -- Mark this module as complete
-                markModuleComplete outputPath modName
+            -- Mark this module as complete
+            liftIO $ markModuleComplete (path cliOptions) modName
 
             -- Try to trigger validation if all modules are complete
             shouldValidate <- liftIO $ tryAcquireValidationLock (path cliOptions)
