@@ -197,15 +197,6 @@ extractFieldUsagesPass opts guts = do
 
                 let aggregated = aggregateFieldInfo allModuleInfos
 
-            -- Debug: Check exclusion config
-            liftIO $ do
-                putStrLn $ "\n[DEBUG CONFIG GHC 9.x] Exclusion config loaded:"
-                putStrLn $ "  includeFiles: " ++ show (includeFiles exclusionConfig)
-                putStrLn $ "  excludeFiles: " ++ show (excludeFiles exclusionConfig)
-                case includeFiles exclusionConfig of
-                    Just _ -> putStrLn $ "  -> Using Phase 2 validation (validateFieldsForTypesUsedInConfiguredModules)"
-                    Nothing -> putStrLn $ "  -> Using Phase 1 validation (validateFieldsWithExclusions)"
-
                 -- Phase 2: Use type-scoped validation when includeFiles is configured
                 validationResult <- liftIO $ case includeFiles exclusionConfig of
                     Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
