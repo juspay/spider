@@ -63,7 +63,7 @@ import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isLower)
-import Data.List (foldl', nub)
+import Data.List (foldl', nub, isPrefixOf, isSuffixOf)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text, pack, unpack)
@@ -928,7 +928,7 @@ loadAllFieldInfo outputPath = do
             allJsonFiles <- findAllJsonFiles outputPath
             putStrLn $ "[DEBUG LOAD] Found " ++ show (length allJsonFiles) ++ " JSON files total"
             mapM_ (\f -> putStrLn $ "  JSON file: " ++ f) allJsonFiles
-            results <- mapM (loadFieldInfoFileAbsolute) allJsonFiles
+            results <- mapM (loadFieldInfoFileAbsolute outputPath) allJsonFiles
             let loaded = catMaybes results
             putStrLn $ "[DEBUG LOAD] Successfully loaded " ++ show (length loaded) ++ " module infos"
             return loaded
@@ -948,35 +948,41 @@ findAllJsonFiles dir = do
     return $ concat allFiles
 
 -- Load field info from absolute file path
--- Check if a JSON file is stale by comparing with source file modification time
-isJsonStale :: FilePath -> IO Bool
-isJsonStale jsonPath = catchIOError checkStale (\_ -> return False)
+-- Check if a JSON file is orphaned (source file no longer exists)
+-- We don't check modification time because during compilation, some modules may not have
+-- written their fresh JSON yet, so we'd skip valid data from the previous compilation
+isJsonStale :: FilePath -> FilePath -> IO Bool
+isJsonStale outputPath jsonPath = catchIOError checkStale (\_ -> return False)
   where
     checkStale = do
         -- Extract source file path from JSON filename
-        -- e.g., "src/Foo/Bar.hs.fieldDefs.json" -> "src/Foo/Bar.hs"
-        let sourcePath = if ".fieldDefs.json" `T.isSuffixOf` pack jsonPath
-                         then T.unpack $ T.replace ".fieldDefs.json" "" $ pack jsonPath
-                         else if ".fieldUsages.json" `T.isSuffixOf` pack jsonPath
-                         then T.unpack $ T.replace ".fieldUsages.json" "" $ pack jsonPath
-                         else ""
+        -- JSON: .juspay/unusedFieldChecker/src/Foo/Bar.hs.fieldDefs.json
+        -- Source: src/Foo/Bar.hs
+        let normalizedOutputPath = if null outputPath || last outputPath == '/'
+                                   then outputPath
+                                   else outputPath ++ "/"
+            relativePath = if normalizedOutputPath `isPrefixOf` jsonPath
+                          then drop (length normalizedOutputPath) jsonPath
+                          else jsonPath
+            sourcePath = if ".fieldDefs.json" `isSuffixOf` relativePath
+                        then take (length relativePath - 16) relativePath  -- 16 = length of ".fieldDefs.json"
+                        else if ".fieldUsages.json" `isSuffixOf` relativePath
+                        then take (length relativePath - 17) relativePath  -- 17 = length of ".fieldUsages.json"
+                        else ""
 
         if null sourcePath
             then return False  -- Can't determine source file, assume not stale
             else do
                 sourceExists <- doesFileExist sourcePath
                 if not sourceExists
-                    then return True  -- Source doesn't exist, JSON is stale (orphaned)
-                    else do
-                        sourceTime <- getModificationTime sourcePath
-                        jsonTime <- getModificationTime jsonPath
-                        let isStale = sourceTime > jsonTime
-                        when isStale $
-                            putStrLn $ "[DEBUG STALE] JSON file is stale: " ++ jsonPath ++ " (source is newer)"
-                        return isStale
+                    then do
+                        putStrLn $ "[DEBUG STALE] Orphaned JSON (source not found): " ++ jsonPath
+                        return True  -- Source doesn't exist, JSON is orphaned
+                    else
+                        return False  -- Source exists, JSON is valid (even if older)
 
-loadFieldInfoFileAbsolute :: FilePath -> IO (Maybe ModuleFieldInfo)
-loadFieldInfoFileAbsolute fullPath = do
+loadFieldInfoFileAbsolute :: FilePath -> FilePath -> IO (Maybe ModuleFieldInfo)
+loadFieldInfoFileAbsolute outputPath fullPath = do
     exists <- doesFileExist fullPath
     if not exists
         then do
@@ -984,7 +990,7 @@ loadFieldInfoFileAbsolute fullPath = do
             return Nothing
         else do
             -- Check if JSON is stale
-            stale <- isJsonStale fullPath
+            stale <- isJsonStale outputPath fullPath
             if stale
                 then do
                     putStrLn $ "[DEBUG LOAD] Skipping stale JSON: " ++ fullPath
