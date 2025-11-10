@@ -145,35 +145,40 @@ extractFieldUsagesPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 extractFieldUsagesPass opts guts = do
     let cliOptions = parseCliOptions opts
         modName = pack $ moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
-        modulePath = moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
+        -- Convert module name to file path: Euler.API.Gateway -> src/Euler/API/Gateway.hs
+        moduleNameStr = moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
+        modulePath = "src/" ++ map (\c -> if c == '.' then '/' else c) moduleNameStr ++ ".hs"
         currentPackage = GHC.Unit.Types.moduleUnit $ mg_module guts
         binds = mg_binds guts
 
     liftIO $ putStrLn $ "[DEBUG PHASE] extractFieldUsagesPass called for: " ++ T.unpack modName
+    liftIO $ putStrLn $ "[DEBUG PHASE] Module path: " ++ modulePath
 
     exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
-    
+
     if isModuleExcluded exclusionConfig modName
         then return guts
         else do
             fieldUsages <- liftIO $ extractFieldUsagesFromCore modName currentPackage binds
-            
+
             liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
                 putStrLn $ "\n[" ++ T.unpack modName ++ "] Core Field Usages:"
                 forM_ fieldUsages $ \usage ->
-                    putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage) 
+                    putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage)
                         ++ " (type: " ++ T.unpack (fieldUsageTypeConstructor usage) ++ ")"
-            
+
             let moduleInfo = ModuleFieldInfo
                     { moduleFieldDefs = []  -- Already saved in typeCheckResultAction
                     , moduleFieldUsages = fieldUsages
                     , moduleName = modName
                     }
-            
+
             liftIO $ do
                 let outputPath = path cliOptions
-                createDirectoryIfMissing True outputPath
-                let fullPath = outputPath </> (modulePath <> ".fieldUsages.json")
+                    fileName = modulePath <> ".fieldUsages.json"
+                    fullPath = outputPath </> fileName
+                putStrLn $ "[DEBUG SAVE] Saving field usages to: " ++ fullPath
+                createDirectoryIfMissing True (takeDirectory fullPath)
                 BL.writeFile fullPath (encodePretty moduleInfo)
             
             -- Perform validation
@@ -237,36 +242,40 @@ extractFieldUsagesPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 extractFieldUsagesPass opts guts = do
     let cliOptions = parseCliOptions opts
         modName = pack $ moduleNameString $ moduleName $ mg_module guts
-        modulePath = moduleNameString $ moduleName $ mg_module guts
+        -- Convert module name to file path: Euler.API.Gateway -> src/Euler/API/Gateway.hs
+        moduleNameStr = moduleNameString $ moduleName $ mg_module guts
+        modulePath = "src/" ++ map (\c -> if c == '.' then '/' else c) moduleNameStr ++ ".hs"
         currentPackage = moduleUnitId $ mg_module guts
         binds = mg_binds guts
-    
+
     -- Load exclusion config
     exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
-    
+
     if isModuleExcluded exclusionConfig modName
         then return guts
         else do
             -- Extract field usages from Core bindings
             fieldUsages <- liftIO $ extractFieldUsagesFromCore modName currentPackage binds
-            
+
             liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
                 putStrLn $ "\n[" ++ T.unpack modName ++ "] Core Field Usages:"
                 forM_ fieldUsages $ \usage ->
                     putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage)
                         ++ " (type: " ++ T.unpack (fieldUsageTypeConstructor usage) ++ ")"
-            
+
             -- Save usages
             let moduleInfo = ModuleFieldInfo
                     { moduleFieldDefs = []  -- Already saved in typeCheckResultAction
                     , moduleFieldUsages = fieldUsages
                     , moduleName = modName
                     }
-            
+
             liftIO $ do
                 let outputPath = path cliOptions
-                createDirectoryIfMissing True outputPath
-                let fullPath = outputPath </> (modulePath <> ".fieldUsages.json")
+                    fileName = modulePath <> ".fieldUsages.json"
+                    fullPath = outputPath </> fileName
+                putStrLn $ "[DEBUG SAVE] Saving field usages to: " ++ fullPath
+                createDirectoryIfMissing True (takeDirectory fullPath)
                 BL.writeFile fullPath (encodePretty moduleInfo)
             
             -- Perform validation
