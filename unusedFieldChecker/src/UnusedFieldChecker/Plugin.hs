@@ -105,6 +105,9 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
 
     liftIO $ putStrLn $ "[DEBUG PHASE] collectFieldDefinitionsOnly called for: " ++ T.unpack modName
 
+    -- Clean up old build artifacts on first module compilation
+    liftIO $ cleanupOldBuildIfNeeded (path cliOptions)
+
     exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
     
     if isModuleExcluded exclusionConfig modName
@@ -342,6 +345,41 @@ parseLocationForCore locStr =
         _ -> Nothing
 #endif
 
+-- | Clean up old JSON files from previous build if this is a new build
+cleanupOldBuildIfNeeded :: FilePath -> IO ()
+cleanupOldBuildIfNeeded outputPath = do
+    let buildMarker = outputPath </> ".current-build"
+
+    -- Try to create the build marker atomically
+    result <- try (openFile buildMarker WriteMode) :: IO (Either SomeException Handle)
+    case result of
+        Left _ ->
+            -- Marker already exists, not first module of new build
+            return ()
+        Right handle -> do
+            -- First module of new build - clean up old files
+            hClose handle
+            putStrLn "[DEBUG CLEANUP] New build detected - cleaning up old JSON files from previous build"
+
+            -- Remove all JSON files
+            exists <- doesDirectoryExist outputPath
+            when exists $ do
+                allFiles <- findAllJsonFiles outputPath
+                mapM_ removeFile allFiles
+                putStrLn $ "[DEBUG CLEANUP] Removed " ++ show (length allFiles) ++ " old JSON files"
+
+            -- Clean up old markers
+            let completeDir = outputPath </> ".complete"
+                lockFile = outputPath </> ".validation.lock"
+
+            completeDirExists <- doesDirectoryExist completeDir
+            when completeDirExists $ do
+                markers <- listDirectory completeDir
+                mapM_ (\m -> removeFile (completeDir </> m)) markers
+
+            lockExists <- doesFileExist lockFile
+            when lockExists $ removeFile lockFile
+
 -- | Mark a module as having completed compilation
 markModuleComplete :: FilePath -> Text -> IO ()
 markModuleComplete outputPath modName = do
@@ -382,6 +420,7 @@ cleanupCompletionMarkers :: FilePath -> IO ()
 cleanupCompletionMarkers outputPath = do
     let completeDir = outputPath </> ".complete"
         lockFile = outputPath </> ".validation.lock"
+        buildMarker = outputPath </> ".current-build"
 
     -- Remove all completion markers
     dirExists <- doesDirectoryExist completeDir
@@ -395,6 +434,12 @@ cleanupCompletionMarkers outputPath = do
     when lockExists $ do
         removeFile lockFile
         putStrLn "[DEBUG CLEANUP] Removed validation lock"
+
+    -- Remove build marker
+    buildMarkerExists <- doesFileExist buildMarker
+    when buildMarkerExists $ do
+        removeFile buildMarker
+        putStrLn "[DEBUG CLEANUP] Removed build marker"
 
 collectAndValidateFieldInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectAndValidateFieldInfo opts modSummary tcEnv = do
