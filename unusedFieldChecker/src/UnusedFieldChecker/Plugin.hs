@@ -69,8 +69,9 @@ import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text, pack, unpack)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory)
+import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, getModificationTime)
 import System.FilePath ((</>), takeDirectory, takeExtension)
+import System.IO.Error (catchIOError)
 import UnusedFieldChecker.Types
 import UnusedFieldChecker.Validator
 import UnusedFieldChecker.Config
@@ -947,6 +948,33 @@ findAllJsonFiles dir = do
     return $ concat allFiles
 
 -- Load field info from absolute file path
+-- Check if a JSON file is stale by comparing with source file modification time
+isJsonStale :: FilePath -> IO Bool
+isJsonStale jsonPath = catchIOError checkStale (\_ -> return False)
+  where
+    checkStale = do
+        -- Extract source file path from JSON filename
+        -- e.g., "src/Foo/Bar.hs.fieldDefs.json" -> "src/Foo/Bar.hs"
+        let sourcePath = if ".fieldDefs.json" `T.isSuffixOf` pack jsonPath
+                         then T.unpack $ T.replace ".fieldDefs.json" "" $ pack jsonPath
+                         else if ".fieldUsages.json" `T.isSuffixOf` pack jsonPath
+                         then T.unpack $ T.replace ".fieldUsages.json" "" $ pack jsonPath
+                         else ""
+
+        if null sourcePath
+            then return False  -- Can't determine source file, assume not stale
+            else do
+                sourceExists <- doesFileExist sourcePath
+                if not sourceExists
+                    then return True  -- Source doesn't exist, JSON is stale (orphaned)
+                    else do
+                        sourceTime <- getModificationTime sourcePath
+                        jsonTime <- getModificationTime jsonPath
+                        let isStale = sourceTime > jsonTime
+                        when isStale $
+                            putStrLn $ "[DEBUG STALE] JSON file is stale: " ++ jsonPath ++ " (source is newer)"
+                        return isStale
+
 loadFieldInfoFileAbsolute :: FilePath -> IO (Maybe ModuleFieldInfo)
 loadFieldInfoFileAbsolute fullPath = do
     exists <- doesFileExist fullPath
@@ -955,16 +983,23 @@ loadFieldInfoFileAbsolute fullPath = do
             putStrLn $ "[DEBUG LOAD] File does not exist: " ++ fullPath
             return Nothing
         else do
-            content <- BS.readFile fullPath
-            case decode (BL.fromStrict content) of
-                Just info -> do
-                    putStrLn $ "[DEBUG LOAD] Loaded " ++ fullPath ++ " - Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
-                              " - Defs: " ++ show (length (moduleFieldDefs info)) ++
-                              " - Usages: " ++ show (length (moduleFieldUsages info))
-                    return (Just info)
-                Nothing -> do
-                    putStrLn $ "[DEBUG LOAD] Warning: Failed to parse " ++ fullPath
+            -- Check if JSON is stale
+            stale <- isJsonStale fullPath
+            if stale
+                then do
+                    putStrLn $ "[DEBUG LOAD] Skipping stale JSON: " ++ fullPath
                     return Nothing
+                else do
+                    content <- BS.readFile fullPath
+                    case decode (BL.fromStrict content) of
+                        Just info -> do
+                            putStrLn $ "[DEBUG LOAD] Loaded " ++ fullPath ++ " - Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
+                                      " - Defs: " ++ show (length (moduleFieldDefs info)) ++
+                                      " - Usages: " ++ show (length (moduleFieldUsages info))
+                            return (Just info)
+                        Nothing -> do
+                            putStrLn $ "[DEBUG LOAD] Warning: Failed to parse " ++ fullPath
+                            return Nothing
 
 -- Load a single field info JSON file
 loadFieldInfoFile :: FilePath -> FilePath -> IO (Maybe ModuleFieldInfo)
