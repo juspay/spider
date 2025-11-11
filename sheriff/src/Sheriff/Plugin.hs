@@ -31,7 +31,7 @@ import Data.Function (on)
 import qualified Data.HashMap.Strict as HM
 import Data.List (nub, sortBy, groupBy, find, isInfixOf, isSuffixOf, isPrefixOf)
 import Data.List.Extra (splitOn)
-import Data.Maybe (catMaybes, fromMaybe)
+import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
 import Data.Yaml
 import Debug.Trace (traceShowId, trace)
 import GHC hiding (exprType)
@@ -655,7 +655,10 @@ validateDBRule rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName
                           True  -> checkDBViolationMatchAll
                           False -> checkDBViolationWithoutMatchAll
   violations <- catMaybes <$> mapM checkDBViolation simplifiedExprs
-  pure violations
+  let emptyWhereClauseViolation = if length simplifiedExprs == 0 && length ruleColNames > 0
+                                    then [(expr, EmptyWhereClause tableName rule)]
+                                    else []
+  pure $ emptyWhereClauseViolation <> violations
   where
     -- Since we need all columns to be indexed, we need to check for the columns in the order of composite key
     checkDBViolationMatchAll :: [SimplifiedIsClause] -> TcM (Maybe (LHsExpr GhcTc, Violation))
@@ -741,11 +744,7 @@ getIsClauseData fieldArg _comp _clause = do
         ("$sel" : colName : tableName : []) -> pure $ Just (colName, tableName)
         _ -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ print "Invalid pattern for Selector way") >> pure Nothing
     RecordDot -> do
-      let tyApps = filter (\x -> case x of 
-                                  (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> True
-                                  (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> True
-                                  _ -> False
-                          ) $ (traverseAst fieldArg :: [HsExpr GhcTc])
+      let tyApps = mapMaybe getRecordDotSelector $ (traverseAst fieldArg :: [HsExpr GhcTc])
       if length tyApps > 0 
         then 
           case head tyApps of
@@ -803,6 +802,14 @@ getIsClauseData fieldArg _comp _clause = do
             _ -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ putStrLn "OpApp not present. Should never be the case as we already filtered.") >> pure Nothing
   
   pure mbColNameAndTableName
+  where
+    getRecordDotSelector :: HsExpr GhcTc -> Maybe (HsExpr GhcTc)
+    getRecordDotSelector recordDotExpr = 
+      case recordDotExpr of 
+        (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> Just recordDotExpr
+        (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> Just recordDotExpr
+        (PatHsWrap (WpCompose _ wp@(WpCompose _ _)) hsat@(HsAppType _ _ fldName)) -> getRecordDotSelector (PatHsWrap wp hsat)
+        _ -> Nothing
 
 -- Get how DB field is being extracted in sequelize
 getDBFieldSpecType :: LHsExpr GhcTc -> DBFieldSpecType

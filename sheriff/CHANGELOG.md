@@ -1,5 +1,9 @@
 # Revision history for sheriff
 
+## 0.2.1.9
+* Add EmptyWhereClause violation
+* Add missing pattern for RecordDotSelector case
+
 ## 0.2.1.8
 * Add module level & function level exceptions to DB rules
 

@@ -341,6 +341,7 @@ data Violation =
     ArgTypeBlocked String String String FunctionRule
   | FnBlockedInArg (String, String) String Value FunctionRule
   | NonIndexedDBColumn String String DBRule
+  | EmptyWhereClause String DBRule
   | FnUseBlocked String FunctionRule
   | FnSigBlocked String String FunctionRule
   | InfiniteRecursionDetected InfiniteRecursionRule
@@ -354,5 +355,6 @@ instance Show Violation where
     (FnUseBlocked ruleFnName rule)                   -> "Use of '" <> ruleFnName <> "' in the code is not allowed."
     (FnSigBlocked ruleFnName ruleFnSig rule)         -> "Use of '" <> ruleFnName <> "' with signature '" <> ruleFnSig <> "' is not allowed in the code."
     (NonIndexedDBColumn colName tableName _)         -> "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
+    (EmptyWhereClause tableName _)                   -> "Query with empty where clause on table '" <> (tableName) <> "' is not allowed."
     (InfiniteRecursionDetected _)                    -> "Infinite recursion detected in expression"
     NoViolation                                      -> "NoViolation"
