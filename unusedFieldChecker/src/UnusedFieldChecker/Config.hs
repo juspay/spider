@@ -50,27 +50,31 @@ loadExclusionConfigCached configPath = do
 
 isFieldExcluded :: ExclusionConfig -> FieldDefinition -> Bool
 isFieldExcluded ExclusionConfig{..} FieldDefinition{..} =
-    any matchesRule exclusions
+    any matchesModuleExclusion exclusions
   where
-    matchesRule :: ExclusionRule -> Bool
-    matchesRule ExclusionRule{..} =
+    matchesModuleExclusion :: ModuleExclusion -> Bool
+    matchesModuleExclusion ModuleExclusion{..} =
         moduleMatches exclModule fieldDefModule &&
+        any matchesTypeExclusion exclTypes
+
+    matchesTypeExclusion :: TypeExclusion -> Bool
+    matchesTypeExclusion TypeExclusion{..} =
         typeMatches exclDataType fieldDefTypeName &&
         fieldMatches exclFields fieldDefName
-    
+
     moduleMatches :: Text -> Text -> Bool
     moduleMatches pattern modName
         | pattern == "*" = True
-        | T.isSuffixOf ".*" pattern = 
+        | T.isSuffixOf ".*" pattern =
             let prefix = T.dropEnd 2 pattern
             in prefix `T.isPrefixOf` modName
         | otherwise = pattern == modName
-    
+
     typeMatches :: Text -> Text -> Bool
     typeMatches pattern typeName
         | pattern == "*" = True
         | otherwise = pattern == typeName
-    
+
     fieldMatches :: [Text] -> Text -> Bool
     fieldMatches [] _ = True
     fieldMatches fields fieldName = fieldName `elem` fields

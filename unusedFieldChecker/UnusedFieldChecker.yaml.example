@@ -5,15 +5,19 @@
 # 3. Only check specific files/modules (whitelist mode)
 
 # ============================================================================
+# PRIORITY ORDER (how exclusions are applied):
+# ============================================================================
+# 1. includeFiles - If set, ONLY these modules are checked (whitelist mode)
+# 2. excludeFiles - If includeFiles not set, skip these modules (blacklist mode)
+# 3. exclusions - Field-level exclusions within checked modules
+#
+# Example: If includeFiles = ["MyApp.Core.*"], then ONLY MyApp.Core.* modules
+# are checked, and excludeFiles is completely ignored. Then within those checked
+# modules, the exclusions are applied to skip specific fields.
+
+# ============================================================================
 # FILE-LEVEL EXCLUSIONS
 # ============================================================================
-
-# Exclude specific files/modules from being checked entirely
-# Supports wildcards: "Module.*" matches all submodules, "*.Internal" matches any module ending with .Internal
-excludeFiles:
-  # - "MyApp.Legacy.OldTypes"
-  # - "MyApp.Generated.*"
-  # - "*.Internal"
 
 # Optional: Only check these files/modules (whitelist mode)
 # If this is set, ONLY these files will be checked (excludeFiles will be ignored)
@@ -23,37 +27,51 @@ excludeFiles:
 #   - "MyApp.API.Types"
 #   - "MyApp.Domain.*"
 
+# Exclude specific files/modules from being checked entirely
+# Supports wildcards: "Module.*" matches all submodules, "*.Internal" matches any module ending with .Internal
+# NOTE: This is IGNORED if includeFiles is set (includeFiles takes priority)
+excludeFiles: []
+  # - "MyApp.Legacy.OldTypes"
+  # - "MyApp.Generated.*"
+  # - "*.Internal"
+
 # ============================================================================
-# FIELD-LEVEL EXCLUSIONS
+# FIELD-LEVEL EXCLUSIONS (New cleaner format - group types by module)
 # ============================================================================
 
 # Exclude specific fields from unused field validation
 # This is useful for backward compatibility with legacy code
 exclusions:
-  # Example 1: Exclude specific fields in a type
-  - module: "MyModule.Types"
-    dataType: "User"
-    fields:
-      - "legacyField1"
-      - "legacyField2"
-      - "deprecatedUserId"
-  
-  # Example 2: Exclude all fields in a specific type
-  - module: "Legacy.OldTypes"
-    dataType: "OldConfig"
-    fields: []  # Empty list means exclude ALL fields in this type
-  
-  # Example 3: Use wildcards for module matching
+  # Example 1: Multiple types in the same module (no repetition!)
+  - module: "MyApp.API.Types"
+    types:
+      - dataType: "User"
+        fields:
+          - "legacyField1"
+          - "legacyField2"
+          - "deprecatedUserId"
+
+      - dataType: "Product"
+        fields:
+          - "oldPriceField"
+          - "legacyStockCount"
+
+      - dataType: "Order"
+        fields: []  # Empty list means exclude ALL fields in this type
+
+  # Example 2: Use wildcards for module matching
   - module: "MyApp.Legacy.*"  # Matches MyApp.Legacy.Types, MyApp.Legacy.Models, etc.
-    dataType: "LegacyData"
-    fields:
-      - "oldField"
-  
-  # Example 4: Exclude fields across all modules (use with caution!)
+    types:
+      - dataType: "LegacyData"
+        fields:
+          - "oldField"
+
+  # Example 3: Exclude fields across all modules (use with caution!)
   - module: "*"
-    dataType: "GlobalConfig"
-    fields:
-      - "internalField"
+    types:
+      - dataType: "GlobalConfig"
+        fields:
+          - "internalField"
 
 # Notes:
 # - Module names should be fully qualified (e.g., "MyApp.Types.User")

@@ -1,5 +1,6 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module UnusedFieldChecker.Types where
 
@@ -21,7 +22,7 @@ data CliOptions = CliOptions
 
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions
-    { path = "/tmp/unusedFieldChecker/"
+    { path = ".juspay/unusedFieldChecker/"
     , port = 4445
     , host = "::1"
     , log = False
@@ -85,15 +86,46 @@ data ValidationResult = ValidationResult
     , usedFields :: [FieldDefinition]
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
-data ExclusionRule = ExclusionRule
-    { exclModule :: Text 
-    , exclDataType :: Text 
+-- Individual type exclusion within a module
+data TypeExclusion = TypeExclusion
+    { exclDataType :: Text
     , exclFields :: [Text]
-    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData)
 
+instance ToJSON TypeExclusion where
+    toJSON (TypeExclusion dt fields) = object
+        [ "dataType" .= dt
+        , "fields" .= fields
+        ]
 
+instance FromJSON TypeExclusion where
+    parseJSON = withObject "TypeExclusion" $ \v -> TypeExclusion
+        <$> v .: "dataType"
+        <*> v .: "fields"
+
+-- Module-level exclusion with grouped types (new cleaner format)
+data ModuleExclusion = ModuleExclusion
+    { exclModule :: Text
+    , exclTypes :: [TypeExclusion]
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData)
+
+instance ToJSON ModuleExclusion where
+    toJSON (ModuleExclusion mod types) = object
+        [ "module" .= mod
+        , "types" .= types
+        ]
+
+instance FromJSON ModuleExclusion where
+    parseJSON = withObject "ModuleExclusion" $ \v -> ModuleExclusion
+        <$> v .: "module"
+        <*> v .: "types"
+
+-- Configuration with priority order:
+-- 1. includeFiles (if set, ONLY these modules are checked - whitelist mode)
+-- 2. excludeFiles (if includeFiles not set, these modules are skipped - blacklist mode)
+-- 3. exclusions (field-level exclusions within checked modules)
 data ExclusionConfig = ExclusionConfig
-    { exclusions :: [ExclusionRule]
+    { exclusions :: [ModuleExclusion]
     , excludeFiles :: [Text]
     , includeFiles :: Maybe [Text]
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
