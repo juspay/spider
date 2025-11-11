@@ -655,7 +655,7 @@ validateDBRule rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName
                           True  -> checkDBViolationMatchAll
                           False -> checkDBViolationWithoutMatchAll
   violations <- catMaybes <$> mapM checkDBViolation simplifiedExprs
-  let emptyWhereClauseViolation = if length simplifiedExprs == 0 && length ruleColNames > 0
+  let emptyWhereClauseViolation = if (length simplifiedExprs == 0 || all (\x -> length x == 0) simplifiedExprs) && length ruleColNames > 0
                                     then [(expr, EmptyWhereClause tableName rule)]
                                     else []
   pure $ emptyWhereClauseViolation <> violations
@@ -706,7 +706,7 @@ type SimplifiedIsClause = (LHsExpr GhcTc, String, String)
 
 -- Simplify the complex `where` clause of SQL queries as OR queries at top (i.e. ((C1 and C2 and C3) OR (C1 AND C5) OR (C6)))
 trfWhereToSOP :: (HasPluginOpts PluginOpts) => [LHsExpr GhcTc] -> TcM [[SimplifiedIsClause]]
-trfWhereToSOP [] = pure [[]]
+trfWhereToSOP [] = pure [[]]  -- Needs to have empty list inside empty list to make the cross product work
 trfWhereToSOP (clause : ls) = do
   let res = getWhereClauseFnNameWithAllArgs clause
       (fnName, args) = fromMaybe ("NA", []) res
