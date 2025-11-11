@@ -69,7 +69,7 @@ import Data.Maybe (catMaybes, fromMaybe)
 import Data.Text (Text, pack, unpack)
 import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, getModificationTime, removeFile)
+import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, getModificationTime, removeFile, renameFile)
 import System.FilePath ((</>), takeDirectory, takeExtension, takeFileName)
 import System.IO (Handle, hClose, openFile, IOMode(..), hPutStrLn, hFlush)
 import System.IO.Error (catchIOError, isAlreadyExistsError)
@@ -136,7 +136,7 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
                 putStrLn $ "[DEBUG SAVE] Writing directly to: " ++ fullPath
                 -- Create all parent directories including subdirectories
                 createDirectoryIfMissing True (takeDirectory fullPath)
-                BL.writeFile fullPath (encodePretty moduleInfo)
+                atomicWriteFile fullPath (encodePretty moduleInfo)
                 putStrLn $ "[DEBUG SAVE] Successfully saved field definitions"
             
             return tcEnv
@@ -184,7 +184,7 @@ extractFieldUsagesPass opts guts = do
                     fullPath = outputPath </> fileName
                 putStrLn $ "[DEBUG SAVE] Saving field usages to: " ++ fullPath
                 createDirectoryIfMissing True (takeDirectory fullPath)
-                BL.writeFile fullPath (encodePretty moduleInfo)
+                atomicWriteFile fullPath (encodePretty moduleInfo)
                 putStrLn $ "[DEBUG SAVE] Successfully saved field usages"
 
             -- Mark this module as complete
@@ -285,7 +285,7 @@ extractFieldUsagesPass opts guts = do
                     fullPath = outputPath </> fileName
                 putStrLn $ "[DEBUG SAVE] Saving field usages to: " ++ fullPath
                 createDirectoryIfMissing True (takeDirectory fullPath)
-                BL.writeFile fullPath (encodePretty moduleInfo)
+                atomicWriteFile fullPath (encodePretty moduleInfo)
                 putStrLn $ "[DEBUG SAVE] Successfully saved field usages"
 
             -- Mark this module as complete
@@ -379,6 +379,20 @@ cleanupOldBuildIfNeeded outputPath = do
 
             lockExists <- doesFileExist lockFile
             when lockExists $ removeFile lockFile
+
+-- | Atomically write a file (to avoid file locking issues with parallel compilation)
+-- Write to a temp file first, then atomically rename
+atomicWriteFile :: FilePath -> BL.ByteString -> IO ()
+atomicWriteFile filePath content = do
+    let tempPath = filePath <> ".tmp." <> show (hash filePath)
+    -- Write to temp file
+    BL.writeFile tempPath content
+    -- Atomically rename temp file to target (this is atomic on POSIX)
+    renameFile tempPath filePath
+  where
+    -- Simple hash function for uniqueness
+    hash :: String -> Int
+    hash = foldl' (\h c -> 31 * h + fromEnum c) 0
 
 -- | Mark a module as having completed compilation
 markModuleComplete :: FilePath -> Text -> IO ()
@@ -489,7 +503,7 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
                 let outputPath = path cliOptions
                 createDirectoryIfMissing True outputPath
                 let fullPath = outputPath </> (modulePath <> ".fieldInfo.json")
-                BL.writeFile fullPath (encodePretty moduleInfo)
+                atomicWriteFile fullPath (encodePretty moduleInfo)
             
             -- Perform immediate validation for fields defined in this module
             let aggregated = aggregateFieldInfo [moduleInfo]
