@@ -154,7 +154,10 @@ detectHasField modName currentPkgName func args = do
             when ("$dHasField" `T.isInfixOf` varName || "getField" `T.isInfixOf` varName) $
                 liftIO $ putStrLn $ "[DEBUG HasField] Found potential HasField: " ++ T.unpack varName
             detectHasFieldFromVar modName currentPkgName func hasFieldVar
-        _ -> return []
+        _ -> do
+            -- Log when args is not a Var - might be missing HasField patterns
+            liftIO $ putStrLn $ "[DEBUG HasField MISS] Args is not a Var in module: " ++ T.unpack modName
+            return []
 
 detectHasFieldFromVar :: Text -> Text -> CoreExpr -> Id -> IO [FieldUsage]
 detectHasFieldFromVar modName currentPkgName func hasFieldVar
@@ -162,6 +165,7 @@ detectHasFieldFromVar modName currentPkgName func hasFieldVar
       "$dHasField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) ||
       "getField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) = do
         -- Extract field info from HasField constraint
+        liftIO $ putStrLn $ "[DEBUG HasField VAR MATCH] Checking func pattern in module: " ++ T.unpack modName
         case func of
             -- Pattern: App (App (App _ (Type fieldName)) (Type recordType)) (Type fieldType)
             App (App (App _ (Type fieldNameType)) (Type recordType)) (Type fieldType) -> do
@@ -195,7 +199,10 @@ detectHasFieldFromVar modName currentPkgName func hasFieldVar
                     else do
                         liftIO $ putStrLn $ "[DEBUG HasField FILTERED OUT] Skipping cross-package usage: " ++ T.unpack fieldName
                         return []
-            _ -> return []
+            _ -> do
+                -- Log when the func pattern doesn't match expected structure
+                liftIO $ putStrLn $ "[DEBUG HasField PATTERN MISS] Func pattern doesn't match in module: " ++ T.unpack modName
+                return []
     | otherwise = return []
 
 -- | Extract field name from type-level string
