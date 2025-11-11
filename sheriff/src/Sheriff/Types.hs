@@ -25,6 +25,7 @@ data PluginOpts = PluginOpts {
     rulesConfigPath       :: String,
     exceptionsConfigPath  :: String,
     matchAllInsideAnd     :: Bool,
+    checkEmptyWhereClause :: Bool,
     shouldCheckExceptions :: Bool,
     logDebugInfo          :: Bool,
     logWarnInfo           :: Bool,
@@ -39,6 +40,7 @@ defaultPluginOpts =
     throwCompilationError = True, 
     failOnFileNotFound    = True, 
     matchAllInsideAnd     = False,
+    checkEmptyWhereClause = False,
     savePath              = ".juspay/tmp/sheriff/", 
     indexedKeysPath       = ".juspay/indexedKeys.yaml" ,
     rulesConfigPath       = ".juspay/sheriffRules.yaml",
@@ -60,6 +62,7 @@ instance FromJSON PluginOpts where
     rulesConfigPath       <- o .:? "rulesConfigPath"       .!= (rulesConfigPath defaultPluginOpts)
     exceptionsConfigPath  <- o .:? "exceptionsConfigPath"  .!= (exceptionsConfigPath defaultPluginOpts)
     matchAllInsideAnd     <- o .:? "matchAllInsideAnd"     .!= (matchAllInsideAnd defaultPluginOpts)
+    checkEmptyWhereClause <- o .:? "checkEmptyWhereClause" .!= (checkEmptyWhereClause defaultPluginOpts)
     shouldCheckExceptions <- o .:? "matchAllInsideAnd"     .!= (shouldCheckExceptions defaultPluginOpts)
     logDebugInfo          <- o .:? "logDebugInfo"          .!= (logDebugInfo defaultPluginOpts)
     logWarnInfo           <- o .:? "logWarnInfo"           .!= (logWarnInfo defaultPluginOpts)

@@ -655,7 +655,7 @@ validateDBRule rule@(DBRule {db_rule_name = ruleName, table_name = ruleTableName
                           True  -> checkDBViolationMatchAll
                           False -> checkDBViolationWithoutMatchAll
   violations <- catMaybes <$> mapM checkDBViolation simplifiedExprs
-  let emptyWhereClauseViolation = if (length simplifiedExprs == 0 || all (\x -> length x == 0) simplifiedExprs) && length ruleColNames > 0
+  let emptyWhereClauseViolation = if (checkEmptyWhereClause . pluginOpts $ ?pluginOpts) && (length simplifiedExprs == 0 || all (\x -> length x == 0) simplifiedExprs) && length ruleColNames > 0
                                     then [(expr, EmptyWhereClause tableName rule)]
                                     else []
   pure $ emptyWhereClauseViolation <> violations
