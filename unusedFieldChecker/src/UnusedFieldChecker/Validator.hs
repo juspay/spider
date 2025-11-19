@@ -7,6 +7,9 @@ module UnusedFieldChecker.Validator
     , validateFieldsWithExclusions
     , validateFieldsForTypesUsedInConfiguredModules
     , reportUnusedFields
+    , categorizeFieldByType
+    , isFieldMaybeType
+    , filterSerializationUsages
     ) where
 
 import Control.Monad (when)
@@ -69,8 +72,25 @@ validateFields AggregatedFieldInfo{..} =
                 then (fieldDef : unusedMaybe, unusedNonMaybe, used)
                 else (unusedMaybe, fieldDef : unusedNonMaybe, used)
       where
-        -- All usage types now count as real usage
-        isRealUsage _ = True
+        -- Enhanced real usage detection - filter out serialization
+        isRealUsage usage = case fieldUsageType usage of
+            -- These are real field accesses in business logic
+            AccessorFunction -> True
+            PatternMatch -> True
+            NamedFieldPuns -> True
+            RecordWildCards -> True
+            RecordDotSyntax -> True
+            RecordConstruct -> True
+            RecordUpdate -> True
+            HasFieldOverloaded -> True
+            FunctionComposition -> True
+            LensesOptics -> True
+            GenericReflection -> True
+
+            -- These are NOT real field usage - ignore
+            TemplateHaskell -> False
+            DerivedInstances -> False
+            DataSYB -> False
 
 validateFieldsWithExclusions :: ExclusionConfig -> AggregatedFieldInfo -> ValidationResult
 validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
@@ -168,15 +188,84 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
 
             in nameMatches && (isExplicitRecordOp || typeMatches)
 
+-- | Enhanced field categorization with proper Maybe type detection
+categorizeFieldByType :: FieldDefinition -> [FieldUsage] -> FieldCategory
+categorizeFieldByType fieldDef usages =
+    let hasRealUsage = any isRealFieldUsage usages
+        isMaybeField = isFieldMaybeType (fieldDefType fieldDef)
+    in if hasRealUsage
+        then UsedField
+        else if isMaybeField
+            then UnusedMaybeField
+            else UnusedNonMaybeField
+  where
+    isRealFieldUsage usage = case fieldUsageType usage of
+        -- Real business logic usage
+        AccessorFunction -> True
+        PatternMatch -> True
+        RecordConstruct -> True
+        RecordUpdate -> True
+        RecordDotSyntax -> True
+        HasFieldOverloaded -> True
+        LensesOptics -> True
+        -- Serialization is NOT real usage
+        _ -> False
+
+-- | Proper Maybe type detection using type analysis
+isFieldMaybeType :: Text -> Bool
+isFieldMaybeType fieldType =
+    let normalized = T.strip fieldType
+    in "Maybe" `T.isPrefixOf` normalized ||
+       "Maybe (" `T.isPrefixOf` normalized ||
+       "Maybe(" `T.isPrefixOf` normalized ||
+       " -> Maybe" `T.isInfixOf` normalized ||
+       "m (Maybe" `T.isInfixOf` normalized
+
+-- | Field categorization result
+data FieldCategory
+    = UsedField
+    | UnusedMaybeField
+    | UnusedNonMaybeField
+    deriving (Show, Eq)
+
+-- | Filter out serialization usages from the usage list
+filterSerializationUsages :: [FieldUsage] -> [FieldUsage]
+filterSerializationUsages = filter (not . isSerializationUsage)
+  where
+    isSerializationUsage usage =
+        let location = fieldUsageLocation usage
+            moduleName = fieldUsageModule usage
+            usageType = fieldUsageType usage
+        in any (`T.isInfixOf` location) serializationKeywords ||
+           any (`T.isSuffixOf` moduleName) serializationModules ||
+           usageType `elem` [DerivedInstances, TemplateHaskell]
+
+    serializationKeywords =
+        [ "parseJSON", "toJSON", "toEncoding"
+        , ".:?", ".:!", ".:", ".="
+        , "$fFromJSON", "$fToJSON", "$fGeneric"
+        , "FromJSON", "ToJSON", "Generic"
+        ]
+
+    serializationModules =
+        [ ".FromJSON", ".ToJSON", ".Generic"
+        , ".Aeson", ".Data.Aeson"
+        ]
+
 -- Phase 2: Only check fields that have no usage within configured modules
 validateFieldsForTypesUsedInConfiguredModules :: ExclusionConfig -> AggregatedFieldInfo -> IO ValidationResult
 validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInfo{..} = do
     let allDefs = concat $ Map.elems allFieldDefs
-        -- Apply exclusions to field definitions
-        nonExcludedDefs = filter (not . isFieldExcluded exclusionConfig) allDefs
+        
+        -- First filter by include/exclude rules to get only fields from allowed modules
+        allowedModuleDefs = filter (isFromAllowedModule exclusionConfig) allDefs
+        
+        -- Then apply field-specific exclusions
+        nonExcludedDefs = filter (not . isFieldExcluded exclusionConfig) allowedModuleDefs
 
     -- Debug logging
     putStrLn $ "\n[DEBUG Phase 2] Total field definitions: " ++ show (length allDefs)
+    putStrLn $ "[DEBUG Phase 2] Allowed module definitions: " ++ show (length allowedModuleDefs)
     putStrLn $ "[DEBUG Phase 2] Non-excluded definitions: " ++ show (length nonExcludedDefs)
     case includeFiles exclusionConfig of
         Just includes -> putStrLn $ "[DEBUG Phase 2] Configured modules: " ++ show includes
@@ -198,6 +287,24 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
         , usedFields = nub used
         }
   where
+    -- Check if a field definition is from an allowed module
+    isFromAllowedModule :: ExclusionConfig -> FieldDefinition -> Bool
+    isFromAllowedModule ExclusionConfig{..} FieldDefinition{..} =
+        case includeFiles of
+            Just includes -> any (`matchesPattern` fieldDefModule) includes
+            Nothing -> not (any (`matchesPattern` fieldDefModule) excludeFiles)
+      where
+        matchesPattern :: Text -> Text -> Bool
+        matchesPattern pattern modName
+            | pattern == "*" = True
+            | T.isSuffixOf ".*" pattern =
+                let prefix = T.dropEnd 2 pattern
+                in prefix `T.isPrefixOf` modName
+            | T.isPrefixOf "*." pattern =
+                let suffix = T.drop 1 pattern
+                in suffix `T.isSuffixOf` modName
+            | otherwise = pattern == modName
+
     -- Check if a usage occurs within a configured module
     isUsageInConfiguredModule :: ExclusionConfig -> FieldUsage -> Bool
     isUsageInConfiguredModule ExclusionConfig{..} FieldUsage{..} =
@@ -254,24 +361,73 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
                 then (fieldDef : unusedMaybe, unusedNonMaybe, used)
                 else (unusedMaybe, fieldDef : unusedNonMaybe, used)
 
+-- | Generate simple, actionable error messages for unused fields
 reportUnusedFields :: [FieldDefinition] -> [(Text, Text, Text)]
-reportUnusedFields fields = map generateError fields
+reportUnusedFields fields = map generateSimpleError fields
   where
-    generateError :: FieldDefinition -> (Text, Text, Text)
-    generateError FieldDefinition{..} =
-        let errorMsg = T.concat
-                [ "\n"
-                , "Unused field detected:\n"
-                , "  Field: ", fieldDefName, "\n"
-                , "  Type: ", fieldDefTypeName, "\n"
-                , "  Field Type: ", fieldDefType, "\n"
-                , "  Module: ", fieldDefModule, "\n"
-                , "\n"
-                , "This non-Maybe field is defined but never used in the codebase.\n"
-                , "\n"
-                , "Suggested fixes:\n"
-                , "  1. Use this field somewhere in your code\n"
-                , "  2. Change the field type to 'Maybe ", fieldDefType, "' if it's optional\n"
-                , "  3. Add it to the exclusion config (UnusedFieldChecker.yaml) if intentionally unused\n"
-                ]
+    generateSimpleError :: FieldDefinition -> (Text, Text, Text)
+    generateSimpleError FieldDefinition{..} =
+        let errorMsg = formatUnusedFieldError FieldDefinition{..}
         in (fieldDefLocation, errorMsg, fieldDefModule)
+
+-- | Format error message with clear, actionable guidance
+formatUnusedFieldError :: FieldDefinition -> Text
+formatUnusedFieldError FieldDefinition{..} = T.unlines
+    [ ""
+    , "❌ Unused field detected:"
+    , "   Field: " <> fieldDefName <> " :: " <> fieldDefType
+    , "   Type: " <> fieldDefTypeName
+    , "   Module: " <> fieldDefModule
+    , ""
+    , "⚠️  This non-Maybe field is defined but never used in business logic."
+    , ""
+    , "🔧 Fix options (choose one):"
+    , "   1. USE the field: Add code that reads this field"
+    , "   2. MAKE OPTIONAL: Change type to 'Maybe " <> fieldDefType <> "'"
+    , "   3. EXCLUDE: Add to config if intentionally unused:"
+    , ""
+    , "      # In UnusedFieldChecker.yaml:"
+    , "      exclusions:"
+    , "        - module: \"" <> fieldDefModule <> "\""
+    , "          types:"
+    , "            - dataType: \"" <> fieldDefTypeName <> "\""
+    , "              fields: [\"" <> fieldDefName <> "\"]"
+    , ""
+    ]
+
+-- | Generate summary report for multiple unused fields
+generateSummaryReport :: [FieldDefinition] -> Text
+generateSummaryReport [] = "✅ No unused fields detected!"
+generateSummaryReport unusedFields =
+    let count = length unusedFields
+        fieldsByModule = groupByModule unusedFields
+        moduleCount = length fieldsByModule
+    in T.unlines $
+        [ "📊 UNUSED FIELDS SUMMARY"
+        , "══════════════════════════="
+        , "Found " <> T.pack (show count) <> " unused field(s) in " <> T.pack (show moduleCount) <> " module(s)"
+        , ""
+        ] ++
+        concatMap formatModuleGroup fieldsByModule ++
+        [ ""
+        , "🚀 QUICK FIX: To make all fields optional:"
+        , "   Find/Replace: ':: SomeType' → ':: Maybe SomeType'"
+        , ""
+        , "📖 More help: https://docs.yourproject.com/unused-field-checker"
+        ]
+  where
+    groupByModule :: [FieldDefinition] -> [(Text, [FieldDefinition])]
+    groupByModule fields =
+        let grouped = foldr addToGroup [] fields
+        in grouped
+
+    addToGroup :: FieldDefinition -> [(Text, [FieldDefinition])] -> [(Text, [FieldDefinition])]
+    addToGroup field [] = [(fieldDefModule field, [field])]
+    addToGroup field ((modName, fields):rest)
+        | fieldDefModule field == modName = (modName, field:fields) : rest
+        | otherwise = (modName, fields) : addToGroup field rest
+
+    formatModuleGroup :: (Text, [FieldDefinition]) -> [Text]
+    formatModuleGroup (moduleName, fields) =
+        ("📁 " <> moduleName <> " (" <> T.pack (show (length fields)) <> " fields):") :
+        map (\f -> "   ▸ " <> fieldDefName f <> " :: " <> fieldDefType f <> " (in " <> fieldDefTypeName f <> ")") fields

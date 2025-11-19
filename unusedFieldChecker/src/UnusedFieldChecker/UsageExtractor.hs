@@ -40,6 +40,7 @@ import Var
 
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
+import Data.Char (isUpper, isLower)
 import Data.List (foldl')
 import Data.Text (Text, pack)
 import qualified Data.Text as T
@@ -155,9 +156,10 @@ detectHasField modName currentPkgName func args = do
                 liftIO $ putStrLn $ "[DEBUG HasField] Found potential HasField: " ++ T.unpack varName
             detectHasFieldFromVar modName currentPkgName func hasFieldVar
         _ -> do
-            -- Log when args is not a Var - might be missing HasField patterns
-            liftIO $ putStrLn $ "[DEBUG HasField MISS] Args is not a Var in module: " ++ T.unpack modName
-            return []
+            -- Enhanced detection for non-Var patterns
+            lensUsages <- detectLensOperations modName currentPkgName func args
+            recordUsages <- detectRecordOperations modName currentPkgName func args
+            return $ lensUsages ++ recordUsages
 
 detectHasFieldFromVar :: Text -> Text -> CoreExpr -> Id -> IO [FieldUsage]
 detectHasFieldFromVar modName currentPkgName func hasFieldVar
@@ -435,3 +437,94 @@ extractPackageName unitStr =
     startsWithDigit t = case T.uncons t of
         Just (c, _) -> c >= '0' && c <= '9'
         Nothing -> False
+
+-- | Detect lens operations: ^., .~, %~, etc.
+detectLensOperations :: Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
+detectLensOperations modName currentPkgName func args = do
+    let funcStr = extractExprString func
+        argsStr = extractExprString args
+
+    -- Check for lens operators
+    if any (`T.isInfixOf` funcStr) ["^.", ".~", "%~", "&", "view", "set", "over"]
+        then do
+            let fieldName = extractPotentialFieldName argsStr
+            if not (T.null fieldName)
+                then return [FieldUsage
+                    { fieldUsageName = fieldName
+                    , fieldUsageType = LensesOptics
+                    , fieldUsageTypeName = ""
+                    , fieldUsageModule = modName
+                    , fieldUsageLocation = "Lens:" <> fieldName
+                    , fieldUsageTypeConstructor = ""
+                    }]
+                else return []
+        else return []
+
+-- | Detect record operations: record construction, updates
+detectRecordOperations :: Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
+detectRecordOperations modName currentPkgName func args = do
+    case func of
+        Var funcVar -> do
+            let funcName = pack $ getOccString $ idName funcVar
+            -- Check for record constructor or accessor
+            if isRecordConstructor funcName || isFieldAccessor funcName
+                then return [FieldUsage
+                    { fieldUsageName = extractFieldFromName funcName
+                    , fieldUsageType = if isRecordConstructor funcName then RecordConstruct else AccessorFunction
+                    , fieldUsageTypeName = ""
+                    , fieldUsageModule = modName
+                    , fieldUsageLocation = "Record:" <> funcName
+                    , fieldUsageTypeConstructor = ""
+                    }]
+                else return []
+        _ -> return []
+  where
+    isRecordConstructor name = not (T.null name) && isUpper (T.head name)
+    isFieldAccessor name = not (T.null name) && isLower (T.head name) && not (name `elem` commonFunctions)
+    extractFieldFromName = id
+    commonFunctions = ["map", "filter", "foldl", "foldr", "return", "pure", ">>=", ">>", "show", "read"]
+
+-- | Enhanced serialization filtering - ignore FromJSON/ToJSON generated code
+filterSerializationUsage :: [FieldUsage] -> IO [FieldUsage]
+filterSerializationUsage usages = return $ filter (not . isSerializationContext) usages
+  where
+    isSerializationContext :: FieldUsage -> Bool
+    isSerializationContext usage =
+        let modName = fieldUsageModule usage
+            location = fieldUsageLocation usage
+            usageName = fieldUsageName usage
+        in any (`T.isInfixOf` location)
+            [ "parseJSON", "toJSON", "toEncoding", ".:?", ".:!", ".:", ".="
+            , "$fFromJSON", "$fToJSON", "$fGeneric", "$dm"
+            ] ||
+           any (`T.isSuffixOf` modName) [".FromJSON", ".ToJSON", ".Generic"] ||
+           fieldUsageType usage `elem` [DerivedInstances, TemplateHaskell] ||
+           "$" `T.isPrefixOf` usageName
+
+-- | Extract field name from various expression patterns
+extractPotentialFieldName :: Text -> Text
+extractPotentialFieldName exprStr
+    | T.isInfixOf "\"" exprStr =
+        case T.splitOn "\"" exprStr of
+            (_:fieldName:_) -> fieldName
+            _ -> ""
+    | otherwise = ""
+
+-- | Extract string representation from Core expression for pattern matching
+extractExprString :: CoreExpr -> Text
+extractExprString expr = case expr of
+    Var v -> pack $ getOccString $ idName v
+    Lit _ -> "literal"
+    App e1 e2 -> extractExprString e1 <> " " <> extractExprString e2
+    Lam _ body -> "lambda " <> extractExprString body
+    Let _ body -> "let " <> extractExprString body
+    Case _ _ _ _ -> "case"
+    Cast e _ -> extractExprString e
+    Tick _ e -> extractExprString e
+#if __GLASGOW_HASKELL__ >= 900
+    Type _ -> "type"
+    Coercion _ -> "coercion"
+#else
+    Type _ -> "type"
+    Coercion _ -> "coercion"
+#endif
