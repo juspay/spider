@@ -3,24 +3,15 @@
 
 module UnusedFieldChecker.Config
     ( loadExclusionConfig
-    , loadExclusionConfigCached
     , isFieldExcluded
     , isModuleExcluded
     ) where
 
-import Control.Monad.IO.Class (liftIO)
-import Data.IORef
 import Data.Text (Text)
 import qualified Data.Text as T
-import Data.Time (UTCTime)
 import Data.Yaml (decodeFileEither, ParseException)
-import System.Directory (doesFileExist, getModificationTime)
-import System.IO.Unsafe (unsafePerformIO)
+import System.Directory (doesFileExist)
 import UnusedFieldChecker.Types
-
-{-# NOINLINE exclusionConfigCache #-}
-exclusionConfigCache :: IORef (Maybe (FilePath, UTCTime, ExclusionConfig))
-exclusionConfigCache = unsafePerformIO $ newIORef Nothing
 
 loadExclusionConfig :: FilePath -> IO ExclusionConfig
 loadExclusionConfig configPath = do
@@ -37,30 +28,6 @@ loadExclusionConfig configPath = do
                     putStrLn $ "Loaded exclusion config from: " ++ configPath
                     return config
 
-loadExclusionConfigCached :: FilePath -> IO ExclusionConfig
-loadExclusionConfigCached configPath = do
-    cached <- readIORef exclusionConfigCache
-    exists <- doesFileExist configPath
-
-    if not exists
-        then do
-            -- Config file doesn't exist, return empty config
-            return emptyExclusionConfig
-        else do
-            -- Get current modification time
-            currentModTime <- getModificationTime configPath
-
-            case cached of
-                Just (cachedPath, cachedModTime, config)
-                    | cachedPath == configPath && cachedModTime == currentModTime -> do
-                        -- Cache hit and file hasn't been modified
-                        return config
-                _ -> do
-                    -- Cache miss or file was modified - reload config
-                    putStrLn $ "[DEBUG CONFIG] Reloading exclusion config from: " ++ configPath
-                    config <- loadExclusionConfig configPath
-                    writeIORef exclusionConfigCache (Just (configPath, currentModTime, config))
-                    return config
 
 isFieldExcluded :: ExclusionConfig -> FieldDefinition -> Bool
 isFieldExcluded ExclusionConfig{..} FieldDefinition{..} =

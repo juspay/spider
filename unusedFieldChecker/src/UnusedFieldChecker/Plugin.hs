@@ -108,7 +108,7 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
     -- Clean up old build artifacts on first module compilation
     liftIO $ cleanupOldBuildIfNeeded (path cliOptions)
 
-    exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
     
     if isModuleExcluded exclusionConfig modName
         then do
@@ -159,7 +159,7 @@ extractFieldUsagesPass opts guts = do
     liftIO $ putStrLn $ "[DEBUG PHASE] extractFieldUsagesPass called for: " ++ T.unpack modName
     liftIO $ putStrLn $ "[DEBUG PHASE] Module path: " ++ modulePath
 
-    exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
 
     if isModuleExcluded exclusionConfig modName
         then return guts
@@ -258,7 +258,7 @@ extractFieldUsagesPass opts guts = do
         binds = mg_binds guts
 
     -- Load exclusion config
-    exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
 
     if isModuleExcluded exclusionConfig modName
         then return guts
@@ -467,7 +467,7 @@ collectAndValidateFieldInfo opts modSummary tcEnv = do
 #endif
     
     -- Load exclusion config and check if this module should be excluded
-    exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
     
     if isModuleExcluded exclusionConfig modName
         then do
@@ -1045,7 +1045,7 @@ performCrossModuleValidation opts modIface = do
     let cliOptions = parseCliOptions opts
     allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
     let aggregated = aggregateFieldInfo allModuleInfos
-    exclusionConfig <- liftIO $ loadExclusionConfigCached (exclusionConfigFile cliOptions)
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
     let validationResult = validateFieldsWithExclusions exclusionConfig aggregated
     return modIface
 

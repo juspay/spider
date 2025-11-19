@@ -26,7 +26,7 @@ defaultCliOptions = CliOptions
     , port = 4445
     , host = "::1"
     , log = False
-    , exclusionConfigFile = ".juspay/unusedFieldChecker.yaml"
+    , exclusionConfigFile = ".juspay/UnusedFieldChecker.yaml"
     }
 
 data FieldDefinition = FieldDefinition
