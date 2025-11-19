@@ -216,10 +216,12 @@ extractFieldUsagesPass opts guts = do
                             let srcSpan = parseLocationForCore locStr
                                 errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
                             GHC.Core.Opt.Monad.putMsg errMsg
+                            liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
                         -- Clean up markers before failing
                         liftIO $ cleanupCompletionMarkers (path cliOptions)
-                        -- Throw an error to fail compilation
-                        liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                        liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION SHOULD FAIL *** due to " ++ show (length errors) ++ " unused strict fields"
+                        -- Fail compilation by using GHC's error mechanism
+                        error $ "\n[UnusedFieldChecker] Compilation failed: " ++ show (length errors) ++ " unused strict fields detected"
                     else do
                         -- No errors - clean up and continue
                         liftIO $ cleanupCompletionMarkers (path cliOptions)
@@ -317,10 +319,12 @@ extractFieldUsagesPass opts guts = do
                             let srcSpan = parseLocationForCore locStr
                                 errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
                             CoreMonad.putMsg errMsg
+                            liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
                         -- Clean up markers before failing
                         liftIO $ cleanupCompletionMarkers (path cliOptions)
-                        -- Throw an error to fail compilation
-                        liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                        liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION SHOULD FAIL *** due to " ++ show (length errors) ++ " unused strict fields"
+                        -- Fail compilation by using GHC's error mechanism
+                        error $ "\n[UnusedFieldChecker] Compilation failed: " ++ show (length errors) ++ " unused strict fields detected"
                     else do
                         -- No errors - clean up and continue
                         liftIO $ cleanupCompletionMarkers (path cliOptions)
