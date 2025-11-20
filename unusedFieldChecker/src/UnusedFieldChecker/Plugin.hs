@@ -72,7 +72,7 @@ import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, getModificationTime, removeFile, renameFile)
 import System.FilePath ((</>), takeDirectory, takeExtension, takeFileName)
 import System.IO (Handle, hClose, openFile, IOMode(..), hPutStrLn, hFlush)
-import System.IO.Error (catchIOError, isAlreadyExistsError)
+import System.IO.Error (catchIOError, isAlreadyExistsError, isDoesNotExistError, ioError)
 import Control.Exception (catch, SomeException, try)
 import Data.Time (getCurrentTime, UTCTime, diffUTCTime)
 import UnusedFieldChecker.Types
@@ -350,6 +350,14 @@ parseLocationForCore locStr =
         _ -> Nothing
 #endif
 
+-- | Safe file removal that ignores "file not found" errors
+safeRemoveFile :: FilePath -> IO ()
+safeRemoveFile path = catchIOError (removeFile path) $ \e ->
+    -- Only ignore "does not exist" errors, re-throw others
+    if isDoesNotExistError e
+        then return ()
+        else ioError e
+
 -- | Clean up old JSON files from previous build if this is a new build
 cleanupOldBuildIfNeeded :: FilePath -> IO ()
 cleanupOldBuildIfNeeded outputPath = do
@@ -370,7 +378,7 @@ cleanupOldBuildIfNeeded outputPath = do
             exists <- doesDirectoryExist outputPath
             when exists $ do
                 allFiles <- findAllJsonFiles outputPath
-                mapM_ removeFile allFiles
+                mapM_ safeRemoveFile allFiles
                 putStrLn $ "[DEBUG CLEANUP] Removed " ++ show (length allFiles) ++ " old JSON files"
 
             -- Clean up old markers
@@ -380,10 +388,10 @@ cleanupOldBuildIfNeeded outputPath = do
             completeDirExists <- doesDirectoryExist completeDir
             when completeDirExists $ do
                 markers <- listDirectory completeDir
-                mapM_ (\m -> removeFile (completeDir </> m)) markers
+                mapM_ (\m -> safeRemoveFile (completeDir </> m)) markers
 
             lockExists <- doesFileExist lockFile
-            when lockExists $ removeFile lockFile
+            when lockExists $ safeRemoveFile lockFile
 
 -- | Enhanced atomic file operations with proper error handling and cleanup
 atomicWriteFile :: FilePath -> BL.ByteString -> IO ()
@@ -399,7 +407,7 @@ atomicWriteFile filePath content = do
             putStrLn $ "[ERROR ATOMIC] Failed to write temp file " ++ tempPath ++ ": " ++ show err
             -- Clean up partial file if it exists
             tempExists <- doesFileExist tempPath
-            when tempExists $ removeFile tempPath
+            when tempExists $ safeRemoveFile tempPath
             error $ "Failed to write file atomically: " ++ show err
         Right _ -> do
             -- Verify temp file was written correctly
@@ -411,7 +419,7 @@ atomicWriteFile filePath content = do
                     case renameResult of
                         Left renameErr -> do
                             putStrLn $ "[ERROR ATOMIC] Failed to rename " ++ tempPath ++ " to " ++ filePath ++ ": " ++ show renameErr
-                            removeFile tempPath  -- Clean up
+                            safeRemoveFile tempPath  -- Clean up
                             error $ "Failed to rename file atomically: " ++ show renameErr
                         Right _ ->
                             putStrLn $ "[DEBUG ATOMIC] Successfully wrote: " ++ filePath
@@ -454,9 +462,9 @@ tryAcquireValidationLock outputPath = do
                     if staleResult
                         then do
                             putStrLn "[DEBUG LOCK] Detected stale lock, cleaning up"
-                            removeFile lockFile
+                            safeRemoveFile lockFile
                             pidExists <- doesFileExist pidFile
-                            when pidExists $ removeFile pidFile
+                            when pidExists $ safeRemoveFile pidFile
                             acquireLockSafely outputPath
                         else do
                             putStrLn "[DEBUG LOCK] Validation already in progress by another process"
@@ -534,25 +542,25 @@ cleanupCompletionMarkers outputPath = do
     dirExists <- doesDirectoryExist completeDir
     when dirExists $ do
         markers <- listDirectory completeDir
-        mapM_ (\m -> removeFile (completeDir </> m)) markers
+        mapM_ (\m -> safeRemoveFile (completeDir </> m)) markers
         putStrLn $ "[DEBUG CLEANUP] Removed " ++ show (length markers) ++ " completion markers"
 
     -- Remove lock file
     -- Enhanced cleanup with PID file
     lockExists <- doesFileExist lockFile
     when lockExists $ do
-        removeFile lockFile
+        safeRemoveFile lockFile
         putStrLn "[DEBUG CLEANUP] Removed validation lock"
 
     pidExists <- doesFileExist (outputPath </> ".validation.pid")
     when pidExists $ do
-        removeFile (outputPath </> ".validation.pid")
+        safeRemoveFile (outputPath </> ".validation.pid")
         putStrLn "[DEBUG CLEANUP] Removed validation PID file"
 
     -- Remove build marker
     buildMarkerExists <- doesFileExist buildMarker
     when buildMarkerExists $ do
-        removeFile buildMarker
+        safeRemoveFile buildMarker
         putStrLn "[DEBUG CLEANUP] Removed build marker"
 
 collectAndValidateFieldInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
