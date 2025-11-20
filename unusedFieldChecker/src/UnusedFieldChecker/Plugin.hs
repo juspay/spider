@@ -210,26 +210,24 @@ extractFieldUsagesPass opts guts = do
                         Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
                     let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
 
-                    -- Emit compilation errors for unused fields
-                    if not $ null errors
-                        then do
-                            liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 9.x] Found " ++ show (length errors) ++ " unused fields"
-                            forM_ errors $ \(locStr, msg, _) -> do
-                                let srcSpan = parseLocationForCore locStr
-                                    errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
-                                GHC.Core.Opt.Monad.putMsg errMsg
-                                liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
-                            -- Mark validation as complete and clean up
-                            liftIO $ markValidationComplete (path cliOptions)
-                            liftIO $ cleanupCompletionMarkers (path cliOptions)
-                            liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION SHOULD FAIL *** due to " ++ show (length errors) ++ " unused strict fields"
-                            -- Fail compilation by using GHC's error mechanism
-                            error $ "\n[UnusedFieldChecker] Compilation failed: " ++ show (length errors) ++ " unused strict fields detected"
-                        else do
-                            -- No errors - mark validation complete and clean up
-                            liftIO $ markValidationComplete (path cliOptions)
-                            liftIO $ cleanupCompletionMarkers (path cliOptions)
-                            liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
+                -- Emit compilation errors for unused fields
+                if not $ null errors
+                    then do
+                        liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 9.x] Found " ++ show (length errors) ++ " unused fields"
+                        forM_ errors $ \(locStr, msg, _) -> do
+                            let srcSpan = parseLocationForCore locStr
+                                errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
+                            GHC.Core.Opt.Monad.putMsg errMsg
+                            liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
+                        -- DON'T clean up markers - let them accumulate for cross-module validation
+                        -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                        liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION FAILED *** due to " ++ show (length errors) ++ " unused strict fields"
+                        -- Throw an error to fail compilation
+                        liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                    else do
+                        -- No errors - DON'T clean up markers, let them accumulate for subsequent module validation
+                        -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                        liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
 
             return guts
 -- Helper function to parse location strings in CoreM context
@@ -317,26 +315,24 @@ extractFieldUsagesPass opts guts = do
                         Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
                     let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
 
-                    -- Emit compilation errors for unused fields
-                    if not $ null errors
-                        then do
-                            liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 8.x] Found " ++ show (length errors) ++ " unused fields"
-                            forM_ errors $ \(locStr, msg, _) -> do
-                                let srcSpan = parseLocationForCore locStr
-                                    errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
-                                CoreMonad.putMsg errMsg
-                                liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
-                            -- Mark validation as complete and clean up
-                            liftIO $ markValidationComplete (path cliOptions)
-                            liftIO $ cleanupCompletionMarkers (path cliOptions)
-                            liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION SHOULD FAIL *** due to " ++ show (length errors) ++ " unused strict fields"
-                            -- Fail compilation by using GHC's error mechanism
-                            error $ "\n[UnusedFieldChecker] Compilation failed: " ++ show (length errors) ++ " unused strict fields detected"
-                        else do
-                            -- No errors - mark validation complete and clean up
-                            liftIO $ markValidationComplete (path cliOptions)
-                            liftIO $ cleanupCompletionMarkers (path cliOptions)
-                            liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
+                -- Emit compilation errors for unused fields
+                if not $ null errors
+                    then do
+                        liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 8.x] Found " ++ show (length errors) ++ " unused fields"
+                        forM_ errors $ \(locStr, msg, _) -> do
+                            let srcSpan = parseLocationForCore locStr
+                                errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
+                            CoreMonad.putMsg errMsg
+                            liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
+                        -- DON'T clean up markers - let them accumulate for cross-module validation
+                        -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                        liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION FAILED *** due to " ++ show (length errors) ++ " unused strict fields"
+                        -- Throw an error to fail compilation
+                        liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                    else do
+                        -- No errors - DON'T clean up markers, let them accumulate for subsequent module validation
+                        -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                        liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
 
             return guts
 
@@ -552,58 +548,40 @@ tryAcquireValidationLock :: FilePath -> IO Bool
 tryAcquireValidationLock outputPath = do
     let lockFile = outputPath </> ".validation.lock"
         completeDir = outputPath </> ".complete"
-        pidFile = outputPath </> ".validation.pid"
-        expectedModulesFile = outputPath </> ".expected-modules"
 
-    -- Check if all expected modules have completed
-    allModulesComplete <- areAllModulesComplete outputPath
-    if not allModulesComplete
+    -- Check if lock file already exists (validation already done/in progress)
+    lockExists <- doesFileExist lockFile
+    if lockExists
         then do
-            putStrLn "[DEBUG LOCK] Not all modules complete yet, skipping validation"
+            putStrLn "[DEBUG LOCK] Validation already done or in progress"
             return False
         else do
-            -- Check if lock file already exists
-            lockExists <- doesFileExist lockFile
-            if lockExists
+            -- Check if we have complete data (both defs and usages) for modules
+            allJsonFiles <- findAllJsonFiles outputPath
+            let defsCount = length $ filter (".fieldDefs.json" `isSuffixOf`) allJsonFiles
+                usagesCount = length $ filter (".fieldUsages.json" `isSuffixOf`) allJsonFiles
+
+            putStrLn $ "[DEBUG LOCK] JSON files - Defs: " ++ show defsCount ++ ", Usages: " ++ show usagesCount
+
+            -- Only validate if we have matching defs and usages (both compilation phases done)
+            -- AND we have at least some data to validate
+            if defsCount == 0 || usagesCount == 0 || abs (defsCount - usagesCount) > 2
                 then do
-                    -- Check if the process holding the lock is still alive
-                    staleResult <- isLockStale pidFile
-                    if staleResult
-                        then do
-                            putStrLn "[DEBUG LOCK] Detected stale lock, cleaning up"
-                            safeRemoveFile lockFile
-                            pidExists <- doesFileExist pidFile
-                            when pidExists $ safeRemoveFile pidFile
-                            acquireLockSafely outputPath
-                        else do
-                            putStrLn "[DEBUG LOCK] Validation already in progress by another process"
+                    putStrLn $ "[DEBUG LOCK] Incomplete data (defs/usages mismatch or no data), skipping validation"
+                    return False
+                else do
+                    -- Try to create lock file atomically
+                    result <- try (openFile lockFile WriteMode) :: IO (Either SomeException Handle)
+                    case result of
+                        Left _ -> do
+                            putStrLn "[DEBUG LOCK] Another module acquired the lock"
                             return False
-                else
-                    acquireLockSafely outputPath
-  where
-    acquireLockSafely :: FilePath -> IO Bool
-    acquireLockSafely outputPath = do
-        let lockFile = outputPath </> ".validation.lock"
-            pidFile = outputPath </> ".validation.pid"
-
-        -- Try to create lock file atomically with process ID
-        result <- try (openFile lockFile WriteMode) :: IO (Either SomeException Handle)
-        case result of
-            Left _ -> do
-                putStrLn "[DEBUG LOCK] Another process acquired the lock concurrently"
-                return False
-            Right handle -> do
-                -- Write lock information
-                hPutStrLn handle "validation-in-progress"
-                hPutStrLn handle =<< show <$> getCurrentTime
-                hFlush handle
-                hClose handle
-
-                -- Create PID file for stale lock detection
-                writeFile pidFile "validation-process"
-
-                putStrLn "[DEBUG LOCK] Successfully acquired validation lock"
-                return True
+                        Right handle -> do
+                            hPutStrLn handle "locked"
+                            hFlush handle
+                            hClose handle
+                            putStrLn "[DEBUG LOCK] Acquired validation lock successfully"
+                            return True
 
 -- | Check if all expected modules have completed compilation
 areAllModulesComplete :: FilePath -> IO Bool
