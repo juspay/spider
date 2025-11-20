@@ -192,7 +192,7 @@ extractFieldUsagesPass opts guts = do
             liftIO $ markModuleComplete (path cliOptions) modName
 
             -- Try to trigger validation if all modules are complete
-            shouldValidate <- liftIO $ tryAcquireValidationLock (path cliOptions)
+            shouldValidate <- liftIO $ shouldRunValidation (path cliOptions)
             when shouldValidate $ do
                 liftIO $ putStrLn "\n[UnusedFieldChecker] All modules complete, starting validation..."
 
@@ -200,32 +200,36 @@ extractFieldUsagesPass opts guts = do
                 allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
                 liftIO $ putStrLn $ "[DEBUG] Loaded " ++ show (length allModuleInfos) ++ " module infos"
 
-                let aggregated = aggregateFieldInfo allModuleInfos
+                -- Only proceed if we have substantial module data
+                when (length allModuleInfos >= 100) $ do
+                    let aggregated = aggregateFieldInfo allModuleInfos
 
-                -- Phase 2: Use type-scoped validation when includeFiles is configured
-                validationResult <- liftIO $ case includeFiles exclusionConfig of
-                    Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
-                    Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
-                let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+                    -- Phase 2: Use type-scoped validation when includeFiles is configured
+                    validationResult <- liftIO $ case includeFiles exclusionConfig of
+                        Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
+                        Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
+                    let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
 
-                -- Emit compilation errors for unused fields
-                if not $ null errors
-                    then do
-                        liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 9.x] Found " ++ show (length errors) ++ " unused fields"
-                        forM_ errors $ \(locStr, msg, _) -> do
-                            let srcSpan = parseLocationForCore locStr
-                                errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
-                            GHC.Core.Opt.Monad.putMsg errMsg
-                            liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
-                        -- Clean up markers before failing
-                        liftIO $ cleanupCompletionMarkers (path cliOptions)
-                        liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION SHOULD FAIL *** due to " ++ show (length errors) ++ " unused strict fields"
-                        -- Fail compilation by using GHC's error mechanism
-                        error $ "\n[UnusedFieldChecker] Compilation failed: " ++ show (length errors) ++ " unused strict fields detected"
-                    else do
-                        -- No errors - clean up and continue
-                        liftIO $ cleanupCompletionMarkers (path cliOptions)
-                        liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
+                    -- Emit compilation errors for unused fields
+                    if not $ null errors
+                        then do
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 9.x] Found " ++ show (length errors) ++ " unused fields"
+                            forM_ errors $ \(locStr, msg, _) -> do
+                                let srcSpan = parseLocationForCore locStr
+                                    errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
+                                GHC.Core.Opt.Monad.putMsg errMsg
+                                liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
+                            -- Mark validation as complete and clean up
+                            liftIO $ markValidationComplete (path cliOptions)
+                            liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION SHOULD FAIL *** due to " ++ show (length errors) ++ " unused strict fields"
+                            -- Fail compilation by using GHC's error mechanism
+                            error $ "\n[UnusedFieldChecker] Compilation failed: " ++ show (length errors) ++ " unused strict fields detected"
+                        else do
+                            -- No errors - mark validation complete and clean up
+                            liftIO $ markValidationComplete (path cliOptions)
+                            liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
 
             return guts
 -- Helper function to parse location strings in CoreM context
@@ -295,7 +299,7 @@ extractFieldUsagesPass opts guts = do
             liftIO $ markModuleComplete (path cliOptions) modName
 
             -- Try to trigger validation if all modules are complete
-            shouldValidate <- liftIO $ tryAcquireValidationLock (path cliOptions)
+            shouldValidate <- liftIO $ shouldRunValidation (path cliOptions)
             when shouldValidate $ do
                 liftIO $ putStrLn "\n[UnusedFieldChecker] All modules complete, starting validation..."
 
@@ -303,32 +307,36 @@ extractFieldUsagesPass opts guts = do
                 allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
                 liftIO $ putStrLn $ "[DEBUG] Loaded " ++ show (length allModuleInfos) ++ " module infos"
 
-                let aggregated = aggregateFieldInfo allModuleInfos
+                -- Only proceed if we have substantial module data
+                when (length allModuleInfos >= 100) $ do
+                    let aggregated = aggregateFieldInfo allModuleInfos
 
-                -- Phase 2: Use type-scoped validation when includeFiles is configured
-                validationResult <- liftIO $ case includeFiles exclusionConfig of
-                    Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
-                    Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
-                let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+                    -- Phase 2: Use type-scoped validation when includeFiles is configured
+                    validationResult <- liftIO $ case includeFiles exclusionConfig of
+                        Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
+                        Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
+                    let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
 
-                -- Emit compilation errors for unused fields
-                if not $ null errors
-                    then do
-                        liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 8.x] Found " ++ show (length errors) ++ " unused fields"
-                        forM_ errors $ \(locStr, msg, _) -> do
-                            let srcSpan = parseLocationForCore locStr
-                                errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
-                            CoreMonad.putMsg errMsg
-                            liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
-                        -- Clean up markers before failing
-                        liftIO $ cleanupCompletionMarkers (path cliOptions)
-                        liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION SHOULD FAIL *** due to " ++ show (length errors) ++ " unused strict fields"
-                        -- Fail compilation by using GHC's error mechanism
-                        error $ "\n[UnusedFieldChecker] Compilation failed: " ++ show (length errors) ++ " unused strict fields detected"
-                    else do
-                        -- No errors - clean up and continue
-                        liftIO $ cleanupCompletionMarkers (path cliOptions)
-                        liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
+                    -- Emit compilation errors for unused fields
+                    if not $ null errors
+                        then do
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 8.x] Found " ++ show (length errors) ++ " unused fields"
+                            forM_ errors $ \(locStr, msg, _) -> do
+                                let srcSpan = parseLocationForCore locStr
+                                    errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
+                                CoreMonad.putMsg errMsg
+                                liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
+                            -- Mark validation as complete and clean up
+                            liftIO $ markValidationComplete (path cliOptions)
+                            liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION SHOULD FAIL *** due to " ++ show (length errors) ++ " unused strict fields"
+                            -- Fail compilation by using GHC's error mechanism
+                            error $ "\n[UnusedFieldChecker] Compilation failed: " ++ show (length errors) ++ " unused strict fields detected"
+                        else do
+                            -- No errors - mark validation complete and clean up
+                            liftIO $ markValidationComplete (path cliOptions)
+                            liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
 
             return guts
 
@@ -384,6 +392,7 @@ cleanupOldBuildIfNeeded outputPath = do
             -- Clean up old markers
             let completeDir = outputPath </> ".complete"
                 lockFile = outputPath </> ".validation.lock"
+                validatedFile = outputPath </> ".validated"
 
             completeDirExists <- doesDirectoryExist completeDir
             when completeDirExists $ do
@@ -392,6 +401,9 @@ cleanupOldBuildIfNeeded outputPath = do
 
             lockExists <- doesFileExist lockFile
             when lockExists $ safeRemoveFile lockFile
+
+            validatedExists <- doesFileExist validatedFile
+            when validatedExists $ safeRemoveFile validatedFile
 
 -- | Enhanced atomic file operations with proper error handling and cleanup
 atomicWriteFile :: FilePath -> BL.ByteString -> IO ()
@@ -437,6 +449,61 @@ markModuleComplete outputPath modName = do
     createDirectoryIfMissing True (outputPath </> ".complete")
     writeFile markerFile (T.unpack modName)
     putStrLn $ "[DEBUG COMPLETE] Marked module complete: " ++ T.unpack modName
+
+-- | Mark that validation has been completed for this build
+markValidationComplete :: FilePath -> IO ()
+markValidationComplete outputPath = do
+    let validatedFile = outputPath </> ".validated"
+    writeFile validatedFile "validation-complete"
+    putStrLn "[DEBUG VALIDATION] Marked validation as complete"
+
+-- | Check if we should run validation now
+-- Only runs validation when:
+-- 1. Validation hasn't already run (no .validated file)
+-- 2. We can acquire the validation lock
+-- 3. We have accumulated most/all modules (heuristic: > 2000 completion markers)
+shouldRunValidation :: FilePath -> IO Bool
+shouldRunValidation outputPath = do
+    let validatedFile = outputPath </> ".validated"
+        completeDir = outputPath </> ".complete"
+        lockFile = outputPath </> ".validation.lock"
+
+    -- Check if validation already ran
+    validatedExists <- doesFileExist validatedFile
+    if validatedExists
+        then do
+            putStrLn "[DEBUG VALIDATION] Validation already complete for this build, skipping"
+            return False
+        else do
+            -- Count completion markers
+            completeDirExists <- doesDirectoryExist completeDir
+            if not completeDirExists
+                then return False
+                else do
+                    markers <- listDirectory completeDir
+                    let markerCount = length markers
+                    putStrLn $ "[DEBUG VALIDATION] Found " ++ show markerCount ++ " completion markers"
+
+                    -- Only validate when we have accumulated most modules
+                    -- Use threshold of 2000 to ensure we're near the end of compilation
+                    if markerCount < 2000
+                        then do
+                            putStrLn $ "[DEBUG VALIDATION] Not enough modules yet (" ++ show markerCount ++ " < 2000), skipping validation"
+                            return False
+                        else do
+                            -- Try to acquire lock atomically
+                            result <- try (openFile lockFile WriteMode) :: IO (Either SomeException Handle)
+                            case result of
+                                Left _ -> do
+                                    putStrLn "[DEBUG VALIDATION] Could not acquire lock, another process is validating"
+                                    return False
+                                Right handle -> do
+                                    -- Successfully acquired lock
+                                    hPutStrLn handle "validation-in-progress"
+                                    hFlush handle
+                                    hClose handle
+                                    putStrLn "[DEBUG VALIDATION] Lock acquired, will run validation"
+                                    return True
 
 -- | Enhanced validation lock with proper dependency tracking and deadlock prevention
 tryAcquireValidationLock :: FilePath -> IO Bool
