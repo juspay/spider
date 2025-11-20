@@ -200,8 +200,8 @@ extractFieldUsagesPass opts guts = do
                 allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
                 liftIO $ putStrLn $ "[DEBUG] Loaded " ++ show (length allModuleInfos) ++ " module infos"
 
-                -- Only proceed if we have substantial module data
-                when (length allModuleInfos >= 100) $ do
+                -- Validate with whatever modules we have (includeFiles may limit scope)
+                when (length allModuleInfos >= 1) $ do
                     let aggregated = aggregateFieldInfo allModuleInfos
 
                     -- Phase 2: Use type-scoped validation when includeFiles is configured
@@ -307,8 +307,8 @@ extractFieldUsagesPass opts guts = do
                 allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
                 liftIO $ putStrLn $ "[DEBUG] Loaded " ++ show (length allModuleInfos) ++ " module infos"
 
-                -- Only proceed if we have substantial module data
-                when (length allModuleInfos >= 100) $ do
+                -- Validate with whatever modules we have (includeFiles may limit scope)
+                when (length allModuleInfos >= 1) $ do
                     let aggregated = aggregateFieldInfo allModuleInfos
 
                     -- Phase 2: Use type-scoped validation when includeFiles is configured
@@ -367,43 +367,72 @@ safeRemoveFile path = catchIOError (removeFile path) $ \e ->
         else ioError e
 
 -- | Clean up old JSON files from previous build if this is a new build
+-- This is called ONCE at the start of a new build by the first module
+-- Uses a lock file to ensure only one module does the cleanup
 cleanupOldBuildIfNeeded :: FilePath -> IO ()
 cleanupOldBuildIfNeeded outputPath = do
     let buildMarker = outputPath </> ".current-build"
+        cleanupLock = outputPath </> ".cleanup.lock"
 
-    -- Try to create the build marker atomically
-    result <- try (openFile buildMarker WriteMode) :: IO (Either SomeException Handle)
-    case result of
-        Left _ ->
-            -- Marker already exists, not first module of new build
+    -- Check if build marker already exists (cleanup already done for this build)
+    markerExists <- doesFileExist buildMarker
+    if markerExists
+        then do
+            -- Build marker exists, cleanup already done
             return ()
-        Right handle -> do
-            -- First module of new build - clean up old files
-            hClose handle
-            putStrLn "[DEBUG CLEANUP] New build detected - cleaning up old JSON files from previous build"
+        else do
+            -- Try to acquire cleanup lock exclusively
+            lockResult <- try (openFile cleanupLock WriteMode) :: IO (Either SomeException Handle)
+            case lockResult of
+                Left _ -> do
+                    -- Another module is doing cleanup or already did it
+                    putStrLn "[DEBUG CLEANUP] Another module is handling cleanup, skipping"
+                    return ()
+                Right lockHandle -> do
+                    -- We got the lock! Check again if marker was created while we waited
+                    markerExistsNow <- doesFileExist buildMarker
+                    if markerExistsNow
+                        then do
+                            -- Marker created by another process, cleanup already done
+                            hClose lockHandle
+                            safeRemoveFile cleanupLock
+                            return ()
+                        else do
+                            -- We are first! Do the cleanup
+                            putStrLn "[DEBUG CLEANUP] New build detected - cleaning up old JSON files from previous build"
 
-            -- Remove all JSON files
-            exists <- doesDirectoryExist outputPath
-            when exists $ do
-                allFiles <- findAllJsonFiles outputPath
-                mapM_ safeRemoveFile allFiles
-                putStrLn $ "[DEBUG CLEANUP] Removed " ++ show (length allFiles) ++ " old JSON files"
+                            -- Remove all JSON files from previous build
+                            exists <- doesDirectoryExist outputPath
+                            when exists $ do
+                                allFiles <- findAllJsonFiles outputPath
+                                -- Filter out the lock file itself
+                                let filesToRemove = filter (/= cleanupLock) allFiles
+                                mapM_ safeRemoveFile filesToRemove
+                                putStrLn $ "[DEBUG CLEANUP] Removed " ++ show (length filesToRemove) ++ " old JSON files"
 
-            -- Clean up old markers
-            let completeDir = outputPath </> ".complete"
-                lockFile = outputPath </> ".validation.lock"
-                validatedFile = outputPath </> ".validated"
+                            -- Clean up old markers
+                            let completeDir = outputPath </> ".complete"
+                                lockFile = outputPath </> ".validation.lock"
+                                validatedFile = outputPath </> ".validated"
 
-            completeDirExists <- doesDirectoryExist completeDir
-            when completeDirExists $ do
-                markers <- listDirectory completeDir
-                mapM_ (\m -> safeRemoveFile (completeDir </> m)) markers
+                            completeDirExists <- doesDirectoryExist completeDir
+                            when completeDirExists $ do
+                                markers <- listDirectory completeDir
+                                mapM_ (\m -> safeRemoveFile (completeDir </> m)) markers
 
-            lockExists <- doesFileExist lockFile
-            when lockExists $ safeRemoveFile lockFile
+                            lockExists <- doesFileExist lockFile
+                            when lockExists $ safeRemoveFile lockFile
 
-            validatedExists <- doesFileExist validatedFile
-            when validatedExists $ safeRemoveFile validatedFile
+                            validatedExists <- doesFileExist validatedFile
+                            when validatedExists $ safeRemoveFile validatedFile
+
+                            -- Create build marker to indicate cleanup is done
+                            writeFile buildMarker "cleanup-complete"
+
+                            -- Release lock
+                            hClose lockHandle
+                            safeRemoveFile cleanupLock
+                            putStrLn "[DEBUG CLEANUP] Cleanup complete"
 
 -- | Enhanced atomic file operations with proper error handling and cleanup
 atomicWriteFile :: FilePath -> BL.ByteString -> IO ()
@@ -461,7 +490,7 @@ markValidationComplete outputPath = do
 -- Only runs validation when:
 -- 1. Validation hasn't already run (no .validated file)
 -- 2. We can acquire the validation lock
--- 3. We have accumulated most/all modules (heuristic: > 2000 completion markers)
+-- 3. We have both fieldDefs and fieldUsages for each module (indicating compilation is complete)
 shouldRunValidation :: FilePath -> IO Bool
 shouldRunValidation outputPath = do
     let validatedFile = outputPath </> ".validated"
@@ -484,26 +513,39 @@ shouldRunValidation outputPath = do
                     let markerCount = length markers
                     putStrLn $ "[DEBUG VALIDATION] Found " ++ show markerCount ++ " completion markers"
 
-                    -- Only validate when we have accumulated most modules
-                    -- Use threshold of 2000 to ensure we're near the end of compilation
-                    if markerCount < 2000
+                    -- Need at least 5 modules to validate (avoid premature validation)
+                    if markerCount < 5
                         then do
-                            putStrLn $ "[DEBUG VALIDATION] Not enough modules yet (" ++ show markerCount ++ " < 2000), skipping validation"
+                            putStrLn $ "[DEBUG VALIDATION] Not enough modules yet (" ++ show markerCount ++ " < 5), skipping validation"
                             return False
                         else do
-                            -- Try to acquire lock atomically
-                            result <- try (openFile lockFile WriteMode) :: IO (Either SomeException Handle)
-                            case result of
-                                Left _ -> do
-                                    putStrLn "[DEBUG VALIDATION] Could not acquire lock, another process is validating"
+                            -- Count JSON files to see if we have both defs and usages for all modules
+                            allJsonFiles <- findAllJsonFiles outputPath
+                            let defsCount = length $ filter (".fieldDefs.json" `isSuffixOf`) allJsonFiles
+                                usagesCount = length $ filter (".fieldUsages.json" `isSuffixOf`) allJsonFiles
+
+                            putStrLn $ "[DEBUG VALIDATION] JSON files: defs=" ++ show defsCount ++ ", usages=" ++ show usagesCount
+
+                            -- Only validate if we have matching defs and usages counts (both phases done)
+                            -- AND we have enough total data
+                            if defsCount < 5 || usagesCount < 5 || abs (defsCount - usagesCount) > 2
+                                then do
+                                    putStrLn $ "[DEBUG VALIDATION] Compilation still in progress (defs/usages mismatch or too few files)"
                                     return False
-                                Right handle -> do
-                                    -- Successfully acquired lock
-                                    hPutStrLn handle "validation-in-progress"
-                                    hFlush handle
-                                    hClose handle
-                                    putStrLn "[DEBUG VALIDATION] Lock acquired, will run validation"
-                                    return True
+                                else do
+                                    -- Try to acquire lock atomically
+                                    result <- try (openFile lockFile WriteMode) :: IO (Either SomeException Handle)
+                                    case result of
+                                        Left _ -> do
+                                            putStrLn "[DEBUG VALIDATION] Could not acquire lock, another process is validating"
+                                            return False
+                                        Right handle -> do
+                                            -- Successfully acquired lock
+                                            hPutStrLn handle "validation-in-progress"
+                                            hFlush handle
+                                            hClose handle
+                                            putStrLn "[DEBUG VALIDATION] Lock acquired, will run validation"
+                                            return True
 
 -- | Enhanced validation lock with proper dependency tracking and deadlock prevention
 tryAcquireValidationLock :: FilePath -> IO Bool
