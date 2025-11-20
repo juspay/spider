@@ -210,24 +210,24 @@ extractFieldUsagesPass opts guts = do
                         Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
                     let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
 
-                -- Emit compilation errors for unused fields
-                if not $ null errors
-                    then do
-                        liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 9.x] Found " ++ show (length errors) ++ " unused fields"
-                        forM_ errors $ \(locStr, msg, _) -> do
-                            let srcSpan = parseLocationForCore locStr
-                                errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
-                            GHC.Core.Opt.Monad.putMsg errMsg
-                            liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
-                        -- DON'T clean up markers - let them accumulate for cross-module validation
-                        -- liftIO $ cleanupCompletionMarkers (path cliOptions)
-                        liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION FAILED *** due to " ++ show (length errors) ++ " unused strict fields"
-                        -- Throw an error to fail compilation
-                        liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
-                    else do
-                        -- No errors - DON'T clean up markers, let them accumulate for subsequent module validation
-                        -- liftIO $ cleanupCompletionMarkers (path cliOptions)
-                        liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
+                    -- Emit compilation errors for unused fields
+                    if not $ null errors
+                        then do
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 9.x] Found " ++ show (length errors) ++ " unused fields"
+                            forM_ errors $ \(locStr, msg, _) -> do
+                                let srcSpan = parseLocationForCore locStr
+                                    errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
+                                GHC.Core.Opt.Monad.putMsg errMsg
+                                liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
+                            -- DON'T clean up markers - let them accumulate for cross-module validation
+                            -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION FAILED *** due to " ++ show (length errors) ++ " unused strict fields"
+                            -- Throw an error to fail compilation
+                            liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                        else do
+                            -- No errors - DON'T clean up markers, let them accumulate for subsequent module validation
+                            -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
 
             return guts
 -- Helper function to parse location strings in CoreM context
@@ -315,24 +315,24 @@ extractFieldUsagesPass opts guts = do
                         Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
                     let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
 
-                -- Emit compilation errors for unused fields
-                if not $ null errors
-                    then do
-                        liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 8.x] Found " ++ show (length errors) ++ " unused fields"
-                        forM_ errors $ \(locStr, msg, _) -> do
-                            let srcSpan = parseLocationForCore locStr
-                                errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
-                            CoreMonad.putMsg errMsg
-                            liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
-                        -- DON'T clean up markers - let them accumulate for cross-module validation
-                        -- liftIO $ cleanupCompletionMarkers (path cliOptions)
-                        liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION FAILED *** due to " ++ show (length errors) ++ " unused strict fields"
-                        -- Throw an error to fail compilation
-                        liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
-                    else do
-                        -- No errors - DON'T clean up markers, let them accumulate for subsequent module validation
-                        -- liftIO $ cleanupCompletionMarkers (path cliOptions)
-                        liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
+                    -- Emit compilation errors for unused fields
+                    if not $ null errors
+                        then do
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 8.x] Found " ++ show (length errors) ++ " unused fields"
+                            forM_ errors $ \(locStr, msg, _) -> do
+                                let srcSpan = parseLocationForCore locStr
+                                    errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
+                                CoreMonad.putMsg errMsg
+                                liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
+                            -- DON'T clean up markers - let them accumulate for cross-module validation
+                            -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION FAILED *** due to " ++ show (length errors) ++ " unused strict fields"
+                            -- Throw an error to fail compilation
+                            liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                        else do
+                            -- No errors - DON'T clean up markers, let them accumulate for subsequent module validation
+                            -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
 
             return guts
 
