@@ -374,19 +374,16 @@ reportUnusedFields fields = map generateSimpleError fields
 formatUnusedFieldError :: FieldDefinition -> Text
 formatUnusedFieldError FieldDefinition{..} = T.unlines
     [ ""
-    , "❌ Unused field detected:"
-    , "   Field: " <> fieldDefName <> " :: " <> fieldDefType
-    , "   Type: " <> fieldDefTypeName
-    , "   Module: " <> fieldDefModule
+    , "error: unused field:"
+    , "   " <> fieldDefName <> " :: " <> fieldDefType
+    , "   in type " <> fieldDefTypeName
+    , "   in module " <> fieldDefModule
     , ""
-    , "⚠️  This non-Maybe field is defined but never used in business logic."
+    , "To resolve:"
+    , "  • Make the field optional: change its type to 'Maybe " <> fieldDefType <> "'"
+    , "  • Exclude the field if it is intentionally unused by updating your configuration:"
     , ""
-    , "🔧 Fix options (choose one):"
-    , "   1. USE the field: Add code that reads this field"
-    , "   2. MAKE OPTIONAL: Change type to 'Maybe " <> fieldDefType <> "'"
-    , "   3. EXCLUDE: Add to config if intentionally unused:"
-    , ""
-    , "      # In UnusedFieldChecker.yaml:"
+    , "      # UnusedFieldChecker.yaml"
     , "      exclusions:"
     , "        - module: \"" <> fieldDefModule <> "\""
     , "          types:"
