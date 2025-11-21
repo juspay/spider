@@ -1,0 +1,41 @@
+cabal-version:      2.4
+name:               unusedFieldChecker
+version:            0.1.0.0
+license:            MIT
+author:             Juspay
+maintainer:         juspay
+category:           Development
+build-type:         Simple
+
+library
+  exposed-modules:
+      UnusedFieldChecker.Plugin
+      UnusedFieldChecker.Types
+      UnusedFieldChecker.Validator
+      UnusedFieldChecker.Config
+      UnusedFieldChecker.DefinitionExtractor
+      UnusedFieldChecker.LibraryFilter
+      UnusedFieldChecker.UsageExtractor
+  build-depends:
+      base >=4.7 && <5,
+      ghc >=8.8 && <9.11,
+      aeson,
+      text,
+      containers,
+      bytestring,
+      directory,
+      filepath,
+      aeson-pretty,
+      extra,
+      binary,
+      deepseq,
+      socket-lib,
+      yaml,
+      time
+  hs-source-dirs:   src
+  default-language: Haskell2010
+  ghc-options:
+      -Wall
+      -Wno-orphans
+      -Wno-unused-imports
+      -Wno-unused-top-binds
