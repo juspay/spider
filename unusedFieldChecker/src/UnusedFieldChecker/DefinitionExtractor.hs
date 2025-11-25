@@ -15,6 +15,8 @@ import GHC.Core.DataCon
 import GHC.Core.TyCon
 import qualified GHC.Core.TyCo.Rep as TyCo
 import GHC.Core.Type
+import GHC.Core.Class
+import GHC.Core.InstEnv
 import GHC.Data.FastString
 import GHC.Tc.Types
 import GHC.Types.FieldLabel
@@ -38,16 +40,17 @@ import TcRnTypes
 import TyCon
 import TyCoRep
 import Type
+import Class
+import InstEnv
 #endif
 
 import Control.Monad (forM)
 import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text, pack)
 import qualified Data.Text as T
+import Data.List (find)
 import UnusedFieldChecker.Types
 
--- | Extract field definitions from type-checked environment
--- Only extracts definitions for types from the current package
 #if __GLASGOW_HASKELL__ >= 900
 extractFieldDefinitions :: Text -> Unit -> TcGblEnv -> TcM [FieldDefinition]
 extractFieldDefinitions modName currentPkg tcEnv = do
@@ -65,43 +68,47 @@ extractFieldDefinitions modName currentPkg tcEnv = do
 extractFieldsFromTyCon :: Text -> Text -> TyCon -> TcM [FieldDefinition]
 extractFieldsFromTyCon modName currentPkgName tc
     | isAlgTyCon tc && not (isClassTyCon tc) = do
-        let dataCons = tyConDataCons tc
-            typeName = pack $ showSDocUnsafe $ ppr $ tyConName tc
-            typeConstructor = pack $ nameStableString $ tyConName tc
-        concat <$> mapM (extractFieldsFromDataCon modName currentPkgName typeName typeConstructor) dataCons
+        hasFieldChecker <- checkFieldCheckerInstance tc
+
+        if not hasFieldChecker
+            then return []
+            else do
+                let dataCons = tyConDataCons tc
+                    typeName = pack $ showSDocUnsafe $ ppr $ tyConName tc
+                    typeConstructor = pack $ nameStableString $ tyConName tc
+                concat <$> mapM (extractFieldsFromDataCon modName currentPkgName typeName typeConstructor hasFieldChecker) dataCons
     | otherwise = return []
 
-extractFieldsFromDataCon :: Text -> Text -> Text -> Text -> DataCon -> TcM [FieldDefinition]
-extractFieldsFromDataCon modName currentPkgName typeName typeConstructor dc = do
+checkFieldCheckerInstance :: TyCon -> TcM Bool
+checkFieldCheckerInstance tc = do
+    return True
+
+extractFieldsFromDataCon :: Text -> Text -> Text -> Text -> Bool -> DataCon -> TcM [FieldDefinition]
+extractFieldsFromDataCon modName currentPkgName typeName typeConstructor hasFieldChecker dc = do
     let fieldLabels = dataConFieldLabels dc
         fieldTypes = dataConRepArgTys dc
         dcName = getName dc
         tyConName = getName $ dataConTyCon dc
-    
-    let packagePattern = "$" <> currentPkgName <> "-"
+        packagePattern = "$" <> currentPkgName <> "-"
         isCurrentPackage = packagePattern `T.isPrefixOf` typeConstructor
-    
+
     if not isCurrentPackage
-        then return []  -- Early exit for external packages
-        else extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName
+        then return []
+        else extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker fieldLabels fieldTypes dcName tyConName
 
 #if __GLASGOW_HASKELL__ >= 900
-extractFieldsForCurrentPackage :: Text -> Text -> Text -> [FieldLabel] -> [Scaled Type] -> Name -> Name -> TcM [FieldDefinition]
-extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName = do
+extractFieldsForCurrentPackage :: Text -> Text -> Text -> Bool -> [FieldLabel] -> [Scaled Type] -> Name -> Name -> TcM [FieldDefinition]
+extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker fieldLabels fieldTypes dcName tyConName = do
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
         then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
             let fieldName = pack $ unpackFS $ flLabel label
                 fieldTypeStr = pack $ showSDocUnsafe $ ppr $ TyCo.scaledThing fieldType
                 isMaybe = isMaybeType (TyCo.scaledThing fieldType)
                 location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
-                isSingleField = length fieldLabels == 1  -- GHC optimizes away single-field accessors
-
-                -- Extract package name from the type constructor
+                isSingleField = length fieldLabels == 1
                 packageName = case nameModule_maybe tyConName of
                     Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnit mod
                     Nothing -> "this"
-
-                -- Create fully qualified type name
                 fullyQualifiedType = modName <> "." <> typeName
 
             return FieldDefinition
@@ -115,25 +122,22 @@ extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fiel
                 , fieldDefFullyQualifiedType = fullyQualifiedType
                 , fieldDefTypeConstructor = typeConstructor
                 , fieldDefIsSingleField = isSingleField
+                , fieldDefHasFieldChecker = hasFieldChecker
                 }
         else return []
 #else
-extractFieldsForCurrentPackage :: Text -> Text -> Text -> [FieldLabel] -> [Type] -> Name -> Name -> TcM [FieldDefinition]
-extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fieldTypes dcName tyConName = do
+extractFieldsForCurrentPackage :: Text -> Text -> Text -> Bool -> [FieldLabel] -> [Type] -> Name -> Name -> TcM [FieldDefinition]
+extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker fieldLabels fieldTypes dcName tyConName = do
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
         then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
             let fieldName = pack $ unpackFS $ flLabel label
                 fieldTypeStr = pack $ showSDocUnsafe $ ppr fieldType
                 isMaybe = isMaybeType fieldType
                 location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
-                isSingleField = length fieldLabels == 1  -- GHC optimizes away single-field accessors
-
-                -- Extract package name from the type constructor
+                isSingleField = length fieldLabels == 1
                 packageName = case nameModule_maybe tyConName of
                     Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnitId mod
                     Nothing -> "this"
-
-                -- Create fully qualified type name
                 fullyQualifiedType = modName <> "." <> typeName
 
             return FieldDefinition
@@ -147,6 +151,7 @@ extractFieldsForCurrentPackage modName typeName typeConstructor fieldLabels fiel
                 , fieldDefFullyQualifiedType = fullyQualifiedType
                 , fieldDefTypeConstructor = typeConstructor
                 , fieldDefIsSingleField = isSingleField
+                , fieldDefHasFieldChecker = hasFieldChecker
                 }
         else return []
 #endif

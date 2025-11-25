@@ -3,10 +3,8 @@
 
 module UnusedFieldChecker.Config
     ( loadExclusionConfig
-    , isFieldExcluded
     , isModuleExcluded
     , validateConfigurationStrictly
-    , enforceFieldExclusions
     , applyConfigurationRules
     ) where
 
@@ -19,7 +17,6 @@ import System.Directory (doesFileExist)
 import System.IO (hPutStrLn, stderr)
 import UnusedFieldChecker.Types
 
--- | Load and validate exclusion configuration with strict error checking
 loadExclusionConfig :: FilePath -> IO ExclusionConfig
 loadExclusionConfig configPath = do
     exists <- doesFileExist configPath
@@ -35,7 +32,6 @@ loadExclusionConfig configPath = do
                     hPutStrLn stderr "Using empty configuration due to parse error"
                     return emptyExclusionConfig
                 Right config -> do
-                    -- Strict validation of the loaded configuration
                     validated <- validateConfigurationStrictly config
                     case validated of
                         Left configError -> do
@@ -50,52 +46,18 @@ loadExclusionConfig configPath = do
     logConfigSummary ExclusionConfig{..} = do
         case includeFiles of
             Just includes -> putStrLn $ "[CONFIG] Include patterns: " ++ show includes
-            Nothing -> putStrLn $ "[CONFIG] Exclude patterns: " ++ show excludeFiles
-        when (not $ null exclusions) $
-            putStrLn $ "[CONFIG] Field exclusions: " ++ show (length exclusions) ++ " module(s)"
-
-
-isFieldExcluded :: ExclusionConfig -> FieldDefinition -> Bool
-isFieldExcluded ExclusionConfig{..} FieldDefinition{..} =
-    any matchesModuleExclusion exclusions
-  where
-    matchesModuleExclusion :: ModuleExclusion -> Bool
-    matchesModuleExclusion ModuleExclusion{..} =
-        moduleMatches exclModule fieldDefModule &&
-        any matchesTypeExclusion exclTypes
-
-    matchesTypeExclusion :: TypeExclusion -> Bool
-    matchesTypeExclusion TypeExclusion{..} =
-        typeMatches exclDataType fieldDefTypeName &&
-        fieldMatches exclFields fieldDefName
-
-    moduleMatches :: Text -> Text -> Bool
-    moduleMatches pattern modName
-        | pattern == "*" = True
-        | T.isSuffixOf ".*" pattern =
-            let prefix = T.dropEnd 2 pattern
-            in prefix `T.isPrefixOf` modName
-        | otherwise = pattern == modName
-
-    typeMatches :: Text -> Text -> Bool
-    typeMatches pattern typeName
-        | pattern == "*" = True
-        | otherwise = pattern == typeName
-
-    fieldMatches :: [Text] -> Text -> Bool
-    fieldMatches [] _ = True
-    fieldMatches fields fieldName = fieldName `elem` fields
+            Nothing -> putStrLn $ "[CONFIG] No module filters - checking all modules"
 
 isModuleExcluded :: ExclusionConfig -> Text -> Bool
 isModuleExcluded ExclusionConfig{..} modName =
     case includeFiles of
         Just includes -> not (any (`matchesPattern` modName) includes)
-        Nothing -> any (`matchesPattern` modName) excludeFiles
+        Nothing -> False
   where
     matchesPattern :: Text -> Text -> Bool
     matchesPattern pattern modName
         | pattern == "*" = True
-        | T.isSuffixOf ".*" pattern = 
+        | T.isSuffixOf ".*" pattern =
             let prefix = T.dropEnd 2 pattern
             in prefix `T.isPrefixOf` modName
         | T.isPrefixOf "*." pattern =
@@ -103,15 +65,9 @@ isModuleExcluded ExclusionConfig{..} modName =
             in suffix `T.isSuffixOf` modName
         | otherwise = pattern == modName
 
--- | Strict configuration validation - ensures all patterns and references are valid
 validateConfigurationStrictly :: ExclusionConfig -> IO (Either Text ExclusionConfig)
 validateConfigurationStrictly config@ExclusionConfig{..} = do
-    let errors = concat
-            [ validateModulePatterns includeFiles "includeFiles"
-            , validateModulePatterns (Just excludeFiles) "excludeFiles"
-            , validateExclusions exclusions
-            , validatePatternConflicts config
-            ]
+    let errors = validateModulePatterns includeFiles "includeFiles"
 
     if null errors
         then return $ Right config
@@ -125,31 +81,6 @@ validateConfigurationStrictly config@ExclusionConfig{..} = do
         , not (isValidPattern pattern)
         ]
 
-    validateExclusions :: [ModuleExclusion] -> [Text]
-    validateExclusions = concatMap validateModuleExclusion
-
-    validateModuleExclusion :: ModuleExclusion -> [Text]
-    validateModuleExclusion ModuleExclusion{..} =
-        let moduleErrors = if isValidPattern exclModule
-                then []
-                else ["Invalid module pattern: '" <> exclModule <> "'"]
-            typeErrors = concatMap validateTypeExclusion exclTypes
-        in moduleErrors ++ typeErrors
-
-    validateTypeExclusion :: TypeExclusion -> [Text]
-    validateTypeExclusion TypeExclusion{..} =
-        if T.null exclDataType || null exclFields
-            then ["Empty dataType or fields in exclusion: " <> exclDataType]
-            else []
-
-    validatePatternConflicts :: ExclusionConfig -> [Text]
-    validatePatternConflicts ExclusionConfig{..} =
-        case includeFiles of
-            Just includes | not (null excludeFiles) ->
-                ["Cannot specify both includeFiles and excludeFiles - includeFiles takes precedence"]
-            _ -> []
-
--- | Check if a pattern is valid (basic character validation)
 isValidPattern :: Text -> Bool
 isValidPattern pattern =
     not (T.null pattern) && T.all isValidPatternChar pattern
@@ -157,36 +88,21 @@ isValidPattern pattern =
     isValidPatternChar c =
         c `elem` (['a'..'z'] ++ ['A'..'Z'] ++ ['0'..'9'] ++ "._*-")
 
--- | Apply configuration rules with strict filtering
 applyConfigurationRules :: ExclusionConfig -> [FieldDefinition] -> IO [FieldDefinition]
 applyConfigurationRules config fieldDefs = do
     let moduleFiltered = filter (isFromAllowedModule config) fieldDefs
-        fieldFiltered = filter (not . isFieldExcluded config) moduleFiltered
 
     putStrLn $ "[CONFIG FILTER] Total fields: " ++ show (length fieldDefs)
     putStrLn $ "[CONFIG FILTER] After module filter: " ++ show (length moduleFiltered)
-    putStrLn $ "[CONFIG FILTER] After field exclusions: " ++ show (length fieldFiltered)
 
-    return fieldFiltered
+    return moduleFiltered
   where
     isFromAllowedModule :: ExclusionConfig -> FieldDefinition -> Bool
     isFromAllowedModule ExclusionConfig{..} FieldDefinition{..} =
         case includeFiles of
             Just includes -> any (`strictMatchesPattern` fieldDefModule) includes
-            Nothing -> not (any (`strictMatchesPattern` fieldDefModule) excludeFiles)
+            Nothing -> True
 
--- | Enforce field exclusions - completely remove excluded fields from analysis
-enforceFieldExclusions :: [FieldDefinition] -> ExclusionConfig -> IO [FieldDefinition]
-enforceFieldExclusions fieldDefs config = do
-    let nonExcluded = filter (not . isFieldExcluded config) fieldDefs
-        excludedCount = length fieldDefs - length nonExcluded
-
-    when (excludedCount > 0) $
-        putStrLn $ "[CONFIG] Excluded " ++ show excludedCount ++ " field(s) from analysis"
-
-    return nonExcluded
-
--- | Strict pattern matching with exact semantics
 strictMatchesPattern :: Text -> Text -> Bool
 strictMatchesPattern pattern modName
     | pattern == "*" = True
@@ -197,11 +113,9 @@ strictMatchesPattern pattern modName
         let suffix = T.drop 2 pattern
         in not (T.null suffix) && suffix `T.isSuffixOf` modName
     | "*" `T.isInfixOf` pattern =
-        -- Complex wildcard patterns - simple matching
         matchesWildcard pattern modName
     | otherwise = pattern == modName
 
--- | Simple wildcard matching without regex dependency
 matchesWildcard :: Text -> Text -> Bool
 matchesWildcard pattern text
     | T.null pattern = T.null text
@@ -209,7 +123,7 @@ matchesWildcard pattern text
     | T.head pattern == '*' =
         let rest = T.tail pattern
         in if T.null rest
-            then True  -- Pattern is just "*"
+            then True
             else any (matchesWildcard rest) (T.tails text)
     | T.head pattern == T.head text =
         matchesWildcard (T.tail pattern) (T.tail text)

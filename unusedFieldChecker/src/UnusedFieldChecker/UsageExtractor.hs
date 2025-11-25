@@ -46,8 +46,6 @@ import Data.Text (Text, pack)
 import qualified Data.Text as T
 import UnusedFieldChecker.Types
 
--- | Extract field usages from Core bindings
--- Only extracts usages for types from the current package
 #if __GLASGOW_HASKELL__ >= 900
 extractFieldUsagesFromCore :: Text -> Unit -> [CoreBind] -> IO [FieldUsage]
 extractFieldUsagesFromCore modName currentPkg binds = do
@@ -56,7 +54,6 @@ extractFieldUsagesFromCore modName currentPkg binds = do
     allUsages <- mapM (extractUsagesFromBind modName currentPkgName) binds
     return $ concat allUsages
 
--- | Extract usages from a single Core binding
 extractUsagesFromBind :: Text -> Text -> CoreBind -> IO [FieldUsage]
 extractUsagesFromBind modName currentPkgName (NonRec binder expr) = do
 #else
@@ -67,13 +64,11 @@ extractFieldUsagesFromCore modName currentPkg binds = do
     allUsages <- mapM (extractUsagesFromBind modName currentPkgName) binds
     return $ concat allUsages
 
--- | Extract usages from a single Core binding
 extractUsagesFromBind :: Text -> Text -> CoreBind -> IO [FieldUsage]
 extractUsagesFromBind modName currentPkgName (NonRec binder expr) = do
 #endif
     let binderName = pack $ getOccString $ idName binder
     
-    -- Skip derived/compiler-generated bindings entirely
     if isDerivedBinding binderName
         then return []
         else extractUsagesFromExpr modName currentPkgName expr
@@ -87,7 +82,6 @@ extractUsagesFromBind modName currentPkgName (Rec binds) = do
         ) binds
     return $ concat usages
 
--- | Extract usages from a Core expression
 extractUsagesFromExpr :: Text -> Text -> CoreExpr -> IO [FieldUsage]
 extractUsagesFromExpr modName currentPkgName expr = case expr of
     Var _ -> return []
@@ -100,9 +94,7 @@ extractUsagesFromExpr modName currentPkgName expr = case expr of
     Coercion _ -> return []
 #endif
     
-    -- Application: check for HasField and recurse
     App func args -> do
-        -- Debug logging for function applications
         case func of
             Var fv -> do
                 let funcName = pack (nameStableString $ idName fv)
@@ -115,40 +107,29 @@ extractUsagesFromExpr modName currentPkgName expr = case expr of
         hasFieldUsages <- detectHasField modName currentPkgName func args
         return $ funcUsages ++ argUsages ++ hasFieldUsages
     
-    -- Lambda: recurse into body and check for record patterns in binder
     Lam binder body -> do
         bodyUsages <- extractUsagesFromExpr modName currentPkgName body
-        -- Check if lambda binds a record type and extracts fields
         binderUsages <- extractUsagesFromBinder modName currentPkgName binder body
         return $ binderUsages ++ bodyUsages
     
-    -- Let: extract from both binding and body, including record destructuring
     Let bind body -> do
         liftIO $ putStrLn $ "[DEBUG LET] Processing let binding in module: " ++ T.unpack modName
         bindUsages <- extractUsagesFromBind modName currentPkgName bind
         liftIO $ putStrLn $ "[DEBUG LET] Bind usages: " ++ show (length bindUsages)
         bodyUsages <- extractUsagesFromExpr modName currentPkgName body
         liftIO $ putStrLn $ "[DEBUG LET] Body usages: " ++ show (length bodyUsages)
-        -- Extract field usages from let-bound record patterns
         letPatternUsages <- extractLetPatternUsages modName currentPkgName bind
         liftIO $ putStrLn $ "[DEBUG LET] Pattern usages: " ++ show (length letPatternUsages)
         return $ bindUsages ++ bodyUsages ++ letPatternUsages
-    
-    -- Case: extract from scrutinee and alternatives
     Case scrut _ _ alts -> do
         scrutUsages <- extractUsagesFromExpr modName currentPkgName scrut
         altUsages <- mapM (extractUsagesFromAlt modName currentPkgName) alts
         return $ scrutUsages ++ concat altUsages
-    
-    -- Cast and Tick: recurse through
     Cast expr' _ -> extractUsagesFromExpr modName currentPkgName expr'
     Tick _ expr' -> extractUsagesFromExpr modName currentPkgName expr'
 
--- | Detect HasField constraints (the key to nested field access!)
--- Now accepts currentPkgName for filtering
 detectHasField :: Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
 detectHasField modName currentPkgName func args = do
-    -- Debug: Log when we detect potential HasField usage
     case args of
         Var hasFieldVar -> do
             let varName = pack (nameStableString $ idName hasFieldVar)
@@ -156,7 +137,6 @@ detectHasField modName currentPkgName func args = do
                 liftIO $ putStrLn $ "[DEBUG HasField] Found potential HasField: " ++ T.unpack varName
             detectHasFieldFromVar modName currentPkgName func hasFieldVar
         _ -> do
-            -- Enhanced detection for non-Var patterns
             lensUsages <- detectLensOperations modName currentPkgName func args
             recordUsages <- detectRecordOperations modName currentPkgName func args
             return $ lensUsages ++ recordUsages
@@ -166,18 +146,14 @@ detectHasFieldFromVar modName currentPkgName func hasFieldVar
     | "$_sys$$dHasField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) ||
       "$dHasField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) ||
       "getField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) = do
-        -- Extract field info from HasField constraint
         liftIO $ putStrLn $ "[DEBUG HasField VAR MATCH] Checking func pattern in module: " ++ T.unpack modName
         case func of
-            -- Pattern: App (App (App _ (Type fieldName)) (Type recordType)) (Type fieldType)
             App (App (App _ (Type fieldNameType)) (Type recordType)) (Type fieldType) -> do
                 let fieldName = extractFieldNameFromType fieldNameType
                     typeName = extractTypeNameFromType recordType
                     typeConstructor = extractTypeConstructor recordType
-                    -- Use a simple string representation for location
                     location = "HasField:" <> fieldName <> ":" <> typeName
 
-                    -- Filter by package
                     packagePattern = "$" <> currentPkgName <> "-"
                     shouldInclude = packagePattern `T.isPrefixOf` typeConstructor
 
@@ -202,12 +178,10 @@ detectHasFieldFromVar modName currentPkgName func hasFieldVar
                         liftIO $ putStrLn $ "[DEBUG HasField FILTERED OUT] Skipping cross-package usage: " ++ T.unpack fieldName
                         return []
             _ -> do
-                -- Log when the func pattern doesn't match expected structure
                 liftIO $ putStrLn $ "[DEBUG HasField PATTERN MISS] Func pattern doesn't match in module: " ++ T.unpack modName
                 return []
     | otherwise = return []
 
--- | Extract field name from type-level string
 extractFieldNameFromType :: Type -> Text
 extractFieldNameFromType ty = 
     let tyStr = pack $ showSDocUnsafe $ ppr ty
@@ -215,7 +189,6 @@ extractFieldNameFromType ty =
         (_:fieldName:_) -> fieldName
         _ -> tyStr
 
--- | Extract type name from type
 extractTypeNameFromType :: Type -> Text
 #if __GLASGOW_HASKELL__ >= 900
 extractTypeNameFromType ty = case ty of
@@ -227,7 +200,6 @@ extractTypeNameFromType ty = case ty of
     _ -> pack $ showSDocUnsafe $ ppr ty
 #endif
 
--- | Extract type constructor for matching
 extractTypeConstructor :: Type -> Text
 #if __GLASGOW_HASKELL__ >= 900
 extractTypeConstructor ty = case ty of
@@ -239,7 +211,6 @@ extractTypeConstructor ty = case ty of
     _ -> ""
 #endif
 
--- | Extract usages from case alternatives (pattern matching)
 #if __GLASGOW_HASKELL__ >= 900
 extractUsagesFromAlt :: Text -> Text -> CoreAlt -> IO [FieldUsage]
 extractUsagesFromAlt modName currentPkgName (Alt altCon boundVars expr) = 
@@ -260,7 +231,6 @@ extractUsagesFromAlt' modName currentPkgName (DataAlt dataCon, boundVars, expr) 
         typeName = pack $ nameStableString tyConName
         typeConstructor = typeName
 
-        -- Check if this is a library type being pattern matched
         isLibraryType = isLibraryTypeConstructor typeConstructor
         fieldLabels = dataConFieldLabels dataCon
 
@@ -272,8 +242,6 @@ extractUsagesFromAlt' modName currentPkgName (DataAlt dataCon, boundVars, expr) 
     let packagePattern = "$" <> currentPkgName <> "-"
         shouldInclude = packagePattern `T.isPrefixOf` typeConstructor
     
-    -- Only create pattern match usages for current package types
-    -- Skip library types, external packages, and constructors without fields
     let patternUsages = if not shouldInclude || isLibraryType || null fieldLabels
             then []
             else zipWith (\var label -> FieldUsage
@@ -373,13 +341,11 @@ extractFieldSelectorsFromExpr modName currentPkgName targetVar dataCon expr = do
     extractFieldsFromAlt :: Text -> [FieldLabel] -> Text -> Text -> CoreAlt -> IO [FieldUsage]
     extractFieldsFromAlt currentPkgName labels tName tCon (Alt (DataAlt altCon) boundVars _) 
         | altCon == dataCon = do
-            -- Filter by package - only create usages for current package types
             let packagePattern = "$" <> currentPkgName <> "-"
                 shouldInclude = packagePattern `T.isPrefixOf` tCon
             
             if shouldInclude
                 then do
-                    -- This alternative matches our data constructor - bound vars are fields
                     let usages = zipWith (\var label -> FieldUsage
                             { fieldUsageName = pack $ unpackFS $ flLabel label
                             , fieldUsageType = PatternMatch
@@ -399,13 +365,11 @@ extractFieldSelectorsFromExpr modName currentPkgName targetVar dataCon expr = do
     extractFieldsFromAlt :: Text -> [FieldLabel] -> Text -> Text -> CoreAlt -> IO [FieldUsage]
     extractFieldsFromAlt currentPkgName labels tName tCon (DataAlt altCon, boundVars, _) 
         | altCon == dataCon = do
-            -- Filter by package - only create usages for current package types
             let packagePattern = "$" <> currentPkgName <> "-"
                 shouldInclude = packagePattern `T.isPrefixOf` tCon
             
             if shouldInclude
                 then do
-                    -- This alternative matches our data constructor - bound vars are fields
                     let usages = zipWith (\var label -> FieldUsage
                             { fieldUsageName = pack $ unpackFS $ flLabel label
                             , fieldUsageType = PatternMatch
@@ -419,17 +383,9 @@ extractFieldSelectorsFromExpr modName currentPkgName targetVar dataCon expr = do
     extractFieldsFromAlt _ _ _ _ _ = return []
 #endif
 
--- | Extract package name from full unit string
--- Examples:
---   "euler-api-gateway-0.1.0.1-inplace" -> "euler-api-gateway"
---   "euler-db-22.12.0-3et0lfACrmh4W6cv3STvRQ" -> "euler-db"
---   "common-0.1.0.1-inplace" -> "common"
 extractPackageName :: Text -> Text
 extractPackageName unitStr =
-    -- Package format: name-version-hash or name-version-inplace
-    -- We want just the "name" part before the first version number
     let parts = T.splitOn "-" unitStr
-        -- Take parts until we hit a version number (starts with digit)
         nameParts = takeWhile (not . startsWithDigit) parts
     in T.intercalate "-" nameParts
   where
@@ -438,13 +394,11 @@ extractPackageName unitStr =
         Just (c, _) -> c >= '0' && c <= '9'
         Nothing -> False
 
--- | Detect lens operations: ^., .~, %~, etc.
 detectLensOperations :: Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
 detectLensOperations modName currentPkgName func args = do
     let funcStr = extractExprString func
         argsStr = extractExprString args
 
-    -- Check for lens operators
     if any (`T.isInfixOf` funcStr) ["^.", ".~", "%~", "&", "view", "set", "over"]
         then do
             let fieldName = extractPotentialFieldName argsStr
@@ -460,13 +414,11 @@ detectLensOperations modName currentPkgName func args = do
                 else return []
         else return []
 
--- | Detect record operations: record construction, updates
 detectRecordOperations :: Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
 detectRecordOperations modName currentPkgName func args = do
     case func of
         Var funcVar -> do
             let funcName = pack $ getOccString $ idName funcVar
-            -- Check for record constructor or accessor
             if isRecordConstructor funcName || isFieldAccessor funcName
                 then return [FieldUsage
                     { fieldUsageName = extractFieldFromName funcName
@@ -484,7 +436,6 @@ detectRecordOperations modName currentPkgName func args = do
     extractFieldFromName = id
     commonFunctions = ["map", "filter", "foldl", "foldr", "return", "pure", ">>=", ">>", "show", "read"]
 
--- | Enhanced serialization filtering - ignore FromJSON/ToJSON generated code
 filterSerializationUsage :: [FieldUsage] -> IO [FieldUsage]
 filterSerializationUsage usages = return $ filter (not . isSerializationContext) usages
   where
@@ -501,7 +452,6 @@ filterSerializationUsage usages = return $ filter (not . isSerializationContext)
            fieldUsageType usage `elem` [DerivedInstances, TemplateHaskell] ||
            "$" `T.isPrefixOf` usageName
 
--- | Extract field name from various expression patterns
 extractPotentialFieldName :: Text -> Text
 extractPotentialFieldName exprStr
     | T.isInfixOf "\"" exprStr =
@@ -510,7 +460,6 @@ extractPotentialFieldName exprStr
             _ -> ""
     | otherwise = ""
 
--- | Extract string representation from Core expression for pattern matching
 extractExprString :: CoreExpr -> Text
 extractExprString expr = case expr of
     Var v -> pack $ getOccString $ idName v

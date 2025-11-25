@@ -10,6 +10,8 @@ module UnusedFieldChecker.Validator
     , categorizeFieldByType
     , isFieldMaybeType
     , filterSerializationUsages
+    , validateServantAPITypes
+    , formatMissingFieldCheckerError
     ) where
 
 import Control.Monad (when)
@@ -60,7 +62,6 @@ validateFields AggregatedFieldInfo{..} =
             isUsed = case Map.lookup fieldName allFieldUsages of
                 Nothing -> False
                 Just usages -> any isRealUsage usages
-            -- Single-field records are automatically considered "used" since GHC optimizes away the accessor
             isSingleFieldRecord = fieldDefIsSingleField fieldDef
             _ = unsafePerformIO $ when (fieldName == "notificationRequestItem") $ do
                     putStrLn $ "[DEBUG SINGLE] Field: " ++ T.unpack fieldName ++
@@ -72,9 +73,7 @@ validateFields AggregatedFieldInfo{..} =
                 then (fieldDef : unusedMaybe, unusedNonMaybe, used)
                 else (unusedMaybe, fieldDef : unusedNonMaybe, used)
       where
-        -- Enhanced real usage detection - filter out serialization
         isRealUsage usage = case fieldUsageType usage of
-            -- These are real field accesses in business logic
             AccessorFunction -> True
             PatternMatch -> True
             NamedFieldPuns -> True
@@ -86,8 +85,6 @@ validateFields AggregatedFieldInfo{..} =
             FunctionComposition -> True
             LensesOptics -> True
             GenericReflection -> True
-
-            -- These are NOT real field usage - ignore
             TemplateHaskell -> False
             DerivedInstances -> False
             DataSYB -> False
@@ -95,14 +92,9 @@ validateFields AggregatedFieldInfo{..} =
 validateFieldsWithExclusions :: ExclusionConfig -> AggregatedFieldInfo -> ValidationResult
 validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
     let allDefs = concat $ Map.elems allFieldDefs
-
-        -- First filter by include/exclude rules to get only fields from allowed modules
         allowedModuleDefs = filter (isFromAllowedModule exclusionConfig) allDefs
 
-        -- Then filter by field-specific exclusions
-        nonExcludedDefs = filter (not . isFieldExcluded exclusionConfig) allowedModuleDefs
-
-        (unusedMaybe, unusedNonMaybe, used) = foldl' categorizeField ([], [], []) nonExcludedDefs
+        (unusedMaybe, unusedNonMaybe, used) = foldl' categorizeField ([], [], []) allowedModuleDefs
 
     in ValidationResult
         { unusedNonMaybeFields = nub unusedNonMaybe
@@ -110,12 +102,11 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
         , usedFields = nub used
         }
   where
-    -- Check if a field definition is from an allowed module
     isFromAllowedModule :: ExclusionConfig -> FieldDefinition -> Bool
     isFromAllowedModule ExclusionConfig{..} FieldDefinition{..} =
         case includeFiles of
             Just includes -> any (`matchesPattern` fieldDefModule) includes
-            Nothing -> not (any (`matchesPattern` fieldDefModule) excludeFiles)
+            Nothing -> True
       where
         matchesPattern :: Text -> Text -> Bool
         matchesPattern pattern modName
@@ -136,8 +127,6 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
             typeName = fieldDefTypeName fieldDef
             defModule = fieldDefModule fieldDef
             fullyQualifiedType = fieldDefFullyQualifiedType fieldDef
-
-            -- Check if this specific field (by name, type, and module) is used
             isUsed = case Map.lookup fieldName allFieldUsages of
                 Nothing -> False
                 Just usages -> any (isRealUsageOfThisField fieldDef) usages
@@ -147,26 +136,18 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
                 then (fieldDef : unusedMaybe, unusedNonMaybe, used)
                 else (unusedMaybe, fieldDef : unusedNonMaybe, used)
       where
-        -- Check if usage is actually of this specific field definition
         isRealUsageOfThisField :: FieldDefinition -> FieldUsage -> Bool
         isRealUsageOfThisField fieldDef usage =
             let fieldName = fieldDefName fieldDef
                 defTypeConstructor = fieldDefTypeConstructor fieldDef
                 usageName = fieldUsageName usage
                 usageTypeConstructor = fieldUsageTypeConstructor usage
-
-                -- Names must match
                 nameMatches = usageName == fieldName
-
-                -- Type constructors should match (when available)
                 typeMatches = case (usageTypeConstructor, defTypeConstructor) of
                     ("", _) -> True  -- Unknown type in usage, conservatively match
                     (_, "") -> True  -- Unknown type in definition, conservatively match
                     (usageType, defType) -> usageType == defType
-
-                -- For explicit record operations, we can be confident it's the right field
                 isExplicitRecordOp = case fieldUsageType usage of
-                    -- These usage types are explicit about which record they're accessing
                     RecordConstruct -> True
                     RecordUpdate -> True
                     PatternMatch -> True
@@ -176,19 +157,16 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
                     HasFieldOverloaded -> True  -- From Core-level HasField detection
                     GenericReflection -> True
 
-                    -- For these, we need type matching to be sure
                     AccessorFunction -> typeMatches
                     FunctionComposition -> typeMatches
                     LensesOptics -> typeMatches
 
-                    -- These are not field-specific
                     TemplateHaskell -> False
                     DerivedInstances -> False
                     DataSYB -> False
 
             in nameMatches && (isExplicitRecordOp || typeMatches)
 
--- | Enhanced field categorization with proper Maybe type detection
 categorizeFieldByType :: FieldDefinition -> [FieldUsage] -> FieldCategory
 categorizeFieldByType fieldDef usages =
     let hasRealUsage = any isRealFieldUsage usages
@@ -200,7 +178,6 @@ categorizeFieldByType fieldDef usages =
             else UnusedNonMaybeField
   where
     isRealFieldUsage usage = case fieldUsageType usage of
-        -- Real business logic usage
         AccessorFunction -> True
         PatternMatch -> True
         RecordConstruct -> True
@@ -208,10 +185,8 @@ categorizeFieldByType fieldDef usages =
         RecordDotSyntax -> True
         HasFieldOverloaded -> True
         LensesOptics -> True
-        -- Serialization is NOT real usage
         _ -> False
 
--- | Proper Maybe type detection using type analysis
 isFieldMaybeType :: Text -> Bool
 isFieldMaybeType fieldType =
     let normalized = T.strip fieldType
@@ -221,14 +196,12 @@ isFieldMaybeType fieldType =
        " -> Maybe" `T.isInfixOf` normalized ||
        "m (Maybe" `T.isInfixOf` normalized
 
--- | Field categorization result
 data FieldCategory
     = UsedField
     | UnusedMaybeField
     | UnusedNonMaybeField
     deriving (Show, Eq)
 
--- | Filter out serialization usages from the usage list
 filterSerializationUsages :: [FieldUsage] -> [FieldUsage]
 filterSerializationUsages = filter (not . isSerializationUsage)
   where
@@ -252,28 +225,20 @@ filterSerializationUsages = filter (not . isSerializationUsage)
         , ".Aeson", ".Data.Aeson"
         ]
 
--- Phase 2: Only check fields that have no usage within configured modules
 validateFieldsForTypesUsedInConfiguredModules :: ExclusionConfig -> AggregatedFieldInfo -> IO ValidationResult
 validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInfo{..} = do
     let allDefs = concat $ Map.elems allFieldDefs
-        
-        -- First filter by include/exclude rules to get only fields from allowed modules
-        allowedModuleDefs = filter (isFromAllowedModule exclusionConfig) allDefs
-        
-        -- Then apply field-specific exclusions
-        nonExcludedDefs = filter (not . isFieldExcluded exclusionConfig) allowedModuleDefs
 
-    -- Debug logging
+        allowedModuleDefs = filter (isFromAllowedModule exclusionConfig) allDefs
+
     putStrLn $ "\n[DEBUG Phase 2] Total field definitions: " ++ show (length allDefs)
     putStrLn $ "[DEBUG Phase 2] Allowed module definitions: " ++ show (length allowedModuleDefs)
-    putStrLn $ "[DEBUG Phase 2] Non-excluded definitions: " ++ show (length nonExcludedDefs)
     case includeFiles exclusionConfig of
         Just includes -> putStrLn $ "[DEBUG Phase 2] Configured modules: " ++ show includes
         Nothing -> putStrLn $ "[DEBUG Phase 2] No configured modules (includeFiles is Nothing)"
 
-    let (unusedMaybe, unusedNonMaybe, used) = foldl' categorizeField ([], [], []) nonExcludedDefs
+    let (unusedMaybe, unusedNonMaybe, used) = foldl' categorizeField ([], [], []) allowedModuleDefs
 
-    -- More debug logging
     putStrLn $ "[DEBUG Phase 2] Results:"
     putStrLn $ "  - Used fields: " ++ show (length used)
     putStrLn $ "  - Unused Maybe fields: " ++ show (length unusedMaybe)
@@ -287,12 +252,11 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
         , usedFields = nub used
         }
   where
-    -- Check if a field definition is from an allowed module
     isFromAllowedModule :: ExclusionConfig -> FieldDefinition -> Bool
     isFromAllowedModule ExclusionConfig{..} FieldDefinition{..} =
         case includeFiles of
             Just includes -> any (`matchesPattern` fieldDefModule) includes
-            Nothing -> not (any (`matchesPattern` fieldDefModule) excludeFiles)
+            Nothing -> True
       where
         matchesPattern :: Text -> Text -> Bool
         matchesPattern pattern modName
@@ -305,7 +269,6 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
                 in suffix `T.isSuffixOf` modName
             | otherwise = pattern == modName
 
-    -- Check if a usage occurs within a configured module
     isUsageInConfiguredModule :: ExclusionConfig -> FieldUsage -> Bool
     isUsageInConfiguredModule ExclusionConfig{..} FieldUsage{..} =
         case includeFiles of
@@ -329,10 +292,8 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
     categorizeField (unusedMaybe, unusedNonMaybe, used) fieldDef =
         let fieldName = fieldDefName fieldDef
 
-            -- Single-field records are automatically considered "used" since GHC optimizes away the accessor
             isSingleFieldRecord = fieldDefIsSingleField fieldDef
 
-            -- Check if this field has any usage within the configured modules
             (hasUsageInConfiguredModules, usageDetails) = case Map.lookup fieldName allFieldUsages of
                 Nothing -> (False, "no usages found")
                 Just usages ->
@@ -345,7 +306,6 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
                         ", configured usages: " ++ show (length configuredUsages) ++
                         ", configured modules: " ++ show configuredUsageModules)
 
-            -- Debug logging for first few fields
             _ = unsafePerformIO $
                 if length (unusedMaybe ++ unusedNonMaybe ++ used) < 10  -- Only log first 10 fields
                 then putStrLn $ "    [FIELD] " ++ T.unpack fieldName ++ " :: " ++ T.unpack (fieldDefType fieldDef) ++
@@ -361,7 +321,6 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
                 then (fieldDef : unusedMaybe, unusedNonMaybe, used)
                 else (unusedMaybe, fieldDef : unusedNonMaybe, used)
 
--- | Generate simple, actionable error messages for unused fields
 reportUnusedFields :: [FieldDefinition] -> [(Text, Text, Text)]
 reportUnusedFields fields = map generateSimpleError fields
   where
@@ -370,29 +329,40 @@ reportUnusedFields fields = map generateSimpleError fields
         let errorMsg = formatUnusedFieldError FieldDefinition{..}
         in (fieldDefLocation, errorMsg, fieldDefModule)
 
--- | Format error message with clear, actionable guidance
 formatUnusedFieldError :: FieldDefinition -> Text
 formatUnusedFieldError FieldDefinition{..} = T.unlines
-    [ ""
-    , "error: unused field:"
-    , "   " <> fieldDefName <> " :: " <> fieldDefType
-    , "   in type " <> fieldDefTypeName
-    , "   in module " <> fieldDefModule
+    [ "Unused Maybe field detected:"
+    , "  Type: " <> fieldDefTypeName
+    , "  Field: " <> fieldDefName <> " :: " <> fieldDefType
     , ""
-    , "To resolve:"
-    , "  • Make the field optional: change its type to 'Maybe " <> fieldDefType <> "'"
-    , "  • Exclude the field if it is intentionally unused by updating your configuration:"
+    , "This field is declared as Maybe but never used in the codebase."
+    , "Either:"
+    , "  1. Use this field in your code, OR"
+    , "  2. Add it to excludedFields in the FieldChecker instance"
     , ""
-    , "      # UnusedFieldChecker.yaml"
-    , "      exclusions:"
-    , "        - module: \"" <> fieldDefModule <> "\""
-    , "          types:"
-    , "            - dataType: \"" <> fieldDefTypeName <> "\""
-    , "              fields: [\"" <> fieldDefName <> "\"]"
-    , ""
+    , "Example:"
+    , "  instance FieldChecker " <> fieldDefTypeName <> " where"
+    , "    excludedFields _ = [\"" <> fieldDefName <> "\"]"
     ]
 
--- | Generate summary report for multiple unused fields
+formatMissingFieldCheckerError :: Text -> Text -> Text
+formatMissingFieldCheckerError typeName endpoint = T.unlines
+    [ "Missing FieldChecker instance for Servant API type:"
+    , "  Type: " <> typeName
+    , "  Used in: API endpoint at " <> endpoint
+    , ""
+    , "All types used in Servant API definitions must have a FieldChecker instance."
+    , ""
+    , "Add this instance:"
+    , "  instance FieldChecker " <> typeName <> " where"
+    , "    excludedFields _ = []"
+    ]
+
+validateServantAPITypes :: [ServantAPIType] -> [(Text, Text)]
+validateServantAPITypes apiTypes =
+    let missingInstances = filter (not . apiHasFieldChecker) apiTypes
+    in map (\api -> (formatMissingFieldCheckerError (apiTypeName api) (apiEndpoint api), apiLocation api)) missingInstances
+
 generateSummaryReport :: [FieldDefinition] -> Text
 generateSummaryReport [] = "✅ No unused fields detected!"
 generateSummaryReport unusedFields =

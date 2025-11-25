@@ -40,6 +40,7 @@ data FieldDefinition = FieldDefinition
     , fieldDefFullyQualifiedType :: Text  -- moduleName.typeName
     , fieldDefTypeConstructor :: Text     -- Type constructor for matching
     , fieldDefIsSingleField :: Bool       -- True if this is the only field in the record (GHC optimizes away accessor)
+    , fieldDefHasFieldChecker :: Bool     -- True if type derives FieldChecker
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 data UsageType
@@ -86,62 +87,29 @@ data ValidationResult = ValidationResult
     , usedFields :: [FieldDefinition]
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
--- Individual type exclusion within a module
-data TypeExclusion = TypeExclusion
-    { exclDataType :: Text
-    , exclFields :: [Text]
-    } deriving (Show, Eq, Ord, Binary, Generic, NFData)
-
-instance ToJSON TypeExclusion where
-    toJSON (TypeExclusion dt fields) = object
-        [ "dataType" .= dt
-        , "fields" .= fields
-        ]
-
-instance FromJSON TypeExclusion where
-    parseJSON = withObject "TypeExclusion" $ \v -> TypeExclusion
-        <$> v .: "dataType"
-        <*> v .: "fields"
-
--- Module-level exclusion with grouped types (new cleaner format)
-data ModuleExclusion = ModuleExclusion
-    { exclModule :: Text
-    , exclTypes :: [TypeExclusion]
-    } deriving (Show, Eq, Ord, Binary, Generic, NFData)
-
-instance ToJSON ModuleExclusion where
-    toJSON (ModuleExclusion mod types) = object
-        [ "module" .= mod
-        , "types" .= types
-        ]
-
-instance FromJSON ModuleExclusion where
-    parseJSON = withObject "ModuleExclusion" $ \v -> ModuleExclusion
-        <$> v .: "module"
-        <*> v .: "types"
-
--- Configuration with priority order:
--- 1. includeFiles (if set, ONLY these modules are checked - whitelist mode)
--- 2. excludeFiles (if includeFiles not set, these modules are skipped - blacklist mode)
--- 3. exclusions (field-level exclusions within checked modules)
 data ExclusionConfig = ExclusionConfig
-    { exclusions :: [ModuleExclusion]
-    , excludeFiles :: [Text]
-    , includeFiles :: Maybe [Text]
+    { includeFiles :: Maybe [Text]
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 emptyExclusionConfig :: ExclusionConfig
 emptyExclusionConfig = ExclusionConfig
-    { exclusions = []
-    , excludeFiles = []
-    , includeFiles = Nothing
+    { includeFiles = Nothing
     }
 
--- Phase 2: Track which types are used within configured modules
 data TypeUsageInModule = TypeUsageInModule
     { typeName :: Text           -- e.g., "AdyenRefundSuccessResponse"
     , typeModule :: Text         -- Module where type is defined
     , usedInModule :: Text       -- Module where type is used
     , usageLocation :: Text      -- Location where type is used
     , typeConstructor :: Text    -- Type constructor for matching
+    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+
+data ServantAPIType = ServantAPIType
+    { apiTypeName :: Text              -- e.g., "AuthRequest"
+    , apiTypeModule :: Text            -- Module where type is defined
+    , apiTypeConstructor :: Text       -- Type constructor for matching
+    , apiEndpoint :: Text              -- e.g., "/v1/authentication"
+    , apiLocation :: Text              -- Source location of the API definition
+    , apiHasFieldChecker :: Bool       -- Whether FieldChecker instance exists
+    , apiServantCombinator :: Text     -- e.g., "ReqBody '[JSON]", "Post '[JSON]"
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
