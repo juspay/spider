@@ -23,14 +23,14 @@ import GHC.Driver.Session
 import GHC.Hs
 import GHC.Tc.Types
 import GHC.Tc.Utils.Monad (addMessages)
-import GHC.Types.Error
+import GHC.Types.Error (Messages, mkMessages)
 import GHC.Types.FieldLabel
 import GHC.Types.Name
 import GHC.Types.SrcLoc
 import GHC.Unit.Module.ModGuts
 import GHC.Unit.Module.ModSummary
 import GHC.Unit.Types (moduleName, moduleUnit)
-import GHC.Utils.Error
+import GHC.Utils.Error (mkMsgEnvelope, mkLocMessage)
 import GHC.Utils.Outputable hiding ((<>))
 import qualified GHC.Utils.Error as Err
 #else
@@ -90,7 +90,6 @@ plugin :: Plugin
 plugin = defaultPlugin
     { typeCheckResultAction = collectFieldDefinitionsOnly
     , installCoreToDos = installFieldUsageAnalysis
-    , interfaceLoadAction = performCrossModuleValidation
     , pluginRecompile = \_ -> return NoForceRecompile
     }
 
@@ -115,6 +114,21 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
             apiTypes <- extractServantAPITypes modName tcEnv
 
             liftIO $ putStrLn $ "[Plugin] Extracted " ++ show (length apiTypes) ++ " Servant API types from " ++ T.unpack modName
+
+            apiValidationErrors <- validateAPITypesHaveFieldChecker apiTypes
+            when (not $ null apiValidationErrors) $ do
+                liftIO $ putStrLn $ "[Plugin ERROR] Found " ++ show (length apiValidationErrors) ++ " Servant API types without FieldChecker instances"
+                forM_ apiValidationErrors $ \(typeName, endpoint, srcSpan) -> do
+                    let errMsg = formatMissingFieldCheckerError typeName endpoint
+                    liftIO $ putStrLn $ "[Plugin ERROR] " ++ T.unpack typeName ++ " at " ++ T.unpack endpoint
+#if __GLASGOW_HASKELL__ >= 900
+                    let msg = mkMsgEnvelope srcSpan neverQualify (text $ T.unpack errMsg)
+                    addMessages (mkMessages $ unitBag msg)
+#else
+                    let msg = mkErrMsg srcSpan neverQualify (text $ T.unpack errMsg)
+                    addErrs [(srcSpan, text $ T.unpack errMsg)]
+#endif
+                liftIO $ error $ "Compilation failed: " ++ show (length apiValidationErrors) ++ " Servant API types missing FieldChecker instances"
 
             let moduleInfo = ModuleFieldInfo
                     { moduleFieldDefs = fieldDefs
@@ -195,12 +209,13 @@ performValidationPass opts guts = do
                         else return ()
 
             return guts
+
 parseLocationForCore :: Text -> SrcSpan
-parseLocationForCore locStr = 
+parseLocationForCore locStr =
     case T.splitOn ":" locStr of
-        [file, line, col] -> 
+        [file, line, col] ->
             case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
-                (Just l, Just c) -> 
+                (Just l, Just c) ->
                     let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
                     in mkSrcSpan srcLoc srcLoc
                 _ -> noSrcSpan
@@ -257,11 +272,11 @@ performValidationPass opts guts = do
             return guts
 
 parseLocationForCore :: Text -> SrcSpan
-parseLocationForCore locStr = 
+parseLocationForCore locStr =
     case T.splitOn ":" locStr of
-        [file, line, col] -> 
+        [file, line, col] ->
             case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
-                (Just l, Just c) -> 
+                (Just l, Just c) ->
                     let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
                     in mkSrcSpan srcLoc srcLoc
                 _ -> noSrcSpan
