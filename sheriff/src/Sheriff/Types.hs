@@ -25,6 +25,7 @@ data PluginOpts = PluginOpts {
     rulesConfigPath       :: String,
     exceptionsConfigPath  :: String,
     matchAllInsideAnd     :: Bool,
+    checkEmptyWhereClause :: Bool,
     shouldCheckExceptions :: Bool,
     logDebugInfo          :: Bool,
     logWarnInfo           :: Bool,
@@ -39,6 +40,7 @@ defaultPluginOpts =
     throwCompilationError = True, 
     failOnFileNotFound    = True, 
     matchAllInsideAnd     = False,
+    checkEmptyWhereClause = False,
     savePath              = ".juspay/tmp/sheriff/", 
     indexedKeysPath       = ".juspay/indexedKeys.yaml" ,
     rulesConfigPath       = ".juspay/sheriffRules.yaml",
@@ -60,6 +62,7 @@ instance FromJSON PluginOpts where
     rulesConfigPath       <- o .:? "rulesConfigPath"       .!= (rulesConfigPath defaultPluginOpts)
     exceptionsConfigPath  <- o .:? "exceptionsConfigPath"  .!= (exceptionsConfigPath defaultPluginOpts)
     matchAllInsideAnd     <- o .:? "matchAllInsideAnd"     .!= (matchAllInsideAnd defaultPluginOpts)
+    checkEmptyWhereClause <- o .:? "checkEmptyWhereClause" .!= (checkEmptyWhereClause defaultPluginOpts)
     shouldCheckExceptions <- o .:? "matchAllInsideAnd"     .!= (shouldCheckExceptions defaultPluginOpts)
     logDebugInfo          <- o .:? "logDebugInfo"          .!= (logDebugInfo defaultPluginOpts)
     logWarnInfo           <- o .:? "logWarnInfo"           .!= (logWarnInfo defaultPluginOpts)
@@ -341,6 +344,7 @@ data Violation =
     ArgTypeBlocked String String String FunctionRule
   | FnBlockedInArg (String, String) String Value FunctionRule
   | NonIndexedDBColumn String String DBRule
+  | EmptyWhereClause String DBRule
   | FnUseBlocked String FunctionRule
   | FnSigBlocked String String FunctionRule
   | InfiniteRecursionDetected InfiniteRecursionRule
@@ -354,5 +358,6 @@ instance Show Violation where
     (FnUseBlocked ruleFnName rule)                   -> "Use of '" <> ruleFnName <> "' in the code is not allowed."
     (FnSigBlocked ruleFnName ruleFnSig rule)         -> "Use of '" <> ruleFnName <> "' with signature '" <> ruleFnSig <> "' is not allowed in the code."
     (NonIndexedDBColumn colName tableName _)         -> "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
+    (EmptyWhereClause tableName _)                   -> "Query with empty where clause on table '" <> (tableName) <> "' is not allowed."
     (InfiniteRecursionDetected _)                    -> "Infinite recursion detected in expression"
     NoViolation                                      -> "NoViolation"

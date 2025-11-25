@@ -37,6 +37,7 @@ getViolationSuggestions v = case v of
   FnUseBlocked _ r -> fn_rule_fixes r
   FnSigBlocked _ _ r -> fn_rule_fixes r
   NonIndexedDBColumn _ _ r -> db_rule_fixes r
+  EmptyWhereClause _ r -> db_rule_fixes r
   InfiniteRecursionDetected r -> infinite_recursion_rule_fixes r
   NoViolation -> []
 
@@ -47,6 +48,7 @@ getViolationType v = case v of
   FnUseBlocked _ _ -> "FnUseBlocked"
   FnSigBlocked _ _ _ -> "FnSigBlocked"
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
+  EmptyWhereClause _ _ -> "EmptyWhereClause"
   InfiniteRecursionDetected _ -> "InfiniteRecursionDetected"
   NoViolation -> "NoViolation"
 
@@ -57,6 +59,7 @@ getViolationRule v = case v of
   FnUseBlocked _ r -> FunctionRuleT r
   FnSigBlocked _ _ r -> FunctionRuleT r
   NonIndexedDBColumn _ _ r -> DBRuleT r
+  EmptyWhereClause _ r -> DBRuleT r
   InfiniteRecursionDetected r -> InfiniteRecursionRuleT r
   NoViolation -> defaultRule
 
@@ -67,6 +70,7 @@ getViolationRuleName v = case v of
   FnUseBlocked _ r -> fn_rule_name r
   FnSigBlocked _ _ r -> fn_rule_name r
   NonIndexedDBColumn _ _ r -> db_rule_name r
+  EmptyWhereClause _ r -> db_rule_name r
   InfiniteRecursionDetected r -> infinite_recursion_rule_name r
   NoViolation -> "NA"
 
