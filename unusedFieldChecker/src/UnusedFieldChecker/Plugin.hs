@@ -543,6 +543,7 @@ extractUsagesFromConPatDetails modName loc details = case details of
                     , fieldUsageTypeName = ""
                     , fieldUsageModule = modName
                     , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                    , fieldUsageTypeConstructor = ""
                     }]
                 Nothing -> []
         fieldUsages <- concat <$> mapM (extractUsageFromRecField modName loc) fields
@@ -777,6 +778,7 @@ extractUsageFromRecFieldExpr modName loc usageType (L _ HsRecField{hsRecFieldLbl
             , fieldUsageTypeName = ""
             , fieldUsageModule = modName
             , fieldUsageLocation = location
+            , fieldUsageTypeConstructor = ""
             }
     argUsages <- extractUsagesFromExpr modName arg
     return $ usage : argUsages
@@ -881,6 +883,7 @@ extractFunctionComposition modName loc lexpr = case unLoc lexpr of
                     , fieldUsageTypeName = ""
                     , fieldUsageModule = modName
                     , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                    , fieldUsageTypeConstructor = ""
                     }) fields
             else return []
     _ -> return []
@@ -916,6 +919,7 @@ extractLensUsage modName loc lexpr = case unLoc lexpr of
                 , fieldUsageTypeName = ""
                 , fieldUsageModule = modName
                 , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                , fieldUsageTypeConstructor = ""
                 }]
             else return []
     
@@ -939,6 +943,7 @@ extractLensUsage modName loc lexpr = case unLoc lexpr of
                         , fieldUsageTypeName = ""
                         , fieldUsageModule = modName
                         , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                        , fieldUsageTypeConstructor = ""
                         }]
                     else return []
             else return []
@@ -961,6 +966,7 @@ extractCompositionFields modName loc e1 e2 = do
         , fieldUsageTypeName = ""
         , fieldUsageModule = modName
         , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+        , fieldUsageTypeConstructor = ""
         }) allFields
   where
     getFieldAccessors :: LHsExpr GhcTc -> [Text]
@@ -994,6 +1000,7 @@ extractSYBUsage modName loc e1 e2 = case unLoc e1 of
                 , fieldUsageTypeName = ""
                 , fieldUsageModule = modName
                 , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                , fieldUsageTypeConstructor = ""
                 }]
             else return []
     _ -> return []
@@ -1016,6 +1023,7 @@ extractTypeApplicationUsage modName loc expr = case expr of
                         , fieldUsageTypeName = ""
                         , fieldUsageModule = modName
                         , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                        , fieldUsageTypeConstructor = ""
                         }]
                     else return []
             else if varName == "field"
@@ -1027,6 +1035,7 @@ extractTypeApplicationUsage modName loc expr = case expr of
                             , fieldUsageTypeName = ""
                             , fieldUsageModule = modName
                             , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                            , fieldUsageTypeConstructor = ""
                             }]
                         else return []
                 else return []
@@ -1047,6 +1056,7 @@ extractTemplateHaskellUsage modName loc splice = do
             , fieldUsageTypeName = ""
             , fieldUsageModule = modName
             , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+            , fieldUsageTypeConstructor = ""
             }]
         else return []
 #else
