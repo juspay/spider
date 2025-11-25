@@ -18,10 +18,14 @@ import GHC.Core.Type
 import GHC.Core.Class
 import GHC.Core.InstEnv
 import GHC.Data.FastString
+import GHC.Data.IOEnv (readMutVar)
 import GHC.Tc.Types
+import GHC.Tc.Utils.Env (tcLookupClass)
+import GHC.Tc.Utils.Monad (getEpsVar, getGblEnv)
 import GHC.Types.FieldLabel
 import GHC.Types.Name
 import GHC.Types.SrcLoc
+import GHC.Unit.External
 import GHC.Unit.Module.ModGuts
 import GHC.Unit.Types (Unit, moduleUnit, unitString)
 import GHC.Utils.Outputable hiding ((<>))
@@ -34,8 +38,12 @@ import GHC
 import GhcPlugins hiding ((<>))
 import Module (moduleUnitId, unitIdString)
 import Name
+import OccName (mkClsOcc)
 import Outputable
+import RdrName (mkRdrUnqual)
 import SrcLoc
+import TcEnv (tcLookupClass)
+import TcRnMonad (getEpsVar, getGblEnv, readMutVar)
 import TcRnTypes
 import TyCon
 import TyCoRep
@@ -81,7 +89,29 @@ extractFieldsFromTyCon modName currentPkgName tc
 
 checkFieldCheckerInstance :: TyCon -> TcM Bool
 checkFieldCheckerInstance tc = do
-    return True
+    gblEnv <- getGblEnv
+    let tyConType = mkTyConTy tc
+        typeName = pack $ showSDocUnsafe $ ppr $ tyConName tc
+        homeInstEnv = tcg_inst_env gblEnv
+        allInsts = instEnvElts homeInstEnv
+
+        hasFieldCheckerInstance = any (isFieldCheckerInstanceFor tyConType) allInsts
+
+    liftIO $ putStrLn $ "[FieldChecker] Type " ++ T.unpack typeName ++ " has instance: " ++ show hasFieldCheckerInstance
+    return hasFieldCheckerInstance
+  where
+    isFieldCheckerInstanceFor :: Type -> ClsInst -> Bool
+    isFieldCheckerInstanceFor ty inst =
+        let className = pack $ showSDocUnsafe $ ppr $ is_cls inst
+            instTypes = is_tys inst
+        in "FieldChecker" `T.isInfixOf` className &&
+           any (typeMatches ty) instTypes
+
+    typeMatches :: Type -> Type -> Bool
+    typeMatches t1 t2 =
+        let t1Str = pack $ showSDocUnsafe $ ppr t1
+            t2Str = pack $ showSDocUnsafe $ ppr t2
+        in t1Str == t2Str
 
 extractFieldsFromDataCon :: Text -> Text -> Text -> Text -> Bool -> DataCon -> TcM [FieldDefinition]
 extractFieldsFromDataCon modName currentPkgName typeName typeConstructor hasFieldChecker dc = do
