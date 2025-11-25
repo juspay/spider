@@ -9,3 +9,4 @@ packages:
   ./warner
   ./keyLookupTracker
   ./socket_lib
+  ./unusedFieldChecker
