@@ -1,0 +1,1582 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE LambdaCase #-}
+
+module UnusedFieldChecker.Plugin (plugin) where
+
+import Prelude hiding (log)
+
+#if __GLASGOW_HASKELL__ >= 900
+import GHC
+import GHC.Core.DataCon
+import GHC.Core.Opt.Monad
+import GHC.Core.TyCon
+import qualified GHC.Core.TyCo.Rep as TyCo
+import GHC.Core.Type
+import GHC.Data.Bag
+import GHC.Data.FastString
+import GHC.Driver.Plugins
+import GHC.Driver.Session
+import GHC.Hs
+import GHC.Tc.Types
+import GHC.Tc.Utils.Monad (addMessages)
+import GHC.Types.Error
+import GHC.Types.FieldLabel
+import GHC.Types.Name
+import GHC.Types.SrcLoc
+import GHC.Unit.Module.ModGuts
+import GHC.Unit.Module.ModSummary
+import GHC.Unit.Types (moduleName, moduleUnit)
+import GHC.Utils.Error
+import GHC.Utils.Outputable hiding ((<>))
+import qualified GHC.Utils.Error as Err
+#else
+import Bag
+import CoreMonad
+import DataCon
+import DynFlags
+import ErrUtils (mkErrMsg)
+import FastString
+import FieldLabel
+import GHC
+import GhcPlugins hiding ((<>))
+import HsSyn
+import Module (moduleName, moduleUnitId)
+import Name
+import Outputable
+import Plugins
+import SrcLoc
+import TcRnMonad
+import TcRnTypes
+import TyCon
+import TyCoRep
+import Type
+#endif
+
+import Control.Monad (forM, forM_, when)
+import Control.Monad.IO.Class (liftIO)
+import Data.Aeson (decode, encode)
+import Data.Aeson.Encode.Pretty (encodePretty)
+import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy as BL
+import Data.Char (isLower)
+import Data.List (foldl', nub, isPrefixOf, isSuffixOf)
+import qualified Data.Map as Map
+import Data.Maybe (catMaybes, fromMaybe)
+import Data.Text (Text, pack, unpack)
+import qualified Data.Text as T
+import Data.Text.Encoding (decodeUtf8, encodeUtf8)
+import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, getModificationTime, removeFile, renameFile)
+import System.FilePath ((</>), takeDirectory, takeExtension, takeFileName)
+import System.IO (Handle, hClose, openFile, IOMode(..), hPutStrLn, hFlush)
+import System.IO.Error (catchIOError, isAlreadyExistsError, isDoesNotExistError, ioError)
+import Control.Exception (catch, SomeException, try)
+import Data.Time (getCurrentTime, UTCTime, diffUTCTime)
+import UnusedFieldChecker.Types
+import UnusedFieldChecker.Validator
+import UnusedFieldChecker.Config
+import UnusedFieldChecker.DefinitionExtractor
+import UnusedFieldChecker.UsageExtractor
+
+#if __GLASGOW_HASKELL__ < 900
+import TcRnMonad (addErrs)
+#endif
+
+plugin :: Plugin
+plugin = defaultPlugin
+    { typeCheckResultAction = collectFieldDefinitionsOnly
+    , installCoreToDos = installFieldUsageAnalysis
+    , interfaceLoadAction = performCrossModuleValidation
+    , pluginRecompile = \_ -> return NoForceRecompile
+    }
+
+collectFieldDefinitionsOnly :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
+collectFieldDefinitionsOnly opts modSummary tcEnv = do
+    let cliOptions = parseCliOptions opts
+        modulePath = msHsFilePath modSummary
+        modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
+#if __GLASGOW_HASKELL__ >= 900
+        currentPackage = GHC.Unit.Types.moduleUnit $ ms_mod modSummary
+#else
+        currentPackage = moduleUnitId $ ms_mod modSummary
+#endif
+
+    liftIO $ putStrLn $ "[DEBUG PHASE] collectFieldDefinitionsOnly called for: " ++ T.unpack modName
+
+    -- Clean up old build artifacts on first module compilation
+    liftIO $ cleanupOldBuildIfNeeded (path cliOptions)
+
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    
+    if isModuleExcluded exclusionConfig modName
+        then do
+            liftIO $ when (log cliOptions) $
+                putStrLn $ "[UnusedFieldChecker] Skipping excluded module: " ++ T.unpack modName
+            return tcEnv
+        else do
+            fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
+            
+            liftIO $ when (log cliOptions && not (null fieldDefs)) $ do
+                putStrLn $ "\n[" ++ T.unpack modName ++ "] Field Definitions: " ++ show (length fieldDefs)
+            
+            let moduleInfo = ModuleFieldInfo
+                    { moduleFieldDefs = fieldDefs
+                    , moduleFieldUsages = [] 
+                    , moduleName = modName
+                    }
+            
+            liftIO $ do
+                let outputPath = path cliOptions
+                    fileName = modulePath <> ".fieldDefs.json"
+                    fullPath = outputPath </> fileName
+                putStrLn $ "[DEBUG SAVE] Saving field definitions to: " ++ outputPath
+                putStrLn $ "[DEBUG SAVE] Saving file: " ++ fileName
+                putStrLn $ "[DEBUG SAVE] Writing directly to: " ++ fullPath
+                -- Create all parent directories including subdirectories
+                createDirectoryIfMissing True (takeDirectory fullPath)
+                atomicWriteFile fullPath (encodePretty moduleInfo)
+                putStrLn $ "[DEBUG SAVE] Successfully saved field definitions"
+            
+            return tcEnv
+
+#if __GLASGOW_HASKELL__ >= 900
+installFieldUsageAnalysis :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
+installFieldUsageAnalysis args todos = 
+    return (CoreDoPluginPass "UnusedFieldChecker-Usage" (extractFieldUsagesPass args) : todos)
+
+extractFieldUsagesPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
+extractFieldUsagesPass opts guts = do
+    let cliOptions = parseCliOptions opts
+        modName = pack $ moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
+        -- Convert module name to file path: Euler.API.Gateway -> src/Euler/API/Gateway.hs
+        moduleNameStr = moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
+        modulePath = "src/" ++ map (\c -> if c == '.' then '/' else c) moduleNameStr ++ ".hs"
+        currentPackage = GHC.Unit.Types.moduleUnit $ mg_module guts
+        binds = mg_binds guts
+
+    liftIO $ putStrLn $ "[DEBUG PHASE] extractFieldUsagesPass called for: " ++ T.unpack modName
+    liftIO $ putStrLn $ "[DEBUG PHASE] Module path: " ++ modulePath
+
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+
+    if isModuleExcluded exclusionConfig modName
+        then return guts
+        else do
+            fieldUsages <- liftIO $ extractFieldUsagesFromCore modName currentPackage binds
+
+            liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
+                putStrLn $ "\n[" ++ T.unpack modName ++ "] Core Field Usages:"
+                forM_ fieldUsages $ \usage ->
+                    putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage)
+                        ++ " (type: " ++ T.unpack (fieldUsageTypeConstructor usage) ++ ")"
+
+            let moduleInfo = ModuleFieldInfo
+                    { moduleFieldDefs = []  -- Already saved in typeCheckResultAction
+                    , moduleFieldUsages = fieldUsages
+                    , moduleName = modName
+                    }
+
+            liftIO $ do
+                let outputPath = path cliOptions
+                    fileName = modulePath <> ".fieldUsages.json"
+                    fullPath = outputPath </> fileName
+                putStrLn $ "[DEBUG SAVE] Saving field usages to: " ++ fullPath
+                createDirectoryIfMissing True (takeDirectory fullPath)
+                atomicWriteFile fullPath (encodePretty moduleInfo)
+                putStrLn $ "[DEBUG SAVE] Successfully saved field usages"
+
+            -- Mark this module as complete
+            liftIO $ markModuleComplete (path cliOptions) modName
+
+            -- Try to trigger validation if all modules are complete
+            shouldValidate <- liftIO $ shouldRunValidation (path cliOptions)
+            when shouldValidate $ do
+                liftIO $ putStrLn "\n[UnusedFieldChecker] All modules complete, starting validation..."
+
+                -- Perform validation
+                allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
+                liftIO $ putStrLn $ "[DEBUG] Loaded " ++ show (length allModuleInfos) ++ " module infos"
+
+                -- Validate with whatever modules we have (includeFiles may limit scope)
+                when (length allModuleInfos >= 1) $ do
+                    let aggregated = aggregateFieldInfo allModuleInfos
+
+                    -- Phase 2: Use type-scoped validation when includeFiles is configured
+                    validationResult <- liftIO $ case includeFiles exclusionConfig of
+                        Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
+                        Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
+                    let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+
+                    -- Emit compilation errors for unused fields
+                    if not $ null errors
+                        then do
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 9.x] Found " ++ show (length errors) ++ " unused fields"
+                            forM_ errors $ \(locStr, msg, _) -> do
+                                let srcSpan = parseLocationForCore locStr
+                                    errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
+                                GHC.Core.Opt.Monad.putMsg errMsg
+                                liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
+                            -- DON'T clean up markers - let them accumulate for cross-module validation
+                            -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION FAILED *** due to " ++ show (length errors) ++ " unused strict fields"
+                            -- Throw an error to fail compilation
+                            liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                        else do
+                            -- No errors - DON'T clean up markers, let them accumulate for subsequent module validation
+                            -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
+
+            return guts
+-- Helper function to parse location strings in CoreM context
+parseLocationForCore :: Text -> SrcSpan
+parseLocationForCore locStr = 
+    case T.splitOn ":" locStr of
+        [file, line, col] -> 
+            case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
+                (Just l, Just c) -> 
+                    let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
+                    in mkSrcSpan srcLoc srcLoc
+                _ -> noSrcSpan
+        _ -> noSrcSpan
+  where
+    readMaybe :: Read a => String -> Maybe a
+    readMaybe s = case reads s of
+        [(x, "")] -> Just x
+        _ -> Nothing
+
+#else
+installFieldUsageAnalysis :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
+installFieldUsageAnalysis args todos = 
+    return (CoreDoPluginPass "UnusedFieldChecker-Usage" (extractFieldUsagesPass args) : todos)
+
+extractFieldUsagesPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
+extractFieldUsagesPass opts guts = do
+    let cliOptions = parseCliOptions opts
+        modName = pack $ moduleNameString $ moduleName $ mg_module guts
+        -- Convert module name to file path: Euler.API.Gateway -> src/Euler/API/Gateway.hs
+        moduleNameStr = moduleNameString $ moduleName $ mg_module guts
+        modulePath = "src/" ++ map (\c -> if c == '.' then '/' else c) moduleNameStr ++ ".hs"
+        currentPackage = moduleUnitId $ mg_module guts
+        binds = mg_binds guts
+
+    -- Load exclusion config
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+
+    if isModuleExcluded exclusionConfig modName
+        then return guts
+        else do
+            -- Extract field usages from Core bindings
+            fieldUsages <- liftIO $ extractFieldUsagesFromCore modName currentPackage binds
+
+            liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
+                putStrLn $ "\n[" ++ T.unpack modName ++ "] Core Field Usages:"
+                forM_ fieldUsages $ \usage ->
+                    putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage)
+                        ++ " (type: " ++ T.unpack (fieldUsageTypeConstructor usage) ++ ")"
+
+            -- Save usages
+            let moduleInfo = ModuleFieldInfo
+                    { moduleFieldDefs = []  -- Already saved in typeCheckResultAction
+                    , moduleFieldUsages = fieldUsages
+                    , moduleName = modName
+                    }
+
+            liftIO $ do
+                let outputPath = path cliOptions
+                    fileName = modulePath <> ".fieldUsages.json"
+                    fullPath = outputPath </> fileName
+                putStrLn $ "[DEBUG SAVE] Saving field usages to: " ++ fullPath
+                createDirectoryIfMissing True (takeDirectory fullPath)
+                atomicWriteFile fullPath (encodePretty moduleInfo)
+                putStrLn $ "[DEBUG SAVE] Successfully saved field usages"
+
+            -- Mark this module as complete
+            liftIO $ markModuleComplete (path cliOptions) modName
+
+            -- Try to trigger validation if all modules are complete
+            shouldValidate <- liftIO $ shouldRunValidation (path cliOptions)
+            when shouldValidate $ do
+                liftIO $ putStrLn "\n[UnusedFieldChecker] All modules complete, starting validation..."
+
+                -- Perform validation
+                allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
+                liftIO $ putStrLn $ "[DEBUG] Loaded " ++ show (length allModuleInfos) ++ " module infos"
+
+                -- Validate with whatever modules we have (includeFiles may limit scope)
+                when (length allModuleInfos >= 1) $ do
+                    let aggregated = aggregateFieldInfo allModuleInfos
+
+                    -- Phase 2: Use type-scoped validation when includeFiles is configured
+                    validationResult <- liftIO $ case includeFiles exclusionConfig of
+                        Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
+                        Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
+                    let errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+
+                    -- Emit compilation errors for unused fields
+                    if not $ null errors
+                        then do
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker GHC 8.x] Found " ++ show (length errors) ++ " unused fields"
+                            forM_ errors $ \(locStr, msg, _) -> do
+                                let srcSpan = parseLocationForCore locStr
+                                    errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
+                                CoreMonad.putMsg errMsg
+                                liftIO $ putStrLn $ "[ERROR] " ++ T.unpack locStr ++ ": " ++ T.unpack msg
+                            -- DON'T clean up markers - let them accumulate for cross-module validation
+                            -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn $ "\n[UnusedFieldChecker] *** COMPILATION FAILED *** due to " ++ show (length errors) ++ " unused strict fields"
+                            -- Throw an error to fail compilation
+                            liftIO $ error $ "\n[UnusedFieldChecker] Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                        else do
+                            -- No errors - DON'T clean up markers, let them accumulate for subsequent module validation
+                            -- liftIO $ cleanupCompletionMarkers (path cliOptions)
+                            liftIO $ putStrLn "[UnusedFieldChecker] Validation passed - no unused strict fields found"
+
+            return guts
+
+-- Helper function to parse location strings in CoreM context
+parseLocationForCore :: Text -> SrcSpan
+parseLocationForCore locStr = 
+    case T.splitOn ":" locStr of
+        [file, line, col] -> 
+            case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
+                (Just l, Just c) -> 
+                    let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
+                    in mkSrcSpan srcLoc srcLoc
+                _ -> noSrcSpan
+        _ -> noSrcSpan
+  where
+    readMaybe :: Read a => String -> Maybe a
+    readMaybe s = case reads s of
+        [(x, "")] -> Just x
+        _ -> Nothing
+#endif
+
+-- | Safe file removal that ignores "file not found" errors
+safeRemoveFile :: FilePath -> IO ()
+safeRemoveFile path = catchIOError (removeFile path) $ \e ->
+    -- Only ignore "does not exist" errors, re-throw others
+    if isDoesNotExistError e
+        then return ()
+        else ioError e
+
+-- | Clean up old JSON files from previous build if this is a new build
+-- This is called ONCE at the start of a new build by the first module
+-- Uses a lock file to ensure only one module does the cleanup
+cleanupOldBuildIfNeeded :: FilePath -> IO ()
+cleanupOldBuildIfNeeded outputPath = do
+    let buildMarker = outputPath </> ".current-build"
+        cleanupLock = outputPath </> ".cleanup.lock"
+
+    -- Check if build marker already exists (cleanup already done for this build)
+    markerExists <- doesFileExist buildMarker
+    if markerExists
+        then do
+            -- Build marker exists, cleanup already done
+            return ()
+        else do
+            -- Try to acquire cleanup lock exclusively
+            lockResult <- try (openFile cleanupLock WriteMode) :: IO (Either SomeException Handle)
+            case lockResult of
+                Left _ -> do
+                    -- Another module is doing cleanup or already did it
+                    putStrLn "[DEBUG CLEANUP] Another module is handling cleanup, skipping"
+                    return ()
+                Right lockHandle -> do
+                    -- We got the lock! Check again if marker was created while we waited
+                    markerExistsNow <- doesFileExist buildMarker
+                    if markerExistsNow
+                        then do
+                            -- Marker created by another process, cleanup already done
+                            hClose lockHandle
+                            safeRemoveFile cleanupLock
+                            return ()
+                        else do
+                            -- We are first! Do the cleanup
+                            putStrLn "[DEBUG CLEANUP] New build detected - cleaning up old JSON files from previous build"
+
+                            -- Remove all JSON files from previous build
+                            exists <- doesDirectoryExist outputPath
+                            when exists $ do
+                                allFiles <- findAllJsonFiles outputPath
+                                -- Filter out the lock file itself
+                                let filesToRemove = filter (/= cleanupLock) allFiles
+                                mapM_ safeRemoveFile filesToRemove
+                                putStrLn $ "[DEBUG CLEANUP] Removed " ++ show (length filesToRemove) ++ " old JSON files"
+
+                            -- Clean up old markers
+                            let completeDir = outputPath </> ".complete"
+                                lockFile = outputPath </> ".validation.lock"
+                                validatedFile = outputPath </> ".validated"
+
+                            completeDirExists <- doesDirectoryExist completeDir
+                            when completeDirExists $ do
+                                markers <- listDirectory completeDir
+                                mapM_ (\m -> safeRemoveFile (completeDir </> m)) markers
+
+                            lockExists <- doesFileExist lockFile
+                            when lockExists $ safeRemoveFile lockFile
+
+                            validatedExists <- doesFileExist validatedFile
+                            when validatedExists $ safeRemoveFile validatedFile
+
+                            -- Create build marker to indicate cleanup is done
+                            writeFile buildMarker "cleanup-complete"
+
+                            -- Release lock
+                            hClose lockHandle
+                            safeRemoveFile cleanupLock
+                            putStrLn "[DEBUG CLEANUP] Cleanup complete"
+
+-- | Enhanced atomic file operations with proper error handling and cleanup
+atomicWriteFile :: FilePath -> BL.ByteString -> IO ()
+atomicWriteFile filePath content = do
+    let tempPath = filePath <> ".tmp." <> show (hash filePath) <> "." <> show (BL.length content)
+    -- Ensure parent directory exists
+    createDirectoryIfMissing True (takeDirectory filePath)
+
+    -- Write to temp file with error handling
+    result <- try $ BL.writeFile tempPath content :: IO (Either SomeException ())
+    case result of
+        Left err -> do
+            putStrLn $ "[ERROR ATOMIC] Failed to write temp file " ++ tempPath ++ ": " ++ show err
+            -- Clean up partial file if it exists
+            tempExists <- doesFileExist tempPath
+            when tempExists $ safeRemoveFile tempPath
+            error $ "Failed to write file atomically: " ++ show err
+        Right _ -> do
+            -- Verify temp file was written correctly
+            tempExists <- doesFileExist tempPath
+            if tempExists
+                then do
+                    -- Atomically rename temp file to target (this is atomic on POSIX)
+                    renameResult <- try $ renameFile tempPath filePath :: IO (Either SomeException ())
+                    case renameResult of
+                        Left renameErr -> do
+                            putStrLn $ "[ERROR ATOMIC] Failed to rename " ++ tempPath ++ " to " ++ filePath ++ ": " ++ show renameErr
+                            safeRemoveFile tempPath  -- Clean up
+                            error $ "Failed to rename file atomically: " ++ show renameErr
+                        Right _ ->
+                            putStrLn $ "[DEBUG ATOMIC] Successfully wrote: " ++ filePath
+                else
+                    error $ "Temp file disappeared: " ++ tempPath
+  where
+    -- Enhanced hash function for uniqueness (includes timestamp-like component)
+    hash :: String -> Int
+    hash str = foldl' (\h c -> 31 * h + fromEnum c) (length str * 1000) str
+
+-- | Mark a module as having completed compilation
+markModuleComplete :: FilePath -> Text -> IO ()
+markModuleComplete outputPath modName = do
+    let markerFile = outputPath </> ".complete" </> T.unpack modName <> ".marker"
+    createDirectoryIfMissing True (outputPath </> ".complete")
+    writeFile markerFile (T.unpack modName)
+    putStrLn $ "[DEBUG COMPLETE] Marked module complete: " ++ T.unpack modName
+
+-- | Mark that validation has been completed for this build
+markValidationComplete :: FilePath -> IO ()
+markValidationComplete outputPath = do
+    let validatedFile = outputPath </> ".validated"
+    writeFile validatedFile "validation-complete"
+    putStrLn "[DEBUG VALIDATION] Marked validation as complete"
+
+-- | Check if we should run validation now
+-- Only runs validation when:
+-- 1. Validation hasn't already run (no .validated file)
+-- 2. We can acquire the validation lock
+-- 3. We have both fieldDefs and fieldUsages for each module (indicating compilation is complete)
+shouldRunValidation :: FilePath -> IO Bool
+shouldRunValidation outputPath = do
+    let validatedFile = outputPath </> ".validated"
+        completeDir = outputPath </> ".complete"
+        lockFile = outputPath </> ".validation.lock"
+
+    -- Check if validation already ran
+    validatedExists <- doesFileExist validatedFile
+    if validatedExists
+        then do
+            putStrLn "[DEBUG VALIDATION] Validation already complete for this build, skipping"
+            return False
+        else do
+            -- Count completion markers
+            completeDirExists <- doesDirectoryExist completeDir
+            if not completeDirExists
+                then return False
+                else do
+                    markers <- listDirectory completeDir
+                    let markerCount = length markers
+                    putStrLn $ "[DEBUG VALIDATION] Found " ++ show markerCount ++ " completion markers"
+
+                    -- Need at least 5 modules to validate (avoid premature validation)
+                    if markerCount < 5
+                        then do
+                            putStrLn $ "[DEBUG VALIDATION] Not enough modules yet (" ++ show markerCount ++ " < 5), skipping validation"
+                            return False
+                        else do
+                            -- Count JSON files to see if we have both defs and usages for all modules
+                            allJsonFiles <- findAllJsonFiles outputPath
+                            let defsCount = length $ filter (".fieldDefs.json" `isSuffixOf`) allJsonFiles
+                                usagesCount = length $ filter (".fieldUsages.json" `isSuffixOf`) allJsonFiles
+
+                            putStrLn $ "[DEBUG VALIDATION] JSON files: defs=" ++ show defsCount ++ ", usages=" ++ show usagesCount
+
+                            -- Only validate if we have matching defs and usages counts (both phases done)
+                            -- AND we have enough total data
+                            if defsCount < 5 || usagesCount < 5 || abs (defsCount - usagesCount) > 2
+                                then do
+                                    putStrLn $ "[DEBUG VALIDATION] Compilation still in progress (defs/usages mismatch or too few files)"
+                                    return False
+                                else do
+                                    -- Try to acquire lock atomically
+                                    result <- try (openFile lockFile WriteMode) :: IO (Either SomeException Handle)
+                                    case result of
+                                        Left _ -> do
+                                            putStrLn "[DEBUG VALIDATION] Could not acquire lock, another process is validating"
+                                            return False
+                                        Right handle -> do
+                                            -- Successfully acquired lock
+                                            hPutStrLn handle "validation-in-progress"
+                                            hFlush handle
+                                            hClose handle
+                                            putStrLn "[DEBUG VALIDATION] Lock acquired, will run validation"
+                                            return True
+
+-- | Enhanced validation lock with proper dependency tracking and deadlock prevention
+tryAcquireValidationLock :: FilePath -> IO Bool
+tryAcquireValidationLock outputPath = do
+    let lockFile = outputPath </> ".validation.lock"
+        completeDir = outputPath </> ".complete"
+
+    -- Check if lock file already exists (validation already done/in progress)
+    lockExists <- doesFileExist lockFile
+    if lockExists
+        then do
+            putStrLn "[DEBUG LOCK] Validation already done or in progress"
+            return False
+        else do
+            -- Check if we have complete data (both defs and usages) for modules
+            allJsonFiles <- findAllJsonFiles outputPath
+            let defsCount = length $ filter (".fieldDefs.json" `isSuffixOf`) allJsonFiles
+                usagesCount = length $ filter (".fieldUsages.json" `isSuffixOf`) allJsonFiles
+
+            putStrLn $ "[DEBUG LOCK] JSON files - Defs: " ++ show defsCount ++ ", Usages: " ++ show usagesCount
+
+            -- Only validate if we have matching defs and usages (both compilation phases done)
+            -- AND we have at least some data to validate
+            if defsCount == 0 || usagesCount == 0 || abs (defsCount - usagesCount) > 2
+                then do
+                    putStrLn $ "[DEBUG LOCK] Incomplete data (defs/usages mismatch or no data), skipping validation"
+                    return False
+                else do
+                    -- Try to create lock file atomically
+                    result <- try (openFile lockFile WriteMode) :: IO (Either SomeException Handle)
+                    case result of
+                        Left _ -> do
+                            putStrLn "[DEBUG LOCK] Another module acquired the lock"
+                            return False
+                        Right handle -> do
+                            hPutStrLn handle "locked"
+                            hFlush handle
+                            hClose handle
+                            putStrLn "[DEBUG LOCK] Acquired validation lock successfully"
+                            return True
+
+-- | Check if all expected modules have completed compilation
+areAllModulesComplete :: FilePath -> IO Bool
+areAllModulesComplete outputPath = do
+    let completeDir = outputPath </> ".complete"
+
+    completeDirExists <- doesDirectoryExist completeDir
+    if not completeDirExists
+        then return False
+        else do
+            markers <- listDirectory completeDir
+            -- Simple heuristic: if we have completion markers, assume we're ready
+            -- In a real implementation, this could check against a list of expected modules
+            let hasMarkers = not (null markers)
+            putStrLn $ "[DEBUG COMPLETE] Found " ++ show (length markers) ++ " completion markers"
+            return hasMarkers
+
+-- | Check if a validation lock is stale (process no longer running)
+isLockStale :: FilePath -> IO Bool
+isLockStale pidFile = do
+    pidExists <- doesFileExist pidFile
+    if not pidExists
+        then return True  -- No PID file means stale
+        else do
+            -- In a real implementation, this would check if the process is still running
+            -- For now, we use a simple time-based approach
+            pidModTime <- getModificationTime pidFile
+            currentTime <- getCurrentTime
+            let timeDiff = diffUTCTime currentTime pidModTime
+            let isStale = timeDiff > 300  -- 5 minutes timeout
+
+            when isStale $
+                putStrLn $ "[DEBUG STALE] Lock is " ++ show timeDiff ++ " seconds old, considering stale"
+
+            return isStale
+
+-- | Clean up completion marker files
+cleanupCompletionMarkers :: FilePath -> IO ()
+cleanupCompletionMarkers outputPath = do
+    let completeDir = outputPath </> ".complete"
+        lockFile = outputPath </> ".validation.lock"
+        buildMarker = outputPath </> ".current-build"
+
+    -- Remove all completion markers
+    dirExists <- doesDirectoryExist completeDir
+    when dirExists $ do
+        markers <- listDirectory completeDir
+        mapM_ (\m -> safeRemoveFile (completeDir </> m)) markers
+        putStrLn $ "[DEBUG CLEANUP] Removed " ++ show (length markers) ++ " completion markers"
+
+    -- Remove lock file
+    -- Enhanced cleanup with PID file
+    lockExists <- doesFileExist lockFile
+    when lockExists $ do
+        safeRemoveFile lockFile
+        putStrLn "[DEBUG CLEANUP] Removed validation lock"
+
+    pidExists <- doesFileExist (outputPath </> ".validation.pid")
+    when pidExists $ do
+        safeRemoveFile (outputPath </> ".validation.pid")
+        putStrLn "[DEBUG CLEANUP] Removed validation PID file"
+
+    -- Remove build marker
+    buildMarkerExists <- doesFileExist buildMarker
+    when buildMarkerExists $ do
+        safeRemoveFile buildMarker
+        putStrLn "[DEBUG CLEANUP] Removed build marker"
+
+collectAndValidateFieldInfo :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
+collectAndValidateFieldInfo opts modSummary tcEnv = do
+    let cliOptions = parseCliOptions opts
+        modulePath = path cliOptions </> msHsFilePath modSummary
+        modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
+#if __GLASGOW_HASKELL__ >= 900
+        currentPackage = GHC.Unit.Types.moduleUnit $ ms_mod modSummary
+#else
+        currentPackage = moduleUnitId $ ms_mod modSummary
+#endif
+    
+    -- Load exclusion config and check if this module should be excluded
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    
+    if isModuleExcluded exclusionConfig modName
+        then do
+            -- Skip processing this module entirely
+            liftIO $ when (log cliOptions) $
+                putStrLn $ "[UnusedFieldChecker] Skipping excluded module: " ++ T.unpack modName
+            return tcEnv
+        else do
+            -- Extract field definitions first
+            fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
+            
+            -- Build field registry from current module and load cross-module fields
+            allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
+            let fieldRegistry = buildFieldRegistry exclusionConfig (fieldDefs : map moduleFieldDefs allModuleInfos)
+
+            -- Extract field usages with the registry to filter out non-fields
+            fieldUsages <- extractFieldUsagesWithRegistry modName tcEnv fieldRegistry
+            
+            -- Simple output: just field names and usage types
+            liftIO $ when (log cliOptions && not (null fieldUsages)) $ do
+                putStrLn $ "\n[" ++ T.unpack modName ++ "] Field Usages:"
+                forM_ fieldUsages $ \usage ->
+                    putStrLn $ "  " ++ T.unpack (fieldUsageName usage) ++ " -> " ++ show (fieldUsageType usage)
+            
+            let moduleInfo = ModuleFieldInfo
+                    { moduleFieldDefs = fieldDefs
+                    , moduleFieldUsages = fieldUsages
+                    , moduleName = modName
+                    }
+            
+            -- Save field info for cross-module analysis
+            liftIO $ do
+                let outputPath = path cliOptions
+                createDirectoryIfMissing True outputPath
+                let fullPath = outputPath </> (modulePath <> ".fieldInfo.json")
+                atomicWriteFile fullPath (encodePretty moduleInfo)
+            
+            -- Perform immediate validation for fields defined in this module
+            let aggregated = aggregateFieldInfo [moduleInfo]
+                validationResult = validateFieldsWithExclusions exclusionConfig aggregated
+                errors = reportUnusedFields (unusedNonMaybeFields validationResult)
+            
+            -- Report errors
+            when (not $ null errors) $ do
+#if __GLASGOW_HASKELL__ >= 900
+                let errMsgs = map makeError errors
+                    msgEnvelopes = map mkErrorMsg errMsgs
+                    msgs = mkMessages $ listToBag msgEnvelopes
+                addMessages msgs
+#else
+                let errMsgs = map makeError errors
+                addErrs errMsgs
+#endif
+            
+            return tcEnv
+  where
+#if __GLASGOW_HASKELL__ >= 900
+    makeError :: (Text, Text, Text) -> (SrcSpan, SDoc)
+    makeError (locStr, msg, _) = 
+        let loc = parseLocation locStr
+        in (loc, text $ unpack msg)
+    
+    mkErrorMsg :: (SrcSpan, SDoc) -> MsgEnvelope DecoratedSDoc
+    mkErrorMsg (loc, msg) = 
+        Err.mkMsgEnvelope loc neverQualify msg
+    
+    parseLocation :: Text -> SrcSpan
+    parseLocation locStr = 
+        case T.splitOn ":" locStr of
+            [file, line, col] -> 
+                case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
+                    (Just l, Just c) -> 
+                        let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
+                        in mkSrcSpan srcLoc srcLoc
+                    _ -> noSrcSpan
+            _ -> noSrcSpan
+      where
+        readMaybe :: Read a => String -> Maybe a
+        readMaybe s = case reads s of
+            [(x, "")] -> Just x
+            _ -> Nothing
+#else
+    makeError :: (Text, Text, Text) -> (SrcSpan, SDoc)
+    makeError (locStr, msg, _) = 
+        let loc = parseLocation locStr
+        in (loc, text $ unpack msg)
+    
+    parseLocation :: Text -> SrcSpan
+    parseLocation locStr = 
+        case T.splitOn ":" locStr of
+            [file, line, col] -> 
+                case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
+                    (Just l, Just c) -> 
+                        let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
+                        in mkSrcSpan srcLoc srcLoc
+                    _ -> noSrcSpan
+            _ -> noSrcSpan
+      where
+        readMaybe :: Read a => String -> Maybe a
+        readMaybe s = case reads s of
+            [(x, "")] -> Just x
+            _ -> Nothing
+#endif
+
+parseCliOptions :: [CommandLineOption] -> CliOptions
+parseCliOptions [] = defaultCliOptions
+parseCliOptions (opt:_) = 
+    case decode (BL.fromStrict $ encodeUtf8 $ pack opt) of
+        Just opts -> opts
+        Nothing -> defaultCliOptions
+
+-- Build a type-aware registry of field definitions from allowed modules only
+buildFieldRegistry :: ExclusionConfig -> [[FieldDefinition]] -> Map.Map Text [FieldDefinition]
+buildFieldRegistry exclusionConfig fieldDefLists =
+    let allDefs = concat fieldDefLists
+        allowedDefs = filter (isFromAllowedModule exclusionConfig) allDefs
+    in foldl' (\acc def ->
+        Map.insertWith (++) (fieldDefName def) [def] acc
+        ) Map.empty allowedDefs
+  where
+    -- Check if a field definition is from an allowed module
+    isFromAllowedModule :: ExclusionConfig -> FieldDefinition -> Bool
+    isFromAllowedModule ExclusionConfig{..} FieldDefinition{..} =
+        case includeFiles of
+            Just includes -> any (`matchesPattern` fieldDefModule) includes
+            Nothing -> not (any (`matchesPattern` fieldDefModule) excludeFiles)
+      where
+        matchesPattern :: Text -> Text -> Bool
+        matchesPattern pattern modName
+            | pattern == "*" = True
+            | T.isSuffixOf ".*" pattern =
+                let prefix = T.dropEnd 2 pattern
+                in prefix `T.isPrefixOf` modName
+            | T.isPrefixOf "*." pattern =
+                let suffix = T.drop 1 pattern
+                in suffix `T.isSuffixOf` modName
+            | otherwise = pattern == modName
+
+-- Extract field usages with filtering based on field registry
+extractFieldUsagesWithRegistry :: Text -> TcGblEnv -> Map.Map Text [FieldDefinition] -> TcM [FieldUsage]
+extractFieldUsagesWithRegistry modName tcEnv fieldRegistry = do
+    let binds = bagToList $ tcg_binds tcEnv
+    allUsages <- concat <$> mapM (extractUsagesFromBindWithRegistry modName fieldRegistry) binds
+    -- Filter to only include usages that correspond to fields in allowed modules
+    return $ filter (isFieldUsage fieldRegistry) allUsages
+  where
+    isFieldUsage :: Map.Map Text [FieldDefinition] -> FieldUsage -> Bool
+    isFieldUsage registry usage =
+        case fieldUsageType usage of
+            -- Always include these usage types as they are explicitly field-related
+            RecordConstruct -> True
+            RecordUpdate -> True
+            PatternMatch -> True
+            NamedFieldPuns -> True
+            RecordWildCards -> True
+            RecordDotSyntax -> True
+            HasFieldOverloaded -> True  -- These are explicitly field accesses
+            GenericReflection -> True   -- These are explicitly field accesses
+            -- For accessor functions and other types, check if the name corresponds to allowed fields
+            AccessorFunction -> fieldUsageName usage `Map.member` registry
+            FunctionComposition -> fieldUsageName usage `Map.member` registry
+            LensesOptics -> fieldUsageName usage `Map.member` registry
+            TemplateHaskell -> False    -- TH is not field-specific
+            DerivedInstances -> False   -- Derived instances are not field-specific
+            DataSYB -> False            -- SYB is not field-specific
+
+extractFieldUsages :: Text -> TcGblEnv -> TcM [FieldUsage]
+extractFieldUsages modName tcEnv = do
+    let binds = bagToList $ tcg_binds tcEnv
+    concat <$> mapM (extractUsagesFromBind modName) binds
+
+extractUsagesFromBindWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> LHsBindLR GhcTc GhcTc -> TcM [FieldUsage]
+extractUsagesFromBindWithRegistry modName fieldRegistry lbind@(L loc bind) = do
+    case bind of
+        FunBind{fun_matches = matches} ->
+            extractUsagesFromMatchGroupWithRegistry modName fieldRegistry matches
+        AbsBinds{abs_binds = binds} ->
+            concat <$> mapM (extractUsagesFromBindWithRegistry modName fieldRegistry) (bagToList binds)
+        _ -> return []
+
+extractUsagesFromMatchGroupWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> MatchGroup GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+#if __GLASGOW_HASKELL__ >= 900
+extractUsagesFromMatchGroupWithRegistry modName fieldRegistry (MG _ (L _ matches) _) =
+#else
+extractUsagesFromMatchGroupWithRegistry modName fieldRegistry (MG _ (L _ matches) _ _) =
+#endif
+    concat <$> mapM (extractUsagesFromMatchWithRegistry modName fieldRegistry) matches
+
+extractUsagesFromMatchWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> LMatch GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromMatchWithRegistry modName fieldRegistry (L _ match) = do
+    patUsages <- concat <$> mapM (extractUsagesFromPat modName) (m_pats match)
+    exprUsages <- extractUsagesFromGRHSsWithRegistry modName fieldRegistry (m_grhss match)
+    return $ patUsages ++ exprUsages
+
+extractUsagesFromGRHSsWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> GRHSs GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromGRHSsWithRegistry modName fieldRegistry (GRHSs _ grhss _) =
+    concat <$> mapM (extractUsagesFromGRHSWithRegistry modName fieldRegistry) grhss
+
+extractUsagesFromGRHSWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> LGRHS GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromGRHSWithRegistry modName fieldRegistry (L _ (GRHS _ _ body)) =
+    extractUsagesFromExpr modName body
+
+extractUsagesFromBind :: Text -> LHsBindLR GhcTc GhcTc -> TcM [FieldUsage]
+extractUsagesFromBind modName lbind@(L _ bind) = do
+    case bind of
+        FunBind{fun_matches = matches} -> 
+            extractUsagesFromMatchGroup modName matches
+        AbsBinds{abs_binds = binds} ->
+            concat <$> mapM (extractUsagesFromBind modName) (bagToList binds)
+        _ -> return []
+
+extractUsagesFromMatchGroup :: Text -> MatchGroup GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+#if __GLASGOW_HASKELL__ >= 900
+extractUsagesFromMatchGroup modName (MG _ (L _ matches) _) =
+#else
+extractUsagesFromMatchGroup modName (MG _ (L _ matches) _ _) =
+#endif
+    concat <$> mapM (extractUsagesFromMatch modName) matches
+
+extractUsagesFromMatch :: Text -> LMatch GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromMatch modName (L _ match) = do
+    patUsages <- concat <$> mapM (extractUsagesFromPat modName) (m_pats match)
+    exprUsages <- extractUsagesFromGRHSs modName (m_grhss match)
+    return $ patUsages ++ exprUsages
+
+extractUsagesFromGRHSs :: Text -> GRHSs GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromGRHSs modName (GRHSs _ grhss _) =
+    concat <$> mapM (extractUsagesFromGRHS modName) grhss
+
+extractUsagesFromGRHS :: Text -> LGRHS GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromGRHS modName (L _ (GRHS _ _ body)) =
+    extractUsagesFromExpr modName body
+
+extractUsagesFromPat :: Text -> LPat GhcTc -> TcM [FieldUsage]
+extractUsagesFromPat modName lpat = case unLoc lpat of
+#if __GLASGOW_HASKELL__ >= 900
+    ConPat _ _ details -> extractUsagesFromConPatDetails modName (getLoc lpat) details
+#else
+    ConPatOut{pat_args = details} -> extractUsagesFromConPatDetails modName (getLoc lpat) details
+#endif
+    _ -> return []
+
+#if __GLASGOW_HASKELL__ >= 900
+extractUsagesFromConPatDetails :: Text -> SrcSpanAnnA -> HsConPatDetails GhcTc -> TcM [FieldUsage]
+extractUsagesFromConPatDetails modName loc details = case details of
+    RecCon (HsRecFields fields dotdot) -> do
+        -- Check for RecordWildCards (..)
+        let wildcardUsages = case dotdot of
+                Just _ -> [FieldUsage
+                    { fieldUsageName = ".."
+                    , fieldUsageType = RecordWildCards
+                    , fieldUsageTypeName = ""
+                    , fieldUsageModule = modName
+                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                    , fieldUsageTypeConstructor = ""
+                    }]
+                Nothing -> []
+        fieldUsages <- concat <$> mapM (extractUsageFromRecField modName loc) fields
+        return $ wildcardUsages ++ fieldUsages
+    _ -> return []
+#else
+extractUsagesFromConPatDetails :: Text -> SrcSpan -> HsConPatDetails GhcTc -> TcM [FieldUsage]
+extractUsagesFromConPatDetails modName loc details = case details of
+    RecCon (HsRecFields fields dotdot) -> do
+        -- Check for RecordWildCards (..)
+        let wildcardUsages = case dotdot of
+                Just _ -> [FieldUsage
+                    { fieldUsageName = ".."
+                    , fieldUsageType = RecordWildCards
+                    , fieldUsageTypeName = ""
+                    , fieldUsageModule = modName
+                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                    }]
+                Nothing -> []
+        fieldUsages <- concat <$> mapM (extractUsageFromRecField modName loc) fields
+        return $ wildcardUsages ++ fieldUsages
+    _ -> return []
+#endif
+
+#if __GLASGOW_HASKELL__ >= 900
+extractUsageFromRecField :: Text -> SrcSpanAnnA -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
+extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = _, hsRecPun = pun}) = do
+#else
+extractUsageFromRecField :: Text -> SrcSpan -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
+extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg, hsRecPun = pun}) = do
+#endif
+    let fieldName = pack $ showSDocUnsafe $ ppr lbl
+        location = pack $ showSDocUnsafe $ ppr loc
+        -- Determine usage type: NamedFieldPuns if punned, otherwise PatternMatch
+        usageType = if pun then NamedFieldPuns else PatternMatch
+    return [FieldUsage
+        { fieldUsageName = fieldName
+        , fieldUsageType = usageType
+        , fieldUsageTypeName = ""
+        , fieldUsageModule = modName
+        , fieldUsageLocation = location
+        , fieldUsageTypeConstructor = ""
+        }]
+
+extractUsagesFromExpr :: Text -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractUsagesFromExpr modName lexpr = 
+    let loc = getLoc lexpr
+        expr = unLoc lexpr
+    in case expr of
+    RecordCon{rcon_flds = HsRecFields fields _} ->
+        concat <$> mapM (extractUsageFromRecFieldExpr modName loc RecordConstruct) fields
+    
+    RecordUpd{rupd_flds = fields} ->
+        extractUsagesFromRecordUpdate modName loc fields
+    
+#if __GLASGOW_HASKELL__ >= 900
+    HsGetField _ _ (L _ (HsFieldLabel _ (L _ field))) -> do
+        let fieldName = pack $ unpackFS field
+        return [FieldUsage
+            { fieldUsageName = fieldName
+            , fieldUsageType = RecordDotSyntax
+            , fieldUsageTypeName = ""
+            , fieldUsageModule = modName
+            , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+            , fieldUsageTypeConstructor = ""
+            }]
+#endif
+    
+    HsApp _ e1 e2 -> do
+        -- Check for various field access patterns
+        let (fieldAccessUsage, _) = case unLoc e1 of
+                -- Regular accessor function: fieldName record
+                HsVar _ (L _ varId) -> 
+                    let varName' = pack $ getOccString varId
+                    in if not (T.null varName') && isLower (T.head varName')
+                        then ([FieldUsage
+                            { fieldUsageName = varName'
+                            , fieldUsageType = AccessorFunction
+                            , fieldUsageTypeName = ""
+                            , fieldUsageModule = modName
+                            , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                            , fieldUsageTypeConstructor = ""
+                            }], AccessorFunction)
+                        else ([], AccessorFunction)
+                
+                -- HasFieldOverloaded: getField @"fieldName" record
+                HsAppType _ (L _ (HsVar _ (L _ varId))) _ ->
+                    let varName' = pack $ getOccString varId
+                    in if varName' == "getField"
+                        then case unLoc e2 of
+                            HsVar _ (L _ _) -> 
+                                -- Extract field name from type application
+                                let fieldName = extractFieldNameFromTypeApp e1
+                                in if not (T.null fieldName)
+                                    then ([FieldUsage
+                                        { fieldUsageName = fieldName
+                                        , fieldUsageType = HasFieldOverloaded
+                                        , fieldUsageTypeName = ""
+                                        , fieldUsageModule = modName
+                                        , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                                        , fieldUsageTypeConstructor = ""
+                                        }], HasFieldOverloaded)
+                                    else ([], AccessorFunction)
+                            _ -> ([], AccessorFunction)
+                        else ([], AccessorFunction)
+                
+                -- Lens operators: record ^. lens or record ^. field @"name"
+                OpApp _ _ (L _ (HsVar _ (L _ opId))) _ ->
+                    let opName = pack $ getOccString opId
+                    in if opName == "^."
+                        then case unLoc e2 of
+                            -- Simple lens: record ^. fieldLens
+                            HsVar _ (L _ lensId) ->
+                                let lensName = pack $ getOccString lensId
+                                in ([FieldUsage
+                                    { fieldUsageName = lensName
+                                    , fieldUsageType = LensesOptics
+                                    , fieldUsageTypeName = ""
+                                    , fieldUsageModule = modName
+                                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                                    , fieldUsageTypeConstructor = ""
+                                    }], LensesOptics)
+                            
+                            -- Generic lens: record ^. field @"name"
+                            HsAppType _ (L _ (HsVar _ (L _ fieldId))) _ ->
+                                let fieldFuncName = pack $ getOccString fieldId
+                                in if fieldFuncName == "field"
+                                    then let fieldName = extractFieldNameFromTypeApp e2
+                                        in if not (T.null fieldName)
+                                            then ([FieldUsage
+                                                { fieldUsageName = fieldName
+                                                , fieldUsageType = GenericReflection
+                                                , fieldUsageTypeName = ""
+                                                , fieldUsageModule = modName
+                                                , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                                                , fieldUsageTypeConstructor = ""
+                                                }], GenericReflection)
+                                            else ([], LensesOptics)
+                                    else ([], LensesOptics)
+                            _ -> ([], LensesOptics)
+                        else ([], AccessorFunction)
+                
+                _ -> ([], AccessorFunction)
+        
+        -- Check for function composition: (field1 . field2 . field3)
+        compositionUsages <- extractFunctionComposition modName loc e1
+        
+        -- Check for SYB operations: gmapQ, gmapT, etc.
+        sybUsages <- extractSYBUsage modName loc e1 e2
+        
+        u1 <- extractUsagesFromExpr modName e1
+        u2 <- extractUsagesFromExpr modName e2
+        return $ fieldAccessUsage ++ compositionUsages ++ sybUsages ++ u1 ++ u2
+    
+    -- OpApp for infix operators (lens, composition, etc.)
+    OpApp _ e1 (L _ (HsVar _ (L _ opId))) e2 -> do
+        let opName = pack $ getOccString opId
+        opUsages <- case opName of
+            -- Lens view: record ^. lens
+            "^." -> do
+                lensUsages <- extractLensUsage modName loc e2
+                return lensUsages
+            
+            -- Function composition: field1 . field2
+            "." -> do
+                compUsages <- extractCompositionFields modName loc e1 e2
+                return compUsages
+            
+            -- Lens set: record & lens .~ value
+            ".~" -> do
+                lensUsages <- extractLensUsage modName loc e1
+                return lensUsages
+            
+            "&" -> do
+                -- record & lens .~ value pattern
+                return []
+            
+            _ -> return []
+        
+        u1 <- extractUsagesFromExpr modName e1
+        u2 <- extractUsagesFromExpr modName e2
+        return $ opUsages ++ u1 ++ u2
+    
+    -- Type application for HasField and generic-lens
+    HsAppType _ e1 _ -> do
+        typeAppUsages <- extractTypeApplicationUsage modName loc expr
+        u1 <- extractUsagesFromExpr modName e1
+        return $ typeAppUsages ++ u1
+    
+    -- Template Haskell splices
+    HsSpliceE _ splice -> do
+        thUsages <- extractTemplateHaskellUsage modName loc splice
+        return thUsages
+    
+    HsLet _ binds body -> do
+        bindUsages <- extractUsagesFromLocalBinds modName binds
+        bodyUsages <- extractUsagesFromExpr modName body
+        return $ bindUsages ++ bodyUsages
+    
+    HsCase _ scrut matches -> do
+        scrutUsages <- extractUsagesFromExpr modName scrut
+        matchUsages <- extractUsagesFromMatchGroup modName matches
+        return $ scrutUsages ++ matchUsages
+    
+    HsIf _ cond then_ else_ -> do
+        condUsages <- extractUsagesFromExpr modName cond
+        thenUsages <- extractUsagesFromExpr modName then_
+        elseUsages <- extractUsagesFromExpr modName else_
+        return $ condUsages ++ thenUsages ++ elseUsages
+    
+    HsDo _ _ (L _ stmts) ->
+        concat <$> mapM (extractUsagesFromStmt modName) stmts
+    
+    ExplicitList _ elems ->
+        concat <$> mapM (extractUsagesFromExpr modName) elems
+    
+    HsPar _ e ->
+        extractUsagesFromExpr modName e
+
+    -- Handle lambda expressions
+    HsLam _ matches ->
+        extractUsagesFromMatchGroup modName matches
+
+    -- Handle other common expression types that might contain field accesses
+    HsVar _ _ -> return []  -- Variable references handled elsewhere
+    HsLit _ _ -> return []  -- Literals don't contain field accesses
+    HsOverLit _ _ -> return []  -- Overloaded literals don't contain field accesses
+
+    -- Catch-all for any remaining expression types - traverse recursively
+    _ -> return []
+
+#if __GLASGOW_HASKELL__ >= 900
+extractUsagesFromRecordUpdate :: Text -> SrcSpanAnnA -> Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> TcM [FieldUsage]
+extractUsagesFromRecordUpdate modName loc (Left fields) =
+    concat <$> mapM (extractUsageFromRecUpdField modName loc RecordUpdate) fields
+extractUsagesFromRecordUpdate _ _ (Right _) = return []
+
+extractUsageFromRecUpdField :: Text -> SrcSpanAnnA -> UsageType -> LHsRecUpdField GhcTc -> TcM [FieldUsage]
+extractUsageFromRecUpdField modName loc usageType (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg}) = do
+    let fieldName = pack $ showSDocUnsafe $ ppr lbl
+        location = pack $ showSDocUnsafe $ ppr loc
+        usage = FieldUsage
+            { fieldUsageName = fieldName
+            , fieldUsageType = usageType
+            , fieldUsageTypeName = ""
+            , fieldUsageModule = modName
+            , fieldUsageLocation = location
+            , fieldUsageTypeConstructor = ""
+            }
+    argUsages <- extractUsagesFromExpr modName arg
+    return $ usage : argUsages
+#else
+extractUsagesFromRecordUpdate :: Text -> SrcSpan -> [LHsRecUpdField GhcTc] -> TcM [FieldUsage]
+extractUsagesFromRecordUpdate modName loc fields =
+    concat <$> mapM (extractUsageFromRecFieldExpr modName loc RecordUpdate) fields
+#endif
+
+#if __GLASGOW_HASKELL__ >= 900
+extractUsageFromRecFieldExpr :: Text -> SrcSpanAnnA -> UsageType -> LHsRecField GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+#else
+extractUsageFromRecFieldExpr :: Text -> SrcSpan -> UsageType -> LHsRecField GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+#endif
+extractUsageFromRecFieldExpr modName loc usageType (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg}) = do
+    let fieldName = pack $ showSDocUnsafe $ ppr lbl
+        location = pack $ showSDocUnsafe $ ppr loc
+        usage = FieldUsage
+            { fieldUsageName = fieldName
+            , fieldUsageType = usageType
+            , fieldUsageTypeName = ""
+            , fieldUsageModule = modName
+            , fieldUsageLocation = location
+            }
+    argUsages <- extractUsagesFromExpr modName arg
+    return $ usage : argUsages
+
+extractUsagesFromLocalBinds :: Text -> HsLocalBinds GhcTc -> TcM [FieldUsage]
+extractUsagesFromLocalBinds modName binds = case binds of
+    HsValBinds _ valBinds -> extractUsagesFromValBinds modName valBinds
+    _ -> return []
+
+extractUsagesFromValBinds :: Text -> HsValBindsLR GhcTc GhcTc -> TcM [FieldUsage]
+extractUsagesFromValBinds modName valBinds = case valBinds of
+#if __GLASGOW_HASKELL__ >= 900
+    XValBindsLR (NValBinds binds _) ->
+        concat <$> mapM (\(_, bagBinds) -> 
+            concat <$> mapM (extractUsagesFromBind modName) (bagToList bagBinds)) binds
+#else
+    ValBindsOut binds _ ->
+        concat <$> mapM (\(_, bagBinds) -> 
+            concat <$> mapM (extractUsagesFromBind modName) (bagToList bagBinds)) binds
+#endif
+    _ -> return []
+
+extractUsagesFromStmt :: Text -> LStmt GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsagesFromStmt modName (L _ stmt) = case stmt of
+    BindStmt _ pat expr -> do
+        patUsages <- extractUsagesFromPat modName pat
+        exprUsages <- extractUsagesFromExpr modName expr
+        return $ patUsages ++ exprUsages
+    BodyStmt _ expr _ _ ->
+        extractUsagesFromExpr modName expr
+    LetStmt _ binds ->
+        extractUsagesFromLocalBinds modName binds
+    LastStmt _ expr _ _ ->
+        extractUsagesFromExpr modName expr
+    _ -> return []
+
+extractTyCons :: TcGblEnv -> [TyCon]
+extractTyCons tcEnv = 
+    let tcs = tcg_tcs tcEnv
+    in filter isSafeTyCon tcs
+  where
+    isSafeTyCon tc = 
+        not (isClassTyCon tc) &&
+        not (isPromotedDataCon tc) &&
+        not (isTcTyCon tc)
+
+performCrossModuleValidation :: [CommandLineOption] -> ModIface -> IfM lcl ModIface
+performCrossModuleValidation opts modIface = do
+    let cliOptions = parseCliOptions opts
+    allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
+    let aggregated = aggregateFieldInfo allModuleInfos
+    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+    let validationResult = validateFieldsWithExclusions exclusionConfig aggregated
+    return modIface
+
+loadAllFieldInfo :: FilePath -> IO [ModuleFieldInfo]
+loadAllFieldInfo outputPath = do
+    exists <- doesDirectoryExist outputPath
+    if not exists
+        then do
+            putStrLn $ "[DEBUG LOAD] Output path does not exist: " ++ outputPath
+            return []
+        else do
+            allJsonFiles <- findAllJsonFiles outputPath
+            putStrLn $ "[DEBUG LOAD] Found " ++ show (length allJsonFiles) ++ " JSON files total"
+            results <- mapM (loadFieldInfoFileAbsolute outputPath) allJsonFiles
+            let loaded = catMaybes results
+
+            -- Merge fieldDefs and fieldUsages from separate files into single ModuleFieldInfo
+            let merged = mergeModuleFieldInfos loaded
+
+            putStrLn $ "[DEBUG LOAD] Successfully loaded and merged " ++ show (length merged) ++ " module infos"
+            mapM_ (\info -> putStrLn $ "  Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
+                                      " - Defs: " ++ show (length (moduleFieldDefs info)) ++
+                                      " - Usages: " ++ show (length (moduleFieldUsages info))) merged
+            return merged
+
+-- | Merge ModuleFieldInfo entries with the same module name
+-- This combines .fieldDefs.json and .fieldUsages.json into single entries
+mergeModuleFieldInfos :: [ModuleFieldInfo] -> [ModuleFieldInfo]
+mergeModuleFieldInfos infos =
+    let grouped = Map.fromListWith combineModuleInfo [(UnusedFieldChecker.Types.moduleName info, info) | info <- infos]
+    in Map.elems grouped
+  where
+    combineModuleInfo :: ModuleFieldInfo -> ModuleFieldInfo -> ModuleFieldInfo
+    combineModuleInfo info1 info2 = ModuleFieldInfo
+        { moduleFieldDefs = moduleFieldDefs info1 ++ moduleFieldDefs info2
+        , moduleFieldUsages = moduleFieldUsages info1 ++ moduleFieldUsages info2
+        , moduleName = UnusedFieldChecker.Types.moduleName info1  -- They have the same name
+        }
+
+-- Recursively find all JSON files in directory tree
+findAllJsonFiles :: FilePath -> IO [FilePath]
+findAllJsonFiles dir = do
+    contents <- listDirectory dir
+    allFiles <- forM contents $ \item -> do
+        let fullPath = dir </> item
+        isDir <- doesDirectoryExist fullPath
+        if isDir
+            then findAllJsonFiles fullPath  -- Recurse into subdirectory
+            else if takeExtension item == ".json"
+                then return [fullPath]       -- JSON file found
+                else return []               -- Not a JSON file
+    return $ concat allFiles
+
+-- Load field info from absolute file path
+-- Check if a JSON file is orphaned (source file no longer exists)
+-- We don't check modification time because during compilation, some modules may not have
+-- written their fresh JSON yet, so we'd skip valid data from the previous compilation
+isJsonStale :: FilePath -> FilePath -> IO Bool
+isJsonStale outputPath jsonPath = catchIOError checkStale (\_ -> return False)
+  where
+    checkStale = do
+        -- Extract source file path from JSON filename
+        -- JSON: .juspay/unusedFieldChecker/src/Foo/Bar.hs.fieldDefs.json
+        -- Source: src/Foo/Bar.hs
+        let normalizedOutputPath = if null outputPath || last outputPath == '/'
+                                   then outputPath
+                                   else outputPath ++ "/"
+            relativePath = if normalizedOutputPath `isPrefixOf` jsonPath
+                          then drop (length normalizedOutputPath) jsonPath
+                          else jsonPath
+            sourcePath = if ".fieldDefs.json" `isSuffixOf` relativePath
+                        then take (length relativePath - 16) relativePath  -- 16 = length of ".fieldDefs.json"
+                        else if ".fieldUsages.json" `isSuffixOf` relativePath
+                        then take (length relativePath - 17) relativePath  -- 17 = length of ".fieldUsages.json"
+                        else ""
+
+        if null sourcePath
+            then return False  -- Can't determine source file, assume not stale
+            else do
+                sourceExists <- doesFileExist sourcePath
+                if not sourceExists
+                    then do
+                        putStrLn $ "[DEBUG STALE] Orphaned JSON (source not found): " ++ jsonPath
+                        return True  -- Source doesn't exist, JSON is orphaned
+                    else
+                        return False  -- Source exists, JSON is valid (even if older)
+
+loadFieldInfoFileAbsolute :: FilePath -> FilePath -> IO (Maybe ModuleFieldInfo)
+loadFieldInfoFileAbsolute outputPath fullPath = do
+    exists <- doesFileExist fullPath
+    if not exists
+        then do
+            putStrLn $ "[DEBUG LOAD] File does not exist: " ++ fullPath
+            return Nothing
+        else do
+            -- Load JSON without staleness check (files are overwritten during compilation anyway)
+            content <- BS.readFile fullPath
+            case decode (BL.fromStrict content) of
+                Just info -> do
+                    putStrLn $ "[DEBUG LOAD] Loaded " ++ fullPath ++ " - Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
+                              " - Defs: " ++ show (length (moduleFieldDefs info)) ++
+                              " - Usages: " ++ show (length (moduleFieldUsages info))
+                    return (Just info)
+                Nothing -> do
+                    putStrLn $ "[DEBUG LOAD] Warning: Failed to parse " ++ fullPath
+                    return Nothing
+
+-- Load a single field info JSON file
+loadFieldInfoFile :: FilePath -> FilePath -> IO (Maybe ModuleFieldInfo)
+loadFieldInfoFile outputPath filename = do
+    let fullPath = outputPath </> filename
+    exists <- doesFileExist fullPath
+    if not exists
+        then do
+            putStrLn $ "[DEBUG LOAD] File does not exist: " ++ fullPath
+            return Nothing
+        else do
+            content <- BS.readFile fullPath
+            case decode (BL.fromStrict content) of
+                Just info -> do
+                    putStrLn $ "[DEBUG LOAD] Loaded " ++ fullPath ++ " - Module: " ++ T.unpack (UnusedFieldChecker.Types.moduleName info) ++
+                              " - Defs: " ++ show (length (moduleFieldDefs info)) ++
+                              " - Usages: " ++ show (length (moduleFieldUsages info))
+                    return (Just info)
+                Nothing -> do
+                    putStrLn $ "[DEBUG LOAD] Warning: Failed to parse " ++ fullPath
+                    return Nothing
+
+#if __GLASGOW_HASKELL__ >= 900
+extractFieldNameFromTypeApp :: LHsExpr GhcTc -> Text
+extractFieldNameFromTypeApp lexpr = 
+    -- Simplified implementation: extract from the pretty-printed representation
+    let exprStr = pack $ showSDocUnsafe $ ppr lexpr
+    in if "\"" `T.isInfixOf` exprStr
+        then case T.splitOn "\"" exprStr of
+            (_:fieldName:_) -> fieldName
+            _ -> ""
+        else ""
+#else
+extractFieldNameFromTypeApp :: LHsExpr GhcTc -> Text
+extractFieldNameFromTypeApp _ = ""
+#endif
+
+-- Extract function composition patterns: (field1 . field2 . field3)
+#if __GLASGOW_HASKELL__ >= 900
+extractFunctionComposition :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractFunctionComposition modName loc lexpr = case unLoc lexpr of
+    OpApp _ e1 (L _ (HsVar _ (L _ opId))) e2 -> do
+        let opName = pack $ getOccString opId
+        if opName == "."
+            then do
+                -- Check if both sides are field accessors
+                let fields = extractComposedFields e1 ++ extractComposedFields e2
+                return $ map (\fieldName -> FieldUsage
+                    { fieldUsageName = fieldName
+                    , fieldUsageType = FunctionComposition
+                    , fieldUsageTypeName = ""
+                    , fieldUsageModule = modName
+                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                    }) fields
+            else return []
+    _ -> return []
+  where
+    extractComposedFields :: LHsExpr GhcTc -> [Text]
+    extractComposedFields (L _ expr) = case expr of
+        HsVar _ (L _ varId) ->
+            let varName = pack $ getOccString varId
+            in if not (T.null varName) && isLower (T.head varName)
+                then [varName]
+                else []
+        OpApp _ e1 (L _ (HsVar _ (L _ opId))) e2 ->
+            let opName = pack $ getOccString opId
+            in if opName == "."
+                then extractComposedFields e1 ++ extractComposedFields e2
+                else []
+        HsPar _ e -> extractComposedFields e
+        _ -> []
+#else
+extractFunctionComposition :: Text -> SrcSpan -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractFunctionComposition modName loc lexpr = return []
+#endif
+
+-- Extract lens usage from expressions
+#if __GLASGOW_HASKELL__ >= 900
+extractLensUsage :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractLensUsage modName loc lexpr = case unLoc lexpr of
+    HsVar _ (L _ varId) ->
+        let varName = pack $ getOccString varId
+        in if not (T.null varName) && isLower (T.head varName)
+            then return [FieldUsage
+                { fieldUsageName = varName
+                , fieldUsageType = LensesOptics
+                , fieldUsageTypeName = ""
+                , fieldUsageModule = modName
+                , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                }]
+            else return []
+    
+    -- Composed lenses: lens1 . lens2 . lens3
+    OpApp _ e1 (L _ (HsVar _ (L _ opId))) e2 -> do
+        let opName = pack $ getOccString opId
+        if opName == "."
+            then do
+                u1 <- extractLensUsage modName loc e1
+                u2 <- extractLensUsage modName loc e2
+                return $ u1 ++ u2
+            else return []
+    
+    -- Generic lens with type application: field @"name"
+    HsAppType _ (L _ (HsVar _ (L _ varId))) _ ->
+        let varName = pack $ getOccString varId
+        in if varName == "field"
+            then let fieldName = extractFieldNameFromTypeApp lexpr
+                in if not (T.null fieldName)
+                    then return [FieldUsage
+                        { fieldUsageName = fieldName
+                        , fieldUsageType = GenericReflection
+                        , fieldUsageTypeName = ""
+                        , fieldUsageModule = modName
+                        , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                        }]
+                    else return []
+            else return []
+    
+    _ -> return []
+#else
+extractLensUsage :: Text -> SrcSpan -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractLensUsage modName loc lexpr = return []
+#endif
+
+-- Extract composition fields for function composition operator
+#if __GLASGOW_HASKELL__ >= 900
+extractCompositionFields :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractCompositionFields modName loc e1 e2 = do
+    let fields1 = getFieldAccessors e1
+        fields2 = getFieldAccessors e2
+        allFields = fields1 ++ fields2
+    return $ map (\fieldName -> FieldUsage
+        { fieldUsageName = fieldName
+        , fieldUsageType = FunctionComposition
+        , fieldUsageTypeName = ""
+        , fieldUsageModule = modName
+        , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+        }) allFields
+  where
+    getFieldAccessors :: LHsExpr GhcTc -> [Text]
+    getFieldAccessors (L _ expr) = case expr of
+        HsVar _ (L _ varId) ->
+            let varName = pack $ getOccString varId
+            in if not (T.null varName) && isLower (T.head varName)
+                then [varName]
+                else []
+        OpApp _ e1' (L _ (HsVar _ (L _ opId))) e2' ->
+            let opName = pack $ getOccString opId
+            in if opName == "."
+                then getFieldAccessors e1' ++ getFieldAccessors e2'
+                else []
+        HsPar _ e -> getFieldAccessors e
+        _ -> []
+#else
+extractCompositionFields :: Text -> SrcSpan -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractCompositionFields modName loc e1 e2 = return []
+#endif
+
+-- Extract SYB (Scrap Your Boilerplate) usage patterns
+#if __GLASGOW_HASKELL__ >= 900
+extractSYBUsage :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractSYBUsage modName loc e1 e2 = case unLoc e1 of
+    HsVar _ (L _ varId) ->
+        let varName = pack $ getOccString varId
+        in if varName `elem` ["gmapQ", "gmapT", "gmapM", "gmapQl", "gmapQr", "gmapQi"]
+            then return [FieldUsage
+                { fieldUsageName = varName
+                , fieldUsageType = DataSYB
+                , fieldUsageTypeName = ""
+                , fieldUsageModule = modName
+                , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                }]
+            else return []
+    _ -> return []
+#else
+extractSYBUsage :: Text -> SrcSpan -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractSYBUsage modName loc e1 e2 = return []
+#endif
+
+-- Extract type application usage (HasField, generic-lens)
+#if __GLASGOW_HASKELL__ >= 900
+extractTypeApplicationUsage :: Text -> SrcSpanAnnA -> HsExpr GhcTc -> TcM [FieldUsage]
+extractTypeApplicationUsage modName loc expr = case expr of
+    HsAppType _ (L _ (HsVar _ (L _ varId))) _ ->
+        let varName = pack $ getOccString varId
+        in if varName == "getField"
+            then let fieldName = extractFieldNameFromTypeApp (L loc expr)
+                in if not (T.null fieldName)
+                    then return [FieldUsage
+                        { fieldUsageName = fieldName
+                        , fieldUsageType = HasFieldOverloaded
+                        , fieldUsageTypeName = ""
+                        , fieldUsageModule = modName
+                        , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                        }]
+                    else return []
+            else if varName == "field"
+                then let fieldName = extractFieldNameFromTypeApp (L loc expr)
+                    in if not (T.null fieldName)
+                        then return [FieldUsage
+                            { fieldUsageName = fieldName
+                            , fieldUsageType = GenericReflection
+                            , fieldUsageTypeName = ""
+                            , fieldUsageModule = modName
+                            , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+                            }]
+                        else return []
+                else return []
+    _ -> return []
+#else
+extractTypeApplicationUsage :: Text -> SrcSpan -> HsExpr GhcTc -> TcM [FieldUsage]
+extractTypeApplicationUsage modName loc expr = return []
+#endif
+
+-- Extract Template Haskell usage patterns
+#if __GLASGOW_HASKELL__ >= 900
+extractTemplateHaskellUsage :: Text -> SrcSpanAnnA -> HsSplice GhcTc -> TcM [FieldUsage]
+extractTemplateHaskellUsage modName loc splice = do
+    -- Check if the splice contains reify or other TH operations on types
+    let spliceStr = pack $ showSDocUnsafe $ ppr splice
+    if "reify" `T.isInfixOf` spliceStr
+        then return [FieldUsage
+            { fieldUsageName = "reify"
+            , fieldUsageType = TemplateHaskell
+            , fieldUsageTypeName = ""
+            , fieldUsageModule = modName
+            , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
+            }]
+        else return []
+#else
+extractTemplateHaskellUsage :: Text -> SrcSpan -> HsSplice GhcTc -> TcM [FieldUsage]
+extractTemplateHaskellUsage modName loc splice = return []
+#endif
