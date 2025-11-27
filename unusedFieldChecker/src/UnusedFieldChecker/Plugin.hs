@@ -180,7 +180,6 @@ performValidationPass opts guts = do
     if isModuleExcluded exclusionConfig modName
         then return guts
         else do
-            liftIO $ markModuleComplete (path cliOptions) modName
             shouldValidate <- liftIO $ shouldRunValidation (path cliOptions)
 
             when shouldValidate $ do
@@ -241,7 +240,6 @@ performValidationPass opts guts = do
     if isModuleExcluded exclusionConfig modName
         then return guts
         else do
-            liftIO $ markModuleComplete (path cliOptions) modName
             shouldValidate <- liftIO $ shouldRunValidation (path cliOptions)
 
             when shouldValidate $ do
@@ -321,14 +319,8 @@ cleanupOldBuildIfNeeded outputPath = do
                                     filesToRemove = filter (/= cleanupLock) fullPaths
                                 mapM_ safeRemoveFile filesToRemove
 
-                            let completeDir = outputPath </> ".complete"
-                                lockFile = outputPath </> ".validation.lock"
+                            let lockFile = outputPath </> ".validation.lock"
                                 validatedFile = outputPath </> ".validated"
-
-                            completeDirExists <- doesDirectoryExist completeDir
-                            when completeDirExists $ do
-                                markers <- listDirectory completeDir
-                                mapM_ (\m -> safeRemoveFile (completeDir </> m)) markers
 
                             lockExists <- doesFileExist lockFile
                             when lockExists $ safeRemoveFile lockFile
@@ -366,46 +358,37 @@ atomicWriteFile filePath content = do
     hash :: String -> Int
     hash str = foldl' (\h c -> 31 * h + fromEnum c) (length str * 1000) str
 
-markModuleComplete :: FilePath -> Text -> IO ()
-markModuleComplete outputPath modName = do
-    let markerFile = outputPath </> ".complete" </> T.unpack modName <> ".marker"
-    createDirectoryIfMissing True (outputPath </> ".complete")
-    writeFile markerFile (T.unpack modName)
 
 shouldRunValidation :: FilePath -> IO Bool
 shouldRunValidation outputPath = do
     let validatedFile = outputPath </> ".validated"
-        completeDir = outputPath </> ".complete"
         lockFile = outputPath </> ".validation.lock"
 
     validatedExists <- doesFileExist validatedFile
     if validatedExists
-        then return False
+        then do
+            putStrLn "[Validation] Skipping validation - already validated"
+            return False
         else do
-            completeDirExists <- doesDirectoryExist completeDir
-            if not completeDirExists
-                then return False
+            allJsonFiles <- findAllJsonFiles outputPath
+            let jsonCount = length allJsonFiles
+
+            if jsonCount < 1
+                then do
+                    putStrLn $ "[Validation] Skipping validation - no JSON files found"
+                    return False
                 else do
-                    markers <- listDirectory completeDir
-                    let markerCount = length markers
-
-                    if markerCount < 5
-                        then return False
-                        else do
-                            allJsonFiles <- findAllJsonFiles outputPath
-                            let jsonCount = length allJsonFiles
-
-                            if jsonCount < 5
-                                then return False
-                                else do
-                                    result <- try (openFile lockFile WriteMode) :: IO (Either SomeException Handle)
-                                    case result of
-                                        Left _ -> return False
-                                        Right handle -> do
-                                            hPutStrLn handle "validation-in-progress"
-                                            hFlush handle
-                                            hClose handle
-                                            return True
+                    result <- try (openFile lockFile WriteMode) :: IO (Either SomeException Handle)
+                    case result of
+                        Left _ -> do
+                            putStrLn "[Validation] Skipping validation - could not acquire lock"
+                            return False
+                        Right handle -> do
+                            putStrLn "[Validation] Running validation"
+                            hPutStrLn handle "validation-in-progress"
+                            hFlush handle
+                            hClose handle
+                            return True
 
 parseCliOptions :: [CommandLineOption] -> CliOptions
 parseCliOptions [] = defaultCliOptions
