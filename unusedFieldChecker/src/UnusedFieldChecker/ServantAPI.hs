@@ -245,7 +245,7 @@ checkFieldCheckerInstance typeName typeConstructor = do
         in "FieldChecker" `T.isInfixOf` className &&
            any (== typeName) instTypeStrs
 
-validateAPITypesHaveFieldChecker :: [ServantAPIType] -> TcM [(Text, Text, SrcSpan, Text)]
+validateAPITypesHaveFieldChecker :: [ServantAPIType] -> TcM [(Text, Text, SrcSpan, Text, [Text])]
 validateAPITypesHaveFieldChecker apiTypes = do
     let missingInstances = filter (not . apiHasFieldChecker) apiTypes
 
@@ -254,7 +254,8 @@ validateAPITypesHaveFieldChecker apiTypes = do
 
     forM missingInstances $ \apiType -> do
         let srcSpan = parseLocationString (apiLocation apiType)
-        return (apiTypeName apiType, apiEndpoint apiType, srcSpan, apiTypeModule apiType)
+            nestedMissing = apiMissingInstances apiType
+        return (apiTypeName apiType, apiEndpoint apiType, srcSpan, apiTypeModule apiType, nestedMissing)
 
 concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
 concatMapM f xs = concat <$> mapM f xs

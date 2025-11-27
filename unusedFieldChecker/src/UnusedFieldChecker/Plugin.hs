@@ -117,8 +117,10 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
 
             apiValidationErrors <- validateAPITypesHaveFieldChecker apiTypes
             when (not $ null apiValidationErrors) $ do
-                forM_ apiValidationErrors $ \(typeName, endpoint, srcSpan, moduleInfo) -> do
-                    let errMsg = formatMissingFieldCheckerError typeName endpoint moduleInfo
+                forM_ apiValidationErrors $ \(typeName, endpoint, srcSpan, moduleInfo, nestedMissing) -> do
+                    let errMsg = if null nestedMissing
+                                 then formatMissingFieldCheckerError typeName endpoint moduleInfo
+                                 else formatRecursiveMissingError typeName endpoint moduleInfo nestedMissing
 #if __GLASGOW_HASKELL__ >= 900
                     let msg = mkMsgEnvelope srcSpan neverQualify (text $ T.unpack errMsg)
                     addMessages (mkMessages $ unitBag msg)

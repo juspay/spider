@@ -12,6 +12,7 @@ module UnusedFieldChecker.Validator
     , filterSerializationUsages
     , validateServantAPITypes
     , formatMissingFieldCheckerError
+    , formatRecursiveMissingError
     ) where
 
 import Control.Monad (when)
@@ -369,15 +370,14 @@ validateServantAPITypes apiTypes =
 
 formatRecursiveMissingError :: Text -> Text -> Text -> [Text] -> Text
 formatRecursiveMissingError rootType endpoint moduleInfo missingTypes = T.unlines $
-    [ "[FieldChecker] Recursive validation failed for '" <> rootType <> "'"
-    , "    Used in API endpoint: " <> endpoint
+    [ "[FieldChecker] Parent type '" <> rootType <> "' has FieldChecker instance, but child types are missing instances"
     , "    Defined in module: " <> moduleInfo
     , ""
-    , "    The following nested types are missing FieldChecker instances:"
+    , "    The following child/nested types must also have FieldChecker instances:"
     ] ++ map (\t -> "    - " <> t) missingTypes ++
     [ ""
-    , "    All types in the dependency tree of a Servant API type must have FieldChecker instances."
-    , "    Please add instances for the missing types."
+    , "    Since the parent type is used in a Servant API, all its child types must also have FieldChecker instances."
+    , "    Please add instances for all the missing child types listed above."
     ]
 
 generateSummaryReport :: [FieldDefinition] -> Text
