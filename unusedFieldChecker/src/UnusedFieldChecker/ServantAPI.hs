@@ -205,7 +205,7 @@ isCustomType t =
     not ("[]" `T.isInfixOf` t) &&
     not ("Maybe" == t) &&
     not (T.null (T.strip t)) &&
-    not (T.head t `elem` ['\'', '(', '['])
+    not (T.head t `elem` ['\'', '(', '[', ':'])
   where
     primitiveTypes =
         [ "Int", "Integer", "Double", "Float", "Bool", "Char"
