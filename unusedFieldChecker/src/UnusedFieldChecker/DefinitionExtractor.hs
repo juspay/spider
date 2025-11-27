@@ -21,11 +21,11 @@ import GHC.Data.FastString
 import GHC.Data.IOEnv (readMutVar)
 import GHC.Tc.Types
 import GHC.Tc.Utils.Env (tcLookupClass)
-import GHC.Tc.Utils.Monad (getEpsVar, getGblEnv)
+import GHC.Tc.Utils.Monad (getEps, getEpsVar, getGblEnv)
 import GHC.Types.FieldLabel
 import GHC.Types.Name
 import GHC.Types.SrcLoc
-import GHC.Unit.External
+import GHC.Unit.External (eps_inst_env)
 import GHC.Unit.Module.ModGuts
 import GHC.Unit.Types (Unit, moduleUnit, unitString)
 import GHC.Utils.Outputable hiding ((<>))
@@ -90,14 +90,25 @@ extractFieldsFromTyCon modName currentPkgName tc
 checkFieldCheckerInstance :: TyCon -> TcM Bool
 checkFieldCheckerInstance tc = do
     gblEnv <- getGblEnv
+#if __GLASGOW_HASKELL__ >= 900
+    eps <- getEps
+    let extInstEnv = eps_inst_env eps
+#else
+    epsVar <- getEpsVar
+    eps <- readMutVar epsVar
+    let extInstEnv = eps_inst_env eps
+#endif
     let tyConType = mkTyConTy tc
         typeName = pack $ showSDocUnsafe $ ppr $ tyConName tc
         homeInstEnv = tcg_inst_env gblEnv
-        allInsts = instEnvElts homeInstEnv
+        homeInsts = instEnvElts homeInstEnv
+        extInsts = instEnvElts extInstEnv
+        allInsts = homeInsts ++ extInsts
 
         hasFieldCheckerInstance = any (isFieldCheckerInstanceFor tyConType) allInsts
 
     liftIO $ putStrLn $ "[FieldChecker] Type " ++ T.unpack typeName ++ " has instance: " ++ show hasFieldCheckerInstance
+    liftIO $ putStrLn $ "[FieldChecker] Checked " ++ show (length homeInsts) ++ " home instances and " ++ show (length extInsts) ++ " external instances"
     return hasFieldCheckerInstance
   where
     isFieldCheckerInstanceFor :: Type -> ClsInst -> Bool

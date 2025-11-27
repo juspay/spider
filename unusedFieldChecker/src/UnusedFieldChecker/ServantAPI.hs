@@ -18,9 +18,10 @@ import qualified GHC.Core.TyCo.Rep as TyCo
 import GHC.Core.Type
 import GHC.Data.FastString
 import GHC.Tc.Types
-import GHC.Tc.Utils.Monad (getGblEnv)
+import GHC.Tc.Utils.Monad (getGblEnv, getEps)
 import GHC.Types.Name
 import GHC.Types.SrcLoc
+import GHC.Unit.External (eps_inst_env)
 import GHC.Utils.Outputable hiding ((<>))
 #else
 import GHC
@@ -30,7 +31,7 @@ import InstEnv
 import Name
 import Outputable
 import SrcLoc
-import TcRnMonad (getGblEnv)
+import TcRnMonad (getGblEnv, getEpsVar, readMutVar)
 import TcRnTypes
 import TyCon
 import TyCoRep
@@ -217,12 +218,23 @@ isCustomType t =
 checkFieldCheckerInstance :: Text -> Text -> TcM Bool
 checkFieldCheckerInstance typeName typeConstructor = do
     gblEnv <- getGblEnv
+#if __GLASGOW_HASKELL__ >= 900
+    eps <- getEps
+    let extInstEnv = eps_inst_env eps
+#else
+    epsVar <- getEpsVar
+    eps <- readMutVar epsVar
+    let extInstEnv = eps_inst_env eps
+#endif
     let homeInstEnv = tcg_inst_env gblEnv
-        allInsts = instEnvElts homeInstEnv
+        homeInsts = instEnvElts homeInstEnv
+        extInsts = instEnvElts extInstEnv
+        allInsts = homeInsts ++ extInsts
 
         hasFieldCheckerInstance = any isFieldCheckerInstanceForType allInsts
 
     liftIO $ putStrLn $ "[ServantAPI] Type " ++ T.unpack typeName ++ " has FieldChecker instance: " ++ show hasFieldCheckerInstance
+    liftIO $ putStrLn $ "[ServantAPI] Checked " ++ show (length homeInsts) ++ " home instances and " ++ show (length extInsts) ++ " external instances"
     return hasFieldCheckerInstance
   where
     isFieldCheckerInstanceForType :: ClsInst -> Bool
