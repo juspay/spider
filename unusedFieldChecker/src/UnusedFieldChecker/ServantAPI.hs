@@ -11,6 +11,7 @@ import Prelude hiding (log)
 
 #if __GLASGOW_HASKELL__ >= 900
 import GHC
+import GHC.Core.DataCon
 import GHC.Core.InstEnv
 import GHC.Core.TyCon
 import qualified GHC.Core.TyCo.Rep as TyCo
@@ -23,6 +24,7 @@ import GHC.Types.SrcLoc
 import GHC.Utils.Outputable hiding ((<>))
 #else
 import GHC
+import DataCon
 import GhcPlugins hiding ((<>))
 import InstEnv
 import Name
@@ -35,12 +37,14 @@ import TyCoRep
 import Type
 #endif
 
-import Control.Monad (forM)
+import Control.Monad (forM, forM_, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.List (nub)
 import Data.Maybe (catMaybes, mapMaybe)
 import Data.Text (Text, pack)
 import qualified Data.Text as T
+import Data.IORef (newIORef, readIORef, modifyIORef)
+import qualified Data.Set as Set
 import UnusedFieldChecker.Types
 
 extractServantAPITypes :: Text -> TcGblEnv -> TcM [ServantAPIType]
@@ -154,9 +158,14 @@ extractDataTypes modName location endpoint combinator types = do
     let customTypes = mapMaybe extractCustomType types
     liftIO $ putStrLn $ "[ServantAPI] Found " ++ show (length customTypes) ++ " custom types in " ++ T.unpack combinator
 
-    typesWithInstances <- forM customTypes $ \(typeName, typeConstructor) -> do
-        hasInstance <- checkFieldCheckerInstance typeName typeConstructor
-        liftIO $ putStrLn $ "[ServantAPI] Type " ++ T.unpack typeName ++ " has FieldChecker: " ++ show hasInstance
+    typesWithInstances <- forM customTypes $ \(typeName, typeConstructor, typeObj) -> do
+        missingInstances <- checkRecursiveFieldCheckerInstance typeObj
+        let hasInstance = null missingInstances
+        
+        liftIO $ putStrLn $ "[ServantAPI] Type " ++ T.unpack typeName ++ " recursive check passed: " ++ show hasInstance
+        when (not hasInstance) $
+            liftIO $ putStrLn $ "[ServantAPI] Missing instances for " ++ T.unpack typeName ++ ": " ++ show missingInstances
+
         return ServantAPIType
             { apiTypeName = typeName
             , apiTypeModule = modName
@@ -164,19 +173,20 @@ extractDataTypes modName location endpoint combinator types = do
             , apiEndpoint = endpoint
             , apiLocation = location
             , apiHasFieldChecker = hasInstance
+            , apiMissingInstances = missingInstances
             , apiServantCombinator = combinator
             }
 
     return typesWithInstances
 
-extractCustomType :: Type -> Maybe (Text, Text)
+extractCustomType :: Type -> Maybe (Text, Text, Type)
 extractCustomType t = case t of
 #if __GLASGOW_HASKELL__ >= 900
     TyCo.TyConApp tc _ ->
         let tcName = pack $ showSDocUnsafe $ ppr $ tyConName tc
             tcConstructor = pack $ nameStableString $ tyConName tc
         in if isCustomType tcName
-            then Just (tcName, tcConstructor)
+            then Just (tcName, tcConstructor, t)
             else Nothing
     _ -> Nothing
 #else
@@ -184,7 +194,7 @@ extractCustomType t = case t of
         let tcName = pack $ showSDocUnsafe $ ppr $ tyConName tc
             tcConstructor = pack $ nameStableString $ tyConName tc
         in if isCustomType tcName
-            then Just (tcName, tcConstructor)
+            then Just (tcName, tcConstructor, t)
             else Nothing
     _ -> Nothing
 #endif
@@ -194,7 +204,8 @@ isCustomType t =
     not (t `elem` primitiveTypes) &&
     not ("[]" `T.isInfixOf` t) &&
     not ("Maybe" == t) &&
-    not (T.null t || T.head t `elem` ['\'', '(', '['])
+    not (T.null (T.strip t)) &&
+    not (T.head t `elem` ['\'', '(', '['])
   where
     primitiveTypes =
         [ "Int", "Integer", "Double", "Float", "Bool", "Char"
@@ -222,7 +233,7 @@ checkFieldCheckerInstance typeName typeConstructor = do
         in "FieldChecker" `T.isInfixOf` className &&
            any (== typeName) instTypeStrs
 
-validateAPITypesHaveFieldChecker :: [ServantAPIType] -> TcM [(Text, Text, SrcSpan)]
+validateAPITypesHaveFieldChecker :: [ServantAPIType] -> TcM [(Text, Text, SrcSpan, Text)]
 validateAPITypesHaveFieldChecker apiTypes = do
     let missingInstances = filter (not . apiHasFieldChecker) apiTypes
 
@@ -231,7 +242,7 @@ validateAPITypesHaveFieldChecker apiTypes = do
 
     forM missingInstances $ \apiType -> do
         let srcSpan = parseLocationString (apiLocation apiType)
-        return (apiTypeName apiType, apiEndpoint apiType, srcSpan)
+        return (apiTypeName apiType, apiEndpoint apiType, srcSpan, apiTypeModule apiType)
 
 concatMapM :: Monad m => (a -> m [b]) -> [a] -> m [b]
 concatMapM f xs = concat <$> mapM f xs
@@ -251,3 +262,51 @@ parseLocationString locStr =
     readMaybeInt s = case reads (T.unpack s) of
         [(x, "")] -> Just x
         _ -> Nothing
+
+checkRecursiveFieldCheckerInstance :: Type -> TcM [Text]
+checkRecursiveFieldCheckerInstance rootType = do
+    visitedRef <- liftIO $ newIORef Set.empty
+    missingRef <- liftIO $ newIORef []
+    go visitedRef missingRef rootType
+    liftIO $ readIORef missingRef
+  where
+    go visitedRef missingRef ty = do
+        let tyStr = pack $ showSDocUnsafe $ ppr ty
+        visited <- liftIO $ readIORef visitedRef
+        
+        if Set.member tyStr visited
+            then return ()
+            else do
+                liftIO $ modifyIORef visitedRef (Set.insert tyStr)
+                
+                case ty of
+#if __GLASGOW_HASKELL__ >= 900
+                    TyCo.TyConApp tc args -> handleTyConApp visitedRef missingRef tc args
+#else
+                    TyConApp tc args -> handleTyConApp visitedRef missingRef tc args
+#endif
+                    _ -> return ()
+
+    handleTyConApp visitedRef missingRef tc args = do
+        let tcName = pack $ showSDocUnsafe $ ppr $ tyConName tc
+            isCustom = isCustomType tcName
+        
+        if isCustom
+            then do
+                hasInstance <- checkFieldCheckerInstance tcName tcName -- Second arg is constructor, using name for now
+                if not hasInstance
+                    then liftIO $ modifyIORef missingRef (tcName :)
+                    else do
+                        -- Recurse into fields
+                        let dataCons = tyConDataCons tc
+                        forM_ dataCons $ \dc -> do
+                            let fieldTypes = dataConRepArgTys dc
+                            forM_ fieldTypes $ \ft -> do
+#if __GLASGOW_HASKELL__ >= 900
+                                go visitedRef missingRef (TyCo.scaledThing ft)
+#else
+                                go visitedRef missingRef ft
+#endif
+            else do
+                -- Recurse into type arguments (e.g. Maybe a, [a])
+                forM_ args $ \arg -> go visitedRef missingRef arg

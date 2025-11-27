@@ -331,37 +331,54 @@ reportUnusedFields fields = map generateSimpleError fields
 
 formatUnusedFieldError :: FieldDefinition -> Text
 formatUnusedFieldError FieldDefinition{..} = T.unlines
-    [ "Unused Maybe field detected:"
-    , "  Type: " <> fieldDefTypeName
-    , "  Field: " <> fieldDefName <> " :: " <> fieldDefType
+    [ "[FieldChecker] Unused Maybe field: " <> fieldDefName <> " :: " <> fieldDefType
+    , "    In type: " <> fieldDefTypeName
+    , "    Location: " <> fieldDefLocation
     , ""
-    , "This field is declared as Maybe but never used in the codebase."
-    , "Either:"
-    , "  1. Use this field in your code, OR"
-    , "  2. Add it to excludedFields in the FieldChecker instance"
+    , "    To fix, either use the field or exclude it:"
     , ""
-    , "Example:"
-    , "  instance FieldChecker " <> fieldDefTypeName <> " where"
-    , "    excludedFields _ = [\"" <> fieldDefName <> "\"]"
+    , "    instance FieldChecker " <> fieldDefTypeName <> " where"
+    , "        excludedFields _ = [\"" <> fieldDefName <> "\"]"
     ]
 
-formatMissingFieldCheckerError :: Text -> Text -> Text
-formatMissingFieldCheckerError typeName endpoint = T.unlines
-    [ "Missing FieldChecker instance for Servant API type:"
-    , "  Type: " <> typeName
-    , "  Used in: API endpoint at " <> endpoint
+formatMissingFieldCheckerError :: Text -> Text -> Text -> Text
+formatMissingFieldCheckerError typeName endpoint moduleInfo = T.unlines
+    [ "[FieldChecker] Missing required instance: FieldChecker " <> typeName
+    , "    Used in API endpoint: " <> endpoint
+    , "    Defined in module: " <> moduleInfo
     , ""
-    , "All types used in Servant API definitions must have a FieldChecker instance."
+    , "    All types used in Servant APIs must have a FieldChecker instance."
+    , "    Add the following instance to fix this error:"
     , ""
-    , "Add this instance:"
-    , "  instance FieldChecker " <> typeName <> " where"
-    , "    excludedFields _ = []"
+    , "    instance FieldChecker " <> typeName <> " where"
+    , "        excludedFields _ = []"
     ]
 
 validateServantAPITypes :: [ServantAPIType] -> [(Text, Text)]
 validateServantAPITypes apiTypes =
     let missingInstances = filter (not . apiHasFieldChecker) apiTypes
-    in map (\api -> (formatMissingFieldCheckerError (apiTypeName api) (apiEndpoint api), apiLocation api)) missingInstances
+    in map formatError missingInstances
+  where
+    formatError :: ServantAPIType -> (Text, Text)
+    formatError api =
+        let missingTypes = apiMissingInstances api
+            errorMsg = if null missingTypes
+                then formatMissingFieldCheckerError (apiTypeName api) (apiEndpoint api) (apiTypeModule api)
+                else formatRecursiveMissingError (apiTypeName api) (apiEndpoint api) (apiTypeModule api) missingTypes
+        in (errorMsg, apiLocation api)
+
+formatRecursiveMissingError :: Text -> Text -> Text -> [Text] -> Text
+formatRecursiveMissingError rootType endpoint moduleInfo missingTypes = T.unlines $
+    [ "[FieldChecker] Recursive validation failed for '" <> rootType <> "'"
+    , "    Used in API endpoint: " <> endpoint
+    , "    Defined in module: " <> moduleInfo
+    , ""
+    , "    The following nested types are missing FieldChecker instances:"
+    ] ++ map (\t -> "    - " <> t) missingTypes ++
+    [ ""
+    , "    All types in the dependency tree of a Servant API type must have FieldChecker instances."
+    , "    Please add instances for the missing types."
+    ]
 
 generateSummaryReport :: [FieldDefinition] -> Text
 generateSummaryReport [] = "✅ No unused fields detected!"

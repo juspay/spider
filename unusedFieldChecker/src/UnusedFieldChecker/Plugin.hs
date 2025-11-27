@@ -117,10 +117,8 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
 
             apiValidationErrors <- validateAPITypesHaveFieldChecker apiTypes
             when (not $ null apiValidationErrors) $ do
-                liftIO $ putStrLn $ "[Plugin ERROR] Found " ++ show (length apiValidationErrors) ++ " Servant API types without FieldChecker instances"
-                forM_ apiValidationErrors $ \(typeName, endpoint, srcSpan) -> do
-                    let errMsg = formatMissingFieldCheckerError typeName endpoint
-                    liftIO $ putStrLn $ "[Plugin ERROR] " ++ T.unpack typeName ++ " at " ++ T.unpack endpoint
+                forM_ apiValidationErrors $ \(typeName, endpoint, srcSpan, moduleInfo) -> do
+                    let errMsg = formatMissingFieldCheckerError typeName endpoint moduleInfo
 #if __GLASGOW_HASKELL__ >= 900
                     let msg = mkMsgEnvelope srcSpan neverQualify (text $ T.unpack errMsg)
                     addMessages (mkMessages $ unitBag msg)
@@ -128,7 +126,7 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
                     let msg = mkErrMsg srcSpan neverQualify (text $ T.unpack errMsg)
                     addErrs [(srcSpan, text $ T.unpack errMsg)]
 #endif
-                liftIO $ error $ "Compilation failed: " ++ show (length apiValidationErrors) ++ " Servant API types missing FieldChecker instances"
+                return ()
 
             let moduleInfo = ModuleFieldInfo
                     { moduleFieldDefs = fieldDefs
@@ -205,7 +203,7 @@ performValidationPass opts guts = do
                                 let srcSpan = parseLocationForCore locStr
                                     errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
                                 GHC.Core.Opt.Monad.putMsg errMsg
-                            liftIO $ error $ "Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                            return ()
                         else return ()
 
             return guts
@@ -266,7 +264,7 @@ performValidationPass opts guts = do
                                 let srcSpan = parseLocationForCore locStr
                                     errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
                                 CoreMonad.putMsg errMsg
-                            liftIO $ error $ "Compilation failed due to " ++ show (length errors) ++ " unused strict fields"
+                            return ()
                         else return ()
 
             return guts

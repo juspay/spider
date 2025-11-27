@@ -110,6 +110,7 @@ data ServantAPIType = ServantAPIType
     , apiTypeConstructor :: Text       -- Type constructor for matching
     , apiEndpoint :: Text              -- e.g., "/v1/authentication"
     , apiLocation :: Text              -- Source location of the API definition
-    , apiHasFieldChecker :: Bool       -- Whether FieldChecker instance exists
+    , apiHasFieldChecker :: Bool       -- Whether FieldChecker instance exists (top-level)
+    , apiMissingInstances :: [Text]    -- List of types in the dependency tree missing FieldChecker instances
     , apiServantCombinator :: Text     -- e.g., "ReqBody '[JSON]", "Post '[JSON]"
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
