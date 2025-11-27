@@ -175,11 +175,16 @@ performValidationPass opts guts = do
     let cliOptions = parseCliOptions opts
         modName = pack $ moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
 
+    liftIO $ putStrLn $ "[Core] Processing module: " ++ T.unpack modName
+
     exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
 
     if isModuleExcluded exclusionConfig modName
-        then return guts
+        then do
+            liftIO $ putStrLn $ "[Core] Module excluded: " ++ T.unpack modName
+            return guts
         else do
+            liftIO $ putStrLn $ "[Core] Checking if validation should run for: " ++ T.unpack modName
             shouldValidate <- liftIO $ shouldRunValidation (path cliOptions)
 
             when shouldValidate $ do
