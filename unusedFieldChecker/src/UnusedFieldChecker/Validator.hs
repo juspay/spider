@@ -374,10 +374,10 @@ formatRecursiveMissingError rootType endpoint moduleInfo missingTypes = T.unline
     , "    Defined in module: " <> moduleInfo
     , ""
     , "    The following child/nested types must also have FieldChecker instances:"
-    ] ++ map (\t -> "    - " <> t) missingTypes ++
+    , ""
+    ] ++ concatMap (\t -> T.lines $ formatMissingFieldCheckerError t endpoint moduleInfo) missingTypes ++
     [ ""
     , "    Since the parent type is used in a Servant API, all its child types must also have FieldChecker instances."
-    , "    Please add instances for all the missing child types listed above."
     ]
 
 generateSummaryReport :: [FieldDefinition] -> Text
