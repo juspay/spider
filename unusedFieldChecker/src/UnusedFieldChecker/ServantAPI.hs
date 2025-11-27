@@ -209,10 +209,30 @@ isCustomType t =
     not (T.head t `elem` ['\'', '(', '[', ':'])
   where
     primitiveTypes =
+        -- Numeric types
         [ "Int", "Integer", "Double", "Float", "Bool", "Char"
-        , "String", "Text", "ByteString", "UTCTime", "Day"
+        , "Int8", "Int16", "Int32", "Int64"
+        , "Word", "Word8", "Word16", "Word32", "Word64"
+        , "Natural", "Rational", "Scientific"
+        -- String/Text types
+        , "String", "Text", "ByteString"
+        , "LazyText", "LazyByteString", "ShortByteString"
+        , "ShortText", "StrictText", "StrictByteString"
+        -- Time/Date types
+        , "UTCTime", "Day", "ZonedTime", "LocalTime", "TimeOfDay"
+        , "NominalDiffTime", "DiffTime", "UniversalTime"
+        , "TimeZone", "CalendarDiffTime", "CalendarDiffDays"
+        -- Servant content types
         , "JSON", "XML", "PlainText", "OctetStream", "FormUrlEncoded"
-        , "UUID", "NoContent"
+        , "HTML", "CSS", "JavaScript"
+        -- Common library types
+        , "UUID", "NoContent", "Void", "Unit"
+        , "FilePath", "Handle", "IOMode"
+        -- Container types (handled separately but listed for completeness)
+        , "Maybe", "Either", "List", "Map", "Set", "Seq"
+        , "Vector", "Array", "HashMap", "HashSet"
+        -- Ordering and comparison
+        , "Ordering", "Proxy"
         ]
 
 checkFieldCheckerInstance :: Text -> Text -> TcM Bool
