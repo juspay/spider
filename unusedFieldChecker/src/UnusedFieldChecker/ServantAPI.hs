@@ -228,6 +228,7 @@ isCustomType t =
         -- Common library types
         , "UUID", "NoContent", "Void", "Unit"
         , "FilePath", "Handle", "IOMode"
+        , "PII"
         -- Container types (handled separately but listed for completeness)
         , "Maybe", "Either", "List", "Map", "Set", "Seq"
         , "Vector", "Array", "HashMap", "HashSet"
