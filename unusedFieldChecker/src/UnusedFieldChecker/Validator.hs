@@ -29,15 +29,19 @@ aggregateFieldInfo :: [ModuleFieldInfo] -> AggregatedFieldInfo
 aggregateFieldInfo modules =
     let allDefs = concatMap moduleFieldDefs modules
         allUsages = concatMap moduleFieldUsages modules
-        
-        defMap = foldl' (\acc def -> 
-            Map.insertWith (++) (fieldDefName def) [def] acc
+
+        -- Key by (typeName, fieldName) to properly match fields to their types
+        defMap = foldl' (\acc def ->
+            let key = (fieldDefTypeName def, fieldDefName def)
+            in Map.insertWith (++) key [def] acc
             ) Map.empty allDefs
-        
+
+        -- Key usages by (typeName, fieldName), but also track usages without type info
         usageMap = foldl' (\acc usage ->
-            Map.insertWith (++) (fieldUsageName usage) [usage] acc
+            let key = (fieldUsageTypeName usage, fieldUsageName usage)
+            in Map.insertWith (++) key [usage] acc
             ) Map.empty allUsages
-    
+
     in AggregatedFieldInfo
         { allFieldDefs = defMap
         , allFieldUsages = usageMap
@@ -55,14 +59,22 @@ validateFields AggregatedFieldInfo{..} =
         , usedFields = nub used
         }
   where
-    categorizeField :: ([FieldDefinition], [FieldDefinition], [FieldDefinition]) 
-                    -> FieldDefinition 
+    categorizeField :: ([FieldDefinition], [FieldDefinition], [FieldDefinition])
+                    -> FieldDefinition
                     -> ([FieldDefinition], [FieldDefinition], [FieldDefinition])
     categorizeField (unusedMaybe, unusedNonMaybe, used) fieldDef =
         let fieldName = fieldDefName fieldDef
-            isUsed = case Map.lookup fieldName allFieldUsages of
-                Nothing -> False
+            typeName = fieldDefTypeName fieldDef
+            key = (typeName, fieldName)
+            -- First try exact match with type name
+            exactMatch = Map.lookup key allFieldUsages
+            -- Fallback: if FieldInspector didn't capture type info, check for usage with empty type
+            fallbackMatch = Map.lookup ("", fieldName) allFieldUsages
+            isUsed = case exactMatch of
                 Just usages -> any isRealUsage usages
+                Nothing -> case fallbackMatch of
+                    Just usages -> any isRealUsage usages
+                    Nothing -> False
             isSingleFieldRecord = fieldDefIsSingleField fieldDef
             _ = unsafePerformIO $ when (fieldName == "notificationRequestItem") $ do
                     putStrLn $ "[DEBUG SINGLE] Field: " ++ T.unpack fieldName ++
@@ -128,9 +140,25 @@ validateFieldsWithExclusions exclusionConfig AggregatedFieldInfo{..} =
             typeName = fieldDefTypeName fieldDef
             defModule = fieldDefModule fieldDef
             fullyQualifiedType = fieldDefFullyQualifiedType fieldDef
-            isUsed = case Map.lookup fieldName allFieldUsages of
-                Nothing -> False
-                Just usages -> any (isRealUsageOfThisField fieldDef) usages
+            isUsed = 
+                let -- Try exact match with (typeName, fieldName) first
+                    exactKey = (typeName, fieldName)
+                    exactUsages = Map.lookup exactKey allFieldUsages
+                    
+                    -- Fallback: try empty type name (for usages without type info)
+                    fallbackKey = ("", fieldName)
+                    fallbackUsages = Map.lookup fallbackKey allFieldUsages
+                    
+                    -- Combine all possible usages
+                    allPossibleUsages = case (exactUsages, fallbackUsages) of
+                        (Just exact, Just fallback) -> Just (exact ++ fallback)
+                        (Just exact, Nothing) -> Just exact
+                        (Nothing, Just fallback) -> Just fallback
+                        (Nothing, Nothing) -> Nothing
+                        
+                in case allPossibleUsages of
+                    Nothing -> False
+                    Just usages -> any (isRealUsageOfThisField fieldDef) usages
         in if isUsed
             then (unusedMaybe, unusedNonMaybe, fieldDef : used)
             else if fieldDefIsMaybe fieldDef
@@ -295,17 +323,33 @@ validateFieldsForTypesUsedInConfiguredModules exclusionConfig AggregatedFieldInf
 
             isSingleFieldRecord = fieldDefIsSingleField fieldDef
 
-            (hasUsageInConfiguredModules, usageDetails) = case Map.lookup fieldName allFieldUsages of
-                Nothing -> (False, "no usages found")
-                Just usages ->
-                    let configuredUsages = filter (isUsageInConfiguredModule exclusionConfig) usages
-                        allUsageModules = map fieldUsageModule usages
-                        configuredUsageModules = map fieldUsageModule configuredUsages
-                    in (not (null configuredUsages),
-                        "total usages: " ++ show (length usages) ++
-                        ", in modules: " ++ show allUsageModules ++
-                        ", configured usages: " ++ show (length configuredUsages) ++
-                        ", configured modules: " ++ show configuredUsageModules)
+            (hasUsageInConfiguredModules, usageDetails) = 
+                let -- Try exact match with (typeName, fieldName) first
+                    exactKey = (fieldDefTypeName fieldDef, fieldName)
+                    exactUsages = Map.lookup exactKey allFieldUsages
+                    
+                    -- Fallback: try empty type name (for usages without type info)
+                    fallbackKey = ("", fieldName)
+                    fallbackUsages = Map.lookup fallbackKey allFieldUsages
+                    
+                    -- Combine all possible usages
+                    allPossibleUsages = case (exactUsages, fallbackUsages) of
+                        (Just exact, Just fallback) -> Just (exact ++ fallback)
+                        (Just exact, Nothing) -> Just exact
+                        (Nothing, Just fallback) -> Just fallback
+                        (Nothing, Nothing) -> Nothing
+                        
+                in case allPossibleUsages of
+                    Nothing -> (False, "no usages found")
+                    Just usages ->
+                        let configuredUsages = filter (isUsageInConfiguredModule exclusionConfig) usages
+                            allUsageModules = map fieldUsageModule usages
+                            configuredUsageModules = map fieldUsageModule configuredUsages
+                        in (not (null configuredUsages),
+                            "total usages: " ++ show (length usages) ++
+                            ", in modules: " ++ show allUsageModules ++
+                            ", configured usages: " ++ show (length configuredUsages) ++
+                            ", configured modules: " ++ show configuredUsageModules)
 
             _ = unsafePerformIO $
                 if length (unusedMaybe ++ unusedNonMaybe ++ used) < 10  -- Only log first 10 fields

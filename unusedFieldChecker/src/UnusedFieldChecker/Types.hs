@@ -76,8 +76,8 @@ data ModuleFieldInfo = ModuleFieldInfo
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 data AggregatedFieldInfo = AggregatedFieldInfo
-    { allFieldDefs :: Map.Map Text [FieldDefinition] 
-    , allFieldUsages :: Map.Map Text [FieldUsage] 
+    { allFieldDefs :: Map.Map (Text, Text) [FieldDefinition]   -- Key: (typeName, fieldName)
+    , allFieldUsages :: Map.Map (Text, Text) [FieldUsage]      -- Key: (typeName, fieldName)
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 
