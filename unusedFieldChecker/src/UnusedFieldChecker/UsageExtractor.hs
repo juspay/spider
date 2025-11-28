@@ -95,13 +95,6 @@ extractUsagesFromExpr modName currentPkgName expr = case expr of
 #endif
     
     App func args -> do
-        case func of
-            Var fv -> do
-                let funcName = pack (nameStableString $ idName fv)
-                when ("getField" `T.isInfixOf` funcName || "$sel:" `T.isInfixOf` funcName) $
-                    liftIO $ putStrLn $ "[DEBUG APP] Function app: " ++ T.unpack funcName
-            _ -> return ()
-
         funcUsages <- extractUsagesFromExpr modName currentPkgName func
         argUsages <- extractUsagesFromExpr modName currentPkgName args
         hasFieldUsages <- detectHasField modName currentPkgName func args

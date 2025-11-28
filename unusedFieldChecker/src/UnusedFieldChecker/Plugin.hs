@@ -31,8 +31,8 @@ import GHC.Unit.Module.ModGuts
 import GHC.Unit.Module.ModSummary
 import GHC.Unit.Types (moduleName, moduleUnit)
 import GHC.Utils.Error (mkMsgEnvelope, mkLocMessage)
-import GHC.Utils.Outputable hiding ((<>))
 import qualified GHC.Utils.Error as Err
+import GHC.Utils.Outputable (showSDocUnsafe, ppr, text, neverQualify)
 #else
 import Bag
 import CoreMonad
@@ -832,9 +832,24 @@ performCrossModuleValidation :: [CommandLineOption] -> ModIface -> IfM lcl ModIf
 performCrossModuleValidation opts modIface = do
     let cliOptions = parseCliOptions opts
     allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
-    let aggregated = aggregateFieldInfo allModuleInfos
-    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
-    let validationResult = validateFieldsWithExclusions exclusionConfig aggregated
+    when (length allModuleInfos >= 1) $ do
+        let aggregated = aggregateFieldInfo allModuleInfos
+        exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
+        
+        validationResult <- liftIO $ case includeFiles exclusionConfig of
+            Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
+            Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
+        
+        let unusedFields = unusedNonMaybeFields validationResult
+            errors = reportUnusedFields unusedFields
+        
+        liftIO $ putStrLn $ "[CrossModuleValidation] Found " ++ show (length unusedFields) ++ " unused non-Maybe fields"
+        liftIO $ putStrLn $ "[CrossModuleValidation] Generated " ++ show (length errors) ++ " error messages"
+        
+        when (not $ null errors) $ do
+            forM_ errors $ \(locStr, msg, _) -> do
+                liftIO $ putStrLn $ "[CrossModuleValidation] Error: " ++ T.unpack msg ++ " at " ++ T.unpack locStr
+            return ()
     return modIface
 
 loadAllFieldInfo :: FilePath -> IO [ModuleFieldInfo]
@@ -1039,7 +1054,7 @@ extractTypeApplicationUsage modName loc expr = case expr of
                             , fieldUsageModule = modName
                             , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
                             , fieldUsageTypeConstructor = ""
-                            }]
+                        }]
                         else return []
                 else return []
     _ -> return []
