@@ -532,54 +532,58 @@ extractUsagesFromGRHS modName (L _ (GRHS _ _ body)) =
 extractUsagesFromPat :: Text -> LPat GhcTc -> TcM [FieldUsage]
 extractUsagesFromPat modName lpat = case unLoc lpat of
 #if __GLASGOW_HASKELL__ >= 900
-    ConPat _ _ details -> extractUsagesFromConPatDetails modName (getLoc lpat) details
+    ConPat _ con details -> do
+        let typeConStr = pack $ showSDocUnsafe $ ppr con
+        extractUsagesFromConPatDetails modName (getLoc lpat) typeConStr details
 #else
-    ConPatOut{pat_args = details} -> extractUsagesFromConPatDetails modName (getLoc lpat) details
+    ConPatOut{pat_con = con, pat_args = details} -> do
+        let typeConStr = pack $ showSDocUnsafe $ ppr con
+        extractUsagesFromConPatDetails modName (getLoc lpat) typeConStr details
 #endif
     _ -> return []
 
 #if __GLASGOW_HASKELL__ >= 900
-extractUsagesFromConPatDetails :: Text -> SrcSpanAnnA -> HsConPatDetails GhcTc -> TcM [FieldUsage]
-extractUsagesFromConPatDetails modName loc details = case details of
+extractUsagesFromConPatDetails :: Text -> SrcSpanAnnA -> Text -> HsConPatDetails GhcTc -> TcM [FieldUsage]
+extractUsagesFromConPatDetails modName loc typeCon details = case details of
     RecCon (HsRecFields fields dotdot) -> do
         let wildcardUsages = case dotdot of
                 Just _ -> [FieldUsage
                     { fieldUsageName = ".."
                     , fieldUsageType = RecordWildCards
-                    , fieldUsageTypeName = ""
+                    , fieldUsageTypeName = typeCon
                     , fieldUsageModule = modName
                     , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-                    , fieldUsageTypeConstructor = ""
+                    , fieldUsageTypeConstructor = typeCon
                     }]
                 Nothing -> []
-        fieldUsages <- concat <$> mapM (extractUsageFromRecField modName loc) fields
+        fieldUsages <- concat <$> mapM (extractUsageFromRecField modName loc typeCon) fields
         return $ wildcardUsages ++ fieldUsages
     _ -> return []
 #else
-extractUsagesFromConPatDetails :: Text -> SrcSpan -> HsConPatDetails GhcTc -> TcM [FieldUsage]
-extractUsagesFromConPatDetails modName loc details = case details of
+extractUsagesFromConPatDetails :: Text -> SrcSpan -> Text -> HsConPatDetails GhcTc -> TcM [FieldUsage]
+extractUsagesFromConPatDetails modName loc typeCon details = case details of
     RecCon (HsRecFields fields dotdot) -> do
         let wildcardUsages = case dotdot of
                 Just _ -> [FieldUsage
                     { fieldUsageName = ".."
                     , fieldUsageType = RecordWildCards
-                    , fieldUsageTypeName = ""
+                    , fieldUsageTypeName = typeCon
                     , fieldUsageModule = modName
                     , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-                    , fieldUsageTypeConstructor = ""
+                    , fieldUsageTypeConstructor = typeCon
                     }]
                 Nothing -> []
-        fieldUsages <- concat <$> mapM (extractUsageFromRecField modName loc) fields
+        fieldUsages <- concat <$> mapM (extractUsageFromRecField modName loc typeCon) fields
         return $ wildcardUsages ++ fieldUsages
     _ -> return []
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
-extractUsageFromRecField :: Text -> SrcSpanAnnA -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
-extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = _, hsRecPun = pun}) = do
+extractUsageFromRecField :: Text -> SrcSpanAnnA -> Text -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
+extractUsageFromRecField modName loc typeCon (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = _, hsRecPun = pun}) = do
 #else
-extractUsageFromRecField :: Text -> SrcSpan -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
-extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg, hsRecPun = pun}) = do
+extractUsageFromRecField :: Text -> SrcSpan -> Text -> LHsRecField GhcTc (LPat GhcTc) -> TcM [FieldUsage]
+extractUsageFromRecField modName loc typeCon (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg, hsRecPun = pun}) = do
 #endif
     let fieldName = pack $ showSDocUnsafe $ ppr lbl
         location = pack $ showSDocUnsafe $ ppr loc
@@ -587,22 +591,30 @@ extractUsageFromRecField modName loc (L _ HsRecField{hsRecFieldLbl = lbl, hsRecF
     return [FieldUsage
         { fieldUsageName = fieldName
         , fieldUsageType = usageType
-        , fieldUsageTypeName = ""
+        , fieldUsageTypeName = typeCon
         , fieldUsageModule = modName
         , fieldUsageLocation = location
-        , fieldUsageTypeConstructor = ""
+        , fieldUsageTypeConstructor = typeCon
         }]
 
+-- Helper to extract type constructor name from an expression (best effort)
+extractTypeFromExpr :: LHsExpr GhcTc -> Text
+extractTypeFromExpr lexpr = case unLoc lexpr of
+    HsVar _ (L _ varId) -> pack $ getOccString varId
+    _ -> ""
+
 extractUsagesFromExpr :: Text -> LHsExpr GhcTc -> TcM [FieldUsage]
-extractUsagesFromExpr modName lexpr = 
+extractUsagesFromExpr modName lexpr =
     let loc = getLoc lexpr
         expr = unLoc lexpr
     in case expr of
-    RecordCon{rcon_flds = HsRecFields fields _} ->
-        concat <$> mapM (extractUsageFromRecFieldExpr modName loc RecordConstruct) fields
-    
-    RecordUpd{rupd_flds = fields} ->
-        extractUsagesFromRecordUpdate modName loc fields
+    RecordCon{rcon_con = con, rcon_flds = HsRecFields fields _} -> do
+        let typeCon = pack $ showSDocUnsafe $ ppr con
+        concat <$> mapM (extractUsageFromRecFieldExpr modName loc typeCon RecordConstruct) fields
+
+    RecordUpd{rupd_expr = updExpr, rupd_flds = fields} -> do
+        let typeCon = extractTypeFromExpr updExpr
+        extractUsagesFromRecordUpdate modName loc typeCon fields
     
 #if __GLASGOW_HASKELL__ >= 900
     HsGetField _ _ (L _ (HsFieldLabel _ (L _ field))) -> do
@@ -762,46 +774,46 @@ extractUsagesFromExpr modName lexpr =
     _ -> return []
 
 #if __GLASGOW_HASKELL__ >= 900
-extractUsagesFromRecordUpdate :: Text -> SrcSpanAnnA -> Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> TcM [FieldUsage]
-extractUsagesFromRecordUpdate modName loc (Left fields) =
-    concat <$> mapM (extractUsageFromRecUpdField modName loc RecordUpdate) fields
-extractUsagesFromRecordUpdate _ _ (Right _) = return []
+extractUsagesFromRecordUpdate :: Text -> SrcSpanAnnA -> Text -> Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> TcM [FieldUsage]
+extractUsagesFromRecordUpdate modName loc typeCon (Left fields) =
+    concat <$> mapM (extractUsageFromRecUpdField modName loc typeCon RecordUpdate) fields
+extractUsagesFromRecordUpdate _ _ _ (Right _) = return []
 
-extractUsageFromRecUpdField :: Text -> SrcSpanAnnA -> UsageType -> LHsRecUpdField GhcTc -> TcM [FieldUsage]
-extractUsageFromRecUpdField modName loc usageType (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg}) = do
+extractUsageFromRecUpdField :: Text -> SrcSpanAnnA -> Text -> UsageType -> LHsRecUpdField GhcTc -> TcM [FieldUsage]
+extractUsageFromRecUpdField modName loc typeCon usageType (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg}) = do
     let fieldName = pack $ showSDocUnsafe $ ppr lbl
         location = pack $ showSDocUnsafe $ ppr loc
         usage = FieldUsage
             { fieldUsageName = fieldName
             , fieldUsageType = usageType
-            , fieldUsageTypeName = ""
+            , fieldUsageTypeName = typeCon
             , fieldUsageModule = modName
             , fieldUsageLocation = location
-            , fieldUsageTypeConstructor = ""
+            , fieldUsageTypeConstructor = typeCon
             }
     argUsages <- extractUsagesFromExpr modName arg
     return $ usage : argUsages
 #else
-extractUsagesFromRecordUpdate :: Text -> SrcSpan -> [LHsRecUpdField GhcTc] -> TcM [FieldUsage]
-extractUsagesFromRecordUpdate modName loc fields =
-    concat <$> mapM (extractUsageFromRecFieldExpr modName loc RecordUpdate) fields
+extractUsagesFromRecordUpdate :: Text -> SrcSpan -> Text -> [LHsRecUpdField GhcTc] -> TcM [FieldUsage]
+extractUsagesFromRecordUpdate modName loc typeCon fields =
+    concat <$> mapM (extractUsageFromRecFieldExpr modName loc typeCon RecordUpdate) fields
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
-extractUsageFromRecFieldExpr :: Text -> SrcSpanAnnA -> UsageType -> LHsRecField GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsageFromRecFieldExpr :: Text -> SrcSpanAnnA -> Text -> UsageType -> LHsRecField GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
 #else
-extractUsageFromRecFieldExpr :: Text -> SrcSpan -> UsageType -> LHsRecField GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
+extractUsageFromRecFieldExpr :: Text -> SrcSpan -> Text -> UsageType -> LHsRecField GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
 #endif
-extractUsageFromRecFieldExpr modName loc usageType (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg}) = do
+extractUsageFromRecFieldExpr modName loc typeCon usageType (L _ HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = arg}) = do
     let fieldName = pack $ showSDocUnsafe $ ppr lbl
         location = pack $ showSDocUnsafe $ ppr loc
         usage = FieldUsage
             { fieldUsageName = fieldName
             , fieldUsageType = usageType
-            , fieldUsageTypeName = ""
+            , fieldUsageTypeName = typeCon
             , fieldUsageModule = modName
             , fieldUsageLocation = location
-            , fieldUsageTypeConstructor = ""
+            , fieldUsageTypeConstructor = typeCon
             }
     argUsages <- extractUsagesFromExpr modName arg
     return $ usage : argUsages
