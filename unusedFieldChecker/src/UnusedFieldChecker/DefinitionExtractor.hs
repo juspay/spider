@@ -130,25 +130,32 @@ extractFieldsFromDataCon modName currentPkgName typeName typeConstructor hasFiel
         fieldTypes = dataConRepArgTys dc
         dcName = getName dc
         tyConName = getName $ dataConTyCon dc
-        packagePattern = "$" <> currentPkgName <> "-"
-        isCurrentPackage = packagePattern `T.isPrefixOf` typeConstructor
+        typePackage = extractPackageFromTypeConstructor typeConstructor
+        -- Match if exact match OR if one package name contains the other (e.g., "gateway" matches "euler-api-gateway")
+        isCurrentPackage = typePackage == currentPkgName ||
+                          currentPkgName `T.isInfixOf` typePackage ||
+                          typePackage `T.isInfixOf` currentPkgName
 
     liftIO $ putStrLn $ "[PACKAGE FILTER] Type: " ++ T.unpack typeName ++
                        ", currentPkg: " ++ T.unpack currentPkgName ++
-                       ", pattern: " ++ T.unpack packagePattern ++
+                       ", typePackage: " ++ T.unpack typePackage ++
                        ", typeConstructor: " ++ T.unpack typeConstructor ++
                        ", isCurrentPackage: " ++ show isCurrentPackage ++
                        ", hasFieldChecker: " ++ show hasFieldChecker
 
     if not isCurrentPackage
         then do
-            liftIO $ putStrLn $ "[PACKAGE FILTER] SKIPPING " ++ T.unpack typeName ++ " - not from current package"
+            liftIO $ putStrLn $ "[PACKAGE FILTER] SKIPPING " ++ T.unpack typeName ++ " (typePackage: " ++ T.unpack typePackage ++ " != currentPkg: " ++ T.unpack currentPkgName ++ ")"
             return []
         else extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker fieldLabels fieldTypes dcName tyConName
 
 #if __GLASGOW_HASKELL__ >= 900
 extractFieldsForCurrentPackage :: Text -> Text -> Text -> Bool -> [FieldLabel] -> [Scaled Type] -> Name -> Name -> TcM [FieldDefinition]
 extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker fieldLabels fieldTypes dcName tyConName = do
+    liftIO $ putStrLn $ "[FIELD EXTRACTION] Type: " ++ T.unpack typeName ++
+                       ", fieldLabels: " ++ show (length fieldLabels) ++
+                       ", fieldTypes: " ++ show (length fieldTypes)
+
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
         then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
             let fieldName = pack $ unpackFS $ flLabel label
@@ -178,6 +185,10 @@ extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker 
 #else
 extractFieldsForCurrentPackage :: Text -> Text -> Text -> Bool -> [FieldLabel] -> [Type] -> Name -> Name -> TcM [FieldDefinition]
 extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker fieldLabels fieldTypes dcName tyConName = do
+    liftIO $ putStrLn $ "[FIELD EXTRACTION] Type: " ++ T.unpack typeName ++
+                       ", fieldLabels: " ++ show (length fieldLabels) ++
+                       ", fieldTypes: " ++ show (length fieldTypes)
+
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
         then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
             let fieldName = pack $ unpackFS $ flLabel label
@@ -209,15 +220,29 @@ extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker 
 isMaybeType :: Type -> Bool
 isMaybeType ty = case ty of
 #if __GLASGOW_HASKELL__ >= 900
-    TyCo.TyConApp tc _ -> 
+    TyCo.TyConApp tc _ ->
         let tcName = getOccString (getName tc)
         in tcName == "Maybe"
 #else
-    TyConApp tc _ -> 
+    TyConApp tc _ ->
         let tcName = getOccString (getName tc)
         in tcName == "Maybe"
 #endif
     _ -> False
+
+extractPackageFromTypeConstructor :: Text -> Text
+extractPackageFromTypeConstructor tc =
+    case T.splitOn "$" tc of
+        (_:pkgWithVersion:_) ->
+            let parts = T.splitOn "-" pkgWithVersion
+                nameParts = takeWhile (not . startsWithDigit) parts
+            in T.intercalate "-" nameParts
+        _ -> ""
+  where
+    startsWithDigit :: Text -> Bool
+    startsWithDigit t = case T.uncons t of
+        Just (c, _) -> c >= '0' && c <= '9'
+        Nothing -> False
 
 
 extractPackageName :: Text -> Text
