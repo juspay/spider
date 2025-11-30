@@ -212,6 +212,9 @@ performValidationPass opts guts = do
                             return ()
                         else return ()
 
+                    -- Mark validation as complete
+                    liftIO $ markValidationComplete (path cliOptions)
+
             return guts
 
 parseLocationForCore :: Text -> SrcSpan
@@ -271,6 +274,9 @@ performValidationPass opts guts = do
                                 CoreMonad.putMsg errMsg
                             return ()
                         else return ()
+
+                    -- Mark validation as complete
+                    liftIO $ markValidationComplete (path cliOptions)
 
             return guts
 
@@ -394,6 +400,20 @@ shouldRunValidation outputPath = do
                             hFlush handle
                             hClose handle
                             return True
+
+markValidationComplete :: FilePath -> IO ()
+markValidationComplete outputPath = do
+    let validatedFile = outputPath </> ".validated"
+        lockFile = outputPath </> ".validation.lock"
+
+    putStrLn "[Validation] Marking validation as complete"
+    writeFile validatedFile "validation-complete"
+
+    -- Clean up lock file
+    lockExists <- doesFileExist lockFile
+    when lockExists $ safeRemoveFile lockFile
+
+    putStrLn "[Validation] Validation completed successfully"
 
 parseCliOptions :: [CommandLineOption] -> CliOptions
 parseCliOptions [] = defaultCliOptions
