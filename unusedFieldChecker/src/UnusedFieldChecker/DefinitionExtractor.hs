@@ -133,8 +133,17 @@ extractFieldsFromDataCon modName currentPkgName typeName typeConstructor hasFiel
         packagePattern = "$" <> currentPkgName <> "-"
         isCurrentPackage = packagePattern `T.isPrefixOf` typeConstructor
 
+    liftIO $ putStrLn $ "[PACKAGE FILTER] Type: " ++ T.unpack typeName ++
+                       ", currentPkg: " ++ T.unpack currentPkgName ++
+                       ", pattern: " ++ T.unpack packagePattern ++
+                       ", typeConstructor: " ++ T.unpack typeConstructor ++
+                       ", isCurrentPackage: " ++ show isCurrentPackage ++
+                       ", hasFieldChecker: " ++ show hasFieldChecker
+
     if not isCurrentPackage
-        then return []
+        then do
+            liftIO $ putStrLn $ "[PACKAGE FILTER] SKIPPING " ++ T.unpack typeName ++ " - not from current package"
+            return []
         else extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker fieldLabels fieldTypes dcName tyConName
 
 #if __GLASGOW_HASKELL__ >= 900
