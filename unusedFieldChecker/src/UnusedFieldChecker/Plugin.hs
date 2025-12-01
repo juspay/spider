@@ -12,12 +12,12 @@ import Prelude hiding (log)
 #if __GLASGOW_HASKELL__ >= 900
 import GHC
 import GHC.Core.DataCon
-import GHC.Core.Opt.Monad
 import GHC.Core.TyCon
 import qualified GHC.Core.TyCo.Rep as TyCo
 import GHC.Core.Type
 import GHC.Data.Bag
 import GHC.Data.FastString
+import GHC.Driver.Env (HscEnv)
 import GHC.Driver.Plugins
 import GHC.Driver.Session
 import GHC.Hs
@@ -27,11 +27,9 @@ import GHC.Types.Error (Messages, mkMessages)
 import GHC.Types.FieldLabel
 import GHC.Types.Name
 import GHC.Types.SrcLoc
-import GHC.Unit.Module.ModGuts
 import GHC.Unit.Module.ModSummary
 import GHC.Unit.Types (moduleName, moduleUnit)
-import GHC.Utils.Error (mkMsgEnvelope, mkLocMessage)
-import qualified GHC.Utils.Error as Err
+import GHC.Utils.Error (mkMsgEnvelope)
 import GHC.Utils.Outputable (showSDocUnsafe, ppr, text, neverQualify)
 #else
 import Bag
@@ -89,8 +87,10 @@ import TcRnMonad (addErrs)
 plugin :: Plugin
 plugin = defaultPlugin
     { typeCheckResultAction = collectFieldDefinitionsOnly
-    , installCoreToDos = installFieldUsageAnalysis
     , pluginRecompile = \_ -> return NoForceRecompile
+#if __GLASGOW_HASKELL__ >= 900
+    , driverPlugin = runCrossModuleValidation
+#endif
     }
 
 collectFieldDefinitionsOnly :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
@@ -169,135 +169,54 @@ mergeGatewayFieldInfo existing new =
     in new : filtered
 
 #if __GLASGOW_HASKELL__ >= 900
-installFieldUsageAnalysis :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
-installFieldUsageAnalysis args todos =
-    return (CoreDoPluginPass "UnusedFieldChecker-Validation" (performValidationPass args) : todos)
-
-performValidationPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
-performValidationPass opts guts = do
+-- | Driver plugin hook that runs after all modules are compiled
+-- This is where we perform cross-module validation for unused fields
+runCrossModuleValidation :: [CommandLineOption] -> HscEnv -> IO HscEnv
+runCrossModuleValidation opts hscEnv = do
     let cliOptions = parseCliOptions opts
-        modName = pack $ moduleNameString $ GHC.Unit.Types.moduleName $ mg_module guts
-
-    liftIO $ putStrLn $ "[Core] Processing module: " ++ T.unpack modName
-
-    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
-
-    if isModuleExcluded exclusionConfig modName
+    
+    putStrLn "[CrossModuleValidation] Starting cross-module validation..."
+    
+    -- Load all field info from JSON files
+    allModuleInfos <- loadAllFieldInfo (path cliOptions)
+    
+    if null allModuleInfos
         then do
-            liftIO $ putStrLn $ "[Core] Module excluded: " ++ T.unpack modName
-            return guts
+            putStrLn "[CrossModuleValidation] No field definitions found, skipping validation"
+            return hscEnv
         else do
-            liftIO $ putStrLn $ "[Core] Checking if validation should run for: " ++ T.unpack modName
-            shouldValidate <- liftIO $ shouldRunValidation (path cliOptions)
-
-            when shouldValidate $ do
-                allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
-
-                when (length allModuleInfos >= 1) $ do
-                    let aggregated = aggregateFieldInfo allModuleInfos
-
-                    validationResult <- liftIO $ case includeFiles exclusionConfig of
-                        Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
-                        Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
-
-                    let unusedFields = unusedNonMaybeFields validationResult
-                        errors = reportUnusedFields unusedFields
-
-                    liftIO $ putStrLn $ "[Validation] Found " ++ show (length unusedFields) ++ " unused non-Maybe fields"
-                    liftIO $ putStrLn $ "[Validation] Generated " ++ show (length errors) ++ " error messages"
-
-                    if not $ null errors
-                        then do
-                            forM_ errors $ \(locStr, msg, _) -> do
-                                let srcSpan = parseLocationForCore locStr
-                                    errMsg = mkLocMessage SevError srcSpan (text $ T.unpack msg)
-                                GHC.Core.Opt.Monad.putMsg errMsg
-                            return ()
-                        else return ()
-
-                    -- Mark validation as complete
-                    liftIO $ markValidationComplete (path cliOptions)
-
-            return guts
-
-parseLocationForCore :: Text -> SrcSpan
-parseLocationForCore locStr =
-    case T.splitOn ":" locStr of
-        [file, line, col] ->
-            case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
-                (Just l, Just c) ->
-                    let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
-                    in mkSrcSpan srcLoc srcLoc
-                _ -> noSrcSpan
-        _ -> noSrcSpan
-  where
-    readMaybe :: Read a => String -> Maybe a
-    readMaybe s = case reads s of
-        [(x, "")] -> Just x
-        _ -> Nothing
-
-#else
-installFieldUsageAnalysis :: [CommandLineOption] -> [CoreToDo] -> CoreM [CoreToDo]
-installFieldUsageAnalysis args todos =
-    return (CoreDoPluginPass "UnusedFieldChecker-Validation" (performValidationPass args) : todos)
-
-performValidationPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
-performValidationPass opts guts = do
-    let cliOptions = parseCliOptions opts
-        modName = pack $ moduleNameString $ moduleName $ mg_module guts
-
-    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
-
-    if isModuleExcluded exclusionConfig modName
-        then return guts
-        else do
-            shouldValidate <- liftIO $ shouldRunValidation (path cliOptions)
-
-            when shouldValidate $ do
-                allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
-
-                when (length allModuleInfos >= 1) $ do
-                    let aggregated = aggregateFieldInfo allModuleInfos
-
-                    validationResult <- liftIO $ case includeFiles exclusionConfig of
-                        Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
-                        Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
-
-                    let unusedFields = unusedNonMaybeFields validationResult
-                        errors = reportUnusedFields unusedFields
-
-                    liftIO $ putStrLn $ "[Validation] Found " ++ show (length unusedFields) ++ " unused non-Maybe fields"
-                    liftIO $ putStrLn $ "[Validation] Generated " ++ show (length errors) ++ " error messages"
-
-                    if not $ null errors
-                        then do
-                            forM_ errors $ \(locStr, msg, _) -> do
-                                let srcSpan = parseLocationForCore locStr
-                                    errMsg = mkErrMsg srcSpan neverQualify (text $ T.unpack msg)
-                                CoreMonad.putMsg errMsg
-                            return ()
-                        else return ()
-
-                    -- Mark validation as complete
-                    liftIO $ markValidationComplete (path cliOptions)
-
-            return guts
-
-parseLocationForCore :: Text -> SrcSpan
-parseLocationForCore locStr =
-    case T.splitOn ":" locStr of
-        [file, line, col] ->
-            case (readMaybe (T.unpack line), readMaybe (T.unpack col)) of
-                (Just l, Just c) ->
-                    let srcLoc = mkSrcLoc (mkFastString $ T.unpack file) l c
-                    in mkSrcSpan srcLoc srcLoc
-                _ -> noSrcSpan
-        _ -> noSrcSpan
-  where
-    readMaybe :: Read a => String -> Maybe a
-    readMaybe s = case reads s of
-        [(x, "")] -> Just x
-        _ -> Nothing
+            let aggregated = aggregateFieldInfo allModuleInfos
+                totalDefs = sum $ map (length . moduleFieldDefs) allModuleInfos
+                totalUsages = sum $ map (length . moduleFieldUsages) allModuleInfos
+            
+            putStrLn $ "[CrossModuleValidation] Loaded " ++ show (length allModuleInfos) ++ " modules"
+            putStrLn $ "[CrossModuleValidation] Total field definitions: " ++ show totalDefs
+            putStrLn $ "[CrossModuleValidation] Total field usages: " ++ show totalUsages
+            
+            exclusionConfig <- loadExclusionConfig (exclusionConfigFile cliOptions)
+            
+            validationResult <- case includeFiles exclusionConfig of
+                Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
+                Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
+            
+            let unusedFields = unusedNonMaybeFields validationResult
+                errors = reportUnusedFields unusedFields
+            
+            putStrLn $ "[CrossModuleValidation] Found " ++ show (length unusedFields) ++ " unused non-Maybe fields"
+            putStrLn $ "[CrossModuleValidation] Generated " ++ show (length errors) ++ " error messages"
+            
+            if not $ null errors
+                then do
+                    -- Print all errors
+                    forM_ errors $ \(locStr, msg, fieldName) -> do
+                        putStrLn $ "[CrossModuleValidation] ERROR: " ++ T.unpack msg
+                        putStrLn $ "  Location: " ++ T.unpack locStr
+                        putStrLn $ "  Field: " ++ T.unpack fieldName
+                    -- Fail the build by throwing an error
+                    error $ "[UnusedFieldChecker] Build failed: Found " ++ show (length errors) ++ " unused non-Maybe fields. See errors above."
+                else do
+                    putStrLn "[CrossModuleValidation] Validation passed - no unused non-Maybe fields found"
+                    return hscEnv
 #endif
 
 safeRemoveFile :: FilePath -> IO ()
@@ -333,15 +252,6 @@ cleanupOldBuildIfNeeded outputPath = do
                                     filesToRemove = filter (/= cleanupLock) fullPaths
                                 mapM_ safeRemoveFile filesToRemove
 
-                            let lockFile = outputPath </> ".validation.lock"
-                                validatedFile = outputPath </> ".validated"
-
-                            lockExists <- doesFileExist lockFile
-                            when lockExists $ safeRemoveFile lockFile
-
-                            validatedExists <- doesFileExist validatedFile
-                            when validatedExists $ safeRemoveFile validatedFile
-
                             writeFile buildMarker "cleanup-complete"
                             hClose lockHandle
                             safeRemoveFile cleanupLock
@@ -373,50 +283,8 @@ atomicWriteFile filePath content = do
     hash str = foldl' (\h c -> 31 * h + fromEnum c) (length str * 1000) str
 
 
-shouldRunValidation :: FilePath -> IO Bool
-shouldRunValidation outputPath = do
-    let validatedFile = outputPath </> ".validated"
-        lockFile = outputPath </> ".validation.lock"
-
-    validatedExists <- doesFileExist validatedFile
-    if validatedExists
-        then do
-            putStrLn "[Validation] Skipping validation - already validated"
-            return False
-        else do
-            allJsonFiles <- findAllJsonFiles outputPath
-            let jsonCount = length allJsonFiles
-
-            if jsonCount < 1
-                then do
-                    putStrLn $ "[Validation] Skipping validation - no JSON files found"
-                    return False
-                else do
-                    result <- try (openFile lockFile WriteMode) :: IO (Either SomeException Handle)
-                    case result of
-                        Left _ -> do
-                            putStrLn "[Validation] Skipping validation - could not acquire lock"
-                            return False
-                        Right handle -> do
-                            putStrLn "[Validation] Running validation"
-                            hPutStrLn handle "validation-in-progress"
-                            hFlush handle
-                            hClose handle
-                            return True
-
-markValidationComplete :: FilePath -> IO ()
-markValidationComplete outputPath = do
-    let validatedFile = outputPath </> ".validated"
-        lockFile = outputPath </> ".validation.lock"
-
-    putStrLn "[Validation] Marking validation as complete"
-    writeFile validatedFile "validation-complete"
-
-    -- Clean up lock file
-    lockExists <- doesFileExist lockFile
-    when lockExists $ safeRemoveFile lockFile
-
-    putStrLn "[Validation] Validation completed successfully"
+-- Note: shouldRunValidation and markValidationComplete have been removed
+-- Validation now runs in the driverPlugin hook after all modules are compiled
 
 parseCliOptions :: [CommandLineOption] -> CliOptions
 parseCliOptions [] = defaultCliOptions
@@ -862,30 +730,6 @@ extractTyCons tcEnv =
         not (isClassTyCon tc) &&
         not (isPromotedDataCon tc) &&
         not (isTcTyCon tc)
-
-performCrossModuleValidation :: [CommandLineOption] -> ModIface -> IfM lcl ModIface
-performCrossModuleValidation opts modIface = do
-    let cliOptions = parseCliOptions opts
-    allModuleInfos <- liftIO $ loadAllFieldInfo (path cliOptions)
-    when (length allModuleInfos >= 1) $ do
-        let aggregated = aggregateFieldInfo allModuleInfos
-        exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
-        
-        validationResult <- liftIO $ case includeFiles exclusionConfig of
-            Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
-            Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
-        
-        let unusedFields = unusedNonMaybeFields validationResult
-            errors = reportUnusedFields unusedFields
-        
-        liftIO $ putStrLn $ "[CrossModuleValidation] Found " ++ show (length unusedFields) ++ " unused non-Maybe fields"
-        liftIO $ putStrLn $ "[CrossModuleValidation] Generated " ++ show (length errors) ++ " error messages"
-        
-        when (not $ null errors) $ do
-            forM_ errors $ \(locStr, msg, _) -> do
-                liftIO $ putStrLn $ "[CrossModuleValidation] Error: " ++ T.unpack msg ++ " at " ++ T.unpack locStr
-            return ()
-    return modIface
 
 loadAllFieldInfo :: FilePath -> IO [ModuleFieldInfo]
 loadAllFieldInfo outputPath = do
