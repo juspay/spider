@@ -157,31 +157,36 @@ extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker 
                        ", fieldTypes: " ++ show (length fieldTypes)
 
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
-        then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
-            let fieldName = pack $ unpackFS $ flLabel label
-                fieldTypeStr = pack $ showSDocUnsafe $ ppr $ TyCo.scaledThing fieldType
-                isMaybe = isMaybeType (TyCo.scaledThing fieldType)
-                location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
-                isSingleField = length fieldLabels == 1
-                packageName = case nameModule_maybe tyConName of
-                    Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnit mod
-                    Nothing -> "this"
-                fullyQualifiedType = modName <> "." <> typeName
+        then do
+            fieldDefs <- forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
+                let fieldName = pack $ unpackFS $ flLabel label
+                    fieldTypeStr = pack $ showSDocUnsafe $ ppr $ TyCo.scaledThing fieldType
+                    isMaybe = isMaybeType (TyCo.scaledThing fieldType)
+                    location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
+                    isSingleField = length fieldLabels == 1
+                    packageName = case nameModule_maybe tyConName of
+                        Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnit mod
+                        Nothing -> "this"
+                    fullyQualifiedType = modName <> "." <> typeName
 
-            return FieldDefinition
-                { fieldDefName = fieldName
-                , fieldDefType = fieldTypeStr
-                , fieldDefTypeName = typeName
-                , fieldDefIsMaybe = isMaybe
-                , fieldDefModule = modName
-                , fieldDefLocation = location
-                , fieldDefPackageName = packageName
-                , fieldDefFullyQualifiedType = fullyQualifiedType
-                , fieldDefTypeConstructor = typeConstructor
-                , fieldDefIsSingleField = isSingleField
-                , fieldDefHasFieldChecker = hasFieldChecker
-                }
-        else return []
+                return FieldDefinition
+                    { fieldDefName = fieldName
+                    , fieldDefType = fieldTypeStr
+                    , fieldDefTypeName = typeName
+                    , fieldDefIsMaybe = isMaybe
+                    , fieldDefModule = modName
+                    , fieldDefLocation = location
+                    , fieldDefPackageName = packageName
+                    , fieldDefFullyQualifiedType = fullyQualifiedType
+                    , fieldDefTypeConstructor = typeConstructor
+                    , fieldDefIsSingleField = isSingleField
+                    , fieldDefHasFieldChecker = hasFieldChecker
+                    }
+            liftIO $ putStrLn $ "[FIELD EXTRACTION] CREATED " ++ show (length fieldDefs) ++ " field definitions for " ++ T.unpack typeName
+            return fieldDefs
+        else do
+            liftIO $ putStrLn $ "[FIELD EXTRACTION] SKIPPING " ++ T.unpack typeName ++ " - no fields or length mismatch"
+            return []
 #else
 extractFieldsForCurrentPackage :: Text -> Text -> Text -> Bool -> [FieldLabel] -> [Type] -> Name -> Name -> TcM [FieldDefinition]
 extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker fieldLabels fieldTypes dcName tyConName = do
@@ -190,31 +195,36 @@ extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker 
                        ", fieldTypes: " ++ show (length fieldTypes)
 
     if not (null fieldLabels) && length fieldLabels == length fieldTypes
-        then forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
-            let fieldName = pack $ unpackFS $ flLabel label
-                fieldTypeStr = pack $ showSDocUnsafe $ ppr fieldType
-                isMaybe = isMaybeType fieldType
-                location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
-                isSingleField = length fieldLabels == 1
-                packageName = case nameModule_maybe tyConName of
-                    Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnitId mod
-                    Nothing -> "this"
-                fullyQualifiedType = modName <> "." <> typeName
+        then do
+            fieldDefs <- forM (zip fieldLabels fieldTypes) $ \(label, fieldType) -> do
+                let fieldName = pack $ unpackFS $ flLabel label
+                    fieldTypeStr = pack $ showSDocUnsafe $ ppr fieldType
+                    isMaybe = isMaybeType fieldType
+                    location = pack $ showSDocUnsafe $ ppr $ getSrcSpan dcName
+                    isSingleField = length fieldLabels == 1
+                    packageName = case nameModule_maybe tyConName of
+                        Just mod -> pack $ showSDocUnsafe $ ppr $ moduleUnitId mod
+                        Nothing -> "this"
+                    fullyQualifiedType = modName <> "." <> typeName
 
-            return FieldDefinition
-                { fieldDefName = fieldName
-                , fieldDefType = fieldTypeStr
-                , fieldDefTypeName = typeName
-                , fieldDefIsMaybe = isMaybe
-                , fieldDefModule = modName
-                , fieldDefLocation = location
-                , fieldDefPackageName = packageName
-                , fieldDefFullyQualifiedType = fullyQualifiedType
-                , fieldDefTypeConstructor = typeConstructor
-                , fieldDefIsSingleField = isSingleField
-                , fieldDefHasFieldChecker = hasFieldChecker
-                }
-        else return []
+                return FieldDefinition
+                    { fieldDefName = fieldName
+                    , fieldDefType = fieldTypeStr
+                    , fieldDefTypeName = typeName
+                    , fieldDefIsMaybe = isMaybe
+                    , fieldDefModule = modName
+                    , fieldDefLocation = location
+                    , fieldDefPackageName = packageName
+                    , fieldDefFullyQualifiedType = fullyQualifiedType
+                    , fieldDefTypeConstructor = typeConstructor
+                    , fieldDefIsSingleField = isSingleField
+                    , fieldDefHasFieldChecker = hasFieldChecker
+                    }
+            liftIO $ putStrLn $ "[FIELD EXTRACTION] CREATED " ++ show (length fieldDefs) ++ " field definitions for " ++ T.unpack typeName
+            return fieldDefs
+        else do
+            liftIO $ putStrLn $ "[FIELD EXTRACTION] SKIPPING " ++ T.unpack typeName ++ " - no fields or length mismatch"
+            return []
 #endif
 
 isMaybeType :: Type -> Bool

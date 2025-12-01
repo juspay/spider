@@ -113,7 +113,10 @@ collectFieldDefinitionsOnly opts modSummary tcEnv = do
             fieldUsages <- extractFieldUsages modName tcEnv
             apiTypes <- extractServantAPITypes modName tcEnv
 
-            liftIO $ putStrLn $ "[Plugin] Extracted " ++ show (length apiTypes) ++ " Servant API types from " ++ T.unpack modName
+            liftIO $ putStrLn $ "[Plugin] Module: " ++ T.unpack modName
+            liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldDefs) ++ " field definitions"
+            liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
+            liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length apiTypes) ++ " Servant API types"
 
             apiValidationErrors <- validateAPITypesHaveFieldChecker apiTypes
             when (not $ null apiValidationErrors) $ do
