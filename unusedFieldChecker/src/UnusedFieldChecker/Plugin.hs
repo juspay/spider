@@ -199,15 +199,13 @@ runFinalValidation cliOptions = do
     -- Cleanup: remove build marker so next build starts fresh
     liftIO $ safeRemoveFile buildMarker
 
--- | Emit a GHC compilation error for an unused field
--- Uses noSrcSpan to avoid showing misleading source locations
--- (the field's actual location is in the error message text)
 emitUnusedFieldError :: FieldDefinition -> TcM ()
 emitUnusedFieldError fieldDef = do
     let errorMsg = formatUnusedFieldError fieldDef
-    -- Use setSrcSpan noSrcSpan to avoid showing the current module's location
+        -- Use UnhelpfulSpan to completely suppress the source location display
+        unhelpfulLoc = UnhelpfulSpan (UnhelpfulOther (mkFastString "FieldChecker"))
     -- The actual field location is included in the error message itself
-    setSrcSpan noSrcSpan $ addErr (text (T.unpack errorMsg))
+    setSrcSpan unhelpfulLoc $ addErr (text (T.unpack errorMsg))
 #else
 -- | For GHC < 9.0, skip last module detection
 runFinalValidation :: CliOptions -> TcM ()
