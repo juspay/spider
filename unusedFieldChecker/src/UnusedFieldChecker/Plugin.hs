@@ -25,7 +25,7 @@ import GHC.Driver.Plugins
 import GHC.Driver.Session
 import GHC.Hs
 import GHC.Tc.Types
-import GHC.Tc.Utils.Monad (getTopEnv, addErr)
+import GHC.Tc.Utils.Monad (getTopEnv, addErr, setSrcSpan)
 import GHC.Tc.Utils.TcType (tcSplitTyConApp_maybe)
 import GHC.Types.FieldLabel
 import GHC.Types.Id (idType)
@@ -200,11 +200,14 @@ runFinalValidation cliOptions = do
     liftIO $ safeRemoveFile buildMarker
 
 -- | Emit a GHC compilation error for an unused field
+-- Uses noSrcSpan to avoid showing misleading source locations
+-- (the field's actual location is in the error message text)
 emitUnusedFieldError :: FieldDefinition -> TcM ()
 emitUnusedFieldError fieldDef = do
     let errorMsg = formatUnusedFieldError fieldDef
-    -- Use addErr to emit a simple error message
-    addErr (text (T.unpack errorMsg))
+    -- Use setSrcSpan noSrcSpan to avoid showing the current module's location
+    -- The actual field location is included in the error message itself
+    setSrcSpan noSrcSpan $ addErr (text (T.unpack errorMsg))
 #else
 -- | For GHC < 9.0, skip last module detection
 runFinalValidation :: CliOptions -> TcM ()
