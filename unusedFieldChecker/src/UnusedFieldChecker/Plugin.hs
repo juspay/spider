@@ -57,7 +57,7 @@ import TyCoRep
 import Type
 #endif
 
-import Control.Monad (forM, when)
+import Control.Monad (forM, when, guard)
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson (decode)
 import Data.Aeson.Encode.Pretty (encodePretty)
@@ -65,9 +65,11 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isLower)
 import Data.List (foldl', isSuffixOf)
+import Data.Maybe (fromMaybe)
 import Data.Text (Text, pack)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
+import Text.Read (readMaybe)
 import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>), takeDirectory, takeExtension)
 import System.IO (Handle, hClose, openFile, IOMode(..))
@@ -165,6 +167,48 @@ processModuleFields opts modSummary tcEnv = do
 
             return tcEnv
 
+-- | Parse a location string into its components
+-- Format: "filename:(startLine,startCol)-(endLine,endCol)"
+-- Example: "src/Types.hs:(47,26)-(70,3)"
+parseLocationString :: Text -> Maybe (FilePath, Int, Int, Int, Int)
+parseLocationString locStr = do
+    -- Find the last occurrence of ":(" which separates filename from coords
+    let (beforeCoords, coordsPart) = T.breakOnEnd ":(" locStr
+
+    -- Extract filename (remove trailing ":(")
+    filename <- case T.stripSuffix ":(" beforeCoords of
+        Just f | not (T.null f) -> Just (T.unpack f)
+        _ -> Nothing
+
+    -- Parse coordinates: "(startLine,startCol)-(endLine,endCol)"
+    let coordStr = T.strip coordsPart
+
+    -- Split on ")-(" to get start and end parts
+    case T.splitOn ")-(" coordStr of
+        [startPart, endPartRaw] -> do
+            -- Parse start coordinates
+            let startClean = T.strip $ fromMaybe startPart (T.stripPrefix "(" startPart)
+            (startLine, startCol) <- parseCoordPair startClean
+
+            -- Parse end coordinates
+            let endClean = T.strip $ fromMaybe endPartRaw (T.stripSuffix ")" endPartRaw)
+            (endLine, endCol) <- parseCoordPair endClean
+
+            -- Validate coordinates
+            guard (startLine > 0 && startCol > 0 && endLine > 0 && endCol > 0)
+            guard (endLine > startLine || (endLine == startLine && endCol >= startCol))
+
+            return (filename, startLine, startCol, endLine, endCol)
+        _ -> Nothing
+  where
+    parseCoordPair :: Text -> Maybe (Int, Int)
+    parseCoordPair t = case T.splitOn "," t of
+        [lineStr, colStr] -> do
+            line <- readMaybe (T.unpack $ T.strip lineStr)
+            col <- readMaybe (T.unpack $ T.strip colStr)
+            return (line, col)
+        _ -> Nothing
+
 #if __GLASGOW_HASKELL__ >= 900
 -- | Detect if the current module is the last in the topologically sorted compilation order
 detectLastModule :: ModSummary -> TcM Bool
@@ -181,8 +225,6 @@ detectLastModule modSummary = do
     lastMaybe [] = Nothing
     lastMaybe xs = Just (last xs)
 
--- | Run final validation after all modules are compiled
--- Loads all unused field logs and emits compilation errors if any remain
 runFinalValidation :: CliOptions -> TcM ()
 runFinalValidation cliOptions = do
     let outputPath = path cliOptions
@@ -192,27 +234,73 @@ runFinalValidation cliOptions = do
     
     liftIO $ putStrLn $ "[Plugin] Final validation: " ++ show (length unusedFields) ++ " unused fields remaining"
     
-    -- Emit errors for each unused field
     when (failOnUnused cliOptions && not (null unusedFields)) $ do
         mapM_ emitUnusedFieldError unusedFields
     
     -- Cleanup: remove build marker so next build starts fresh
     liftIO $ safeRemoveFile buildMarker
 
+-- | Create a RealSrcSpan from a location string for GHC >= 9.0
+mkRealSrcSpanFromLocation :: Text -> Maybe SrcSpan
+mkRealSrcSpanFromLocation locStr = do
+    (filename, startLine, startCol, endLine, endCol) <- parseLocationString locStr
+    let fs = mkFastString filename
+        startLoc = mkRealSrcLoc fs startLine startCol
+        endLoc = mkRealSrcLoc fs endLine endCol
+        realSpan = mkRealSrcSpan startLoc endLoc
+    return $ RealSrcSpan realSpan Nothing  -- Nothing for BufSpan
+
 emitUnusedFieldError :: FieldDefinition -> TcM ()
 emitUnusedFieldError fieldDef = do
     let errorMsg = formatUnusedFieldError fieldDef
-        -- Use UnhelpfulSpan to completely suppress the source location display
-        unhelpfulLoc = UnhelpfulSpan (UnhelpfulOther (mkFastString "FieldChecker"))
-    -- The actual field location is included in the error message itself
-    setSrcSpan unhelpfulLoc $ addErr (text (T.unpack errorMsg))
+        locStr = fieldDefLocation fieldDef
+        -- Try to parse location and create real source span
+        mbSrcSpan = mkRealSrcSpanFromLocation locStr
+
+    -- Optional debug logging (can be removed after testing)
+    case mbSrcSpan of
+        Just _ -> liftIO $ putStrLn $ "[Plugin] Parsed location: " ++ T.unpack locStr
+        Nothing -> liftIO $ putStrLn $ "[Plugin] WARNING: Failed to parse location: " ++ T.unpack locStr
+
+    -- Use parsed span or fallback to unhelpful span
+    let srcSpan = fromMaybe
+            (UnhelpfulSpan (UnhelpfulOther (mkFastString "FieldChecker: invalid location")))
+            mbSrcSpan
+
+    setSrcSpan srcSpan $ addErr (text (T.unpack errorMsg))
 #else
--- | For GHC < 9.0, skip last module detection
+-- | Create a RealSrcSpan from a location string for GHC < 9.0
+mkRealSrcSpanFromLocation :: Text -> Maybe SrcSpan
+mkRealSrcSpanFromLocation locStr = do
+    (filename, startLine, startCol, endLine, endCol) <- parseLocationString locStr
+    let fs = mkFastString filename
+        startLoc = mkRealSrcLoc fs startLine startCol
+        endLoc = mkRealSrcLoc fs endLine endCol
+        realSpan = mkRealSrcSpan startLoc endLoc
+    return $ RealSrcSpan realSpan  -- No BufSpan parameter in GHC < 9.0
+
 runFinalValidation :: CliOptions -> TcM ()
 runFinalValidation _ = return ()
+
+emitUnusedFieldError :: FieldDefinition -> TcM ()
+emitUnusedFieldError fieldDef = do
+    let errorMsg = formatUnusedFieldError fieldDef
+        locStr = fieldDefLocation fieldDef
+        mbSrcSpan = mkRealSrcSpanFromLocation locStr
+
+    -- Optional debug logging
+    case mbSrcSpan of
+        Just _ -> liftIO $ putStrLn $ "[Plugin] Parsed location: " ++ T.unpack locStr
+        Nothing -> liftIO $ putStrLn $ "[Plugin] WARNING: Failed to parse location: " ++ T.unpack locStr
+
+    -- Use parsed span or fallback (note: UnhelpfulSpan takes FastString directly in GHC < 9.0)
+    let srcSpan = fromMaybe
+            (UnhelpfulSpan (mkFastString "FieldChecker: invalid location"))
+            mbSrcSpan
+
+    setSrcSpan srcSpan $ addErr (text (T.unpack errorMsg))
 #endif
 
--- | Load the unused field log from a JSON file
 loadUnusedFieldLog :: FilePath -> IO UnusedFieldLog
 loadUnusedFieldLog filePath = do
     exists <- doesFileExist filePath
@@ -226,8 +314,6 @@ loadUnusedFieldLog filePath = do
                     putStrLn $ "[Plugin] Warning: Failed to parse " ++ filePath ++ ", starting fresh"
                     return []
 
--- | Load all unused fields from all gateway JSON files.
--- This is exported for use by external validation scripts that run after compilation.
 loadAllUnusedFields :: FilePath -> IO [FieldDefinition]
 loadAllUnusedFields outputPath = do
     exists <- doesDirectoryExist outputPath
@@ -238,7 +324,6 @@ loadAllUnusedFields outputPath = do
             allLogs <- mapM loadUnusedFieldLog allJsonFiles
             return $ concat allLogs
 
--- | Find all .unusedFields.json files in the output directory
 findAllUnusedFieldJsonFiles :: FilePath -> IO [FilePath]
 findAllUnusedFieldJsonFiles dir = do
     dirExists <- doesDirectoryExist dir
