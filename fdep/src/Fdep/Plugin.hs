@@ -9,66 +9,73 @@ module Fdep.Plugin (plugin,collectDecls) where
 
 import Socket
 -- import Control.Concurrent ( forkIO )
+import Control.Concurrent
 import Control.Exception (SomeException, try)
 import Control.Monad (void, when)
 import Control.Reference (biplateRef, (^?))
 import Data.Aeson ( encode, ToJSON(toJSON) )
-import qualified Data.Aeson as A
+import Data.Bool
 import Data.ByteString.Lazy (toStrict)
-import qualified Data.ByteString.Lazy as BL
 import Data.Data (toConstr)
 import Data.Generics.Uniplate.Data ()
 import Data.List.Extra (splitOn,nub)
-import qualified Data.Map as Map
 import Data.Maybe
 import Data.Text (Text)
-import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Time ( diffUTCTime, getCurrentTime )
+import Digraph
 import Fdep.Types
-import Prelude hiding (id, writeFile,span)
-import qualified Data.List.Extra as Data.List
-import System.Environment (lookupEnv)
 import GHC.IO (unsafePerformIO)
+import Prelude hiding (id, writeFile,span)
+import qualified Data.Aeson as A
+import qualified Data.ByteString.Lazy as BL
+import qualified Data.List.Extra as Data.List
+import qualified Data.Map as Map
+import qualified Data.Text as T
+import qualified Prelude as P
+import System.Environment (lookupEnv)
+import TcRnMonad
 #if __GLASGOW_HASKELL__ >= 900
-import GHC.Tc.Utils.TcType
-import GHC.Core.Type hiding (tyConsOfType)
-import GHC.Core.TyCo.Rep
-import GHC.Data.Bag
-import GHC.Core.TyCon
-import GHC.Core.DataCon
-import GHC.Hs.Pat
-import GHC.Unit.Types
 import GHC
-import GHC.Types.SourceText
-import GHC.Driver.Plugins
-import GHC.Types.Name.Reader
-import GHC.Driver.Env
-import GHC.Tc.Types
-import GHC.Unit.Module.ModSummary
-import GHC.Utils.Outputable (showSDocUnsafe,ppr)
-import GHC.Types.Name hiding (varName)
-import GHC.Types.Var
-import qualified Data.Aeson.KeyMap as HM
-import GHC.Types.Id
 import GHC.Core
+import GHC.Core.DataCon
 import GHC.Core.Opt.Monad
-import GHC.Unit.Module.ModGuts 
+import GHC.Core.TyCo.Rep
+import GHC.Core.TyCon
+import GHC.Core.Type hiding (tyConsOfType)
+import GHC.Data.Bag
 import GHC.Data.FastString
+import GHC.Driver.Env
+import GHC.Driver.Plugins
+import GHC.Hs.Pat
+import GHC.Tc.Types
+import GHC.Tc.Utils.TcType
+import GHC.Types.Id
+import GHC.Types.Name hiding (varName)
+import GHC.Types.Name.Reader
+import GHC.Types.SourceText
+import GHC.Types.Var
+import GHC.Unit.Module.Graph
+import GHC.Unit.Module.ModGuts
+import GHC.Unit.Module.ModSummary
+import GHC.Unit.Types
+import GHC.Utils.Outputable (showSDocUnsafe,ppr)
+import qualified Data.Aeson.KeyMap as HM
 #else
+import Bag (bagToList)
+import BasicTypes
 import CoreMonad
 import CoreSyn
-import TyCoRep
+import Data.IORef
 import DataCon
-import qualified Data.HashMap.Strict as HM
-import Bag (bagToList)
 import DynFlags ()
 import GHC
-import TcType
-import BasicTypes
 import GhcPlugins hiding ((<>),tyConsOfType,tyConsOfType)
 import Outputable ()
-import TcRnTypes (TcGblEnv (..), TcM)
+import qualified Data.HashMap.Strict as HM
+import qualified Data.Set as Set
+import TcType
+import TyCoRep
 #endif
 
 plugin :: Plugin
@@ -399,6 +406,10 @@ filterList =
     , "fromXml"
     ]
 
+{-# NOINLINE globalCompletionState #-}
+globalCompletionState :: IORef (Set.Set String, Int)
+globalCompletionState = unsafePerformIO $ newIORef (Set.empty, 0)
+
 fDep :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 fDep opts modSummary tcEnv = do
     let cliOptions = case opts of
@@ -407,20 +418,67 @@ fDep opts modSummary tcEnv = do
                                 case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
                                     Just (val :: CliOptions) -> val
                                     Nothing -> defaultCliOptions
-    when (shouldGenerateFdep) $
-        liftIO $ do
-            let prefixPath = path cliOptions
-                moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
-                modulePath = prefixPath <> msHsFilePath modSummary
-                wsPath = modulePath <> ".json"
-            let pathStr = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
-            when (shouldLog || Fdep.Types.log cliOptions) $ print ("generating dependancy for module: " <> moduleName' <> " at path: " <> pathStr)
-            t1 <- getCurrentTime
-            let socketPathToUse = fromMaybe (path cliOptions) fdepSocketPath
-            sendPathPerformAction wsPath socketPathToUse (\sock -> void $ mapM (loopOverLHsBindLR cliOptions sock Nothing (T.pack wsPath)) (bagToList $ tcg_binds tcEnv))
-            t2 <- getCurrentTime
-            when (shouldLog || Fdep.Types.log cliOptions) $ print ("generated dependancy for module: " <> moduleName' <> " at path: " <> pathStr <> " total-timetaken: " <> show (diffUTCTime t2 t1))
+    hscEnv <- getTopEnv
+    let moduleGraph = hsc_mod_graph hscEnv
+        modSummaries = mgModSummaries moduleGraph
+        modNames = map (moduleNameString . ms_mod_name) modSummaries
+        sortedModules = map (moduleNameString . ms_mod_name) (flattenSCCs $ topSortModuleGraph True moduleGraph Nothing)
+        totalModules = length sortedModules
+        currentModuleName = moduleNameString $ moduleName $ ms_mod modSummary
+        isLastModule = case lastMaybe sortedModules of
+            Just lastMod -> lastMod == currentModuleName
+            Nothing -> False
+    
+    when (shouldGenerateFdep) $ do
+        liftIO $ atomicModifyIORef' globalCompletionState $ \(completed, total) ->
+            if total == 0 then ((completed, totalModules), ()) else ((completed, total), ())
+        
+        if isLastModule then
+            liftIO $ do
+                processModule cliOptions modSummary tcEnv
+                atomicModifyIORef' globalCompletionState $ \(completed, total) ->
+                    ((Set.insert currentModuleName completed, total), ())
+                waitForAllModules totalModules
+                writeIORef globalCompletionState (Set.empty, 0)
+        else
+            liftIO $ (bool P.id (void . forkIO) shouldForkPerFile) $ do
+                processModule cliOptions modSummary tcEnv
+                atomicModifyIORef' globalCompletionState $ \(completed, total) ->
+                    ((Set.insert currentModuleName completed, total), ())
+    
     return tcEnv
+
+waitForAllModules :: Int -> IO ()
+waitForAllModules expectedTotal = do
+    (completed, _) <- readIORef globalCompletionState
+    let completedCount = Set.size completed
+    if completedCount >= expectedTotal
+        then do
+            print $ "All " <> show expectedTotal <> " modules completed!"
+            return ()
+        else do
+            threadDelay 1000000  -- Wait 1000ms
+            waitForAllModules expectedTotal
+
+processModule :: CliOptions -> ModSummary -> TcGblEnv -> IO ()
+processModule cliOptions modSummary tcEnv = do
+    let prefixPath = path cliOptions
+        moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
+        modulePath = prefixPath <> msHsFilePath modSummary
+        wsPath = modulePath <> ".json"
+        pathStr = (Data.List.intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
+    
+    when (shouldLog || Fdep.Types.log cliOptions) $ 
+        print ("generating dependancy for module: " <> moduleName' <> " at path: " <> pathStr)
+    
+    t1 <- getCurrentTime
+    let socketPathToUse = fromMaybe (path cliOptions) fdepSocketPath
+    sendPathPerformAction wsPath socketPathToUse (\sock -> 
+        void $ mapM (loopOverLHsBindLR cliOptions sock Nothing (T.pack wsPath)) (bagToList $ tcg_binds tcEnv))
+    t2 <- getCurrentTime
+    
+    when (shouldLog || Fdep.Types.log cliOptions) $ 
+        print ("generated dependancy for module: " <> moduleName' <> " at path: " <> pathStr <> " total-timetaken: " <> show (diffUTCTime t2 t1))
 
 transformFromNameStableString :: (Maybe Text, Maybe Text, Maybe Text, [Text]) -> Maybe FunctionInfo
 transformFromNameStableString (Just str, Just loc, _type, args) =
