@@ -17,7 +17,6 @@ library
       UnusedFieldChecker.LibraryFilter
       UnusedFieldChecker.UsageExtractor
       UnusedFieldChecker.FieldChecker
-      UnusedFieldChecker.ServantAPI
   build-depends:
       base >=4.7 && <5,
       ghc >=8.8 && <9.11,

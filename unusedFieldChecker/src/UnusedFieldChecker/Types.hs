@@ -7,110 +7,79 @@ module UnusedFieldChecker.Types where
 import Data.Aeson
 import Data.Binary
 import Data.Text (Text)
-import qualified Data.Map as Map
 import Control.DeepSeq
 import GHC.Generics (Generic)
 import Prelude hiding (log)
 
+-- | CLI options for the plugin
 data CliOptions = CliOptions
-    { path :: FilePath
-    , port :: Int
-    , host :: String
-    , log :: Bool
-    , exclusionConfigFile :: FilePath
+    { path :: FilePath              -- ^ Output directory for JSON files
+    , exclusionConfigFile :: FilePath -- ^ Path to exclusion config YAML
+    , failOnUnused :: Bool          -- ^ If True, emit compilation errors for unused fields
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions
     { path = ".juspay/unusedFieldChecker/"
-    , port = 4445
-    , host = "::1"
-    , log = False
     , exclusionConfigFile = ".juspay/UnusedFieldChecker.yaml"
+    , failOnUnused = True
     }
 
+-- | A field definition extracted from a type with FieldChecker instance
 data FieldDefinition = FieldDefinition
-    { fieldDefName :: Text
-    , fieldDefType :: Text
-    , fieldDefTypeName :: Text
-    , fieldDefIsMaybe :: Bool
-    , fieldDefModule :: Text
-    , fieldDefLocation :: Text
-    , fieldDefPackageName :: Text
-    , fieldDefFullyQualifiedType :: Text  -- moduleName.typeName
-    , fieldDefTypeConstructor :: Text     -- Type constructor for matching
-    , fieldDefIsSingleField :: Bool       -- True if this is the only field in the record (GHC optimizes away accessor)
-    , fieldDefHasFieldChecker :: Bool     -- True if type derives FieldChecker
+    { fieldDefName :: Text              -- ^ Field name
+    , fieldDefType :: Text              -- ^ Field type as string
+    , fieldDefTypeName :: Text          -- ^ Parent type name
+    , fieldDefIsMaybe :: Bool           -- ^ True if field type is Maybe
+    , fieldDefModule :: Text            -- ^ Module where field is defined
+    , fieldDefLocation :: Text          -- ^ Source location
+    , fieldDefPackageName :: Text       -- ^ Package name
+    , fieldDefFullyQualifiedType :: Text -- ^ moduleName.typeName
+    , fieldDefTypeConstructor :: Text   -- ^ Type constructor for matching
+    , fieldDefIsSingleField :: Bool     -- ^ True if only field in record
+    , fieldDefHasFieldChecker :: Bool   -- ^ True if type has FieldChecker instance
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
+-- | Type of field usage detected in code
 data UsageType
-    = AccessorFunction     
-    | PatternMatch         
-    | NamedFieldPuns        
-    | RecordWildCards      
-    | FunctionComposition   
-    | LensesOptics         
-    | HasFieldOverloaded   
-    | GenericReflection    
-    | TemplateHaskell       
-    | DerivedInstances      
-    | DataSYB               
-    | RecordDotSyntax       
-    | RecordConstruct       
-    | RecordUpdate   
+    = AccessorFunction     -- ^ Direct accessor function call
+    | PatternMatch         -- ^ Pattern match on record
+    | NamedFieldPuns       -- ^ NamedFieldPuns extension usage
+    | RecordWildCards      -- ^ RecordWildCards ".." syntax
+    | FunctionComposition  -- ^ Function composition with accessor
+    | LensesOptics         -- ^ Lens/optics usage
+    | HasFieldOverloaded   -- ^ HasField typeclass usage
+    | GenericReflection    -- ^ Generic reflection field access
+    | TemplateHaskell      -- ^ Template Haskell (filtered out)
+    | DerivedInstances     -- ^ Derived instances (filtered out)
+    | DataSYB              -- ^ SYB/Data.Data usage (filtered out)
+    | RecordDotSyntax      -- ^ Record dot syntax
+    | RecordConstruct      -- ^ Record construction
+    | RecordUpdate         -- ^ Record update syntax
     deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
+-- | A detected field usage in code
 data FieldUsage = FieldUsage
-    { fieldUsageName :: Text 
-    , fieldUsageType :: UsageType
-    , fieldUsageTypeName :: Text 
-    , fieldUsageModule :: Text
-    , fieldUsageLocation :: Text
-    , fieldUsageTypeConstructor :: Text  -- Type constructor for matching
+    { fieldUsageName :: Text            -- ^ Field name being used
+    , fieldUsageType :: UsageType       -- ^ Type of usage
+    , fieldUsageTypeName :: Text        -- ^ Parent type name (may be empty)
+    , fieldUsageModule :: Text          -- ^ Module where usage occurs
+    , fieldUsageLocation :: Text        -- ^ Source location of usage
+    , fieldUsageTypeConstructor :: Text -- ^ Type constructor for matching
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
-data ModuleFieldInfo = ModuleFieldInfo
-    { moduleFieldDefs :: [FieldDefinition]
-    , moduleFieldUsages :: [FieldUsage]
-    , moduleName :: Text
-    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
-
-data AggregatedFieldInfo = AggregatedFieldInfo
-    { allFieldDefs :: Map.Map (Text, Text) [FieldDefinition]   -- Key: (typeName, fieldName)
-    , allFieldUsages :: Map.Map (Text, Text) [FieldUsage]      -- Key: (typeName, fieldName)
-    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
-
-
-data ValidationResult = ValidationResult
-    { unusedNonMaybeFields :: [FieldDefinition]
-    , unusedMaybeFields :: [FieldDefinition]
-    , usedFields :: [FieldDefinition]
-    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
-
+-- | Configuration for module inclusion/exclusion
 data ExclusionConfig = ExclusionConfig
-    { includeFiles :: Maybe [Text]
+    { includeFiles :: Maybe [Text]   -- ^ If Just, only these modules are checked
+    , excludeFiles :: Maybe [Text]   -- ^ If Just, these modules are excluded
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 emptyExclusionConfig :: ExclusionConfig
 emptyExclusionConfig = ExclusionConfig
     { includeFiles = Nothing
+    , excludeFiles = Nothing
     }
 
-data TypeUsageInModule = TypeUsageInModule
-    { typeName :: Text           -- e.g., "AdyenRefundSuccessResponse"
-    , typeModule :: Text         -- Module where type is defined
-    , usedInModule :: Text       -- Module where type is used
-    , usageLocation :: Text      -- Location where type is used
-    , typeConstructor :: Text    -- Type constructor for matching
-    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
-
-data ServantAPIType = ServantAPIType
-    { apiTypeName :: Text              -- e.g., "AuthRequest"
-    , apiTypeModule :: Text            -- Module where type is defined
-    , apiTypeConstructor :: Text       -- Type constructor for matching
-    , apiEndpoint :: Text              -- e.g., "/v1/authentication"
-    , apiLocation :: Text              -- Source location of the API definition
-    , apiHasFieldChecker :: Bool       -- Whether FieldChecker instance exists (top-level)
-    , apiMissingInstances :: [Text]    -- List of types in the dependency tree missing FieldChecker instances
-    , apiServantCombinator :: Text     -- e.g., "ReqBody '[JSON]", "Post '[JSON]"
-    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
+-- | Type alias for the unused field log stored in JSON
+-- This is a list of FieldDefinition entries that haven't been marked as used yet
+type UnusedFieldLog = [FieldDefinition]

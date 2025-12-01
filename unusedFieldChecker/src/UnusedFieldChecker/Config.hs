@@ -47,27 +47,39 @@ loadExclusionConfig configPath = do
         case includeFiles of
             Just includes -> putStrLn $ "[CONFIG] Include patterns: " ++ show includes
             Nothing -> putStrLn $ "[CONFIG] No module filters - checking all modules"
+        case excludeFiles of
+            Just excludes -> putStrLn $ "[CONFIG] Exclude patterns: " ++ show excludes
+            Nothing -> return ()
 
+-- | Check if a module should be excluded from processing.
+-- A module is excluded if:
+-- 1. includeFiles is set and module doesn't match any pattern
+-- 2. excludeFiles is set and module matches any pattern
 isModuleExcluded :: ExclusionConfig -> Text -> Bool
 isModuleExcluded ExclusionConfig{..} modName =
-    case includeFiles of
-        Just includes -> not (any (`matchesPattern` modName) includes)
-        Nothing -> False
+    let notIncluded = case includeFiles of
+            Just includes -> not (any (`matchesPattern` modName) includes)
+            Nothing -> False
+        explicitlyExcluded = case excludeFiles of
+            Just excludes -> any (`matchesPattern` modName) excludes
+            Nothing -> False
+    in notIncluded || explicitlyExcluded
   where
     matchesPattern :: Text -> Text -> Bool
-    matchesPattern pattern modName
+    matchesPattern pattern moduleName
         | pattern == "*" = True
         | T.isSuffixOf ".*" pattern =
             let prefix = T.dropEnd 2 pattern
-            in prefix `T.isPrefixOf` modName
+            in prefix `T.isPrefixOf` moduleName
         | T.isPrefixOf "*." pattern =
             let suffix = T.drop 1 pattern
-            in suffix `T.isSuffixOf` modName
-        | otherwise = pattern == modName
+            in suffix `T.isSuffixOf` moduleName
+        | otherwise = pattern == moduleName
 
 validateConfigurationStrictly :: ExclusionConfig -> IO (Either Text ExclusionConfig)
 validateConfigurationStrictly config@ExclusionConfig{..} = do
-    let errors = validateModulePatterns includeFiles "includeFiles"
+    let errors = validateModulePatterns includeFiles "includeFiles" ++
+                 validateModulePatterns excludeFiles "excludeFiles"
 
     if null errors
         then return $ Right config
@@ -99,9 +111,13 @@ applyConfigurationRules config fieldDefs = do
   where
     isFromAllowedModule :: ExclusionConfig -> FieldDefinition -> Bool
     isFromAllowedModule ExclusionConfig{..} FieldDefinition{..} =
-        case includeFiles of
-            Just includes -> any (`strictMatchesPattern` fieldDefModule) includes
-            Nothing -> True
+        let notIncluded = case includeFiles of
+                Just includes -> not (any (`strictMatchesPattern` fieldDefModule) includes)
+                Nothing -> False
+            explicitlyExcluded = case excludeFiles of
+                Just excludes -> any (`strictMatchesPattern` fieldDefModule) excludes
+                Nothing -> False
+        in not (notIncluded || explicitlyExcluded)
 
 strictMatchesPattern :: Text -> Text -> Bool
 strictMatchesPattern pattern modName

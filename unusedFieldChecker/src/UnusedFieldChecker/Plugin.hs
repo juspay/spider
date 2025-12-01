@@ -5,7 +5,10 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE LambdaCase #-}
 
-module UnusedFieldChecker.Plugin (plugin) where
+module UnusedFieldChecker.Plugin 
+    ( plugin
+    , loadAllUnusedFields  -- Exported for external validation scripts
+    ) where
 
 import Prelude hiding (log)
 
@@ -17,26 +20,26 @@ import qualified GHC.Core.TyCo.Rep as TyCo
 import GHC.Core.Type
 import GHC.Data.Bag
 import GHC.Data.FastString
-import GHC.Driver.Env (HscEnv)
+import GHC.Driver.Env (hsc_mod_graph)
 import GHC.Driver.Plugins
 import GHC.Driver.Session
 import GHC.Hs
 import GHC.Tc.Types
-import GHC.Tc.Utils.Monad (addMessages)
-import GHC.Types.Error (Messages, mkMessages)
+import GHC.Tc.Utils.Monad (getTopEnv, addErr)
+import GHC.Tc.Utils.TcType (tcSplitTyConApp_maybe)
 import GHC.Types.FieldLabel
+import GHC.Types.Id (idType)
 import GHC.Types.Name
 import GHC.Types.SrcLoc
+import GHC.Unit.Module.Graph (mgModSummaries)
 import GHC.Unit.Module.ModSummary
 import GHC.Unit.Types (moduleName, moduleUnit)
-import GHC.Utils.Error (mkMsgEnvelope)
-import GHC.Utils.Outputable (showSDocUnsafe, ppr, text, neverQualify)
+import GHC.Utils.Outputable (showSDocUnsafe, ppr, text)
 #else
 import Bag
 import CoreMonad
 import DataCon
 import DynFlags
-import ErrUtils (mkErrMsg)
 import FastString
 import FieldLabel
 import GHC
@@ -54,170 +57,197 @@ import TyCoRep
 import Type
 #endif
 
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM, when)
 import Control.Monad.IO.Class (liftIO)
-import Data.Aeson (decode, encode)
+import Data.Aeson (decode)
 import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isLower)
-import Data.List (foldl', nub, isPrefixOf, isSuffixOf)
-import qualified Data.Map as Map
-import Data.Maybe (catMaybes, fromMaybe)
-import Data.Text (Text, pack, unpack)
+import Data.List (foldl', isSuffixOf)
+import Data.Text (Text, pack)
 import qualified Data.Text as T
-import Data.Text.Encoding (decodeUtf8, encodeUtf8)
-import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, getModificationTime, removeFile, renameFile)
-import System.FilePath ((</>), takeDirectory, takeExtension, takeFileName)
-import System.IO (Handle, hClose, openFile, IOMode(..), hPutStrLn, hFlush)
-import System.IO.Error (catchIOError, isAlreadyExistsError, isDoesNotExistError, ioError)
-import Control.Exception (catch, SomeException, try)
-import Data.Time (getCurrentTime, UTCTime, diffUTCTime)
+import Data.Text.Encoding (encodeUtf8)
+import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, removeFile, renameFile)
+import System.FilePath ((</>), takeDirectory, takeExtension)
+import System.IO (Handle, hClose, openFile, IOMode(..))
+import System.IO.Error (catchIOError, isDoesNotExistError, ioError)
+import Control.Exception (SomeException, try)
 import UnusedFieldChecker.Types
 import UnusedFieldChecker.Validator
 import UnusedFieldChecker.Config
 import UnusedFieldChecker.DefinitionExtractor
 import UnusedFieldChecker.UsageExtractor
-import UnusedFieldChecker.ServantAPI
-
-#if __GLASGOW_HASKELL__ < 900
-import TcRnMonad (addErrs)
-#endif
 
 plugin :: Plugin
 plugin = defaultPlugin
-    { typeCheckResultAction = collectFieldDefinitionsOnly
+    { typeCheckResultAction = processModuleFields
     , pluginRecompile = \_ -> return NoForceRecompile
-#if __GLASGOW_HASKELL__ >= 900
-    , driverPlugin = runCrossModuleValidation
-#endif
     }
 
-collectFieldDefinitionsOnly :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
-collectFieldDefinitionsOnly opts modSummary tcEnv = do
+-- | Main plugin action that runs for each module during type checking.
+-- Implements log-and-remove pattern:
+-- 1. Extract field definitions from types with FieldChecker instances
+-- 2. Add non-Maybe fields to the unused field log
+-- 3. Extract field usages from the current module
+-- 4. Remove used fields from the log
+-- 5. Write updated log to JSON file
+-- 6. On last module: emit compilation errors for unused fields
+processModuleFields :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
+processModuleFields opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
+        currentModuleName = moduleNameString $ GHC.moduleName $ ms_mod modSummary
 #if __GLASGOW_HASKELL__ >= 900
         currentPackage = GHC.Unit.Types.moduleUnit $ ms_mod modSummary
 #else
         currentPackage = moduleUnitId $ ms_mod modSummary
 #endif
 
+    -- Detect if this is the last module in compilation order
+#if __GLASGOW_HASKELL__ >= 900
+    isLastModule <- detectLastModule modSummary
+#else
+    let isLastModule = False
+#endif
+
     liftIO $ cleanupOldBuildIfNeeded (path cliOptions)
     exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
 
+    -- Check if module should be processed based on exclusion config
     if isModuleExcluded exclusionConfig modName
-        then return tcEnv
+        then do
+            liftIO $ putStrLn $ "[Plugin] Module excluded: " ++ T.unpack modName
+            -- Even if excluded, check for last module validation
+            when isLastModule $ do
+                liftIO $ putStrLn $ "[Plugin] Last module (excluded) - running validation"
+                runFinalValidation cliOptions
+            return tcEnv
         else do
+            -- Step 1: Extract field definitions from types with FieldChecker
             fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
+            
+            -- Step 2: Extract field usages from this module
             fieldUsages <- extractFieldUsages modName tcEnv
-            apiTypes <- extractServantAPITypes modName tcEnv
 
             liftIO $ putStrLn $ "[Plugin] Module: " ++ T.unpack modName
             liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldDefs) ++ " field definitions"
             liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
-            liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length apiTypes) ++ " Servant API types"
-
-            apiValidationErrors <- validateAPITypesHaveFieldChecker apiTypes
-            when (not $ null apiValidationErrors) $ do
-                forM_ apiValidationErrors $ \(typeName, endpoint, srcSpan, moduleInfo, nestedMissing) -> do
-                    let errMsg = if null nestedMissing
-                                 then formatMissingFieldCheckerError typeName endpoint moduleInfo
-                                 else formatRecursiveMissingError typeName endpoint moduleInfo nestedMissing
-#if __GLASGOW_HASKELL__ >= 900
-                    let msg = mkMsgEnvelope srcSpan neverQualify (text $ T.unpack errMsg)
-                    addMessages (mkMessages $ unitBag msg)
-#else
-                    let msg = mkErrMsg srcSpan neverQualify (text $ T.unpack errMsg)
-                    addErrs [(srcSpan, text $ T.unpack errMsg)]
-#endif
-                return ()
-
-            let moduleInfo = ModuleFieldInfo
-                    { moduleFieldDefs = fieldDefs
-                    , moduleFieldUsages = fieldUsages
-                    , moduleName = modName
-                    }
 
             liftIO $ do
                 let outputPath = path cliOptions
                     gatewayName = extractGatewayName modName
-                    gatewayFile = T.unpack gatewayName <> ".fieldInfo.json"
+                    gatewayFile = T.unpack gatewayName <> ".unusedFields.json"
                     fullPath = outputPath </> gatewayFile
 
                 createDirectoryIfMissing True outputPath
-                existingData <- loadGatewayFieldInfo fullPath
-                let mergedData = mergeGatewayFieldInfo existingData moduleInfo
-                atomicWriteFile fullPath (encodePretty mergedData)
+                
+                -- Step 3: Load existing unused field log
+                existingLog <- loadUnusedFieldLog fullPath
+                
+                -- Step 4: Add new non-Maybe fields to log (replaces existing entries for same type/field)
+                let logWithNewFields = addFieldsToLog fieldDefs existingLog
+                
+                -- Step 5: Remove fields that are used in this module
+                let updatedLog = removeUsedFieldsFromLog logWithNewFields fieldUsages
+                
+                putStrLn $ "[Plugin]   - Log size: " ++ show (length existingLog) ++ 
+                           " -> " ++ show (length logWithNewFields) ++
+                           " -> " ++ show (length updatedLog)
+                
+                -- Step 6: Write updated log
+                atomicWriteFile fullPath (encodePretty updatedLog)
+
+            -- Step 7: If this is the last module, run final validation
+            when isLastModule $ do
+                liftIO $ putStrLn $ "[Plugin] Last module - running final validation"
+                runFinalValidation cliOptions
 
             return tcEnv
 
-loadGatewayFieldInfo :: FilePath -> IO [ModuleFieldInfo]
-loadGatewayFieldInfo filePath = do
+#if __GLASGOW_HASKELL__ >= 900
+-- | Detect if the current module is the last in the topologically sorted compilation order
+detectLastModule :: ModSummary -> TcM Bool
+detectLastModule modSummary = do
+    hscEnv <- getTopEnv
+    let moduleGraph = hsc_mod_graph hscEnv
+        -- Get all ModSummary from the module graph
+        allModSummaries = mgModSummaries moduleGraph
+        sortedModules = map (moduleNameString . ms_mod_name) allModSummaries
+        currentModuleName = moduleNameString $ ms_mod_name modSummary
+    return $ lastMaybe sortedModules == Just currentModuleName
+  where
+    lastMaybe :: [a] -> Maybe a
+    lastMaybe [] = Nothing
+    lastMaybe xs = Just (last xs)
+
+-- | Run final validation after all modules are compiled
+-- Loads all unused field logs and emits compilation errors if any remain
+runFinalValidation :: CliOptions -> TcM ()
+runFinalValidation cliOptions = do
+    let outputPath = path cliOptions
+        buildMarker = outputPath </> ".current-build"
+    
+    unusedFields <- liftIO $ loadAllUnusedFields outputPath
+    
+    liftIO $ putStrLn $ "[Plugin] Final validation: " ++ show (length unusedFields) ++ " unused fields remaining"
+    
+    -- Emit errors for each unused field
+    when (failOnUnused cliOptions && not (null unusedFields)) $ do
+        mapM_ emitUnusedFieldError unusedFields
+    
+    -- Cleanup: remove build marker so next build starts fresh
+    liftIO $ safeRemoveFile buildMarker
+
+-- | Emit a GHC compilation error for an unused field
+emitUnusedFieldError :: FieldDefinition -> TcM ()
+emitUnusedFieldError fieldDef = do
+    let errorMsg = formatUnusedFieldError fieldDef
+    -- Use addErr to emit a simple error message
+    addErr (text (T.unpack errorMsg))
+#else
+-- | For GHC < 9.0, skip last module detection
+runFinalValidation :: CliOptions -> TcM ()
+runFinalValidation _ = return ()
+#endif
+
+-- | Load the unused field log from a JSON file
+loadUnusedFieldLog :: FilePath -> IO UnusedFieldLog
+loadUnusedFieldLog filePath = do
     exists <- doesFileExist filePath
     if not exists
         then return []
         else do
             content <- BS.readFile filePath
             case decode (BL.fromStrict content) of
-                Just infos -> return infos
-                Nothing -> return []
+                Just entries -> return entries
+                Nothing -> do
+                    putStrLn $ "[Plugin] Warning: Failed to parse " ++ filePath ++ ", starting fresh"
+                    return []
 
-mergeGatewayFieldInfo :: [ModuleFieldInfo] -> ModuleFieldInfo -> [ModuleFieldInfo]
-mergeGatewayFieldInfo existing new =
-    let filtered = filter (\m -> UnusedFieldChecker.Types.moduleName m /= UnusedFieldChecker.Types.moduleName new) existing
-    in new : filtered
-
-#if __GLASGOW_HASKELL__ >= 900
--- | Driver plugin hook that runs after all modules are compiled
--- This is where we perform cross-module validation for unused fields
-runCrossModuleValidation :: [CommandLineOption] -> HscEnv -> IO HscEnv
-runCrossModuleValidation opts hscEnv = do
-    let cliOptions = parseCliOptions opts
-    
-    putStrLn "[CrossModuleValidation] Starting cross-module validation..."
-    
-    -- Load all field info from JSON files
-    allModuleInfos <- loadAllFieldInfo (path cliOptions)
-    
-    if null allModuleInfos
-        then do
-            putStrLn "[CrossModuleValidation] No field definitions found, skipping validation"
-            return hscEnv
+-- | Load all unused fields from all gateway JSON files.
+-- This is exported for use by external validation scripts that run after compilation.
+loadAllUnusedFields :: FilePath -> IO [FieldDefinition]
+loadAllUnusedFields outputPath = do
+    exists <- doesDirectoryExist outputPath
+    if not exists
+        then return []
         else do
-            let aggregated = aggregateFieldInfo allModuleInfos
-                totalDefs = sum $ map (length . moduleFieldDefs) allModuleInfos
-                totalUsages = sum $ map (length . moduleFieldUsages) allModuleInfos
-            
-            putStrLn $ "[CrossModuleValidation] Loaded " ++ show (length allModuleInfos) ++ " modules"
-            putStrLn $ "[CrossModuleValidation] Total field definitions: " ++ show totalDefs
-            putStrLn $ "[CrossModuleValidation] Total field usages: " ++ show totalUsages
-            
-            exclusionConfig <- loadExclusionConfig (exclusionConfigFile cliOptions)
-            
-            validationResult <- case includeFiles exclusionConfig of
-                Just _ -> validateFieldsForTypesUsedInConfiguredModules exclusionConfig aggregated
-                Nothing -> return $ validateFieldsWithExclusions exclusionConfig aggregated
-            
-            let unusedFields = unusedNonMaybeFields validationResult
-                errors = reportUnusedFields unusedFields
-            
-            putStrLn $ "[CrossModuleValidation] Found " ++ show (length unusedFields) ++ " unused non-Maybe fields"
-            putStrLn $ "[CrossModuleValidation] Generated " ++ show (length errors) ++ " error messages"
-            
-            if not $ null errors
-                then do
-                    -- Print all errors
-                    forM_ errors $ \(locStr, msg, fieldName) -> do
-                        putStrLn $ "[CrossModuleValidation] ERROR: " ++ T.unpack msg
-                        putStrLn $ "  Location: " ++ T.unpack locStr
-                        putStrLn $ "  Field: " ++ T.unpack fieldName
-                    -- Fail the build by throwing an error
-                    error $ "[UnusedFieldChecker] Build failed: Found " ++ show (length errors) ++ " unused non-Maybe fields. See errors above."
-                else do
-                    putStrLn "[CrossModuleValidation] Validation passed - no unused non-Maybe fields found"
-                    return hscEnv
-#endif
+            allJsonFiles <- findAllUnusedFieldJsonFiles outputPath
+            allLogs <- mapM loadUnusedFieldLog allJsonFiles
+            return $ concat allLogs
+
+-- | Find all .unusedFields.json files in the output directory
+findAllUnusedFieldJsonFiles :: FilePath -> IO [FilePath]
+findAllUnusedFieldJsonFiles dir = do
+    dirExists <- doesDirectoryExist dir
+    if not dirExists
+        then return []
+        else do
+            contents <- listDirectory dir
+            let jsonFiles = filter (isSuffixOf ".unusedFields.json") contents
+                fullPaths = map (dir </>) jsonFiles
+            return fullPaths
 
 safeRemoveFile :: FilePath -> IO ()
 safeRemoveFile path = catchIOError (removeFile path) $ \e ->
@@ -309,65 +339,10 @@ extractGatewayName modName =
     findGatewayIndex _ _ = Nothing
 
 
-extractFieldUsagesWithRegistry :: Text -> TcGblEnv -> Map.Map Text [FieldDefinition] -> TcM [FieldUsage]
-extractFieldUsagesWithRegistry modName tcEnv fieldRegistry = do
-    let binds = bagToList $ tcg_binds tcEnv
-    allUsages <- concat <$> mapM (extractUsagesFromBindWithRegistry modName fieldRegistry) binds
-    return $ filter (isFieldUsage fieldRegistry) allUsages
-  where
-    isFieldUsage :: Map.Map Text [FieldDefinition] -> FieldUsage -> Bool
-    isFieldUsage registry usage =
-        case fieldUsageType usage of
-            RecordConstruct -> True
-            RecordUpdate -> True
-            PatternMatch -> True
-            NamedFieldPuns -> True
-            RecordWildCards -> True
-            RecordDotSyntax -> True
-            HasFieldOverloaded -> True  -- These are explicitly field accesses
-            GenericReflection -> True   -- These are explicitly field accesses
-            AccessorFunction -> fieldUsageName usage `Map.member` registry
-            FunctionComposition -> fieldUsageName usage `Map.member` registry
-            LensesOptics -> fieldUsageName usage `Map.member` registry
-            TemplateHaskell -> False    -- TH is not field-specific
-            DerivedInstances -> False   -- Derived instances are not field-specific
-            DataSYB -> False            -- SYB is not field-specific
-
 extractFieldUsages :: Text -> TcGblEnv -> TcM [FieldUsage]
 extractFieldUsages modName tcEnv = do
     let binds = bagToList $ tcg_binds tcEnv
     concat <$> mapM (extractUsagesFromBind modName) binds
-
-extractUsagesFromBindWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> LHsBindLR GhcTc GhcTc -> TcM [FieldUsage]
-extractUsagesFromBindWithRegistry modName fieldRegistry lbind@(L loc bind) = do
-    case bind of
-        FunBind{fun_matches = matches} ->
-            extractUsagesFromMatchGroupWithRegistry modName fieldRegistry matches
-        AbsBinds{abs_binds = binds} ->
-            concat <$> mapM (extractUsagesFromBindWithRegistry modName fieldRegistry) (bagToList binds)
-        _ -> return []
-
-extractUsagesFromMatchGroupWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> MatchGroup GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
-#if __GLASGOW_HASKELL__ >= 900
-extractUsagesFromMatchGroupWithRegistry modName fieldRegistry (MG _ (L _ matches) _) =
-#else
-extractUsagesFromMatchGroupWithRegistry modName fieldRegistry (MG _ (L _ matches) _ _) =
-#endif
-    concat <$> mapM (extractUsagesFromMatchWithRegistry modName fieldRegistry) matches
-
-extractUsagesFromMatchWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> LMatch GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
-extractUsagesFromMatchWithRegistry modName fieldRegistry (L _ match) = do
-    patUsages <- concat <$> mapM (extractUsagesFromPat modName) (m_pats match)
-    exprUsages <- extractUsagesFromGRHSsWithRegistry modName fieldRegistry (m_grhss match)
-    return $ patUsages ++ exprUsages
-
-extractUsagesFromGRHSsWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> GRHSs GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
-extractUsagesFromGRHSsWithRegistry modName fieldRegistry (GRHSs _ grhss _) =
-    concat <$> mapM (extractUsagesFromGRHSWithRegistry modName fieldRegistry) grhss
-
-extractUsagesFromGRHSWithRegistry :: Text -> Map.Map Text [FieldDefinition] -> LGRHS GhcTc (LHsExpr GhcTc) -> TcM [FieldUsage]
-extractUsagesFromGRHSWithRegistry modName fieldRegistry (L _ (GRHS _ _ body)) =
-    extractUsagesFromExpr modName body
 
 extractUsagesFromBind :: Text -> LHsBindLR GhcTc GhcTc -> TcM [FieldUsage]
 extractUsagesFromBind modName lbind@(L _ bind) = do
@@ -474,6 +449,33 @@ extractTypeFromExpr lexpr = case unLoc lexpr of
     HsVar _ (L _ varId) -> pack $ getOccString varId
     _ -> ""
 
+#if __GLASGOW_HASKELL__ >= 900
+-- | Extract the type constructor from the type of an expression.
+-- This is used to get the type constructor for accessor function usages.
+-- For example, if we have `fieldName record`, we want to extract the type of `record`.
+extractTypeConstructorFromExpr :: LHsExpr GhcTc -> Text
+extractTypeConstructorFromExpr lexpr = case unLoc lexpr of
+    HsVar _ (L _ varId) ->
+        let varType = idType varId
+        in extractTypeConstructorFromType varType
+    HsApp _ _ arg -> extractTypeConstructorFromExpr arg
+    HsPar _ inner -> extractTypeConstructorFromExpr inner
+    _ -> ""
+
+-- | Extract type constructor name from a Type
+extractTypeConstructorFromType :: Type -> Text
+extractTypeConstructorFromType ty =
+    case tcSplitTyConApp_maybe ty of
+        Just (tyCon, _) -> pack $ nameStableString $ tyConName tyCon
+        Nothing -> ""
+#else
+extractTypeConstructorFromExpr :: LHsExpr GhcTc -> Text
+extractTypeConstructorFromExpr _ = ""
+
+extractTypeConstructorFromType :: Type -> Text
+extractTypeConstructorFromType _ = ""
+#endif
+
 extractUsagesFromExpr :: Text -> LHsExpr GhcTc -> TcM [FieldUsage]
 extractUsagesFromExpr modName lexpr =
     let loc = getLoc lexpr
@@ -488,30 +490,32 @@ extractUsagesFromExpr modName lexpr =
         extractUsagesFromRecordUpdate modName loc typeCon fields
     
 #if __GLASGOW_HASKELL__ >= 900
-    HsGetField _ _ (L _ (HsFieldLabel _ (L _ field))) -> do
+    HsGetField _ baseExpr (L _ (HsFieldLabel _ (L _ field))) -> do
         let fieldName = pack $ unpackFS field
+            typeCon = extractTypeConstructorFromExpr baseExpr
         return [FieldUsage
             { fieldUsageName = fieldName
             , fieldUsageType = RecordDotSyntax
-            , fieldUsageTypeName = ""
+            , fieldUsageTypeName = typeCon
             , fieldUsageModule = modName
             , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-            , fieldUsageTypeConstructor = ""
+            , fieldUsageTypeConstructor = typeCon
             }]
 #endif
     
     HsApp _ e1 e2 -> do
-        let (fieldAccessUsage, _) = case unLoc e1 of
+        let typeCon = extractTypeConstructorFromExpr e2
+            (fieldAccessUsage, _) = case unLoc e1 of
                 HsVar _ (L _ varId) -> 
                     let varName' = pack $ getOccString varId
                     in if not (T.null varName') && isLower (T.head varName')
                         then ([FieldUsage
                             { fieldUsageName = varName'
                             , fieldUsageType = AccessorFunction
-                            , fieldUsageTypeName = ""
+                            , fieldUsageTypeName = typeCon
                             , fieldUsageModule = modName
                             , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-                            , fieldUsageTypeConstructor = ""
+                            , fieldUsageTypeConstructor = typeCon
                             }], AccessorFunction)
                         else ([], AccessorFunction)
                 
@@ -525,17 +529,18 @@ extractUsagesFromExpr modName lexpr =
                                     then ([FieldUsage
                                         { fieldUsageName = fieldName
                                         , fieldUsageType = HasFieldOverloaded
-                                        , fieldUsageTypeName = ""
+                                        , fieldUsageTypeName = typeCon
                                         , fieldUsageModule = modName
                                         , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-                                        , fieldUsageTypeConstructor = ""
+                                        , fieldUsageTypeConstructor = typeCon
                                         }], HasFieldOverloaded)
                                     else ([], AccessorFunction)
                             _ -> ([], AccessorFunction)
                         else ([], AccessorFunction)
                 
-                OpApp _ _ (L _ (HsVar _ (L _ opId))) _ ->
+                OpApp _ lensTarget (L _ (HsVar _ (L _ opId))) _ ->
                     let opName = pack $ getOccString opId
+                        lensTargetTypeCon = extractTypeConstructorFromExpr lensTarget
                     in if opName == "^."
                         then case unLoc e2 of
                             HsVar _ (L _ lensId) ->
@@ -543,10 +548,10 @@ extractUsagesFromExpr modName lexpr =
                                 in ([FieldUsage
                                     { fieldUsageName = lensName
                                     , fieldUsageType = LensesOptics
-                                    , fieldUsageTypeName = ""
+                                    , fieldUsageTypeName = lensTargetTypeCon
                                     , fieldUsageModule = modName
                                     , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-                                    , fieldUsageTypeConstructor = ""
+                                    , fieldUsageTypeConstructor = lensTargetTypeCon
                                     }], LensesOptics)
                             
                             HsAppType _ (L _ (HsVar _ (L _ fieldId))) _ ->
@@ -557,10 +562,10 @@ extractUsagesFromExpr modName lexpr =
                                             then ([FieldUsage
                                                 { fieldUsageName = fieldName
                                                 , fieldUsageType = GenericReflection
-                                                , fieldUsageTypeName = ""
+                                                , fieldUsageTypeName = lensTargetTypeCon
                                                 , fieldUsageModule = modName
                                                 , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-                                                , fieldUsageTypeConstructor = ""
+                                                , fieldUsageTypeConstructor = lensTargetTypeCon
                                                 }], GenericReflection)
                                             else ([], LensesOptics)
                                     else ([], LensesOptics)
@@ -581,7 +586,9 @@ extractUsagesFromExpr modName lexpr =
         let opName = pack $ getOccString opId
         opUsages <- case opName of
             "^." -> do
-                lensUsages <- extractLensUsage modName loc e2
+                -- e1 ^. e2  => e1 is the record, e2 is the lens
+                let targetTypeCon = extractTypeConstructorFromExpr e1
+                lensUsages <- extractLensUsageWithType modName loc targetTypeCon e2
                 return lensUsages
             
             "." -> do
@@ -589,7 +596,8 @@ extractUsagesFromExpr modName lexpr =
                 return compUsages
             
             ".~" -> do
-                lensUsages <- extractLensUsage modName loc e1
+                -- lens .~ value => we need the record type from context (harder to get)
+                lensUsages <- extractLensUsageWithType modName loc "" e1
                 return lensUsages
             
             "&" -> do
@@ -731,27 +739,6 @@ extractTyCons tcEnv =
         not (isPromotedDataCon tc) &&
         not (isTcTyCon tc)
 
-loadAllFieldInfo :: FilePath -> IO [ModuleFieldInfo]
-loadAllFieldInfo outputPath = do
-    exists <- doesDirectoryExist outputPath
-    if not exists
-        then return []
-        else do
-            allJsonFiles <- findAllJsonFiles outputPath
-            allModuleLists <- mapM loadGatewayFieldInfo allJsonFiles
-            return $ concat allModuleLists
-
-findAllJsonFiles :: FilePath -> IO [FilePath]
-findAllJsonFiles dir = do
-    dirExists <- doesDirectoryExist dir
-    if not dirExists
-        then return []
-        else do
-            contents <- listDirectory dir
-            let jsonFiles = filter (\f -> takeExtension f == ".json" && ".fieldInfo.json" `isSuffixOf` f) contents
-                fullPaths = map (dir </>) jsonFiles
-            return fullPaths
-
 #if __GLASGOW_HASKELL__ >= 900
 extractFieldNameFromTypeApp :: LHsExpr GhcTc -> Text
 extractFieldNameFromTypeApp lexpr = 
@@ -767,56 +754,30 @@ extractFieldNameFromTypeApp _ = ""
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
+-- | FunctionComposition usages are disabled because we cannot reliably
+-- determine the type constructor for composed functions like (foo . bar . baz).
+-- Fields used via composition are typically also used elsewhere.
 extractFunctionComposition :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> TcM [FieldUsage]
-extractFunctionComposition modName loc lexpr = case unLoc lexpr of
-    OpApp _ e1 (L _ (HsVar _ (L _ opId))) e2 -> do
-        let opName = pack $ getOccString opId
-        if opName == "."
-            then do
-                let fields = extractComposedFields e1 ++ extractComposedFields e2
-                return $ map (\fieldName -> FieldUsage
-                    { fieldUsageName = fieldName
-                    , fieldUsageType = FunctionComposition
-                    , fieldUsageTypeName = ""
-                    , fieldUsageModule = modName
-                    , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-                    , fieldUsageTypeConstructor = ""
-                    }) fields
-            else return []
-    _ -> return []
-  where
-    extractComposedFields :: LHsExpr GhcTc -> [Text]
-    extractComposedFields (L _ expr) = case expr of
-        HsVar _ (L _ varId) ->
-            let varName = pack $ getOccString varId
-            in if not (T.null varName) && isLower (T.head varName)
-                then [varName]
-                else []
-        OpApp _ e1 (L _ (HsVar _ (L _ opId))) e2 ->
-            let opName = pack $ getOccString opId
-            in if opName == "."
-                then extractComposedFields e1 ++ extractComposedFields e2
-                else []
-        HsPar _ e -> extractComposedFields e
-        _ -> []
+extractFunctionComposition _ _ _ = return []
 #else
 extractFunctionComposition :: Text -> SrcSpan -> LHsExpr GhcTc -> TcM [FieldUsage]
 extractFunctionComposition modName loc lexpr = return []
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
-extractLensUsage :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> TcM [FieldUsage]
-extractLensUsage modName loc lexpr = case unLoc lexpr of
+-- | Extract lens usage with a known type constructor
+extractLensUsageWithType :: Text -> SrcSpanAnnA -> Text -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractLensUsageWithType modName loc typeCon lexpr = case unLoc lexpr of
     HsVar _ (L _ varId) ->
         let varName = pack $ getOccString varId
         in if not (T.null varName) && isLower (T.head varName)
             then return [FieldUsage
                 { fieldUsageName = varName
                 , fieldUsageType = LensesOptics
-                , fieldUsageTypeName = ""
+                , fieldUsageTypeName = typeCon
                 , fieldUsageModule = modName
                 , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-                , fieldUsageTypeConstructor = ""
+                , fieldUsageTypeConstructor = typeCon
                 }]
             else return []
     
@@ -824,8 +785,10 @@ extractLensUsage modName loc lexpr = case unLoc lexpr of
         let opName = pack $ getOccString opId
         if opName == "."
             then do
-                u1 <- extractLensUsage modName loc e1
-                u2 <- extractLensUsage modName loc e2
+                -- For composed lenses like `foo . bar`, we can't easily determine
+                -- intermediate types, so we use the provided typeCon for the first lens
+                u1 <- extractLensUsageWithType modName loc typeCon e1
+                u2 <- extractLensUsageWithType modName loc "" e2
                 return $ u1 ++ u2
             else return []
     
@@ -837,49 +800,32 @@ extractLensUsage modName loc lexpr = case unLoc lexpr of
                     then return [FieldUsage
                         { fieldUsageName = fieldName
                         , fieldUsageType = GenericReflection
-                        , fieldUsageTypeName = ""
+                        , fieldUsageTypeName = typeCon
                         , fieldUsageModule = modName
                         , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-                        , fieldUsageTypeConstructor = ""
+                        , fieldUsageTypeConstructor = typeCon
                         }]
                     else return []
             else return []
     
     _ -> return []
+
+-- | Legacy function for backward compatibility (used internally)
+extractLensUsage :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractLensUsage modName loc lexpr = extractLensUsageWithType modName loc "" lexpr
 #else
+extractLensUsageWithType :: Text -> SrcSpan -> Text -> LHsExpr GhcTc -> TcM [FieldUsage]
+extractLensUsageWithType modName loc typeCon lexpr = return []
+
 extractLensUsage :: Text -> SrcSpan -> LHsExpr GhcTc -> TcM [FieldUsage]
 extractLensUsage modName loc lexpr = return []
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
+-- | Composition fields extraction is disabled because we cannot reliably
+-- determine the type constructor for composed functions.
 extractCompositionFields :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
-extractCompositionFields modName loc e1 e2 = do
-    let fields1 = getFieldAccessors e1
-        fields2 = getFieldAccessors e2
-        allFields = fields1 ++ fields2
-    return $ map (\fieldName -> FieldUsage
-        { fieldUsageName = fieldName
-        , fieldUsageType = FunctionComposition
-        , fieldUsageTypeName = ""
-        , fieldUsageModule = modName
-        , fieldUsageLocation = pack $ showSDocUnsafe $ ppr loc
-        , fieldUsageTypeConstructor = ""
-        }) allFields
-  where
-    getFieldAccessors :: LHsExpr GhcTc -> [Text]
-    getFieldAccessors (L _ expr) = case expr of
-        HsVar _ (L _ varId) ->
-            let varName = pack $ getOccString varId
-            in if not (T.null varName) && isLower (T.head varName)
-                then [varName]
-                else []
-        OpApp _ e1' (L _ (HsVar _ (L _ opId))) e2' ->
-            let opName = pack $ getOccString opId
-            in if opName == "."
-                then getFieldAccessors e1' ++ getFieldAccessors e2'
-                else []
-        HsPar _ e -> getFieldAccessors e
-        _ -> []
+extractCompositionFields _ _ _ _ = return []
 #else
 extractCompositionFields :: Text -> SrcSpan -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
 extractCompositionFields modName loc e1 e2 = return []
