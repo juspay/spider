@@ -75,6 +75,7 @@ import Data.Text.Encoding (encodeUtf8)
 import Text.Read (readMaybe)
 import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, removeFile, renameFile)
 import System.FilePath ((</>), takeDirectory, takeExtension)
+import System.FileLock (withFileLock, SharedExclusive(Exclusive))
 import System.IO (Handle, hClose, openFile, IOMode(..))
 import System.IO.Error (catchIOError, isDoesNotExistError, ioError)
 import System.IO.Unsafe (unsafePerformIO)
@@ -83,16 +84,6 @@ import UnusedFieldChecker.Types
 import UnusedFieldChecker.Validator
 import UnusedFieldChecker.DefinitionExtractor
 import UnusedFieldChecker.UsageExtractor
-
--- | Type alias for gateway-keyed field logs
-type GatewayFieldLogs = Map.Map Text UnusedFieldLog
-
--- | Global MVar holding the unused field logs per gateway.
--- This provides thread-safe state for parallel compilation.
--- Key: gateway name, Value: list of unused field definitions
-unusedFieldLogMVar :: MVar GatewayFieldLogs
-{-# NOINLINE unusedFieldLogMVar #-}
-unusedFieldLogMVar = unsafePerformIO (newMVar Map.empty)
 
 -- | Global MVar tracking pending sink modules per gateway.
 -- Key: gateway name, Value: set of sink module names that haven't completed yet
@@ -139,22 +130,21 @@ processModuleFields opts modSummary tcEnv = do
     liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldDefs) ++ " field definitions"
     liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
 
-    -- Step 3-6: Update in-memory state atomically using MVar
-    liftIO $ modifyMVar_ unusedFieldLogMVar $ \gatewayLogs -> do
-        let existingLog = Map.findWithDefault [] gatewayName gatewayLogs
+    -- Update field log atomically (parallel-safe via file lock)
+    let logFile = getFieldLogPath (path cliOptions) gatewayName
+    liftIO $ withFieldLogLock logFile $ \log -> do
+        -- Update this module's definitions and usages
+        let updatedLog = log { moduleDefinitions = Map.insert modName fieldDefs (moduleDefinitions log)
+                             , moduleUsages = Map.insert modName fieldUsages (moduleUsages log)
+                             }
+        -- Recompute unused fields from ALL modules (including non-recompiled ones)
+        let unused = recomputeUnused updatedLog
 
-            -- Add new non-Maybe fields to log (replaces existing entries for same type/field)
-            logWithNewFields = addFieldsToLog fieldDefs existingLog
+        putStrLn $ "[Plugin]   - Log size: " ++
+                   show (Map.size $ moduleDefinitions log) ++ " modules, " ++
+                   show (length unused) ++ " unused fields"
 
-            -- Remove fields that are used in this module
-            updatedLog = removeUsedFieldsFromLog logWithNewFields fieldUsages
-
-        putStrLn $ "[Plugin]   - Log size: " ++ show (length existingLog) ++
-                   " -> " ++ show (length logWithNewFields) ++
-                   " -> " ++ show (length updatedLog)
-
-        -- Return updated map with new log for this gateway
-        return $ Map.insert gatewayName updatedLog gatewayLogs
+        return updatedLog
 
 #if __GLASGOW_HASKELL__ >= 900
     -- Step 7: Check if this is a sink module for its gateway
@@ -286,25 +276,26 @@ checkAndRemoveSink gatewayName modName =
 runFinalValidation :: CliOptions -> Text -> TcM ()
 runFinalValidation cliOptions gatewayName = do
     let outputPath = path cliOptions
+        logFile = getFieldLogPath outputPath gatewayName
 
-    -- Get this gateway's log from MVar
-    gatewayLogs <- liftIO $ readMVar unusedFieldLogMVar
-    let fieldLog = Map.findWithDefault [] gatewayName gatewayLogs
+    -- Read final unused fields from persisted log
+    fieldLog <- liftIO $ loadFieldLog logFile
+    let finalUnused = recomputeUnused fieldLog
 
-    -- Write JSON file for this gateway
+    -- Write summary JSON
     liftIO $ do
         createDirectoryIfMissing True outputPath
         let fullPath = outputPath </> T.unpack gatewayName <> ".unusedFields.json"
-        atomicWriteFile fullPath (encodePretty fieldLog)
-        putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++ 
-                   ": Wrote " ++ show (length fieldLog) ++ " unused fields to " ++ fullPath
+        atomicWriteFile fullPath (encodePretty finalUnused)
+        putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
+                   ": Wrote " ++ show (length finalUnused) ++ " unused fields to " ++ fullPath
 
-    liftIO $ putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++ 
-                        " final validation: " ++ show (length fieldLog) ++ " unused fields"
+    liftIO $ putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
+                        " final validation: " ++ show (length finalUnused) ++ " unused fields"
 
     -- Emit errors for this gateway's unused fields
-    when (failOnUnused cliOptions && not (null fieldLog)) $ do
-        mapM_ emitUnusedFieldError fieldLog
+    when (failOnUnused cliOptions && not (null finalUnused)) $ do
+        mapM_ emitUnusedFieldError finalUnused
 
 -- | Create a RealSrcSpan from a location string for GHC >= 9.0
 mkRealSrcSpanFromLocation :: Text -> Maybe SrcSpan
@@ -424,18 +415,19 @@ cleanupOldBuildIfNeeded outputPath = do
                         hClose lockHandle
                         safeRemoveFile cleanupLock
                     else do
-                        -- First module of new build: reset MVars for parallel safety
-                        void $ swapMVar unusedFieldLogMVar Map.empty
-                        void $ swapMVar pendingSinksMVar Map.empty
+                        createDirectoryIfMissing True outputPath
 
-                        -- Cleanup old JSON files from previous build
+                        -- Only delete final .unusedFields.json output files
+                        -- Keep .fieldLog.json files for incremental build support
                         exists <- doesDirectoryExist outputPath
                         when exists $ do
                             contents <- listDirectory outputPath
-                            let jsonFiles = filter (\f -> takeExtension f == ".json") contents
-                                fullPaths = map (outputPath </>) jsonFiles
-                                filesToRemove = filter (/= cleanupLock) fullPaths
-                            mapM_ safeRemoveFile filesToRemove
+                            let outputFiles = filter (isSuffixOf ".unusedFields.json") contents
+                                fullPaths = map (outputPath </>) outputFiles
+                            mapM_ safeRemoveFile fullPaths
+
+                        -- Reset sink tracking for the new build
+                        void $ swapMVar pendingSinksMVar Map.empty
 
                         writeFile buildMarker "cleanup-complete"
                         hClose lockHandle
@@ -466,6 +458,43 @@ atomicWriteFile filePath content = do
   where
     hash :: String -> Int
     hash str = foldl' (\h c -> 31 * h + fromEnum c) (length str * 1000) str
+
+-- | Get the path to the field log file for a gateway
+getFieldLogPath :: FilePath -> Text -> FilePath
+getFieldLogPath outputPath gatewayName =
+    outputPath </> T.unpack gatewayName <> ".fieldLog.json"
+
+-- | Load field log from disk, returns empty log if file doesn't exist
+loadFieldLog :: FilePath -> IO FieldLog
+loadFieldLog logFile = do
+    exists <- doesFileExist logFile
+    if not exists
+        then return emptyFieldLog
+        else do
+            content <- BS.readFile logFile
+            case decode (BL.fromStrict content) of
+                Just log -> return log
+                Nothing -> do
+                    putStrLn $ "[Plugin] Warning: Failed to parse " ++ logFile ++ ", starting fresh"
+                    return emptyFieldLog
+
+-- | Execute action on field log with exclusive file lock (parallel-safe)
+withFieldLogLock :: FilePath -> (FieldLog -> IO FieldLog) -> IO ()
+withFieldLogLock logFile action = do
+    createDirectoryIfMissing True (takeDirectory logFile)
+    let lockFile = logFile <> ".lock"
+    withFileLock lockFile Exclusive $ \_ -> do
+        current <- loadFieldLog logFile
+        updated <- action current
+        atomicWriteFile logFile (encodePretty updated)
+
+-- | Recompute unused fields from all module definitions and usages
+recomputeUnused :: FieldLog -> [FieldDefinition]
+recomputeUnused log =
+    let allDefs = concat $ Map.elems (moduleDefinitions log)
+        allUsages = concat $ Map.elems (moduleUsages log)
+        nonMaybeDefs = filter (not . fieldDefIsMaybe) allDefs
+    in removeUsedFieldsFromLog nonMaybeDefs allUsages
 
 parseCliOptions :: [CommandLineOption] -> CliOptions
 parseCliOptions [] = defaultCliOptions

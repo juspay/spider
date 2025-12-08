@@ -31,6 +31,7 @@ library
       deepseq,
       socket-lib,
       time,
+      filelock,
       ghc-tcplugins-extra,
       syb
   hs-source-dirs:   src

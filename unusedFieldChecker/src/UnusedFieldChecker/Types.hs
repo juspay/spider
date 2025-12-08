@@ -7,6 +7,7 @@ module UnusedFieldChecker.Types where
 import Data.Aeson
 import Data.Binary
 import Data.Text (Text)
+import qualified Data.Map.Strict as Map
 import Control.DeepSeq
 import GHC.Generics (Generic)
 import Prelude hiding (log)
@@ -69,3 +70,15 @@ data FieldUsage = FieldUsage
 -- | Type alias for the unused field log stored in JSON
 -- This is a list of FieldDefinition entries that haven't been marked as used yet
 type UnusedFieldLog = [FieldDefinition]
+
+-- | Persistent field log for a gateway (used for incremental build support)
+-- Stores field definitions and usages per-module, allowing us to recompute
+-- unused fields even when some modules aren't recompiled
+data FieldLog = FieldLog
+    { moduleDefinitions :: Map.Map Text [FieldDefinition]  -- ^ Module name -> field definitions from that module
+    , moduleUsages :: Map.Map Text [FieldUsage]            -- ^ Module name -> field usages in that module
+    } deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+-- | Empty field log for initialization
+emptyFieldLog :: FieldLog
+emptyFieldLog = FieldLog Map.empty Map.empty
