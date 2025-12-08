@@ -67,7 +67,8 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Char (isLower)
 import Data.List (foldl', isSuffixOf)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, mapMaybe)
+import qualified Data.Set as Set
 import Data.Text (Text, pack)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
@@ -93,41 +94,42 @@ unusedFieldLogMVar :: MVar GatewayFieldLogs
 {-# NOINLINE unusedFieldLogMVar #-}
 unusedFieldLogMVar = unsafePerformIO (newMVar Map.empty)
 
+-- | Global MVar tracking pending sink modules per gateway.
+-- Key: gateway name, Value: set of sink module names that haven't completed yet
+-- When a gateway's set becomes empty, validation triggers for that gateway.
+pendingSinksMVar :: MVar (Map.Map Text (Set.Set Text))
+{-# NOINLINE pendingSinksMVar #-}
+pendingSinksMVar = unsafePerformIO (newMVar Map.empty)
+
 plugin :: Plugin
 plugin = defaultPlugin
     { typeCheckResultAction = processModuleFields
     , pluginRecompile = \_ -> return NoForceRecompile
     }
 
--- | Main plugin action that runs for each module during type checking.
--- Implements log-and-remove pattern:
--- 1. Extract field definitions from types with FieldChecker instances
--- 2. Add non-Maybe fields to the unused field log
--- 3. Extract field usages from the current module
--- 4. Remove used fields from the log
--- 5. Write updated log to JSON file
--- 6. On last module: emit compilation errors for unused fields
+
 processModuleFields :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 processModuleFields opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
-        currentModuleName = moduleNameString $ GHC.moduleName $ ms_mod modSummary
 #if __GLASGOW_HASKELL__ >= 900
         currentPackage = GHC.Unit.Types.moduleUnit $ ms_mod modSummary
 #else
         currentPackage = moduleUnitId $ ms_mod modSummary
 #endif
 
-    -- Detect if this is the last module in compilation order
-#if __GLASGOW_HASKELL__ >= 900
-    isLastModule <- detectLastModule modSummary
-#else
-    let isLastModule = False
-#endif
+    let gatewayName = extractGatewayName modName
 
     liftIO $ cleanupOldBuildIfNeeded (path cliOptions)
 
-    -- Step 1: Extract field definitions from types with FieldChecker
+#if __GLASGOW_HASKELL__ >= 900
+    -- Initialize sink tracking for this gateway (idempotent)
+    hscEnv <- getTopEnv
+    let moduleGraph = hsc_mod_graph hscEnv
+        allModSummaries = mgModSummaries moduleGraph
+    _ <- liftIO $ initializeGatewaySinks gatewayName allModSummaries
+#endif
+
     fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
 
     -- Step 2: Extract field usages from this module
@@ -139,8 +141,7 @@ processModuleFields opts modSummary tcEnv = do
 
     -- Step 3-6: Update in-memory state atomically using MVar
     liftIO $ modifyMVar_ unusedFieldLogMVar $ \gatewayLogs -> do
-        let gatewayName = extractGatewayName modName
-            existingLog = Map.findWithDefault [] gatewayName gatewayLogs
+        let existingLog = Map.findWithDefault [] gatewayName gatewayLogs
 
             -- Add new non-Maybe fields to log (replaces existing entries for same type/field)
             logWithNewFields = addFieldsToLog fieldDefs existingLog
@@ -155,10 +156,14 @@ processModuleFields opts modSummary tcEnv = do
         -- Return updated map with new log for this gateway
         return $ Map.insert gatewayName updatedLog gatewayLogs
 
-    -- Step 7: If this is the last module, run final validation
-    when isLastModule $ do
-        liftIO $ putStrLn $ "[Plugin] Last module - running final validation"
-        runFinalValidation cliOptions
+#if __GLASGOW_HASKELL__ >= 900
+    -- Step 7: Check if this is a sink module for its gateway
+    (isSink, isLastSink) <- liftIO $ checkAndRemoveSink gatewayName modName
+    when isLastSink $ do
+        liftIO $ putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++ 
+                            " complete - running final validation"
+        runFinalValidation cliOptions gatewayName
+#endif
 
     return tcEnv
 
@@ -205,50 +210,100 @@ parseLocationString locStr = do
         _ -> Nothing
 
 #if __GLASGOW_HASKELL__ >= 900
--- | Detect if the current module is the last in the topologically sorted compilation order
-detectLastModule :: ModSummary -> TcM Bool
-detectLastModule modSummary = do
-    hscEnv <- getTopEnv
-    let moduleGraph = hsc_mod_graph hscEnv
-        -- Get all ModSummary from the module graph
-        allModSummaries = mgModSummaries moduleGraph
-        sortedModules = map (moduleNameString . ms_mod_name) allModSummaries
-        currentModuleName = moduleNameString $ ms_mod_name modSummary
-    return $ lastMaybe sortedModules == Just currentModuleName
+
+-- | Build a per-gateway dependency graph from the module graph.
+-- Returns a map of module name -> set of modules that import it (reverse deps).
+-- Only considers modules belonging to the specified gateway.
+buildGatewayGraph :: Text -> [ModSummary] -> Map.Map Text (Set.Set Text)
+buildGatewayGraph gatewayName allModSummaries =
+    let -- Filter to modules in this gateway
+        gatewayPrefix = "Gateway.Gateway." <> gatewayName <> "."
+        gatewayModules = filter (isGatewayModule gatewayPrefix) allModSummaries
+        gatewayModuleNames = Set.fromList $ map (pack . moduleNameString . ms_mod_name) gatewayModules
+        
+        -- Build reverse dependency map: for each module, who imports it?
+        -- Start with empty sets for all gateway modules
+        emptyReverseDeps = Map.fromList [(pack $ moduleNameString $ ms_mod_name ms, Set.empty) | ms <- gatewayModules]
+        
+        -- For each module, add it as a dependent of its imports
+        reverseDeps = foldl' (addReverseDeps gatewayModuleNames) emptyReverseDeps gatewayModules
+    in reverseDeps
   where
-    lastMaybe :: [a] -> Maybe a
-    lastMaybe [] = Nothing
-    lastMaybe xs = Just (last xs)
+    isGatewayModule :: Text -> ModSummary -> Bool
+    isGatewayModule prefix ms = 
+        let modNameText = pack $ moduleNameString $ ms_mod_name ms
+        in prefix `T.isPrefixOf` modNameText
+    
+    addReverseDeps :: Set.Set Text -> Map.Map Text (Set.Set Text) -> ModSummary -> Map.Map Text (Set.Set Text)
+    addReverseDeps gatewayModuleNames revDeps ms =
+        let currentMod = pack $ moduleNameString $ ms_mod_name ms
+            -- Get imports from this module (only home imports, not package imports)
+            imports = map (pack . moduleNameString . unLoc . snd) $ ms_textual_imps ms
+            -- Filter to only imports within the same gateway
+            gatewayImports = filter (`Set.member` gatewayModuleNames) imports
+        in foldl' (\m imp -> Map.adjust (Set.insert currentMod) imp m) revDeps gatewayImports
 
-runFinalValidation :: CliOptions -> TcM ()
-runFinalValidation cliOptions = do
+-- | Find sink modules for a gateway (modules with no dependents within the gateway).
+-- These are modules that no other gateway module imports.
+findGatewaySinks :: Map.Map Text (Set.Set Text) -> Set.Set Text
+findGatewaySinks reverseDeps =
+    Set.fromList [modName | (modName, dependents) <- Map.toList reverseDeps, Set.null dependents]
+
+-- | Initialize sink tracking for a gateway if not already done.
+-- Returns the set of sink modules for this gateway.
+initializeGatewaySinks :: Text -> [ModSummary] -> IO (Set.Set Text)
+initializeGatewaySinks gatewayName allModSummaries = 
+    modifyMVar pendingSinksMVar $ \pendingSinks ->
+        case Map.lookup gatewayName pendingSinks of
+            Just sinks -> return (pendingSinks, sinks)  -- Already initialized
+            Nothing -> do
+                let reverseDeps = buildGatewayGraph gatewayName allModSummaries
+                    sinks = findGatewaySinks reverseDeps
+                putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++ 
+                           " initialized with " ++ show (Set.size sinks) ++ " sink modules: " ++
+                           show (Set.toList sinks)
+                return (Map.insert gatewayName sinks pendingSinks, sinks)
+
+-- | Check if current module is a sink for its gateway and remove it.
+-- Returns (isSink, isLastSink) - isLastSink means validation should trigger.
+checkAndRemoveSink :: Text -> Text -> IO (Bool, Bool)
+checkAndRemoveSink gatewayName modName = 
+    modifyMVar pendingSinksMVar $ \pendingSinks ->
+        case Map.lookup gatewayName pendingSinks of
+            Nothing -> return (pendingSinks, (False, False))  -- Gateway not tracked
+            Just sinks ->
+                if modName `Set.member` sinks
+                    then do
+                        let newSinks = Set.delete modName sinks
+                            isLast = Set.null newSinks
+                        putStrLn $ "[Plugin] Sink module " ++ T.unpack modName ++ 
+                                   " completed. Remaining sinks: " ++ show (Set.size newSinks)
+                        return (Map.insert gatewayName newSinks pendingSinks, (True, isLast))
+                    else return (pendingSinks, (False, False))
+
+-- | Run final validation for a specific gateway
+runFinalValidation :: CliOptions -> Text -> TcM ()
+runFinalValidation cliOptions gatewayName = do
     let outputPath = path cliOptions
-        buildMarker = outputPath </> ".current-build"
 
-    -- Get all logs from MVar and write JSON files
+    -- Get this gateway's log from MVar
     gatewayLogs <- liftIO $ readMVar unusedFieldLogMVar
+    let fieldLog = Map.findWithDefault [] gatewayName gatewayLogs
 
+    -- Write JSON file for this gateway
     liftIO $ do
         createDirectoryIfMissing True outputPath
-        -- Write all gateway JSON files
-        mapM_ (\(gatewayName, fieldLog) -> do
-            let fullPath = outputPath </> T.unpack gatewayName <> ".unusedFields.json"
-            atomicWriteFile fullPath (encodePretty fieldLog)
-            putStrLn $ "[Plugin] Wrote " ++ show (length fieldLog) ++ " unused fields to " ++ fullPath
-          ) (Map.toList gatewayLogs)
+        let fullPath = outputPath </> T.unpack gatewayName <> ".unusedFields.json"
+        atomicWriteFile fullPath (encodePretty fieldLog)
+        putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++ 
+                   ": Wrote " ++ show (length fieldLog) ++ " unused fields to " ++ fullPath
 
-    -- Collect all unused fields for validation
-    let unusedFields = concat $ Map.elems gatewayLogs
+    liftIO $ putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++ 
+                        " final validation: " ++ show (length fieldLog) ++ " unused fields"
 
-    liftIO $ putStrLn $ "[Plugin] Final validation: " ++ show (length unusedFields) ++ " unused fields remaining"
-
-    when (failOnUnused cliOptions && not (null unusedFields)) $ do
-        mapM_ emitUnusedFieldError unusedFields
-
-    -- Cleanup: remove build marker and reset MVar for next build
-    liftIO $ do
-        safeRemoveFile buildMarker
-        void $ swapMVar unusedFieldLogMVar Map.empty
+    -- Emit errors for this gateway's unused fields
+    when (failOnUnused cliOptions && not (null fieldLog)) $ do
+        mapM_ emitUnusedFieldError fieldLog
 
 -- | Create a RealSrcSpan from a location string for GHC >= 9.0
 mkRealSrcSpanFromLocation :: Text -> Maybe SrcSpan
@@ -289,8 +344,8 @@ mkRealSrcSpanFromLocation locStr = do
         realSpan = mkRealSrcSpan startLoc endLoc
     return $ RealSrcSpan realSpan  -- No BufSpan parameter in GHC < 9.0
 
-runFinalValidation :: CliOptions -> TcM ()
-runFinalValidation _ = return ()
+runFinalValidation :: CliOptions -> Text -> TcM ()
+runFinalValidation _ _ = return ()
 
 emitUnusedFieldError :: FieldDefinition -> TcM ()
 emitUnusedFieldError fieldDef = do
@@ -368,8 +423,9 @@ cleanupOldBuildIfNeeded outputPath = do
                         hClose lockHandle
                         safeRemoveFile cleanupLock
                     else do
-                        -- First module of new build: reset MVar for parallel safety
+                        -- First module of new build: reset MVars for parallel safety
                         void $ swapMVar unusedFieldLogMVar Map.empty
+                        void $ swapMVar pendingSinksMVar Map.empty
 
                         -- Cleanup old JSON files from previous build
                         exists <- doesDirectoryExist outputPath
