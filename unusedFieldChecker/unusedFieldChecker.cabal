@@ -12,7 +12,6 @@ library
       UnusedFieldChecker.Plugin
       UnusedFieldChecker.Types
       UnusedFieldChecker.Validator
-      UnusedFieldChecker.Config
       UnusedFieldChecker.DefinitionExtractor
       UnusedFieldChecker.LibraryFilter
       UnusedFieldChecker.UsageExtractor
@@ -31,7 +30,6 @@ library
       binary,
       deepseq,
       socket-lib,
-      yaml,
       time,
       ghc-tcplugins-extra,
       syb

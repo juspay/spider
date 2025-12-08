@@ -14,14 +14,12 @@ import Prelude hiding (log)
 -- | CLI options for the plugin
 data CliOptions = CliOptions
     { path :: FilePath              -- ^ Output directory for JSON files
-    , exclusionConfigFile :: FilePath -- ^ Path to exclusion config YAML
     , failOnUnused :: Bool          -- ^ If True, emit compilation errors for unused fields
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions
     { path = ".juspay/unusedFieldChecker/"
-    , exclusionConfigFile = ".juspay/UnusedFieldChecker.yaml"
     , failOnUnused = True
     }
 
@@ -67,18 +65,6 @@ data FieldUsage = FieldUsage
     , fieldUsageLocation :: Text        -- ^ Source location of usage
     , fieldUsageTypeConstructor :: Text -- ^ Type constructor for matching
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
-
--- | Configuration for module inclusion/exclusion
-data ExclusionConfig = ExclusionConfig
-    { includeFiles :: Maybe [Text]   -- ^ If Just, only these modules are checked
-    , excludeFiles :: Maybe [Text]   -- ^ If Just, these modules are excluded
-    } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
-
-emptyExclusionConfig :: ExclusionConfig
-emptyExclusionConfig = ExclusionConfig
-    { includeFiles = Nothing
-    , excludeFiles = Nothing
-    }
 
 -- | Type alias for the unused field log stored in JSON
 -- This is a list of FieldDefinition entries that haven't been marked as used yet

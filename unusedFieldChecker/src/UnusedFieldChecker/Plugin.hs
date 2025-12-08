@@ -80,7 +80,6 @@ import System.IO.Unsafe (unsafePerformIO)
 import Control.Exception (SomeException, try)
 import UnusedFieldChecker.Types
 import UnusedFieldChecker.Validator
-import UnusedFieldChecker.Config
 import UnusedFieldChecker.DefinitionExtractor
 import UnusedFieldChecker.UsageExtractor
 
@@ -127,52 +126,41 @@ processModuleFields opts modSummary tcEnv = do
 #endif
 
     liftIO $ cleanupOldBuildIfNeeded (path cliOptions)
-    exclusionConfig <- liftIO $ loadExclusionConfig (exclusionConfigFile cliOptions)
 
-    -- Check if module should be processed based on exclusion config
-    if isModuleExcluded exclusionConfig modName
-        then do
-            liftIO $ putStrLn $ "[Plugin] Module excluded: " ++ T.unpack modName
-            -- Even if excluded, check for last module validation
-            when isLastModule $ do
-                liftIO $ putStrLn $ "[Plugin] Last module (excluded) - running validation"
-                runFinalValidation cliOptions
-            return tcEnv
-        else do
-            -- Step 1: Extract field definitions from types with FieldChecker
-            fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
-            
-            -- Step 2: Extract field usages from this module
-            fieldUsages <- extractFieldUsages modName tcEnv
+    -- Step 1: Extract field definitions from types with FieldChecker
+    fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
 
-            liftIO $ putStrLn $ "[Plugin] Module: " ++ T.unpack modName
-            liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldDefs) ++ " field definitions"
-            liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
+    -- Step 2: Extract field usages from this module
+    fieldUsages <- extractFieldUsages modName tcEnv
 
-            -- Step 3-6: Update in-memory state atomically using MVar
-            liftIO $ modifyMVar_ unusedFieldLogMVar $ \gatewayLogs -> do
-                let gatewayName = extractGatewayName modName
-                    existingLog = Map.findWithDefault [] gatewayName gatewayLogs
+    liftIO $ putStrLn $ "[Plugin] Module: " ++ T.unpack modName
+    liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldDefs) ++ " field definitions"
+    liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
 
-                    -- Add new non-Maybe fields to log (replaces existing entries for same type/field)
-                    logWithNewFields = addFieldsToLog fieldDefs existingLog
+    -- Step 3-6: Update in-memory state atomically using MVar
+    liftIO $ modifyMVar_ unusedFieldLogMVar $ \gatewayLogs -> do
+        let gatewayName = extractGatewayName modName
+            existingLog = Map.findWithDefault [] gatewayName gatewayLogs
 
-                    -- Remove fields that are used in this module
-                    updatedLog = removeUsedFieldsFromLog logWithNewFields fieldUsages
+            -- Add new non-Maybe fields to log (replaces existing entries for same type/field)
+            logWithNewFields = addFieldsToLog fieldDefs existingLog
 
-                putStrLn $ "[Plugin]   - Log size: " ++ show (length existingLog) ++
-                           " -> " ++ show (length logWithNewFields) ++
-                           " -> " ++ show (length updatedLog)
+            -- Remove fields that are used in this module
+            updatedLog = removeUsedFieldsFromLog logWithNewFields fieldUsages
 
-                -- Return updated map with new log for this gateway
-                return $ Map.insert gatewayName updatedLog gatewayLogs
+        putStrLn $ "[Plugin]   - Log size: " ++ show (length existingLog) ++
+                   " -> " ++ show (length logWithNewFields) ++
+                   " -> " ++ show (length updatedLog)
 
-            -- Step 7: If this is the last module, run final validation
-            when isLastModule $ do
-                liftIO $ putStrLn $ "[Plugin] Last module - running final validation"
-                runFinalValidation cliOptions
+        -- Return updated map with new log for this gateway
+        return $ Map.insert gatewayName updatedLog gatewayLogs
 
-            return tcEnv
+    -- Step 7: If this is the last module, run final validation
+    when isLastModule $ do
+        liftIO $ putStrLn $ "[Plugin] Last module - running final validation"
+        runFinalValidation cliOptions
+
+    return tcEnv
 
 -- | Parse a location string into its components
 -- Format: "filename:(startLine,startCol)-(endLine,endCol)"

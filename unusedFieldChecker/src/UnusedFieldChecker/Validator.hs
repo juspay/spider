@@ -99,9 +99,8 @@ formatUnusedFieldError FieldDefinition{..} = T.unlines
     , "    Location: " <> fieldDefLocation
     , ""
     , "    To fix, either:"
-    , "    1. Use the field somewhere in your code"
-    , "    2. Make the field optional: " <> fieldDefName <> " :: Maybe " <> fieldDefType
-    , "    3. Exclude it in the FieldChecker instance:"
+    , "    1. Make the field optional: " <> fieldDefName <> " :: Maybe " <> fieldDefType
+    , "    2. Exclude it in the FieldChecker instance:"
     , ""
     , "       instance FieldChecker " <> fieldDefTypeName <> " where"
     , "           excludedFields _ = [\"" <> fieldDefName <> "\"]"
