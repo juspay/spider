@@ -216,9 +216,8 @@ parseLocationString locStr = do
 -- Only considers modules belonging to the specified gateway.
 buildGatewayGraph :: Text -> [ModSummary] -> Map.Map Text (Set.Set Text)
 buildGatewayGraph gatewayName allModSummaries =
-    let -- Filter to modules in this gateway
-        gatewayPrefix = "Gateway.Gateway." <> gatewayName <> "."
-        gatewayModules = filter (isGatewayModule gatewayPrefix) allModSummaries
+    let -- Filter to modules in this gateway (using same logic as extractGatewayName)
+        gatewayModules = filter (isGatewayModule gatewayName) allModSummaries
         gatewayModuleNames = Set.fromList $ map (pack . moduleNameString . ms_mod_name) gatewayModules
         
         -- Build reverse dependency map: for each module, who imports it?
@@ -229,10 +228,12 @@ buildGatewayGraph gatewayName allModSummaries =
         reverseDeps = foldl' (addReverseDeps gatewayModuleNames) emptyReverseDeps gatewayModules
     in reverseDeps
   where
+    -- | Check if a module belongs to the given gateway
+    -- Matches the logic of extractGatewayName: looks for Gateway.Gateway.<name> pattern
     isGatewayModule :: Text -> ModSummary -> Bool
-    isGatewayModule prefix ms = 
+    isGatewayModule gw ms = 
         let modNameText = pack $ moduleNameString $ ms_mod_name ms
-        in prefix `T.isPrefixOf` modNameText
+        in extractGatewayName modNameText == gw
     
     addReverseDeps :: Set.Set Text -> Map.Map Text (Set.Set Text) -> ModSummary -> Map.Map Text (Set.Set Text)
     addReverseDeps gatewayModuleNames revDeps ms =
