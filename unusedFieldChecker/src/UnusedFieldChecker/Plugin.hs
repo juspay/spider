@@ -57,14 +57,16 @@ import TyCoRep
 import Type
 #endif
 
-import Control.Monad (forM, when, guard)
+import Control.Monad (forM, when, guard, void, unless)
 import Control.Monad.IO.Class (liftIO)
+import Control.Concurrent.MVar
 import Data.Aeson (decode)
 import Data.Aeson.Encode.Pretty (encodePretty)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Lazy as BL
 import Data.Char (isLower)
 import Data.List (foldl', isSuffixOf)
+import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
 import Data.Text (Text, pack)
 import qualified Data.Text as T
@@ -74,12 +76,23 @@ import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryE
 import System.FilePath ((</>), takeDirectory, takeExtension)
 import System.IO (Handle, hClose, openFile, IOMode(..))
 import System.IO.Error (catchIOError, isDoesNotExistError, ioError)
+import System.IO.Unsafe (unsafePerformIO)
 import Control.Exception (SomeException, try)
 import UnusedFieldChecker.Types
 import UnusedFieldChecker.Validator
 import UnusedFieldChecker.Config
 import UnusedFieldChecker.DefinitionExtractor
 import UnusedFieldChecker.UsageExtractor
+
+-- | Type alias for gateway-keyed field logs
+type GatewayFieldLogs = Map.Map Text UnusedFieldLog
+
+-- | Global MVar holding the unused field logs per gateway.
+-- This provides thread-safe state for parallel compilation.
+-- Key: gateway name, Value: list of unused field definitions
+unusedFieldLogMVar :: MVar GatewayFieldLogs
+{-# NOINLINE unusedFieldLogMVar #-}
+unusedFieldLogMVar = unsafePerformIO (newMVar Map.empty)
 
 plugin :: Plugin
 plugin = defaultPlugin
@@ -136,29 +149,23 @@ processModuleFields opts modSummary tcEnv = do
             liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldDefs) ++ " field definitions"
             liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
 
-            liftIO $ do
-                let outputPath = path cliOptions
-                    gatewayName = extractGatewayName modName
-                    gatewayFile = T.unpack gatewayName <> ".unusedFields.json"
-                    fullPath = outputPath </> gatewayFile
+            -- Step 3-6: Update in-memory state atomically using MVar
+            liftIO $ modifyMVar_ unusedFieldLogMVar $ \gatewayLogs -> do
+                let gatewayName = extractGatewayName modName
+                    existingLog = Map.findWithDefault [] gatewayName gatewayLogs
 
-                createDirectoryIfMissing True outputPath
-                
-                -- Step 3: Load existing unused field log
-                existingLog <- loadUnusedFieldLog fullPath
-                
-                -- Step 4: Add new non-Maybe fields to log (replaces existing entries for same type/field)
-                let logWithNewFields = addFieldsToLog fieldDefs existingLog
-                
-                -- Step 5: Remove fields that are used in this module
-                let updatedLog = removeUsedFieldsFromLog logWithNewFields fieldUsages
-                
-                putStrLn $ "[Plugin]   - Log size: " ++ show (length existingLog) ++ 
+                    -- Add new non-Maybe fields to log (replaces existing entries for same type/field)
+                    logWithNewFields = addFieldsToLog fieldDefs existingLog
+
+                    -- Remove fields that are used in this module
+                    updatedLog = removeUsedFieldsFromLog logWithNewFields fieldUsages
+
+                putStrLn $ "[Plugin]   - Log size: " ++ show (length existingLog) ++
                            " -> " ++ show (length logWithNewFields) ++
                            " -> " ++ show (length updatedLog)
-                
-                -- Step 6: Write updated log
-                atomicWriteFile fullPath (encodePretty updatedLog)
+
+                -- Return updated map with new log for this gateway
+                return $ Map.insert gatewayName updatedLog gatewayLogs
 
             -- Step 7: If this is the last module, run final validation
             when isLastModule $ do
@@ -229,16 +236,31 @@ runFinalValidation :: CliOptions -> TcM ()
 runFinalValidation cliOptions = do
     let outputPath = path cliOptions
         buildMarker = outputPath </> ".current-build"
-    
-    unusedFields <- liftIO $ loadAllUnusedFields outputPath
-    
+
+    -- Get all logs from MVar and write JSON files
+    gatewayLogs <- liftIO $ readMVar unusedFieldLogMVar
+
+    liftIO $ do
+        createDirectoryIfMissing True outputPath
+        -- Write all gateway JSON files
+        mapM_ (\(gatewayName, fieldLog) -> do
+            let fullPath = outputPath </> T.unpack gatewayName <> ".unusedFields.json"
+            atomicWriteFile fullPath (encodePretty fieldLog)
+            putStrLn $ "[Plugin] Wrote " ++ show (length fieldLog) ++ " unused fields to " ++ fullPath
+          ) (Map.toList gatewayLogs)
+
+    -- Collect all unused fields for validation
+    let unusedFields = concat $ Map.elems gatewayLogs
+
     liftIO $ putStrLn $ "[Plugin] Final validation: " ++ show (length unusedFields) ++ " unused fields remaining"
-    
+
     when (failOnUnused cliOptions && not (null unusedFields)) $ do
         mapM_ emitUnusedFieldError unusedFields
-    
-    -- Cleanup: remove build marker so next build starts fresh
-    liftIO $ safeRemoveFile buildMarker
+
+    -- Cleanup: remove build marker and reset MVar for next build
+    liftIO $ do
+        safeRemoveFile buildMarker
+        void $ swapMVar unusedFieldLogMVar Map.empty
 
 -- | Create a RealSrcSpan from a location string for GHC >= 9.0
 mkRealSrcSpanFromLocation :: Text -> Maybe SrcSpan
@@ -347,30 +369,32 @@ cleanupOldBuildIfNeeded outputPath = do
         cleanupLock = outputPath </> ".cleanup.lock"
 
     markerExists <- doesFileExist buildMarker
-    if markerExists
-        then return ()
-        else do
-            lockResult <- try (openFile cleanupLock WriteMode) :: IO (Either SomeException Handle)
-            case lockResult of
-                Left _ -> return ()
-                Right lockHandle -> do
-                    markerExistsNow <- doesFileExist buildMarker
-                    if markerExistsNow
-                        then do
-                            hClose lockHandle
-                            safeRemoveFile cleanupLock
-                        else do
-                            exists <- doesDirectoryExist outputPath
-                            when exists $ do
-                                contents <- listDirectory outputPath
-                                let jsonFiles = filter (\f -> takeExtension f == ".json") contents
-                                    fullPaths = map (outputPath </>) jsonFiles
-                                    filesToRemove = filter (/= cleanupLock) fullPaths
-                                mapM_ safeRemoveFile filesToRemove
+    unless markerExists $ do
+        lockResult <- try (openFile cleanupLock WriteMode) :: IO (Either SomeException Handle)
+        case lockResult of
+            Left _ -> return ()
+            Right lockHandle -> do
+                markerExistsNow <- doesFileExist buildMarker
+                if markerExistsNow
+                    then do
+                        hClose lockHandle
+                        safeRemoveFile cleanupLock
+                    else do
+                        -- First module of new build: reset MVar for parallel safety
+                        void $ swapMVar unusedFieldLogMVar Map.empty
 
-                            writeFile buildMarker "cleanup-complete"
-                            hClose lockHandle
-                            safeRemoveFile cleanupLock
+                        -- Cleanup old JSON files from previous build
+                        exists <- doesDirectoryExist outputPath
+                        when exists $ do
+                            contents <- listDirectory outputPath
+                            let jsonFiles = filter (\f -> takeExtension f == ".json") contents
+                                fullPaths = map (outputPath </>) jsonFiles
+                                filesToRemove = filter (/= cleanupLock) fullPaths
+                            mapM_ safeRemoveFile filesToRemove
+
+                        writeFile buildMarker "cleanup-complete"
+                        hClose lockHandle
+                        safeRemoveFile cleanupLock
 
 atomicWriteFile :: FilePath -> BL.ByteString -> IO ()
 atomicWriteFile filePath content = do
@@ -397,10 +421,6 @@ atomicWriteFile filePath content = do
   where
     hash :: String -> Int
     hash str = foldl' (\h c -> 31 * h + fromEnum c) (length str * 1000) str
-
-
--- Note: shouldRunValidation and markValidationComplete have been removed
--- Validation now runs in the driverPlugin hook after all modules are compiled
 
 parseCliOptions :: [CommandLineOption] -> CliOptions
 parseCliOptions [] = defaultCliOptions
@@ -840,9 +860,7 @@ extractFieldNameFromTypeApp _ = ""
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
--- | FunctionComposition usages are disabled because we cannot reliably
--- determine the type constructor for composed functions like (foo . bar . baz).
--- Fields used via composition are typically also used elsewhere.
+    
 extractFunctionComposition :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> TcM [FieldUsage]
 extractFunctionComposition _ _ _ = return []
 #else
