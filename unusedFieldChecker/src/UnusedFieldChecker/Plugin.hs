@@ -150,7 +150,7 @@ saveFieldLog logFile fieldLog = do
 plugin :: Plugin
 plugin = defaultPlugin
     { typeCheckResultAction = processModuleFields
-    , pluginRecompile = \_ -> return NoForceRecompile
+    , pluginRecompile = purePlugin
     }
 
 -- | Get current build ID from module timestamps
