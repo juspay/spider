@@ -93,14 +93,16 @@ globalStateMVar :: MVar GlobalState
 globalStateMVar = unsafePerformIO (newMVar emptyGlobalState)
 
 -- | Initialize or reset state if build ID changed
-initializeOrResetState :: FilePath -> [ModSummary] -> IO ()
-initializeOrResetState outputPath modSummaries = do
+-- NOTE: We do NOT delete output files here. Output files are overwritten during
+-- final validation. Deleting them early causes false errors on first compile
+-- because the in-memory state is empty until modules are processed.
+initializeOrResetState :: [ModSummary] -> IO ()
+initializeOrResetState modSummaries = do
     newBuildId <- getCurrentBuildId modSummaries
     modifyMVar_ globalStateMVar $ \currentState ->
         if currentBuildId currentState /= newBuildId
             then do
-                putStrLn "[Plugin] Fresh build detected, resetting state"
-                cleanupOutputFiles outputPath  -- Clean final .unusedFields.json outputs
+                putStrLn "[Plugin] Fresh build detected, resetting in-memory state"
                 return $ GlobalState newBuildId Map.empty
             else return currentState
 
@@ -146,16 +148,6 @@ getCurrentBuildId modSummaries = do
             then Just <$> getModificationTime path
             else return Nothing
 
--- | Clean up old .unusedFields.json output files
-cleanupOutputFiles :: FilePath -> IO ()
-cleanupOutputFiles outputPath = do
-    exists <- doesDirectoryExist outputPath
-    when exists $ do
-        contents <- listDirectory outputPath
-        let outputFiles = filter (isSuffixOf ".unusedFields.json") contents
-            fullPaths = map (outputPath </>) outputFiles
-        mapM_ safeRemoveFile fullPaths
-
 processModuleFields :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 processModuleFields opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
@@ -173,7 +165,7 @@ processModuleFields opts modSummary tcEnv = do
     hscEnv <- getTopEnv
     let moduleGraph = hsc_mod_graph hscEnv
         allModSummaries = mgModSummaries moduleGraph
-    liftIO $ initializeOrResetState (path cliOptions) allModSummaries
+    liftIO $ initializeOrResetState allModSummaries
 
     -- Initialize sink tracking for this gateway (idempotent)
     _ <- liftIO $ initializeGatewaySinks gatewayName allModSummaries
