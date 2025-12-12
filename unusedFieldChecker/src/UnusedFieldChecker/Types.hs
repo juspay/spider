@@ -72,6 +72,17 @@ data FieldUsage = FieldUsage
 -- This is a list of FieldDefinition entries that haven't been marked as used yet
 type UnusedFieldLog = [FieldDefinition]
 
+-- | Persistent field log for a gateway (saved to .fieldLog.json)
+-- Stores field definitions and usages per-module for incremental build support
+data FieldLog = FieldLog
+    { logModuleDefinitions :: Map.Map Text [FieldDefinition]  -- ^ Module name -> field definitions
+    , logModuleUsages :: Map.Map Text [FieldUsage]            -- ^ Module name -> field usages
+    } deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+-- | Empty field log for initialization
+emptyFieldLog :: FieldLog
+emptyFieldLog = FieldLog Map.empty Map.empty
+
 -- | In-memory global state for all gateways (held in MVar during GHC session)
 data GlobalState = GlobalState
     { currentBuildId :: Text                              -- ^ Build ID to detect fresh builds
