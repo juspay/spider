@@ -92,3 +92,15 @@ emptyGlobalState = GlobalState "" Map.empty
 -- | Empty gateway in-memory state for initialization
 emptyGatewayInMemoryState :: GatewayInMemoryState
 emptyGatewayInMemoryState = GatewayInMemoryState Map.empty Map.empty Set.empty
+
+-- | Output format for .unusedFields.json files
+-- Contains all data needed for incremental builds plus computed unused fields
+data GatewayOutput = GatewayOutput
+    { outputModuleDefinitions :: Map.Map Text [FieldDefinition]  -- ^ Module name -> field definitions
+    , outputModuleUsages :: Map.Map Text [FieldUsage]            -- ^ Module name -> field usages  
+    , outputUnusedFields :: [FieldDefinition]                    -- ^ Computed unused fields
+    } deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+-- | Empty gateway output for initialization
+emptyGatewayOutput :: GatewayOutput
+emptyGatewayOutput = GatewayOutput Map.empty Map.empty []

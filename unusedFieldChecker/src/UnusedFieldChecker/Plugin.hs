@@ -93,9 +93,8 @@ globalStateMVar :: MVar GlobalState
 globalStateMVar = unsafePerformIO (newMVar emptyGlobalState)
 
 -- | Initialize or reset state if build ID changed
--- NOTE: We do NOT delete output files here. Output files are overwritten during
--- final validation. Deleting them early causes false errors on first compile
--- because the in-memory state is empty until modules are processed.
+-- NOTE: We do NOT delete output files here. Persisted data is loaded when
+-- initializing gateway sinks and merged with new data as modules compile.
 initializeOrResetState :: [ModSummary] -> IO ()
 initializeOrResetState modSummaries = do
     newBuildId <- getCurrentBuildId modSummaries
@@ -106,15 +105,61 @@ initializeOrResetState modSummaries = do
                 return $ GlobalState newBuildId Map.empty
             else return currentState
 
--- | Update gateway module data in memory for the current build
-updateGatewayModule :: Text -> Text -> [FieldDefinition] -> [FieldUsage] -> IO ()
-updateGatewayModule gwName modName defs usages =
+-- | Get the path to the output file for a gateway
+getOutputFilePath :: FilePath -> Text -> FilePath
+getOutputFilePath outputPath gatewayName =
+    outputPath </> T.unpack gatewayName <> ".unusedFields.json"
+
+-- | Load gateway output from disk, returns empty output if file doesn't exist or can't be parsed
+loadGatewayOutput :: FilePath -> IO GatewayOutput
+loadGatewayOutput filePath = do
+    exists <- doesFileExist filePath
+    if not exists
+        then return emptyGatewayOutput
+        else do
+            content <- BS.readFile filePath
+            case decode (BL.fromStrict content) of
+                Just output -> return output
+                Nothing -> do
+                    putStrLn $ "[Plugin] Warning: Failed to parse " ++ filePath ++ ", starting fresh"
+                    return emptyGatewayOutput
+
+-- | Save gateway output to disk (atomic write)
+saveGatewayOutput :: FilePath -> GatewayOutput -> IO ()
+saveGatewayOutput filePath output = do
+    createDirectoryIfMissing True (takeDirectory filePath)
+    atomicWriteFile filePath (encodePretty output)
+
+-- | Update gateway module data in memory AND persist to disk
+updateGatewayModule :: FilePath -> Text -> Text -> [FieldDefinition] -> [FieldUsage] -> IO ()
+updateGatewayModule outputPath gwName modName defs usages = do
+    let filePath = getOutputFilePath outputPath gwName
+    
+    -- Load existing persisted data
+    existingOutput <- loadGatewayOutput filePath
+    
     modifyMVar_ globalStateMVar $ \gs -> do
         let gwState = Map.findWithDefault emptyGatewayInMemoryState gwName (gatewayStates gs)
+            -- Merge existing persisted data with in-memory state (in-memory takes precedence)
+            mergedDefs = Map.union (moduleDefinitions gwState) (outputModuleDefinitions existingOutput)
+            mergedUsages = Map.union (moduleUsages gwState) (outputModuleUsages existingOutput)
+            -- Update with new module data
+            updatedDefs = Map.insert modName defs mergedDefs
+            updatedUsages = Map.insert modName usages mergedUsages
             updated = gwState
-                { moduleDefinitions = Map.insert modName defs (moduleDefinitions gwState)
-                , moduleUsages = Map.insert modName usages (moduleUsages gwState)
+                { moduleDefinitions = updatedDefs
+                , moduleUsages = updatedUsages
                 }
+        
+        -- Recompute unused fields and persist
+        let allDefs = concat $ Map.elems updatedDefs
+            allUsages = concat $ Map.elems updatedUsages
+            nonMaybeDefs = filter (not . fieldDefIsMaybe) allDefs
+            unusedFields = removeUsedFieldsFromLog nonMaybeDefs allUsages
+            output = GatewayOutput updatedDefs updatedUsages unusedFields
+        
+        saveGatewayOutput filePath output
+        
         return $ gs { gatewayStates = Map.insert gwName updated (gatewayStates gs) }
 
 plugin :: Plugin
@@ -167,8 +212,8 @@ processModuleFields opts modSummary tcEnv = do
         allModSummaries = mgModSummaries moduleGraph
     liftIO $ initializeOrResetState allModSummaries
 
-    -- Initialize sink tracking for this gateway (idempotent)
-    _ <- liftIO $ initializeGatewaySinks gatewayName allModSummaries
+    -- Initialize sink tracking for this gateway (idempotent), also loads persisted data
+    _ <- liftIO $ initializeGatewaySinks (path cliOptions) gatewayName allModSummaries
 #endif
 
     fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
@@ -180,9 +225,9 @@ processModuleFields opts modSummary tcEnv = do
     liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldDefs) ++ " field definitions"
     liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
 
-    -- Update in-memory state for this gateway and module
-    liftIO $ updateGatewayModule gatewayName modName fieldDefs fieldUsages
-    liftIO $ putStrLn $ "[Plugin]   - Updated in-memory state for gateway " ++ T.unpack gatewayName
+    -- Update in-memory state for this gateway and module (also persists to disk)
+    liftIO $ updateGatewayModule (path cliOptions) gatewayName modName fieldDefs fieldUsages
+    liftIO $ putStrLn $ "[Plugin]   - Updated state for gateway " ++ T.unpack gatewayName
 
 #if __GLASGOW_HASKELL__ >= 900
     -- Step 7: Check if this is a sink module for its gateway
@@ -279,22 +324,34 @@ findGatewaySinks reverseDeps =
     Set.fromList [modName | (modName, dependents) <- Map.toList reverseDeps, Set.null dependents]
 
 -- Returns the set of sink modules for this gateway.
-initializeGatewaySinks :: Text -> [ModSummary] -> IO (Set.Set Text)
-initializeGatewaySinks gatewayName allModSummaries =
+-- Also loads persisted data from .unusedFields.json if available.
+initializeGatewaySinks :: FilePath -> Text -> [ModSummary] -> IO (Set.Set Text)
+initializeGatewaySinks outputPath gatewayName allModSummaries =
     modifyMVar globalStateMVar $ \gs ->
         let gwState = Map.findWithDefault emptyGatewayInMemoryState gatewayName (gatewayStates gs)
             currentSinks = pendingSinks gwState
         in if not (Set.null currentSinks)
             then return (gs, currentSinks)  -- Already initialized this session
             else do
+                -- Load persisted data from previous builds
+                let filePath = getOutputFilePath outputPath gatewayName
+                existingOutput <- loadGatewayOutput filePath
+                
                 let reverseDeps = buildGatewayGraph gatewayName allModSummaries
                     sinks = findGatewaySinks reverseDeps
                 putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
                            " initialized with " ++ show (Set.size sinks) ++ " sink modules: " ++
                            show (Set.toList sinks)
+                putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
+                           " loaded " ++ show (Map.size (outputModuleDefinitions existingOutput)) ++
+                           " modules from persisted data"
 
-                -- Persist sink information in memory for this session
-                let updatedGwState = gwState { pendingSinks = sinks }
+                -- Merge persisted data into in-memory state
+                let updatedGwState = gwState 
+                        { pendingSinks = sinks
+                        , moduleDefinitions = outputModuleDefinitions existingOutput
+                        , moduleUsages = outputModuleUsages existingOutput
+                        }
                     updatedGs = gs { gatewayStates = Map.insert gatewayName updatedGwState (gatewayStates gs) }
                 return (updatedGs, sinks)
 
@@ -322,20 +379,26 @@ checkAndRemoveSink gatewayName modName =
 runFinalValidation :: CliOptions -> Text -> TcM ()
 runFinalValidation cliOptions gatewayName = do
     let outputPath = path cliOptions
+        filePath = getOutputFilePath outputPath gatewayName
 
-    -- Read from in-memory state instead of file
+    -- Read from in-memory state (already contains merged persisted + current build data)
     gwState <- liftIO $ withMVar globalStateMVar $ \gs ->
         return $ Map.findWithDefault emptyGatewayInMemoryState gatewayName (gatewayStates gs)
 
     let finalUnused = recomputeUnusedFromState gwState
+        -- Create full output with all data for persistence
+        output = GatewayOutput
+            { outputModuleDefinitions = moduleDefinitions gwState
+            , outputModuleUsages = moduleUsages gwState
+            , outputUnusedFields = finalUnused
+            }
 
-    -- Write summary JSON
+    -- Write full GatewayOutput JSON (contains definitions, usages, and computed unused)
     liftIO $ do
         createDirectoryIfMissing True outputPath
-        let fullPath = outputPath </> T.unpack gatewayName <> ".unusedFields.json"
-        atomicWriteFile fullPath (encodePretty finalUnused)
+        saveGatewayOutput filePath output
         putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
-                   ": Wrote " ++ show (length finalUnused) ++ " unused fields to " ++ fullPath
+                   ": Wrote " ++ show (length finalUnused) ++ " unused fields to " ++ filePath
 
     liftIO $ putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
                         " final validation: " ++ show (length finalUnused) ++ " unused fields"
@@ -413,6 +476,8 @@ emitUnusedFieldError fieldDef = do
     setSrcSpan srcSpan $ addErr (text (T.unpack errorMsg))
 #endif
 
+-- | Load unused fields from a single .unusedFields.json file
+-- Handles both old format (just list) and new format (GatewayOutput with outputUnusedFields)
 loadUnusedFieldLog :: FilePath -> IO UnusedFieldLog
 loadUnusedFieldLog filePath = do
     exists <- doesFileExist filePath
@@ -420,11 +485,16 @@ loadUnusedFieldLog filePath = do
         then return []
         else do
             content <- BS.readFile filePath
+            -- Try new format first (GatewayOutput)
             case decode (BL.fromStrict content) of
-                Just entries -> return entries
-                Nothing -> do
-                    putStrLn $ "[Plugin] Warning: Failed to parse " ++ filePath ++ ", starting fresh"
-                    return []
+                Just (output :: GatewayOutput) -> return $ outputUnusedFields output
+                Nothing -> 
+                    -- Fallback to old format (just a list)
+                    case decode (BL.fromStrict content) of
+                        Just entries -> return entries
+                        Nothing -> do
+                            putStrLn $ "[Plugin] Warning: Failed to parse " ++ filePath ++ ", starting fresh"
+                            return []
 
 loadAllUnusedFields :: FilePath -> IO [FieldDefinition]
 loadAllUnusedFields outputPath = do
