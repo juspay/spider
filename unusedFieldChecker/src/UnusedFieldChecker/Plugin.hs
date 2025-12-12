@@ -100,52 +100,20 @@ initializeOrResetState outputPath modSummaries = do
         if currentBuildId currentState /= newBuildId
             then do
                 putStrLn "[Plugin] Fresh build detected, resetting state"
-                cleanupAllOutputFiles outputPath  -- Clean both .unusedFields.json and .fieldLog.json
+                cleanupOutputFiles outputPath  -- Clean final .unusedFields.json outputs
                 return $ GlobalState newBuildId Map.empty
             else return currentState
 
--- | Update gateway module data in memory and persist to disk
-updateGatewayModule :: FilePath -> Text -> Text -> [FieldDefinition] -> [FieldUsage] -> IO ()
-updateGatewayModule outputPath gwName modName defs usages = do
+-- | Update gateway module data in memory for the current build
+updateGatewayModule :: Text -> Text -> [FieldDefinition] -> [FieldUsage] -> IO ()
+updateGatewayModule gwName modName defs usages =
     modifyMVar_ globalStateMVar $ \gs -> do
         let gwState = Map.findWithDefault emptyGatewayInMemoryState gwName (gatewayStates gs)
             updated = gwState
                 { moduleDefinitions = Map.insert modName defs (moduleDefinitions gwState)
                 , moduleUsages = Map.insert modName usages (moduleUsages gwState)
                 }
-            updatedGs = gs { gatewayStates = Map.insert gwName updated (gatewayStates gs) }
-
-        -- Persist to disk
-        let logFile = getFieldLogPath outputPath gwName
-            fieldLog = FieldLog (moduleDefinitions updated) (moduleUsages updated)
-        saveFieldLog logFile fieldLog
-
-        return updatedGs
-
--- | Get the path to the field log file for a gateway
-getFieldLogPath :: FilePath -> Text -> FilePath
-getFieldLogPath outputPath gatewayName =
-    outputPath </> T.unpack gatewayName <> ".fieldLog.json"
-
--- | Load field log from disk, returns empty log if file doesn't exist
-loadFieldLog :: FilePath -> IO FieldLog
-loadFieldLog logFile = do
-    exists <- doesFileExist logFile
-    if not exists
-        then return emptyFieldLog
-        else do
-            content <- BS.readFile logFile
-            case decode (BL.fromStrict content) of
-                Just log -> return log
-                Nothing -> do
-                    putStrLn $ "[Plugin] Warning: Failed to parse " ++ logFile ++ ", starting fresh"
-                    return emptyFieldLog
-
--- | Save field log to disk (atomic write)
-saveFieldLog :: FilePath -> FieldLog -> IO ()
-saveFieldLog logFile fieldLog = do
-    createDirectoryIfMissing True (takeDirectory logFile)
-    atomicWriteFile logFile (encodePretty fieldLog)
+        return $ gs { gatewayStates = Map.insert gwName updated (gatewayStates gs) }
 
 plugin :: Plugin
 plugin = defaultPlugin
@@ -188,16 +156,6 @@ cleanupOutputFiles outputPath = do
             fullPaths = map (outputPath </>) outputFiles
         mapM_ safeRemoveFile fullPaths
 
--- | Clean up all output files (.unusedFields.json and .fieldLog.json)
-cleanupAllOutputFiles :: FilePath -> IO ()
-cleanupAllOutputFiles outputPath = do
-    exists <- doesDirectoryExist outputPath
-    when exists $ do
-        contents <- listDirectory outputPath
-        let outputFiles = filter (\f -> ".unusedFields.json" `isSuffixOf` f || ".fieldLog.json" `isSuffixOf` f) contents
-            fullPaths = map (outputPath </>) outputFiles
-        mapM_ safeRemoveFile fullPaths
-
 processModuleFields :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 processModuleFields opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
@@ -218,7 +176,7 @@ processModuleFields opts modSummary tcEnv = do
     liftIO $ initializeOrResetState (path cliOptions) allModSummaries
 
     -- Initialize sink tracking for this gateway (idempotent)
-    _ <- liftIO $ initializeGatewaySinks (path cliOptions) gatewayName allModSummaries
+    _ <- liftIO $ initializeGatewaySinks gatewayName allModSummaries
 #endif
 
     fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
@@ -231,7 +189,7 @@ processModuleFields opts modSummary tcEnv = do
     liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
 
     -- Update in-memory state for this gateway and module
-    liftIO $ updateGatewayModule (path cliOptions) gatewayName modName fieldDefs fieldUsages
+    liftIO $ updateGatewayModule gatewayName modName fieldDefs fieldUsages
     liftIO $ putStrLn $ "[Plugin]   - Updated in-memory state for gateway " ++ T.unpack gatewayName
 
 #if __GLASGOW_HASKELL__ >= 900
@@ -328,33 +286,23 @@ findGatewaySinks :: Map.Map Text (Set.Set Text) -> Set.Set Text
 findGatewaySinks reverseDeps =
     Set.fromList [modName | (modName, dependents) <- Map.toList reverseDeps, Set.null dependents]
 
--- | Initialize sink tracking for a gateway if not already done.
 -- Returns the set of sink modules for this gateway.
--- Loads persisted field log from previous sessions.
-initializeGatewaySinks :: FilePath -> Text -> [ModSummary] -> IO (Set.Set Text)
-initializeGatewaySinks outputPath gatewayName allModSummaries =
+initializeGatewaySinks :: Text -> [ModSummary] -> IO (Set.Set Text)
+initializeGatewaySinks gatewayName allModSummaries =
     modifyMVar globalStateMVar $ \gs ->
         let gwState = Map.findWithDefault emptyGatewayInMemoryState gatewayName (gatewayStates gs)
             currentSinks = pendingSinks gwState
         in if not (Set.null currentSinks)
             then return (gs, currentSinks)  -- Already initialized this session
             else do
-                -- Load persisted field log from previous sessions
-                let logFile = getFieldLogPath outputPath gatewayName
-                fieldLog <- loadFieldLog logFile
-
                 let reverseDeps = buildGatewayGraph gatewayName allModSummaries
                     sinks = findGatewaySinks reverseDeps
                 putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
                            " initialized with " ++ show (Set.size sinks) ++ " sink modules: " ++
                            show (Set.toList sinks)
 
-                -- Merge persisted data into in-memory state
-                let updatedGwState = gwState
-                        { moduleDefinitions = logModuleDefinitions fieldLog
-                        , moduleUsages = logModuleUsages fieldLog
-                        , pendingSinks = sinks
-                        }
+                -- Persist sink information in memory for this session
+                let updatedGwState = gwState { pendingSinks = sinks }
                     updatedGs = gs { gatewayStates = Map.insert gatewayName updatedGwState (gatewayStates gs) }
                 return (updatedGs, sinks)
 
