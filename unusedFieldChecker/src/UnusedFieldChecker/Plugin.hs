@@ -67,30 +67,53 @@ import qualified Data.ByteString.Lazy as BL
 import Data.Char (isLower)
 import Data.List (foldl', isSuffixOf)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, mapMaybe)
+import Data.Maybe (fromMaybe, mapMaybe, catMaybes)
 import qualified Data.Set as Set
 import Data.Text (Text, pack)
 import qualified Data.Text as T
 import Data.Text.Encoding (encodeUtf8)
 import Text.Read (readMaybe)
-import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, removeFile, renameFile)
+import System.Directory (createDirectoryIfMissing, doesFileExist, doesDirectoryExist, listDirectory, removeFile, renameFile, getModificationTime)
 import System.FilePath ((</>), takeDirectory, takeExtension)
-import System.FileLock (withFileLock, SharedExclusive(Exclusive))
-import System.IO (Handle, hClose, openFile, IOMode(..))
 import System.IO.Error (catchIOError, isDoesNotExistError, ioError)
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Exception (SomeException, try)
+import Data.Time.Clock (getCurrentTime, UTCTime)
+import Data.Time.Clock.POSIX (utcTimeToPOSIXSeconds)
 import UnusedFieldChecker.Types
 import UnusedFieldChecker.Validator
 import UnusedFieldChecker.DefinitionExtractor
 import UnusedFieldChecker.UsageExtractor
 
--- | Global MVar tracking pending sink modules per gateway.
--- Key: gateway name, Value: set of sink module names that haven't completed yet
--- When a gateway's set becomes empty, validation triggers for that gateway.
-pendingSinksMVar :: MVar (Map.Map Text (Set.Set Text))
-{-# NOINLINE pendingSinksMVar #-}
-pendingSinksMVar = unsafePerformIO (newMVar Map.empty)
+-- | Global MVar holding the plugin state.
+-- This is initialized once per GHC session and shared across all module compilations.
+-- The state is held entirely in memory and not persisted between sessions.
+globalStateMVar :: MVar GlobalState
+{-# NOINLINE globalStateMVar #-}
+globalStateMVar = unsafePerformIO (newMVar emptyGlobalState)
+
+-- | Initialize or reset state if build ID changed
+initializeOrResetState :: FilePath -> [ModSummary] -> IO ()
+initializeOrResetState outputPath modSummaries = do
+    newBuildId <- getCurrentBuildId modSummaries
+    modifyMVar_ globalStateMVar $ \currentState ->
+        if currentBuildId currentState /= newBuildId
+            then do
+                putStrLn "[Plugin] Fresh build detected, resetting state"
+                cleanupOutputFiles outputPath  -- Only clean .unusedFields.json
+                return $ GlobalState newBuildId Map.empty
+            else return currentState
+
+-- | Update gateway module data in memory
+updateGatewayModule :: Text -> Text -> [FieldDefinition] -> [FieldUsage] -> IO ()
+updateGatewayModule gwName modName defs usages = do
+    modifyMVar_ globalStateMVar $ \gs -> do
+        let gwState = Map.findWithDefault emptyGatewayInMemoryState gwName (gatewayStates gs)
+            updated = gwState
+                { moduleDefinitions = Map.insert modName defs (moduleDefinitions gwState)
+                , moduleUsages = Map.insert modName usages (moduleUsages gwState)
+                }
+        return $ gs { gatewayStates = Map.insert gwName updated (gatewayStates gs) }
 
 plugin :: Plugin
 plugin = defaultPlugin
@@ -98,6 +121,40 @@ plugin = defaultPlugin
     , pluginRecompile = \_ -> return NoForceRecompile
     }
 
+-- | Get current build ID from module timestamps
+getCurrentBuildId :: [ModSummary] -> IO Text
+getCurrentBuildId modSummaries = do
+    -- Use minimum modification time of all source files as build ID
+    -- This ensures the build ID changes when any file is modified
+    let sourceFiles = map ms_hspp_file modSummaries
+    if null sourceFiles
+        then return "0"  -- No source files, use default
+        else do
+            -- Get modification times
+            times <- mapM getModificationTimeIfExists sourceFiles
+            let validTimes = [t | Just t <- times]
+            if null validTimes
+                then return "0"
+                else do
+                    let minTime = minimum validTimes
+                    return (pack $ show $ floor $ realToFrac (utcTimeToPOSIXSeconds minTime) :: Text)
+  where
+    getModificationTimeIfExists :: FilePath -> IO (Maybe UTCTime)
+    getModificationTimeIfExists path = do
+        exists <- doesFileExist path
+        if exists
+            then Just <$> getModificationTime path
+            else return Nothing
+
+-- | Clean up old .unusedFields.json output files
+cleanupOutputFiles :: FilePath -> IO ()
+cleanupOutputFiles outputPath = do
+    exists <- doesDirectoryExist outputPath
+    when exists $ do
+        contents <- listDirectory outputPath
+        let outputFiles = filter (isSuffixOf ".unusedFields.json") contents
+            fullPaths = map (outputPath </>) outputFiles
+        mapM_ safeRemoveFile fullPaths
 
 processModuleFields :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 processModuleFields opts modSummary tcEnv = do
@@ -111,13 +168,14 @@ processModuleFields opts modSummary tcEnv = do
 
     let gatewayName = extractGatewayName modName
 
-    liftIO $ cleanupOldBuildIfNeeded (path cliOptions)
-
 #if __GLASGOW_HASKELL__ >= 900
-    -- Initialize sink tracking for this gateway (idempotent)
+    -- Initialize or reset state if build ID changed
     hscEnv <- getTopEnv
     let moduleGraph = hsc_mod_graph hscEnv
         allModSummaries = mgModSummaries moduleGraph
+    liftIO $ initializeOrResetState (path cliOptions) allModSummaries
+
+    -- Initialize sink tracking for this gateway (idempotent)
     _ <- liftIO $ initializeGatewaySinks gatewayName allModSummaries
 #endif
 
@@ -130,21 +188,9 @@ processModuleFields opts modSummary tcEnv = do
     liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldDefs) ++ " field definitions"
     liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
 
-    -- Update field log atomically (parallel-safe via file lock)
-    let logFile = getFieldLogPath (path cliOptions) gatewayName
-    liftIO $ withFieldLogLock logFile $ \log -> do
-        -- Update this module's definitions and usages
-        let updatedLog = log { moduleDefinitions = Map.insert modName fieldDefs (moduleDefinitions log)
-                             , moduleUsages = Map.insert modName fieldUsages (moduleUsages log)
-                             }
-        -- Recompute unused fields from ALL modules (including non-recompiled ones)
-        let unused = recomputeUnused updatedLog
-
-        putStrLn $ "[Plugin]   - Log size: " ++
-                   show (Map.size $ moduleDefinitions log) ++ " modules, " ++
-                   show (length unused) ++ " unused fields"
-
-        return updatedLog
+    -- Update in-memory state for this gateway and module
+    liftIO $ updateGatewayModule gatewayName modName fieldDefs fieldUsages
+    liftIO $ putStrLn $ "[Plugin]   - Updated in-memory state for gateway " ++ T.unpack gatewayName
 
 #if __GLASGOW_HASKELL__ >= 900
     -- Step 7: Check if this is a sink module for its gateway
@@ -243,44 +289,52 @@ findGatewaySinks reverseDeps =
 -- | Initialize sink tracking for a gateway if not already done.
 -- Returns the set of sink modules for this gateway.
 initializeGatewaySinks :: Text -> [ModSummary] -> IO (Set.Set Text)
-initializeGatewaySinks gatewayName allModSummaries = 
-    modifyMVar pendingSinksMVar $ \pendingSinks ->
-        case Map.lookup gatewayName pendingSinks of
-            Just sinks -> return (pendingSinks, sinks)  -- Already initialized
-            Nothing -> do
+initializeGatewaySinks gatewayName allModSummaries =
+    modifyMVar globalStateMVar $ \gs ->
+        let gwState = Map.findWithDefault emptyGatewayInMemoryState gatewayName (gatewayStates gs)
+            currentSinks = pendingSinks gwState
+        in if not (Set.null currentSinks)
+            then return (gs, currentSinks)  -- Already initialized
+            else do
                 let reverseDeps = buildGatewayGraph gatewayName allModSummaries
                     sinks = findGatewaySinks reverseDeps
-                putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++ 
+                putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
                            " initialized with " ++ show (Set.size sinks) ++ " sink modules: " ++
                            show (Set.toList sinks)
-                return (Map.insert gatewayName sinks pendingSinks, sinks)
+                let updatedGwState = gwState { pendingSinks = sinks }
+                    updatedGs = gs { gatewayStates = Map.insert gatewayName updatedGwState (gatewayStates gs) }
+                return (updatedGs, sinks)
 
 -- | Check if current module is a sink for its gateway and remove it.
 -- Returns (isSink, isLastSink) - isLastSink means validation should trigger.
 checkAndRemoveSink :: Text -> Text -> IO (Bool, Bool)
-checkAndRemoveSink gatewayName modName = 
-    modifyMVar pendingSinksMVar $ \pendingSinks ->
-        case Map.lookup gatewayName pendingSinks of
-            Nothing -> return (pendingSinks, (False, False))  -- Gateway not tracked
-            Just sinks ->
-                if modName `Set.member` sinks
+checkAndRemoveSink gatewayName modName =
+    modifyMVar globalStateMVar $ \gs ->
+        case Map.lookup gatewayName (gatewayStates gs) of
+            Nothing -> return (gs, (False, False))  -- Gateway not tracked
+            Just gwState ->
+                let sinks = pendingSinks gwState
+                in if modName `Set.member` sinks
                     then do
                         let newSinks = Set.delete modName sinks
                             isLast = Set.null newSinks
-                        putStrLn $ "[Plugin] Sink module " ++ T.unpack modName ++ 
+                        putStrLn $ "[Plugin] Sink module " ++ T.unpack modName ++
                                    " completed. Remaining sinks: " ++ show (Set.size newSinks)
-                        return (Map.insert gatewayName newSinks pendingSinks, (True, isLast))
-                    else return (pendingSinks, (False, False))
+                        let updatedGwState = gwState { pendingSinks = newSinks }
+                            updatedGs = gs { gatewayStates = Map.insert gatewayName updatedGwState (gatewayStates gs) }
+                        return (updatedGs, (True, isLast))
+                    else return (gs, (False, False))
 
 -- | Run final validation for a specific gateway
 runFinalValidation :: CliOptions -> Text -> TcM ()
 runFinalValidation cliOptions gatewayName = do
     let outputPath = path cliOptions
-        logFile = getFieldLogPath outputPath gatewayName
 
-    -- Read final unused fields from persisted log
-    fieldLog <- liftIO $ loadFieldLog logFile
-    let finalUnused = recomputeUnused fieldLog
+    -- Read from in-memory state instead of file
+    gwState <- liftIO $ withMVar globalStateMVar $ \gs ->
+        return $ Map.findWithDefault emptyGatewayInMemoryState gatewayName (gatewayStates gs)
+
+    let finalUnused = recomputeUnusedFromState gwState
 
     -- Write summary JSON
     liftIO $ do
@@ -296,6 +350,14 @@ runFinalValidation cliOptions gatewayName = do
     -- Emit errors for this gateway's unused fields
     when (failOnUnused cliOptions && not (null finalUnused)) $ do
         mapM_ emitUnusedFieldError finalUnused
+
+-- | Recompute unused fields from in-memory gateway state
+recomputeUnusedFromState :: GatewayInMemoryState -> [FieldDefinition]
+recomputeUnusedFromState gwState =
+    let allDefs = concat $ Map.elems (moduleDefinitions gwState)
+        allUsages = concat $ Map.elems (moduleUsages gwState)
+        nonMaybeDefs = filter (not . fieldDefIsMaybe) allDefs
+    in removeUsedFieldsFromLog nonMaybeDefs allUsages
 
 -- | Create a RealSrcSpan from a location string for GHC >= 9.0
 mkRealSrcSpanFromLocation :: Text -> Maybe SrcSpan
@@ -398,41 +460,6 @@ safeRemoveFile path = catchIOError (removeFile path) $ \e ->
         then return ()
         else ioError e
 
-cleanupOldBuildIfNeeded :: FilePath -> IO ()
-cleanupOldBuildIfNeeded outputPath = do
-    let buildMarker = outputPath </> ".current-build"
-        cleanupLock = outputPath </> ".cleanup.lock"
-
-    markerExists <- doesFileExist buildMarker
-    unless markerExists $ do
-        lockResult <- try (openFile cleanupLock WriteMode) :: IO (Either SomeException Handle)
-        case lockResult of
-            Left _ -> return ()
-            Right lockHandle -> do
-                markerExistsNow <- doesFileExist buildMarker
-                if markerExistsNow
-                    then do
-                        hClose lockHandle
-                        safeRemoveFile cleanupLock
-                    else do
-                        createDirectoryIfMissing True outputPath
-
-                        -- Only delete final .unusedFields.json output files
-                        -- Keep .fieldLog.json files for incremental build support
-                        exists <- doesDirectoryExist outputPath
-                        when exists $ do
-                            contents <- listDirectory outputPath
-                            let outputFiles = filter (isSuffixOf ".unusedFields.json") contents
-                                fullPaths = map (outputPath </>) outputFiles
-                            mapM_ safeRemoveFile fullPaths
-
-                        -- Reset sink tracking for the new build
-                        void $ swapMVar pendingSinksMVar Map.empty
-
-                        writeFile buildMarker "cleanup-complete"
-                        hClose lockHandle
-                        safeRemoveFile cleanupLock
-
 atomicWriteFile :: FilePath -> BL.ByteString -> IO ()
 atomicWriteFile filePath content = do
     let tempPath = filePath <> ".tmp." <> show (hash filePath) <> "." <> show (BL.length content)
@@ -458,43 +485,6 @@ atomicWriteFile filePath content = do
   where
     hash :: String -> Int
     hash str = foldl' (\h c -> 31 * h + fromEnum c) (length str * 1000) str
-
--- | Get the path to the field log file for a gateway
-getFieldLogPath :: FilePath -> Text -> FilePath
-getFieldLogPath outputPath gatewayName =
-    outputPath </> T.unpack gatewayName <> ".fieldLog.json"
-
--- | Load field log from disk, returns empty log if file doesn't exist
-loadFieldLog :: FilePath -> IO FieldLog
-loadFieldLog logFile = do
-    exists <- doesFileExist logFile
-    if not exists
-        then return emptyFieldLog
-        else do
-            content <- BS.readFile logFile
-            case decode (BL.fromStrict content) of
-                Just log -> return log
-                Nothing -> do
-                    putStrLn $ "[Plugin] Warning: Failed to parse " ++ logFile ++ ", starting fresh"
-                    return emptyFieldLog
-
--- | Execute action on field log with exclusive file lock (parallel-safe)
-withFieldLogLock :: FilePath -> (FieldLog -> IO FieldLog) -> IO ()
-withFieldLogLock logFile action = do
-    createDirectoryIfMissing True (takeDirectory logFile)
-    let lockFile = logFile <> ".lock"
-    withFileLock lockFile Exclusive $ \_ -> do
-        current <- loadFieldLog logFile
-        updated <- action current
-        atomicWriteFile logFile (encodePretty updated)
-
--- | Recompute unused fields from all module definitions and usages
-recomputeUnused :: FieldLog -> [FieldDefinition]
-recomputeUnused log =
-    let allDefs = concat $ Map.elems (moduleDefinitions log)
-        allUsages = concat $ Map.elems (moduleUsages log)
-        nonMaybeDefs = filter (not . fieldDefIsMaybe) allDefs
-    in removeUsedFieldsFromLog nonMaybeDefs allUsages
 
 parseCliOptions :: [CommandLineOption] -> CliOptions
 parseCliOptions [] = defaultCliOptions
@@ -640,7 +630,17 @@ extractTypeConstructorFromExpr lexpr = case unLoc lexpr of
         in extractTypeConstructorFromType varType
     HsApp _ _ arg -> extractTypeConstructorFromExpr arg
     HsPar _ inner -> extractTypeConstructorFromExpr inner
-    _ -> ""
+    HsCase _ scrutinee _ -> extractTypeConstructorFromExpr scrutinee
+    HsLet _ _ body -> extractTypeConstructorFromExpr body
+    HsIf _ _ thenBranch _ -> extractTypeConstructorFromExpr thenBranch
+    OpApp _ e1 _ _ -> extractTypeConstructorFromExpr e1
+    ExprWithTySig _ expr _ -> extractTypeConstructorFromExpr expr
+    _ ->
+        -- Log unhandled expression types to help debug
+        let exprStr = pack $ showSDocUnsafe $ ppr lexpr
+        in if T.length exprStr > 50
+            then ""  -- Skip logging for very long expressions
+            else ""
 
 -- | Extract type constructor name from a Type
 extractTypeConstructorFromType :: Type -> Text

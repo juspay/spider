@@ -8,6 +8,7 @@ import Data.Aeson
 import Data.Binary
 import Data.Text (Text)
 import qualified Data.Map.Strict as Map
+import qualified Data.Set as Set
 import Control.DeepSeq
 import GHC.Generics (Generic)
 import Prelude hiding (log)
@@ -71,14 +72,23 @@ data FieldUsage = FieldUsage
 -- This is a list of FieldDefinition entries that haven't been marked as used yet
 type UnusedFieldLog = [FieldDefinition]
 
--- | Persistent field log for a gateway (used for incremental build support)
--- Stores field definitions and usages per-module, allowing us to recompute
--- unused fields even when some modules aren't recompiled
-data FieldLog = FieldLog
-    { moduleDefinitions :: Map.Map Text [FieldDefinition]  -- ^ Module name -> field definitions from that module
-    , moduleUsages :: Map.Map Text [FieldUsage]            -- ^ Module name -> field usages in that module
+-- | In-memory global state for all gateways (held in MVar during GHC session)
+data GlobalState = GlobalState
+    { currentBuildId :: Text                              -- ^ Build ID to detect fresh builds
+    , gatewayStates :: Map.Map Text GatewayInMemoryState  -- ^ Per-gateway in-memory state
     } deriving (Show, Eq, Generic, ToJSON, FromJSON)
 
--- | Empty field log for initialization
-emptyFieldLog :: FieldLog
-emptyFieldLog = FieldLog Map.empty Map.empty
+-- | Per-gateway in-memory state (not persisted between sessions)
+data GatewayInMemoryState = GatewayInMemoryState
+    { moduleDefinitions :: Map.Map Text [FieldDefinition]  -- ^ Module name -> field definitions
+    , moduleUsages :: Map.Map Text [FieldUsage]            -- ^ Module name -> field usages
+    , pendingSinks :: Set.Set Text                         -- ^ Sink modules pending completion
+    } deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+-- | Empty global state for initialization
+emptyGlobalState :: GlobalState
+emptyGlobalState = GlobalState "" Map.empty
+
+-- | Empty gateway in-memory state for initialization
+emptyGatewayInMemoryState :: GatewayInMemoryState
+emptyGatewayInMemoryState = GatewayInMemoryState Map.empty Map.empty Set.empty

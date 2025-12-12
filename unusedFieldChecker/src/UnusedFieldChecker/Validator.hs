@@ -67,8 +67,10 @@ removeUsedFieldsFromLog logEntries usages =
     isFieldUsed :: [FieldUsage] -> FieldDefinition -> Bool
     isFieldUsed usageList fieldDef = any (matchesField fieldDef) usageList
 
-    -- | Strict matching: requires both typeConstructor and fieldName to match.
-    -- No fallback matching - if either side has empty typeConstructor, no match.
+    -- | Field matching with fallback strategy:
+    -- - If both type constructors are available: strict match (type + name)
+    -- - If type constructor unavailable: fallback to name-only match
+    -- This prevents false positives when type extraction fails.
     matchesField :: FieldDefinition -> FieldUsage -> Bool
     matchesField fieldDef usage =
         let defTypeConstructor = fieldDefTypeConstructor fieldDef
@@ -77,10 +79,11 @@ removeUsedFieldsFromLog logEntries usages =
             usageFieldName = fieldUsageName usage
             nameMatches = defFieldName == usageFieldName
             typeMatches = defTypeConstructor == usageTypeConstructor
-                
-        in if T.null defTypeConstructor || T.null usageTypeConstructor
-            then False  -- Require both to have type constructors
-            else nameMatches && typeMatches  -- Strict match
+            hasTypes = not (T.null defTypeConstructor) && not (T.null usageTypeConstructor)
+
+        in if hasTypes
+            then nameMatches && typeMatches  -- Strict match when types available
+            else nameMatches  -- Fallback: name-only match when type extraction failed
 
 -- | Generate error reports for unused fields
 reportUnusedFields :: [FieldDefinition] -> [(Text, Text, Text)]
