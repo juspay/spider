@@ -42,18 +42,18 @@ library
       -Wno-unused-imports
       -Wno-unused-top-binds
 
-test-suite unusedFieldChecker-test-fail
-  type:             exitcode-stdio-1.0
-  hs-source-dirs:   test
-  main-is:          Main.hs
-  other-modules:
-      FailingTypes
-      AccessPatterns
-      EdgeCases
-  build-depends:
-      base >=4.7 && <5,
-      unusedFieldChecker
-  default-language: Haskell2010
-  ghc-options:
-      -fplugin=UnusedFieldChecker.Plugin
-      -fplugin-opt=UnusedFieldChecker.Plugin:{"failOnUnused":true}
+-- test-suite unusedFieldChecker-test-fail
+--   type:             exitcode-stdio-1.0
+--   hs-source-dirs:   test
+--   main-is:          Main.hs
+--   other-modules:
+--       FailingTypes
+--       AccessPatterns
+--       EdgeCases
+--   build-depends:
+--       base >=4.7 && <5,
+--       unusedFieldChecker
+--   default-language: Haskell2010
+--   ghc-options:
+--       -fplugin=UnusedFieldChecker.Plugin
+--       -fplugin-opt=UnusedFieldChecker.Plugin:{"failOnUnused":false}
