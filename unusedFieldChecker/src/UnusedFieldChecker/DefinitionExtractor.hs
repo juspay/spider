@@ -26,9 +26,9 @@ import GHC.Tc.Types
 import GHC.Tc.Utils.Env (tcLookupClass)
 import GHC.Tc.Utils.Monad (getEps, getEpsVar, getGblEnv)
 import GHC.Types.FieldLabel
-import GHC.Types.Name
+import GHC.Types.Name (nameSrcSpan, getOccString, nameStableString, getSrcSpan, nameModule_maybe)
 import GHC.Types.SrcLoc
-import GHC.Types.Id (idUnfolding)
+import GHC.Types.Id (idUnfolding, idName)
 import GHC.Unit.External (eps_inst_env)
 import GHC.Unit.Module.ModGuts
 import GHC.Unit.Types (Unit, moduleUnit, unitString)
@@ -60,9 +60,12 @@ import Control.Monad (forM)
 import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text, pack)
 import qualified Data.Text as T
-import Data.List (find)
-import Data.Maybe (catMaybes)
+import Data.List (find, stripPrefix, isInfixOf)
+import Data.Maybe (catMaybes, listToMaybe)
 import UnusedFieldChecker.Types
+import System.IO (readFile)
+import System.IO.Error (tryIOError)
+import Text.Read (readMaybe)
 
 #if __GLASGOW_HASKELL__ >= 900
 extractFieldDefinitions :: Text -> Unit -> TcGblEnv -> TcM [FieldDefinition]
@@ -135,33 +138,119 @@ extractStringFromCoreExpr lit =
 -- Extract list from Core expression and handle errors
 extractListFromCoreExpr :: CoreExpr -> Int -> TcM [String]
 extractListFromCoreExpr expr _ = do
+    liftIO $ putStrLn $ "[FieldChecker] Attempting to extract list from Core: " ++ Out.showSDocUnsafe (Out.ppr expr)
     case extractStringList expr of
-        Just strings -> return strings
+        Just strings -> do
+            liftIO $ putStrLn $ "[FieldChecker] Successfully extracted: " ++ show strings
+            return strings
         Nothing -> do
             liftIO $ putStrLn $ "[FieldChecker] Could not extract string list from Core"
             return []
+
+-- Parse excludedFields from source code
+-- Pattern: excludedFields _ = ["field1", "field2", ...]
+parseExcludedFieldsFromSource :: String -> [String]
+parseExcludedFieldsFromSource source =
+    case findExcludedFieldsLine source of
+        Nothing -> []
+        Just line -> extractStringsFromList line
+
+-- Find the line containing "excludedFields _"
+findExcludedFieldsLine :: String -> Maybe String
+findExcludedFieldsLine source =
+    let sourceLines = lines source
+        excluded = filter ("excludedFields" `isInfixOf`) sourceLines
+    in listToMaybe excluded
+
+-- Extract string list from a line like: excludedFields _ = ["a", "b"]
+extractStringsFromList :: String -> [String]
+extractStringsFromList line =
+    case dropWhile (/= '[') line of
+        "" -> []
+        rest -> parseStringList rest
+
+-- Parse strings from a list literal ["str1", "str2"]
+parseStringList :: String -> [String]
+parseStringList s = case s of
+    ('[':rest) -> parseElements rest
+    _ -> []
+  where
+    parseElements [] = []
+    parseElements (']':_) = []
+    parseElements ('"':rest) =
+        let (str, afterStr) = span (/= '"') rest
+        in case afterStr of
+            ('"':',':afterComma) -> str : parseElements (dropWhile (\c -> c == ' ' || c == '\n') afterComma)
+            ('"':']':_) -> [str]
+            ('"':other) -> str : parseElements (dropWhile (not . (== '[')) other)
+            _ -> []
+    parseElements (',':rest) = parseElements (dropWhile (\c -> c == ' ' || c == '\n') rest)
+    parseElements (' ':rest) = parseElements rest
+    parseElements ('\n':rest) = parseElements rest
+    parseElements (_:rest) = parseElements rest
+
+-- Try to read source file and extract excludedFields from it
+tryExtractFromSource :: FilePath -> Int -> Int -> TcM [String]
+tryExtractFromSource filePath startLine endLine = do
+    liftIO $ do
+        result <- tryIOError $ readFile filePath
+        case result of
+            Left err -> do
+                putStrLn $ "[FieldChecker] Failed to read source file " ++ filePath ++ ": " ++ show err
+                return []
+            Right fileContent -> do
+                let sourceLines = lines fileContent
+                    -- Read from startLine to at least endLine+5 to catch multi-line instances
+                    numLines = min (startLine + 10) (length sourceLines)
+                    relevantLines = take (numLines - startLine + 1)
+                                         (drop (startLine - 1) sourceLines)
+                    relevantSource = unlines relevantLines
+                putStrLn $ "[FieldChecker] Extracted source lines " ++ show startLine ++ "-" ++ show numLines
+                putStrLn $ "[FieldChecker] Source:\n" ++ relevantSource
+                let excluded = parseExcludedFieldsFromSource relevantSource
+                putStrLn $ "[FieldChecker] Parsed excludedFields from source: " ++ show excluded
+                return excluded
 
 -- Extract excluded fields from a FieldChecker instance
 extractExcludedFieldsFromInst :: ClsInst -> TcM [String]
 extractExcludedFieldsFromInst inst = do
     let dfun = is_dfun inst            -- Dictionary function Id
         unfolding = idUnfolding dfun   -- Get the unfolding/implementation
+        dfunName = getOccString dfun
+
+    liftIO $ putStrLn $ "[FieldChecker] Attempting to extract excludedFields from instance dfun: " ++ dfunName
 
     case unfolding of
         -- Standard unfolding with Core expression
-        CoreUnfolding { uf_tmpl = coreExpr } ->
+        CoreUnfolding { uf_tmpl = coreExpr } -> do
+            liftIO $ putStrLn $ "[FieldChecker] Got CoreUnfolding"
             extractListFromCoreExpr coreExpr 0
 
         -- Dictionary function unfolding (methods as arguments)
         DFunUnfolding { df_args = args } -> do
+            liftIO $ putStrLn $ "[FieldChecker] Got DFunUnfolding with " ++ show (length args) ++ " args"
+            mapM_ (\(i, arg) -> liftIO $ putStrLn $ "[FieldChecker] Arg " ++ show i ++ ": " ++ Out.showSDocUnsafe (Out.ppr arg)) (zip [0..] args)
             -- excludedFields is the first method (index 0)
             if not (null args)
                 then extractListFromCoreExpr (head args) 0
                 else return []
 
         _ -> do
-            liftIO $ putStrLn "[FieldChecker] Warning: Cannot access dictionary unfolding"
-            return []
+            -- No unfolding available - try to extract from source code
+            liftIO $ putStrLn $ "[FieldChecker] No Core unfolding available, attempting source code extraction"
+
+            -- Try to get the location of the instance definition from the dfun
+            let dfunLoc = nameSrcSpan (idName dfun)
+            case dfunLoc of
+                RealSrcSpan rss _ -> do
+                    let filePath = unpackFS (srcSpanFile rss)
+                        startLine = srcSpanStartLine rss
+                        endLine = srcSpanEndLine rss
+                    liftIO $ putStrLn $ "[FieldChecker] Instance defined at " ++ filePath ++ ":" ++ show startLine ++ "-" ++ show endLine
+                    tryExtractFromSource filePath startLine endLine
+                _ -> do
+                    liftIO $ putStrLn $ "[FieldChecker] No real source location available for instance"
+                    return []
 
 #endif
 

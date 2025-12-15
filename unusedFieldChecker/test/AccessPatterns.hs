@@ -19,7 +19,8 @@ data Product = Product
     , productOptional :: Maybe String
     } deriving (Show, Generic)
 
-instance FieldChecker Product
+instance FieldChecker Product where
+    excludedFields _ = ["productDescription", "productCategory", "productStock", "productPrice"]
 
 -- 1. Accessor function pattern
 getProductInfo :: Product -> String
@@ -66,7 +67,8 @@ data Customer = Customer
     , customerPhone :: Maybe String
     } deriving (Show, Generic)
 
-instance FieldChecker Customer
+instance FieldChecker Customer where
+    excludedFields _ = ["customerName", "customerId"]
 
 -- 7. Multiple pattern matches
 customerContact :: Customer -> String
@@ -84,7 +86,8 @@ data Order = Order
     , orderNotes :: Maybe String
     } deriving (Show, Generic)
 
-instance FieldChecker Order
+instance FieldChecker Order where
+    excludedFields _ = ["orderId", "orderCustomer", "orderProduct", "orderQuantity"]
 
 orderSummary :: Order -> String
 orderSummary order =

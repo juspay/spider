@@ -136,3 +136,17 @@ instance FieldChecker UnpackedRecord
 
 useUnpackedRecord :: UnpackedRecord -> String
 useUnpackedRecord r = show (unpackedInt r) ++ ": " ++ regularField r
+
+-- Test case for excludedFields functionality
+data TestExcluded = TestExcluded
+    { usedField :: String
+    , excludedField1 :: String
+    , excludedField2 :: Int
+    , maybeField :: Maybe Bool
+    } deriving (Show, Generic)
+
+instance FieldChecker TestExcluded where
+    excludedFields _ = ["excludedField1", "excludedField2"]
+
+useTestExcluded :: TestExcluded -> String
+useTestExcluded t = "Used: " ++ usedField t
