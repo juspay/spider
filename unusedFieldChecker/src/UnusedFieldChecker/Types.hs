@@ -13,10 +13,9 @@ import Control.DeepSeq
 import GHC.Generics (Generic)
 import Prelude hiding (log)
 
--- | CLI options for the plugin
 data CliOptions = CliOptions
-    { path :: FilePath              -- ^ Output directory for JSON files
-    , failOnUnused :: Bool          -- ^ If True, emit compilation errors for unused fields
+    { path :: FilePath             
+    , failOnUnused :: Bool        
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 defaultCliOptions :: CliOptions
@@ -25,7 +24,6 @@ defaultCliOptions = CliOptions
     , failOnUnused = True
     }
 
--- | A field definition extracted from a type with FieldChecker instance
 data FieldDefinition = FieldDefinition
     { fieldDefName :: Text              -- ^ Field name
     , fieldDefType :: Text              -- ^ Field type as string
@@ -40,7 +38,6 @@ data FieldDefinition = FieldDefinition
     , fieldDefHasFieldChecker :: Bool   -- ^ True if type has FieldChecker instance
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
--- | Type of field usage detected in code
 data UsageType
     = AccessorFunction     -- ^ Direct accessor function call
     | PatternMatch         -- ^ Pattern match on record
@@ -58,7 +55,6 @@ data UsageType
     | RecordUpdate         -- ^ Record update syntax
     deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
--- | A detected field usage in code
 data FieldUsage = FieldUsage
     { fieldUsageName :: Text            -- ^ Field name being used
     , fieldUsageType :: UsageType       -- ^ Type of usage
@@ -68,8 +64,6 @@ data FieldUsage = FieldUsage
     , fieldUsageTypeConstructor :: Text -- ^ Type constructor for matching
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
--- | Type alias for the unused field log stored in JSON
--- This is a list of FieldDefinition entries that haven't been marked as used yet
 type UnusedFieldLog = [FieldDefinition]
 
 -- | In-memory global state for all gateways (held in MVar during GHC session)
@@ -93,8 +87,6 @@ emptyGlobalState = GlobalState "" Map.empty
 emptyGatewayInMemoryState :: GatewayInMemoryState
 emptyGatewayInMemoryState = GatewayInMemoryState Map.empty Map.empty Set.empty
 
--- | Output format for .unusedFields.json files
--- Contains all data needed for incremental builds plus computed unused fields
 data GatewayOutput = GatewayOutput
     { outputModuleDefinitions :: Map.Map Text [FieldDefinition]  -- ^ Module name -> field definitions
     , outputModuleUsages :: Map.Map Text [FieldUsage]            -- ^ Module name -> field usages  

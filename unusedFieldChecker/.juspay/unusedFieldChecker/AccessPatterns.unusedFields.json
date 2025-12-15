@@ -1,0 +1,966 @@
+{
+    "outputModuleDefinitions": {
+        "AccessPatterns": [
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Order",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(79,14)-(85,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "orderId",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Int",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Order",
+                "fieldDefTypeName": "Order"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Order",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(79,14)-(85,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "orderCustomer",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Customer",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Order",
+                "fieldDefTypeName": "Order"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Order",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(79,14)-(85,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "orderProduct",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Product",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Order",
+                "fieldDefTypeName": "Order"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Order",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(79,14)-(85,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "orderQuantity",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Int",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Order",
+                "fieldDefTypeName": "Order"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Order",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": true,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(79,14)-(85,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "orderNotes",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Maybe String",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Order",
+                "fieldDefTypeName": "Order"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Customer",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(62,17)-(67,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "customerId",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Int",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Customer",
+                "fieldDefTypeName": "Customer"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Customer",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(62,17)-(67,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "customerName",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "String",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Customer",
+                "fieldDefTypeName": "Customer"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Customer",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(62,17)-(67,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "customerEmail",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "String",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Customer",
+                "fieldDefTypeName": "Customer"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Customer",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": true,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(62,17)-(67,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "customerPhone",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Maybe String",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Customer",
+                "fieldDefTypeName": "Customer"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "productName",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "String",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+                "fieldDefTypeName": "Product"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "productPrice",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Double",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+                "fieldDefTypeName": "Product"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "productStock",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Int",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+                "fieldDefTypeName": "Product"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "productCategory",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "String",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+                "fieldDefTypeName": "Product"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "productDescription",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "String",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+                "fieldDefTypeName": "Product"
+            },
+            {
+                "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": true,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+                "fieldDefModule": "AccessPatterns",
+                "fieldDefName": "productOptional",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Maybe String",
+                "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+                "fieldDefTypeName": "Product"
+            }
+        ]
+    },
+    "outputModuleUsages": {
+        "AccessPatterns": [
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:161:21-37",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderId",
+                "fieldUsageType": "NamedFieldPuns",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:157:30-52",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderQuantity",
+                "fieldUsageType": "NamedFieldPuns",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(150,5)-(153,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderQuantity",
+                "fieldUsageType": "RecordUpdate",
+                "fieldUsageTypeConstructor": "order",
+                "fieldUsageTypeName": "order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(150,5)-(153,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderCustomer",
+                "fieldUsageType": "RecordUpdate",
+                "fieldUsageTypeConstructor": "order",
+                "fieldUsageTypeName": "order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:152:27-76",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerEmail",
+                "fieldUsageType": "RecordUpdate",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:100:5-48",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderQuantity",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:100:5-48",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderId",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:73:17-78",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerEmail",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:73:17-78",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerPhone",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:75:17-50",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerEmail",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:59:5-39",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productPrice",
+                "fieldUsageType": "RecordUpdate",
+                "fieldUsageTypeConstructor": "product",
+                "fieldUsageTypeName": "product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(47,5)-(54,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productName",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(47,5)-(54,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productPrice",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(47,5)-(54,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productStock",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(47,5)-(54,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productCategory",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(47,5)-(54,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productDescription",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(47,5)-(54,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productOptional",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(132,16)-(137,13)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerId",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(132,16)-(137,13)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerName",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(132,16)-(137,13)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerEmail",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(132,16)-(137,13)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerPhone",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:138:16-37",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "createProduct",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(139,12)-(145,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderId",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(139,12)-(145,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderCustomer",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(139,12)-(145,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderProduct",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(139,12)-(145,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderQuantity",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:(139,12)-(145,9)",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderNotes",
+                "fieldUsageType": "RecordConstruct",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:41:17-28",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "..",
+                "fieldUsageType": "RecordWildCards",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:41:17-28",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productName",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:41:17-28",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productPrice",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:41:17-28",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productStock",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:41:17-28",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productCategory",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:41:17-28",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productDescription",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:41:17-28",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productOptional",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:42:5-64",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "unwords",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:36:12-35",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productStock",
+                "fieldUsageType": "NamedFieldPuns",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:31:17-69",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productName",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:31:17-69",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productCategory",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:80:7-13",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderId",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:81:7-19",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderCustomer",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:82:7-18",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderProduct",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:83:7-19",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderQuantity",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:84:7-16",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "orderNotes",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Order",
+                "fieldUsageTypeName": "Order"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:63:7-16",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerId",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:64:7-18",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerName",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:65:7-19",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerEmail",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:66:7-19",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "customerPhone",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Customer",
+                "fieldUsageTypeName": "Customer"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:14:7-17",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productName",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:15:7-18",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productPrice",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:16:7-18",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productStock",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:17:7-21",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productCategory",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:18:7-24",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productDescription",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/AccessPatterns.hs:19:7-21",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "productOptional",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Product",
+                "fieldUsageTypeName": "Product"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showParen",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showParen",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showParen",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "AccessPatterns",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            }
+        ]
+    },
+    "outputUnusedFields": [
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Order",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(79,14)-(85,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "orderId",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "Int",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Order",
+            "fieldDefTypeName": "Order"
+        },
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Order",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(79,14)-(85,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "orderCustomer",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "Customer",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Order",
+            "fieldDefTypeName": "Order"
+        },
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Order",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(79,14)-(85,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "orderProduct",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "Product",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Order",
+            "fieldDefTypeName": "Order"
+        },
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Order",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(79,14)-(85,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "orderQuantity",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "Int",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Order",
+            "fieldDefTypeName": "Order"
+        },
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Customer",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(62,17)-(67,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "customerId",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "Int",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Customer",
+            "fieldDefTypeName": "Customer"
+        },
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Customer",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(62,17)-(67,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "customerName",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "String",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Customer",
+            "fieldDefTypeName": "Customer"
+        },
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "productName",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "String",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+            "fieldDefTypeName": "Product"
+        },
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "productPrice",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "Double",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+            "fieldDefTypeName": "Product"
+        },
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "productStock",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "Int",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+            "fieldDefTypeName": "Product"
+        },
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "productCategory",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "String",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+            "fieldDefTypeName": "Product"
+        },
+        {
+            "fieldDefFullyQualifiedType": "AccessPatterns.Product",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/AccessPatterns.hs:(13,16)-(20,5)",
+            "fieldDefModule": "AccessPatterns",
+            "fieldDefName": "productDescription",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "String",
+            "fieldDefTypeConstructor": "$main$AccessPatterns$Product",
+            "fieldDefTypeName": "Product"
+        }
+    ]
+}

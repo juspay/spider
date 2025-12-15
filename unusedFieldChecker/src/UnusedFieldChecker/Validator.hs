@@ -15,18 +15,14 @@ import Data.Text (Text)
 import qualified Data.Text as T
 import UnusedFieldChecker.Types
 
--- | Add new field definitions to the unused field log.
--- If a field with the same (typeName, fieldName) already exists, it is replaced.
--- Only non-Maybe fields are added to the log.
 addFieldsToLog :: [FieldDefinition] -> UnusedFieldLog -> UnusedFieldLog
 addFieldsToLog newFields existingLog =
-    let -- Filter to only non-Maybe fields from new definitions
+    let 
         nonMaybeNewFields = filter (not . fieldDefIsMaybe) newFields
         
-        -- Create a combined list with new fields first (so nubBy keeps them)
         combined = nonMaybeNewFields ++ existingLog
         
-        -- Remove duplicates, keeping the first occurrence (new fields take precedence)
+
     in nubBy sameField combined
   where
     sameField :: FieldDefinition -> FieldDefinition -> Bool
@@ -34,16 +30,12 @@ addFieldsToLog newFields existingLog =
         fieldDefTypeName f1 == fieldDefTypeName f2 &&
         fieldDefName f1 == fieldDefName f2
 
--- | Remove used fields from the log based on detected usages.
--- Uses strict matching: (fieldDefTypeConstructor, fieldDefName) == (fieldUsageTypeConstructor, fieldUsageName)
--- Filters out RecordWildCards, TemplateHaskell, DerivedInstances, and DataSYB usages.
 removeUsedFieldsFromLog :: UnusedFieldLog -> [FieldUsage] -> UnusedFieldLog
 removeUsedFieldsFromLog logEntries usages =
-    let -- Filter out non-real usages
+    let 
         realUsages = filter isRealUsage usages
     in filter (not . isFieldUsed realUsages) logEntries
   where
-    -- | Check if a usage type counts as real field usage
     isRealUsage :: FieldUsage -> Bool
     isRealUsage usage = case fieldUsageType usage of
         RecordWildCards -> False   -- ".." doesn't count as explicit field usage
@@ -62,15 +54,9 @@ removeUsedFieldsFromLog logEntries usages =
         RecordConstruct -> True
         RecordUpdate -> True
 
-    -- | Check if a field definition is used by any of the usages
-    -- Uses strict matching on (typeConstructor, fieldName)
     isFieldUsed :: [FieldUsage] -> FieldDefinition -> Bool
     isFieldUsed usageList fieldDef = any (matchesField fieldDef) usageList
 
-    -- | Field matching with fallback strategy:
-    -- - If both type constructors are available: strict match (type + name)
-    -- - If type constructor unavailable: fallback to name-only match
-    -- This prevents false positives when type extraction fails.
     matchesField :: FieldDefinition -> FieldUsage -> Bool
     matchesField fieldDef usage =
         let defTypeConstructor = fieldDefTypeConstructor fieldDef
@@ -85,7 +71,6 @@ removeUsedFieldsFromLog logEntries usages =
             then nameMatches && typeMatches  -- Strict match when types available
             else nameMatches  -- Fallback: name-only match when type extraction failed
 
--- | Generate error reports for unused fields
 reportUnusedFields :: [FieldDefinition] -> [(Text, Text, Text)]
 reportUnusedFields fields = map generateSimpleError fields
   where

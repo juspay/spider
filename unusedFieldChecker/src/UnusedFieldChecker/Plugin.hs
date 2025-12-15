@@ -355,8 +355,6 @@ initializeGatewaySinks outputPath gatewayName allModSummaries =
                     updatedGs = gs { gatewayStates = Map.insert gatewayName updatedGwState (gatewayStates gs) }
                 return (updatedGs, sinks)
 
--- | Check if current module is a sink for its gateway and remove it.
--- Returns (isSink, isLastSink) - isLastSink means validation should trigger.
 checkAndRemoveSink :: Text -> Text -> IO (Bool, Bool)
 checkAndRemoveSink gatewayName modName =
     modifyMVar globalStateMVar $ \gs ->
@@ -476,8 +474,6 @@ emitUnusedFieldError fieldDef = do
     setSrcSpan srcSpan $ addErr (text (T.unpack errorMsg))
 #endif
 
--- | Load unused fields from a single .unusedFields.json file
--- Handles both old format (just list) and new format (GatewayOutput with outputUnusedFields)
 loadUnusedFieldLog :: FilePath -> IO UnusedFieldLog
 loadUnusedFieldLog filePath = do
     exists <- doesFileExist filePath
@@ -1026,8 +1022,6 @@ extractLensUsageWithType modName loc typeCon lexpr = case unLoc lexpr of
         let opName = pack $ getOccString opId
         if opName == "."
             then do
-                -- For composed lenses like `foo . bar`, we can't easily determine
-                -- intermediate types, so we use the provided typeCon for the first lens
                 u1 <- extractLensUsageWithType modName loc typeCon e1
                 u2 <- extractLensUsageWithType modName loc "" e2
                 return $ u1 ++ u2
@@ -1063,8 +1057,7 @@ extractLensUsage modName loc lexpr = return []
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
--- | Composition fields extraction is disabled because we cannot reliably
--- determine the type constructor for composed functions.
+
 extractCompositionFields :: Text -> SrcSpanAnnA -> LHsExpr GhcTc -> LHsExpr GhcTc -> TcM [FieldUsage]
 extractCompositionFields _ _ _ _ = return []
 #else
