@@ -1,0 +1,144 @@
+{
+    "Main": {
+        "addSurcharge": [
+            "surchargeAmount"
+        ],
+        "addToAmount": [
+            "surchargeAmount"
+        ],
+        "amountList": [
+            "surchargeAmount"
+        ],
+        "checkAmount": [
+            "surchargeAmount"
+        ],
+        "getSurchargeWithTypeApp": [
+            "surchargeAmount"
+        ],
+        "john": [
+            "surchargeAmount"
+        ],
+        "listAmount": [
+            "surchargeAmount"
+        ],
+        "myAmount": [
+            "surchargeAmount"
+        ],
+        "myAmount1": [
+            "surchargeAmount"
+        ],
+        "negativeAmount": [
+            "surchargeAmount"
+        ],
+        "newPerson": [
+            "surchargeAmount"
+        ],
+        "newPerson1": [
+            "surchargeAmount"
+        ],
+        "optimizedAmount": [
+            "surchargeAmount"
+        ],
+        "parallelAmounts": [
+            "surchargeAmount"
+        ],
+        "processAmount": [
+            "surchargeAmount"
+        ],
+        "staticAmount": [
+            "surchargeAmount"
+        ],
+        "testDo": [
+            "surchargeAmount"
+        ],
+        "testLet": [
+            "surchargeAmount"
+        ],
+        "testMultiIf": [
+            "surchargeAmount"
+        ],
+        "tupleAmount": [
+            "surchargeAmount"
+        ],
+        "updatePerson": [
+            "surchargeAmount"
+        ],
+        "val": [
+            "surchargeAmount"
+        ],
+        "value": [
+            "surchargeAmount"
+        ]
+    },
+    "Test1": {
+        "addSurcharge": [
+            "surchargeAmount"
+        ],
+        "addToAmount": [
+            "surchargeAmount"
+        ],
+        "amountList": [
+            "surchargeAmount"
+        ],
+        "checkAmount": [
+            "surchargeAmount"
+        ],
+        "getSurchargeWithTypeApp": [
+            "surchargeAmount"
+        ],
+        "john": [
+            "surchargeAmount"
+        ],
+        "listAmount": [
+            "surchargeAmount"
+        ],
+        "myAmount": [
+            "surchargeAmount"
+        ],
+        "myAmount1": [
+            "surchargeAmount"
+        ],
+        "negativeAmount": [
+            "surchargeAmount"
+        ],
+        "newPerson": [
+            "surchargeAmount"
+        ],
+        "newPerson1": [
+            "surchargeAmount"
+        ],
+        "optimizedAmount": [
+            "surchargeAmount"
+        ],
+        "parallelAmounts": [
+            "surchargeAmount"
+        ],
+        "processAmount": [
+            "surchargeAmount"
+        ],
+        "staticAmount": [
+            "surchargeAmount"
+        ],
+        "testDo": [
+            "surchargeAmount"
+        ],
+        "testLet": [
+            "surchargeAmount"
+        ],
+        "testMultiIf": [
+            "surchargeAmount"
+        ],
+        "tupleAmount": [
+            "surchargeAmount"
+        ],
+        "updatePerson": [
+            "surchargeAmount"
+        ],
+        "val": [
+            "surchargeAmount"
+        ],
+        "value": [
+            "surchargeAmount"
+        ]
+    }
+}
