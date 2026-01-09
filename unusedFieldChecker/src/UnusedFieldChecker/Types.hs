@@ -15,13 +15,15 @@ import Prelude hiding (log)
 
 data CliOptions = CliOptions
     { path :: FilePath             
-    , failOnUnused :: Bool        
+    , failOnUnused :: Bool
+    , logs :: Bool
     } deriving (Show, Eq, Ord, Binary, Generic, NFData, ToJSON, FromJSON)
 
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions
     { path = ".juspay/unusedFieldChecker/"
-    , failOnUnused = True
+    , failOnUnused = False
+    , logs = False
     }
 
 data FieldDefinition = FieldDefinition

@@ -47,43 +47,43 @@ import qualified Data.Text as T
 import UnusedFieldChecker.Types
 
 #if __GLASGOW_HASKELL__ >= 900
-extractFieldUsagesFromCore :: Text -> Unit -> [CoreBind] -> IO [FieldUsage]
-extractFieldUsagesFromCore modName currentPkg binds = do
+extractFieldUsagesFromCore :: Bool -> Text -> Unit -> [CoreBind] -> IO [FieldUsage]
+extractFieldUsagesFromCore enableLogs modName currentPkg binds = do
     let currentPkgName = extractPackageName $ pack $ unitString currentPkg
-    putStrLn $ "[DEBUG PKG] Module: " ++ T.unpack modName ++ " Package: " ++ T.unpack currentPkgName
-    allUsages <- mapM (extractUsagesFromBind modName currentPkgName) binds
+    when enableLogs $ putStrLn $ "[DEBUG PKG] Module: " ++ T.unpack modName ++ " Package: " ++ T.unpack currentPkgName
+    allUsages <- mapM (extractUsagesFromBind enableLogs modName currentPkgName) binds
     return $ concat allUsages
 
-extractUsagesFromBind :: Text -> Text -> CoreBind -> IO [FieldUsage]
-extractUsagesFromBind modName currentPkgName (NonRec binder expr) = do
+extractUsagesFromBind :: Bool -> Text -> Text -> CoreBind -> IO [FieldUsage]
+extractUsagesFromBind enableLogs modName currentPkgName (NonRec binder expr) = do
 #else
-extractFieldUsagesFromCore :: Text -> UnitId -> [CoreBind] -> IO [FieldUsage]
-extractFieldUsagesFromCore modName currentPkg binds = do
+extractFieldUsagesFromCore :: Bool -> Text -> UnitId -> [CoreBind] -> IO [FieldUsage]
+extractFieldUsagesFromCore enableLogs modName currentPkg binds = do
     let currentPkgName = extractPackageName $ pack $ unitIdString currentPkg
-    putStrLn $ "[DEBUG PKG] Module: " ++ T.unpack modName ++ " Package: " ++ T.unpack currentPkgName
-    allUsages <- mapM (extractUsagesFromBind modName currentPkgName) binds
+    when enableLogs $ putStrLn $ "[DEBUG PKG] Module: " ++ T.unpack modName ++ " Package: " ++ T.unpack currentPkgName
+    allUsages <- mapM (extractUsagesFromBind enableLogs modName currentPkgName) binds
     return $ concat allUsages
 
-extractUsagesFromBind :: Text -> Text -> CoreBind -> IO [FieldUsage]
-extractUsagesFromBind modName currentPkgName (NonRec binder expr) = do
+extractUsagesFromBind :: Bool -> Text -> Text -> CoreBind -> IO [FieldUsage]
+extractUsagesFromBind enableLogs modName currentPkgName (NonRec binder expr) = do
 #endif
     let binderName = pack $ getOccString $ idName binder
     
     if isDerivedBinding binderName
         then return []
-        else extractUsagesFromExpr modName currentPkgName expr
+        else extractUsagesFromExpr enableLogs modName currentPkgName expr
 
-extractUsagesFromBind modName currentPkgName (Rec binds) = do
+extractUsagesFromBind enableLogs modName currentPkgName (Rec binds) = do
     usages <- mapM (\(binder, expr) -> 
         let binderName = pack $ getOccString $ idName binder
         in if isDerivedBinding binderName
             then return []
-            else extractUsagesFromExpr modName currentPkgName expr
+            else extractUsagesFromExpr enableLogs modName currentPkgName expr
         ) binds
     return $ concat usages
 
-extractUsagesFromExpr :: Text -> Text -> CoreExpr -> IO [FieldUsage]
-extractUsagesFromExpr modName currentPkgName expr = case expr of
+extractUsagesFromExpr :: Bool -> Text -> Text -> CoreExpr -> IO [FieldUsage]
+extractUsagesFromExpr enableLogs modName currentPkgName expr = case expr of
     Var _ -> return []
     Lit _ -> return []
 #if __GLASGOW_HASKELL__ >= 900
@@ -95,51 +95,51 @@ extractUsagesFromExpr modName currentPkgName expr = case expr of
 #endif
     
     App func args -> do
-        funcUsages <- extractUsagesFromExpr modName currentPkgName func
-        argUsages <- extractUsagesFromExpr modName currentPkgName args
-        hasFieldUsages <- detectHasField modName currentPkgName func args
+        funcUsages <- extractUsagesFromExpr enableLogs modName currentPkgName func
+        argUsages <- extractUsagesFromExpr enableLogs modName currentPkgName args
+        hasFieldUsages <- detectHasField enableLogs modName currentPkgName func args
         return $ funcUsages ++ argUsages ++ hasFieldUsages
     
     Lam binder body -> do
-        bodyUsages <- extractUsagesFromExpr modName currentPkgName body
-        binderUsages <- extractUsagesFromBinder modName currentPkgName binder body
+        bodyUsages <- extractUsagesFromExpr enableLogs modName currentPkgName body
+        binderUsages <- extractUsagesFromBinder enableLogs modName currentPkgName binder body
         return $ binderUsages ++ bodyUsages
     
     Let bind body -> do
-        liftIO $ putStrLn $ "[DEBUG LET] Processing let binding in module: " ++ T.unpack modName
-        bindUsages <- extractUsagesFromBind modName currentPkgName bind
-        liftIO $ putStrLn $ "[DEBUG LET] Bind usages: " ++ show (length bindUsages)
-        bodyUsages <- extractUsagesFromExpr modName currentPkgName body
-        liftIO $ putStrLn $ "[DEBUG LET] Body usages: " ++ show (length bodyUsages)
-        letPatternUsages <- extractLetPatternUsages modName currentPkgName bind
-        liftIO $ putStrLn $ "[DEBUG LET] Pattern usages: " ++ show (length letPatternUsages)
+        when enableLogs $ liftIO $ putStrLn $ "[DEBUG LET] Processing let binding in module: " ++ T.unpack modName
+        bindUsages <- extractUsagesFromBind enableLogs modName currentPkgName bind
+        when enableLogs $ liftIO $ putStrLn $ "[DEBUG LET] Bind usages: " ++ show (length bindUsages)
+        bodyUsages <- extractUsagesFromExpr enableLogs modName currentPkgName body
+        when enableLogs $ liftIO $ putStrLn $ "[DEBUG LET] Body usages: " ++ show (length bodyUsages)
+        letPatternUsages <- extractLetPatternUsages enableLogs modName currentPkgName bind
+        when enableLogs $ liftIO $ putStrLn $ "[DEBUG LET] Pattern usages: " ++ show (length letPatternUsages)
         return $ bindUsages ++ bodyUsages ++ letPatternUsages
     Case scrut _ _ alts -> do
-        scrutUsages <- extractUsagesFromExpr modName currentPkgName scrut
-        altUsages <- mapM (extractUsagesFromAlt modName currentPkgName) alts
+        scrutUsages <- extractUsagesFromExpr enableLogs modName currentPkgName scrut
+        altUsages <- mapM (extractUsagesFromAlt enableLogs modName currentPkgName) alts
         return $ scrutUsages ++ concat altUsages
-    Cast expr' _ -> extractUsagesFromExpr modName currentPkgName expr'
-    Tick _ expr' -> extractUsagesFromExpr modName currentPkgName expr'
+    Cast expr' _ -> extractUsagesFromExpr enableLogs modName currentPkgName expr'
+    Tick _ expr' -> extractUsagesFromExpr enableLogs modName currentPkgName expr'
 
-detectHasField :: Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
-detectHasField modName currentPkgName func args = do
+detectHasField :: Bool -> Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
+detectHasField enableLogs modName currentPkgName func args = do
     case args of
         Var hasFieldVar -> do
             let varName = pack (nameStableString $ idName hasFieldVar)
-            when ("$dHasField" `T.isInfixOf` varName || "getField" `T.isInfixOf` varName) $
+            when enableLogs $ when ("$dHasField" `T.isInfixOf` varName || "getField" `T.isInfixOf` varName) $
                 liftIO $ putStrLn $ "[DEBUG HasField] Found potential HasField: " ++ T.unpack varName
-            detectHasFieldFromVar modName currentPkgName func hasFieldVar
+            detectHasFieldFromVar enableLogs modName currentPkgName func hasFieldVar
         _ -> do
-            lensUsages <- detectLensOperations modName currentPkgName func args
-            recordUsages <- detectRecordOperations modName currentPkgName func args
+            lensUsages <- detectLensOperations enableLogs modName currentPkgName func args
+            recordUsages <- detectRecordOperations enableLogs modName currentPkgName func args
             return $ lensUsages ++ recordUsages
 
-detectHasFieldFromVar :: Text -> Text -> CoreExpr -> Id -> IO [FieldUsage]
-detectHasFieldFromVar modName currentPkgName func hasFieldVar
+detectHasFieldFromVar :: Bool -> Text -> Text -> CoreExpr -> Id -> IO [FieldUsage]
+detectHasFieldFromVar enableLogs modName currentPkgName func hasFieldVar
     | "$_sys$$dHasField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) ||
       "$dHasField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) ||
       "getField" `T.isInfixOf` pack (nameStableString $ idName hasFieldVar) = do
-        liftIO $ putStrLn $ "[DEBUG HasField VAR MATCH] Checking func pattern in module: " ++ T.unpack modName
+        when enableLogs $ liftIO $ putStrLn $ "[DEBUG HasField VAR MATCH] Checking func pattern in module: " ++ T.unpack modName
         case func of
             App (App (App _ (Type fieldNameType)) (Type recordType)) (Type fieldType) -> do
                 let fieldName = extractFieldNameFromType fieldNameType
@@ -150,15 +150,16 @@ detectHasFieldFromVar modName currentPkgName func hasFieldVar
                     packagePattern = "$" <> currentPkgName <> "-"
                     shouldInclude = packagePattern `T.isPrefixOf` typeConstructor
 
-                liftIO $ putStrLn $ "[DEBUG HasField MATCH] Field: " ++ T.unpack fieldName ++
-                                   " Type: " ++ T.unpack typeName ++
-                                   " TypeConstructor: " ++ T.unpack typeConstructor
-                liftIO $ putStrLn $ "[DEBUG HasField FILTER] PackagePattern: " ++ T.unpack packagePattern ++
-                                   " ShouldInclude: " ++ show shouldInclude
+                when enableLogs $ do
+                    liftIO $ putStrLn $ "[DEBUG HasField MATCH] Field: " ++ T.unpack fieldName ++
+                                       " Type: " ++ T.unpack typeName ++
+                                       " TypeConstructor: " ++ T.unpack typeConstructor
+                    liftIO $ putStrLn $ "[DEBUG HasField FILTER] PackagePattern: " ++ T.unpack packagePattern ++
+                                       " ShouldInclude: " ++ show shouldInclude
 
                 if shouldInclude
                     then do
-                        liftIO $ putStrLn $ "[DEBUG HasField INCLUDED] Adding usage for: " ++ T.unpack fieldName
+                        when enableLogs $ liftIO $ putStrLn $ "[DEBUG HasField INCLUDED] Adding usage for: " ++ T.unpack fieldName
                         return [FieldUsage
                             { fieldUsageName = fieldName
                             , fieldUsageType = HasFieldOverloaded
@@ -168,10 +169,10 @@ detectHasFieldFromVar modName currentPkgName func hasFieldVar
                             , fieldUsageTypeConstructor = typeConstructor
                             }]
                     else do
-                        liftIO $ putStrLn $ "[DEBUG HasField FILTERED OUT] Skipping cross-package usage: " ++ T.unpack fieldName
+                        when enableLogs $ liftIO $ putStrLn $ "[DEBUG HasField FILTERED OUT] Skipping cross-package usage: " ++ T.unpack fieldName
                         return []
             _ -> do
-                liftIO $ putStrLn $ "[DEBUG HasField PATTERN MISS] Func pattern doesn't match in module: " ++ T.unpack modName
+                when enableLogs $ liftIO $ putStrLn $ "[DEBUG HasField PATTERN MISS] Func pattern doesn't match in module: " ++ T.unpack modName
                 return []
     | otherwise = return []
 
@@ -205,19 +206,19 @@ extractTypeConstructor ty = case ty of
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
-extractUsagesFromAlt :: Text -> Text -> CoreAlt -> IO [FieldUsage]
-extractUsagesFromAlt modName currentPkgName (Alt altCon boundVars expr) = 
-    extractUsagesFromAlt' modName currentPkgName (altCon, boundVars, expr)
+extractUsagesFromAlt :: Bool -> Text -> Text -> CoreAlt -> IO [FieldUsage]
+extractUsagesFromAlt enableLogs modName currentPkgName (Alt altCon boundVars expr) = 
+    extractUsagesFromAlt' enableLogs modName currentPkgName (altCon, boundVars, expr)
 
-extractUsagesFromAlt' :: Text -> Text -> (AltCon, [Var], CoreExpr) -> IO [FieldUsage]
-extractUsagesFromAlt' modName currentPkgName (DataAlt dataCon, boundVars, expr) = do
+extractUsagesFromAlt' :: Bool -> Text -> Text -> (AltCon, [Var], CoreExpr) -> IO [FieldUsage]
+extractUsagesFromAlt' enableLogs modName currentPkgName (DataAlt dataCon, boundVars, expr) = do
 #else
-extractUsagesFromAlt :: Text -> Text -> CoreAlt -> IO [FieldUsage]
-extractUsagesFromAlt modName currentPkgName (altCon, boundVars, expr) = 
-    extractUsagesFromAlt' modName currentPkgName (altCon, boundVars, expr)
+extractUsagesFromAlt :: Bool -> Text -> Text -> CoreAlt -> IO [FieldUsage]
+extractUsagesFromAlt enableLogs modName currentPkgName (altCon, boundVars, expr) = 
+    extractUsagesFromAlt' enableLogs modName currentPkgName (altCon, boundVars, expr)
 
-extractUsagesFromAlt' :: Text -> Text -> (AltCon, [Var], CoreExpr) -> IO [FieldUsage]
-extractUsagesFromAlt' modName currentPkgName (DataAlt dataCon, boundVars, expr) = do
+extractUsagesFromAlt' :: Bool -> Text -> Text -> (AltCon, [Var], CoreExpr) -> IO [FieldUsage]
+extractUsagesFromAlt' enableLogs modName currentPkgName (DataAlt dataCon, boundVars, expr) = do
 #endif
     let tc = dataConTyCon dataCon
         tyConName = getName tc
@@ -227,7 +228,7 @@ extractUsagesFromAlt' modName currentPkgName (DataAlt dataCon, boundVars, expr) 
         isLibraryType = isLibraryTypeConstructor typeConstructor
         fieldLabels = dataConFieldLabels dataCon
 
-    when ("NotificationRequestItem" `T.isInfixOf` typeName || "NotificationItem" `T.isInfixOf` typeName) $
+    when enableLogs $ when ("NotificationRequestItem" `T.isInfixOf` typeName || "NotificationItem" `T.isInfixOf` typeName) $
         liftIO $ putStrLn $ "[DEBUG CASE] Pattern match on: " ++ T.unpack typeName ++
                            " BoundVars: " ++ show (length boundVars) ++
                            " FieldLabels: " ++ show (length fieldLabels)
@@ -246,14 +247,14 @@ extractUsagesFromAlt' modName currentPkgName (DataAlt dataCon, boundVars, expr) 
                 , fieldUsageTypeConstructor = typeConstructor
                 }) boundVars fieldLabels
     
-    exprUsages <- extractUsagesFromExpr modName currentPkgName expr
+    exprUsages <- extractUsagesFromExpr enableLogs modName currentPkgName expr
     return $ patternUsages ++ exprUsages
 
-extractUsagesFromAlt' modName currentPkgName (_, _, expr) = 
-    extractUsagesFromExpr modName currentPkgName expr
+extractUsagesFromAlt' enableLogs modName currentPkgName (_, _, expr) = 
+    extractUsagesFromExpr enableLogs modName currentPkgName expr
 
-extractLetPatternUsages :: Text -> Text -> CoreBind -> IO [FieldUsage]
-extractLetPatternUsages modName currentPkgName (NonRec binder expr) = do
+extractLetPatternUsages :: Bool -> Text -> Text -> CoreBind -> IO [FieldUsage]
+extractLetPatternUsages enableLogs modName currentPkgName (NonRec binder expr) = do
     let binderType = idType binder
     case getRecordDataCon binderType of
         Just dataCon -> do
@@ -261,20 +262,20 @@ extractLetPatternUsages modName currentPkgName (NonRec binder expr) = do
                 typeName = pack $ nameStableString $ tyConName $ dataConTyCon dataCon
                 typeConstructor = typeName
             
-            fieldUsages <- extractFieldSelectorsFromExpr modName currentPkgName binder dataCon expr
+            fieldUsages <- extractFieldSelectorsFromExpr enableLogs modName currentPkgName binder dataCon expr
             return fieldUsages
         Nothing -> return []
 
-extractLetPatternUsages modName currentPkgName (Rec binds) = do
-    usages <- mapM (\(binder, expr) -> extractLetPatternUsages modName currentPkgName (NonRec binder expr)) binds
+extractLetPatternUsages enableLogs modName currentPkgName (Rec binds) = do
+    usages <- mapM (\(binder, expr) -> extractLetPatternUsages enableLogs modName currentPkgName (NonRec binder expr)) binds
     return $ concat usages
 
-extractUsagesFromBinder :: Text -> Text -> Var -> CoreExpr -> IO [FieldUsage]
-extractUsagesFromBinder modName currentPkgName binder body = do
+extractUsagesFromBinder :: Bool -> Text -> Text -> Var -> CoreExpr -> IO [FieldUsage]
+extractUsagesFromBinder enableLogs modName currentPkgName binder body = do
     let binderType = idType binder
     case getRecordDataCon binderType of
         Just dataCon -> do
-            extractFieldSelectorsFromExpr modName currentPkgName binder dataCon body
+            extractFieldSelectorsFromExpr enableLogs modName currentPkgName binder dataCon body
         Nothing -> return []
 
 getRecordDataCon :: Type -> Maybe DataCon
@@ -285,8 +286,8 @@ getRecordDataCon ty = case splitTyConApp_maybe ty of
             _ -> Nothing
     Nothing -> Nothing
 
-extractFieldSelectorsFromExpr :: Text -> Text -> Var -> DataCon -> CoreExpr -> IO [FieldUsage]
-extractFieldSelectorsFromExpr modName currentPkgName targetVar dataCon expr = do
+extractFieldSelectorsFromExpr :: Bool -> Text -> Text -> Var -> DataCon -> CoreExpr -> IO [FieldUsage]
+extractFieldSelectorsFromExpr _enableLogs modName currentPkgName targetVar dataCon expr = do
     let fieldLabels = dataConFieldLabels dataCon
         typeName = pack $ nameStableString $ tyConName $ dataConTyCon dataCon
         typeConstructor = typeName
@@ -387,8 +388,8 @@ extractPackageName unitStr =
         Just (c, _) -> c >= '0' && c <= '9'
         Nothing -> False
 
-detectLensOperations :: Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
-detectLensOperations modName currentPkgName func args = do
+detectLensOperations :: Bool -> Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
+detectLensOperations _enableLogs modName _currentPkgName func args = do
     let funcStr = extractExprString func
         argsStr = extractExprString args
 
@@ -407,8 +408,8 @@ detectLensOperations modName currentPkgName func args = do
                 else return []
         else return []
 
-detectRecordOperations :: Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
-detectRecordOperations modName currentPkgName func args = do
+detectRecordOperations :: Bool -> Text -> Text -> CoreExpr -> CoreExpr -> IO [FieldUsage]
+detectRecordOperations _enableLogs modName _currentPkgName func args = do
     case func of
         Var funcVar -> do
             let funcName = pack $ getOccString $ idName funcVar

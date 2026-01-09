@@ -84,6 +84,7 @@ import UnusedFieldChecker.Types
 import UnusedFieldChecker.Validator
 import UnusedFieldChecker.DefinitionExtractor
 import UnusedFieldChecker.UsageExtractor
+import System.IO (hPutStrLn, stderr)
 
 -- | Global MVar holding the plugin state.
 -- This is initialized once per GHC session and shared across all module compilations.
@@ -95,13 +96,13 @@ globalStateMVar = unsafePerformIO (newMVar emptyGlobalState)
 -- | Initialize or reset state if build ID changed
 -- NOTE: We do NOT delete output files here. Persisted data is loaded when
 -- initializing gateway sinks and merged with new data as modules compile.
-initializeOrResetState :: [ModSummary] -> IO ()
-initializeOrResetState modSummaries = do
+initializeOrResetState :: Bool -> [ModSummary] -> IO ()
+initializeOrResetState enableLogs modSummaries = do
     newBuildId <- getCurrentBuildId modSummaries
     modifyMVar_ globalStateMVar $ \currentState ->
         if currentBuildId currentState /= newBuildId
             then do
-                putStrLn "[Plugin] Fresh build detected, resetting in-memory state"
+                when enableLogs $ putStrLn "[Plugin] Fresh build detected, resetting in-memory state"
                 return $ GlobalState newBuildId Map.empty
             else return currentState
 
@@ -111,8 +112,8 @@ getOutputFilePath outputPath gatewayName =
     outputPath </> T.unpack gatewayName <> ".unusedFields.json"
 
 -- | Load gateway output from disk, returns empty output if file doesn't exist or can't be parsed
-loadGatewayOutput :: FilePath -> IO GatewayOutput
-loadGatewayOutput filePath = do
+loadGatewayOutput :: Bool -> FilePath -> IO GatewayOutput
+loadGatewayOutput enableLogs filePath = do
     exists <- doesFileExist filePath
     if not exists
         then return emptyGatewayOutput
@@ -121,7 +122,7 @@ loadGatewayOutput filePath = do
             case decode (BL.fromStrict content) of
                 Just output -> return output
                 Nothing -> do
-                    putStrLn $ "[Plugin] Warning: Failed to parse " ++ filePath ++ ", starting fresh"
+                    when enableLogs $ putStrLn $ "[Plugin] Warning: Failed to parse " ++ filePath ++ ", starting fresh"
                     return emptyGatewayOutput
 
 -- | Save gateway output to disk (atomic write)
@@ -131,12 +132,12 @@ saveGatewayOutput filePath output = do
     atomicWriteFile filePath (encodePretty output)
 
 -- | Update gateway module data in memory AND persist to disk
-updateGatewayModule :: FilePath -> Text -> Text -> [FieldDefinition] -> [FieldUsage] -> IO ()
-updateGatewayModule outputPath gwName modName defs usages = do
+updateGatewayModule :: Bool -> FilePath -> Text -> Text -> [FieldDefinition] -> [FieldUsage] -> IO ()
+updateGatewayModule enableLogs outputPath gwName modName defs usages = do
     let filePath = getOutputFilePath outputPath gwName
     
     -- Load existing persisted data
-    existingOutput <- loadGatewayOutput filePath
+    existingOutput <- loadGatewayOutput enableLogs filePath
     
     modifyMVar_ globalStateMVar $ \gs -> do
         let gwState = Map.findWithDefault emptyGatewayInMemoryState gwName (gatewayStates gs)
@@ -196,6 +197,7 @@ getCurrentBuildId modSummaries = do
 processModuleFields :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 processModuleFields opts modSummary tcEnv = do
     let cliOptions = parseCliOptions opts
+        enableLogs = logs cliOptions
         modName = pack $ moduleNameString $ GHC.moduleName $ ms_mod modSummary
 #if __GLASGOW_HASKELL__ >= 900
         currentPackage = GHC.Unit.Types.moduleUnit $ ms_mod modSummary
@@ -210,30 +212,31 @@ processModuleFields opts modSummary tcEnv = do
     hscEnv <- getTopEnv
     let moduleGraph = hsc_mod_graph hscEnv
         allModSummaries = mgModSummaries moduleGraph
-    liftIO $ initializeOrResetState allModSummaries
+    liftIO $ initializeOrResetState enableLogs allModSummaries
 
     -- Initialize sink tracking for this gateway (idempotent), also loads persisted data
-    _ <- liftIO $ initializeGatewaySinks (path cliOptions) gatewayName allModSummaries
+    _ <- liftIO $ initializeGatewaySinks enableLogs (path cliOptions) gatewayName allModSummaries
 #endif
 
-    fieldDefs <- extractFieldDefinitions modName currentPackage tcEnv
+    fieldDefs <- extractFieldDefinitions cliOptions modName currentPackage tcEnv
 
     -- Step 2: Extract field usages from this module
-    fieldUsages <- extractFieldUsages modName tcEnv
+    fieldUsages <- extractFieldUsages cliOptions modName tcEnv
 
-    liftIO $ putStrLn $ "[Plugin] Module: " ++ T.unpack modName
-    liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldDefs) ++ " field definitions"
-    liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
+    when enableLogs $ do
+        liftIO $ putStrLn $ "[Plugin] Module: " ++ T.unpack modName
+        liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldDefs) ++ " field definitions"
+        liftIO $ putStrLn $ "[Plugin]   - Extracted " ++ show (length fieldUsages) ++ " field usages"
 
     -- Update in-memory state for this gateway and module (also persists to disk)
-    liftIO $ updateGatewayModule (path cliOptions) gatewayName modName fieldDefs fieldUsages
-    liftIO $ putStrLn $ "[Plugin]   - Updated state for gateway " ++ T.unpack gatewayName
+    liftIO $ updateGatewayModule enableLogs (path cliOptions) gatewayName modName fieldDefs fieldUsages
+    when enableLogs $ liftIO $ putStrLn $ "[Plugin]   - Updated state for gateway " ++ T.unpack gatewayName
 
 #if __GLASGOW_HASKELL__ >= 900
     -- Step 7: Check if this is a sink module for its gateway
-    (isSink, isLastSink) <- liftIO $ checkAndRemoveSink gatewayName modName
+    (isSink, isLastSink) <- liftIO $ checkAndRemoveSink enableLogs gatewayName modName
     when isLastSink $ do
-        liftIO $ putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++ 
+        when enableLogs $ liftIO $ putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++ 
                             " complete - running final validation"
         runFinalValidation cliOptions gatewayName
 #endif
@@ -325,8 +328,8 @@ findGatewaySinks reverseDeps =
 
 -- Returns the set of sink modules for this gateway.
 -- Also loads persisted data from .unusedFields.json if available.
-initializeGatewaySinks :: FilePath -> Text -> [ModSummary] -> IO (Set.Set Text)
-initializeGatewaySinks outputPath gatewayName allModSummaries =
+initializeGatewaySinks :: Bool -> FilePath -> Text -> [ModSummary] -> IO (Set.Set Text)
+initializeGatewaySinks enableLogs outputPath gatewayName allModSummaries =
     modifyMVar globalStateMVar $ \gs ->
         let gwState = Map.findWithDefault emptyGatewayInMemoryState gatewayName (gatewayStates gs)
             currentSinks = pendingSinks gwState
@@ -335,16 +338,17 @@ initializeGatewaySinks outputPath gatewayName allModSummaries =
             else do
                 -- Load persisted data from previous builds
                 let filePath = getOutputFilePath outputPath gatewayName
-                existingOutput <- loadGatewayOutput filePath
+                existingOutput <- loadGatewayOutput enableLogs filePath
                 
                 let reverseDeps = buildGatewayGraph gatewayName allModSummaries
                     sinks = findGatewaySinks reverseDeps
-                putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
-                           " initialized with " ++ show (Set.size sinks) ++ " sink modules: " ++
-                           show (Set.toList sinks)
-                putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
-                           " loaded " ++ show (Map.size (outputModuleDefinitions existingOutput)) ++
-                           " modules from persisted data"
+                when enableLogs $ do
+                    putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
+                               " initialized with " ++ show (Set.size sinks) ++ " sink modules: " ++
+                               show (Set.toList sinks)
+                    putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
+                               " loaded " ++ show (Map.size (outputModuleDefinitions existingOutput)) ++
+                               " modules from persisted data"
 
                 -- Merge persisted data into in-memory state
                 let updatedGwState = gwState 
@@ -355,8 +359,8 @@ initializeGatewaySinks outputPath gatewayName allModSummaries =
                     updatedGs = gs { gatewayStates = Map.insert gatewayName updatedGwState (gatewayStates gs) }
                 return (updatedGs, sinks)
 
-checkAndRemoveSink :: Text -> Text -> IO (Bool, Bool)
-checkAndRemoveSink gatewayName modName =
+checkAndRemoveSink :: Bool -> Text -> Text -> IO (Bool, Bool)
+checkAndRemoveSink enableLogs gatewayName modName =
     modifyMVar globalStateMVar $ \gs ->
         case Map.lookup gatewayName (gatewayStates gs) of
             Nothing -> return (gs, (False, False))  -- Gateway not tracked
@@ -366,7 +370,7 @@ checkAndRemoveSink gatewayName modName =
                     then do
                         let newSinks = Set.delete modName sinks
                             isLast = Set.null newSinks
-                        putStrLn $ "[Plugin] Sink module " ++ T.unpack modName ++
+                        when enableLogs $ putStrLn $ "[Plugin] Sink module " ++ T.unpack modName ++
                                    " completed. Remaining sinks: " ++ show (Set.size newSinks)
                         let updatedGwState = gwState { pendingSinks = newSinks }
                             updatedGs = gs { gatewayStates = Map.insert gatewayName updatedGwState (gatewayStates gs) }
@@ -378,6 +382,7 @@ runFinalValidation :: CliOptions -> Text -> TcM ()
 runFinalValidation cliOptions gatewayName = do
     let outputPath = path cliOptions
         filePath = getOutputFilePath outputPath gatewayName
+        enableLogs = logs cliOptions
 
     -- Read from in-memory state (already contains merged persisted + current build data)
     gwState <- liftIO $ withMVar globalStateMVar $ \gs ->
@@ -395,15 +400,17 @@ runFinalValidation cliOptions gatewayName = do
     liftIO $ do
         createDirectoryIfMissing True outputPath
         saveGatewayOutput filePath output
-        putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
+        when enableLogs $ putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
                    ": Wrote " ++ show (length finalUnused) ++ " unused fields to " ++ filePath
 
-    liftIO $ putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
+    when enableLogs $ liftIO $ putStrLn $ "[Plugin] Gateway " ++ T.unpack gatewayName ++
                         " final validation: " ++ show (length finalUnused) ++ " unused fields"
 
-    -- Emit errors for this gateway's unused fields
-    when (failOnUnused cliOptions && not (null finalUnused)) $ do
-        mapM_ emitUnusedFieldError finalUnused
+    -- Emit errors or warnings for this gateway's unused fields
+    unless (null finalUnused) $ do
+        if failOnUnused cliOptions
+            then mapM_ (emitUnusedFieldError cliOptions) finalUnused
+            else liftIO $ mapM_ (emitUnusedFieldWarning cliOptions) finalUnused
 
 -- | Recompute unused fields from in-memory gateway state
 recomputeUnusedFromState :: GatewayInMemoryState -> [FieldDefinition]
@@ -423,15 +430,16 @@ mkRealSrcSpanFromLocation locStr = do
         realSpan = mkRealSrcSpan startLoc endLoc
     return $ RealSrcSpan realSpan Nothing  -- Nothing for BufSpan
 
-emitUnusedFieldError :: FieldDefinition -> TcM ()
-emitUnusedFieldError fieldDef = do
+emitUnusedFieldError :: CliOptions -> FieldDefinition -> TcM ()
+emitUnusedFieldError cliOptions fieldDef = do
     let errorMsg = formatUnusedFieldError fieldDef
         locStr = fieldDefLocation fieldDef
+        enableLogs = logs cliOptions
         -- Try to parse location and create real source span
         mbSrcSpan = mkRealSrcSpanFromLocation locStr
 
     -- Optional debug logging (can be removed after testing)
-    case mbSrcSpan of
+    when enableLogs $ case mbSrcSpan of
         Just _ -> liftIO $ putStrLn $ "[Plugin] Parsed location: " ++ T.unpack locStr
         Nothing -> liftIO $ putStrLn $ "[Plugin] WARNING: Failed to parse location: " ++ T.unpack locStr
 
@@ -441,6 +449,28 @@ emitUnusedFieldError fieldDef = do
             mbSrcSpan
 
     setSrcSpan srcSpan $ addErr (text (T.unpack errorMsg))
+
+-- | Emit a warning for an unused field (printed to stderr)
+emitUnusedFieldWarning :: CliOptions -> FieldDefinition -> IO ()
+emitUnusedFieldWarning cliOptions fieldDef = do
+    let warningMsg = formatUnusedFieldWarning fieldDef
+        locStr = fieldDefLocation fieldDef
+        enableLogs = logs cliOptions
+    when enableLogs $ hPutStrLn stderr $ "[Plugin] Warning location: " ++ T.unpack locStr
+    hPutStrLn stderr $ T.unpack warningMsg
+
+-- | Format a warning message for an unused field
+formatUnusedFieldWarning :: FieldDefinition -> Text
+formatUnusedFieldWarning FieldDefinition{..} = T.unlines
+    [ "[FieldChecker Warning] Unused non-Maybe field: " <> fieldDefName <> " :: " <> fieldDefType
+    , "    In type: " <> fieldDefTypeName
+    , "    Location: " <> fieldDefLocation
+    , "    To fix, either:"
+    , "    1. Make the field optional: " <> fieldDefName <> " :: Maybe " <> fieldDefType
+    , "    2. Exclude it in the FieldChecker instance:"
+    , "       instance FieldChecker " <> fieldDefTypeName <> " where"
+    , "           excludedFields _ = [\"" <> fieldDefName <> "\"]"
+    ]
 #else
 -- | Create a RealSrcSpan from a location string for GHC < 9.0
 mkRealSrcSpanFromLocation :: Text -> Maybe SrcSpan
@@ -455,14 +485,15 @@ mkRealSrcSpanFromLocation locStr = do
 runFinalValidation :: CliOptions -> Text -> TcM ()
 runFinalValidation _ _ = return ()
 
-emitUnusedFieldError :: FieldDefinition -> TcM ()
-emitUnusedFieldError fieldDef = do
+emitUnusedFieldError :: CliOptions -> FieldDefinition -> TcM ()
+emitUnusedFieldError cliOptions fieldDef = do
     let errorMsg = formatUnusedFieldError fieldDef
         locStr = fieldDefLocation fieldDef
+        enableLogs = logs cliOptions
         mbSrcSpan = mkRealSrcSpanFromLocation locStr
 
     -- Optional debug logging
-    case mbSrcSpan of
+    when enableLogs $ case mbSrcSpan of
         Just _ -> liftIO $ putStrLn $ "[Plugin] Parsed location: " ++ T.unpack locStr
         Nothing -> liftIO $ putStrLn $ "[Plugin] WARNING: Failed to parse location: " ++ T.unpack locStr
 
@@ -472,6 +503,28 @@ emitUnusedFieldError fieldDef = do
             mbSrcSpan
 
     setSrcSpan srcSpan $ addErr (text (T.unpack errorMsg))
+
+-- | Emit a warning for an unused field (printed to stderr)
+emitUnusedFieldWarning :: CliOptions -> FieldDefinition -> IO ()
+emitUnusedFieldWarning cliOptions fieldDef = do
+    let warningMsg = formatUnusedFieldWarning fieldDef
+        locStr = fieldDefLocation fieldDef
+        enableLogs = logs cliOptions
+    when enableLogs $ hPutStrLn stderr $ "[Plugin] Warning location: " ++ T.unpack locStr
+    hPutStrLn stderr $ T.unpack warningMsg
+
+-- | Format a warning message for an unused field
+formatUnusedFieldWarning :: FieldDefinition -> Text
+formatUnusedFieldWarning FieldDefinition{..} = T.unlines
+    [ "[FieldChecker Warning] Unused non-Maybe field: " <> fieldDefName <> " :: " <> fieldDefType
+    , "    In type: " <> fieldDefTypeName
+    , "    Location: " <> fieldDefLocation
+    , "    To fix, either:"
+    , "    1. Make the field optional: " <> fieldDefName <> " :: Maybe " <> fieldDefType
+    , "    2. Exclude it in the FieldChecker instance:"
+    , "       instance FieldChecker " <> fieldDefTypeName <> " where"
+    , "           excludedFields _ = [\"" <> fieldDefName <> "\"]"
+    ]
 #endif
 
 loadUnusedFieldLog :: FilePath -> IO UnusedFieldLog
@@ -489,7 +542,7 @@ loadUnusedFieldLog filePath = do
                     case decode (BL.fromStrict content) of
                         Just entries -> return entries
                         Nothing -> do
-                            putStrLn $ "[Plugin] Warning: Failed to parse " ++ filePath ++ ", starting fresh"
+                            hPutStrLn stderr $ "[Plugin] Warning: Failed to parse " ++ filePath ++ ", starting fresh"
                             return []
 
 loadAllUnusedFields :: FilePath -> IO [FieldDefinition]
@@ -568,8 +621,8 @@ extractGatewayName modName =
     findGatewayIndex _ _ = Nothing
 
 
-extractFieldUsages :: Text -> TcGblEnv -> TcM [FieldUsage]
-extractFieldUsages modName tcEnv = do
+extractFieldUsages :: CliOptions -> Text -> TcGblEnv -> TcM [FieldUsage]
+extractFieldUsages _cliOpts modName tcEnv = do
     let binds = bagToList $ tcg_binds tcEnv
     concat <$> mapM (extractUsagesFromBind modName) binds
 

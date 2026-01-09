@@ -56,7 +56,7 @@ import Class
 import InstEnv
 #endif
 
-import Control.Monad (forM)
+import Control.Monad (forM, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.Text (Text, pack)
 import qualified Data.Text as T
@@ -68,17 +68,17 @@ import System.IO.Error (tryIOError)
 import Text.Read (readMaybe)
 
 #if __GLASGOW_HASKELL__ >= 900
-extractFieldDefinitions :: Text -> Unit -> TcGblEnv -> TcM [FieldDefinition]
-extractFieldDefinitions modName currentPkg tcEnv = do
+extractFieldDefinitions :: CliOptions -> Text -> Unit -> TcGblEnv -> TcM [FieldDefinition]
+extractFieldDefinitions cliOpts modName currentPkg tcEnv = do
     let tyCons = extractTyCons tcEnv
         currentPkgName = extractPackageName $ pack $ unitString currentPkg
-    concat <$> mapM (extractFieldsFromTyCon modName currentPkgName) tyCons
+    concat <$> mapM (extractFieldsFromTyCon cliOpts modName currentPkgName) tyCons
 #else
-extractFieldDefinitions :: Text -> UnitId -> TcGblEnv -> TcM [FieldDefinition]
-extractFieldDefinitions modName currentPkg tcEnv = do
+extractFieldDefinitions :: CliOptions -> Text -> UnitId -> TcGblEnv -> TcM [FieldDefinition]
+extractFieldDefinitions cliOpts modName currentPkg tcEnv = do
     let tyCons = extractTyCons tcEnv
         currentPkgName = extractPackageName $ pack $ unitIdString currentPkg
-    concat <$> mapM (extractFieldsFromTyCon modName currentPkgName) tyCons
+    concat <$> mapM (extractFieldsFromTyCon cliOpts modName currentPkgName) tyCons
 #endif
 
 -- Helper functions for extracting excluded fields from Core expressions
@@ -136,15 +136,15 @@ extractStringFromCoreExpr lit =
         _ -> Nothing
 
 -- Extract list from Core expression and handle errors
-extractListFromCoreExpr :: CoreExpr -> Int -> TcM [String]
-extractListFromCoreExpr expr _ = do
-    liftIO $ putStrLn $ "[FieldChecker] Attempting to extract list from Core: " ++ Out.showSDocUnsafe (Out.ppr expr)
+extractListFromCoreExpr :: Bool -> CoreExpr -> Int -> TcM [String]
+extractListFromCoreExpr enableLogs expr _ = do
+    when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] Attempting to extract list from Core: " ++ Out.showSDocUnsafe (Out.ppr expr)
     case extractStringList expr of
         Just strings -> do
-            liftIO $ putStrLn $ "[FieldChecker] Successfully extracted: " ++ show strings
+            when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] Successfully extracted: " ++ show strings
             return strings
         Nothing -> do
-            liftIO $ putStrLn $ "[FieldChecker] Could not extract string list from Core"
+            when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] Could not extract string list from Core"
             return []
 
 -- Parse excludedFields from source code
@@ -190,13 +190,13 @@ parseStringList s = case s of
     parseElements (_:rest) = parseElements rest
 
 -- Try to read source file and extract excludedFields from it
-tryExtractFromSource :: FilePath -> Int -> Int -> TcM [String]
-tryExtractFromSource filePath startLine endLine = do
+tryExtractFromSource :: Bool -> FilePath -> Int -> Int -> TcM [String]
+tryExtractFromSource enableLogs filePath startLine endLine = do
     liftIO $ do
         result <- tryIOError $ readFile filePath
         case result of
             Left err -> do
-                putStrLn $ "[FieldChecker] Failed to read source file " ++ filePath ++ ": " ++ show err
+                when enableLogs $ putStrLn $ "[FieldChecker] Failed to read source file " ++ filePath ++ ": " ++ show err
                 return []
             Right fileContent -> do
                 let sourceLines = lines fileContent
@@ -205,39 +205,41 @@ tryExtractFromSource filePath startLine endLine = do
                     relevantLines = take (numLines - startLine + 1)
                                          (drop (startLine - 1) sourceLines)
                     relevantSource = unlines relevantLines
-                putStrLn $ "[FieldChecker] Extracted source lines " ++ show startLine ++ "-" ++ show numLines
-                putStrLn $ "[FieldChecker] Source:\n" ++ relevantSource
+                when enableLogs $ do
+                    putStrLn $ "[FieldChecker] Extracted source lines " ++ show startLine ++ "-" ++ show numLines
+                    putStrLn $ "[FieldChecker] Source:\n" ++ relevantSource
                 let excluded = parseExcludedFieldsFromSource relevantSource
-                putStrLn $ "[FieldChecker] Parsed excludedFields from source: " ++ show excluded
+                when enableLogs $ putStrLn $ "[FieldChecker] Parsed excludedFields from source: " ++ show excluded
                 return excluded
 
 -- Extract excluded fields from a FieldChecker instance
-extractExcludedFieldsFromInst :: ClsInst -> TcM [String]
-extractExcludedFieldsFromInst inst = do
+extractExcludedFieldsFromInst :: Bool -> ClsInst -> TcM [String]
+extractExcludedFieldsFromInst enableLogs inst = do
     let dfun = is_dfun inst            -- Dictionary function Id
         unfolding = idUnfolding dfun   -- Get the unfolding/implementation
         dfunName = getOccString dfun
 
-    liftIO $ putStrLn $ "[FieldChecker] Attempting to extract excludedFields from instance dfun: " ++ dfunName
+    when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] Attempting to extract excludedFields from instance dfun: " ++ dfunName
 
     case unfolding of
         -- Standard unfolding with Core expression
         CoreUnfolding { uf_tmpl = coreExpr } -> do
-            liftIO $ putStrLn $ "[FieldChecker] Got CoreUnfolding"
-            extractListFromCoreExpr coreExpr 0
+            when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] Got CoreUnfolding"
+            extractListFromCoreExpr enableLogs coreExpr 0
 
         -- Dictionary function unfolding (methods as arguments)
         DFunUnfolding { df_args = args } -> do
-            liftIO $ putStrLn $ "[FieldChecker] Got DFunUnfolding with " ++ show (length args) ++ " args"
-            mapM_ (\(i, arg) -> liftIO $ putStrLn $ "[FieldChecker] Arg " ++ show i ++ ": " ++ Out.showSDocUnsafe (Out.ppr arg)) (zip [0..] args)
+            when enableLogs $ do
+                liftIO $ putStrLn $ "[FieldChecker] Got DFunUnfolding with " ++ show (length args) ++ " args"
+                liftIO $ mapM_ (\(i, arg) -> putStrLn $ "[FieldChecker] Arg " ++ show i ++ ": " ++ Out.showSDocUnsafe (Out.ppr arg)) (zip [0..] args)
             -- excludedFields is the first method (index 0)
             if not (null args)
-                then extractListFromCoreExpr (head args) 0
+                then extractListFromCoreExpr enableLogs (head args) 0
                 else return []
 
         _ -> do
             -- No unfolding available - try to extract from source code
-            liftIO $ putStrLn $ "[FieldChecker] No Core unfolding available, attempting source code extraction"
+            when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] No Core unfolding available, attempting source code extraction"
 
             -- Try to get the location of the instance definition from the dfun
             let dfunLoc = nameSrcSpan (idName dfun)
@@ -246,18 +248,18 @@ extractExcludedFieldsFromInst inst = do
                     let filePath = unpackFS (srcSpanFile rss)
                         startLine = srcSpanStartLine rss
                         endLine = srcSpanEndLine rss
-                    liftIO $ putStrLn $ "[FieldChecker] Instance defined at " ++ filePath ++ ":" ++ show startLine ++ "-" ++ show endLine
-                    tryExtractFromSource filePath startLine endLine
+                    when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] Instance defined at " ++ filePath ++ ":" ++ show startLine ++ "-" ++ show endLine
+                    tryExtractFromSource enableLogs filePath startLine endLine
                 _ -> do
-                    liftIO $ putStrLn $ "[FieldChecker] No real source location available for instance"
+                    when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] No real source location available for instance"
                     return []
 
 #endif
 
-extractFieldsFromTyCon :: Text -> Text -> TyCon -> TcM [FieldDefinition]
-extractFieldsFromTyCon modName currentPkgName tc
+extractFieldsFromTyCon :: CliOptions -> Text -> Text -> TyCon -> TcM [FieldDefinition]
+extractFieldsFromTyCon cliOpts modName currentPkgName tc
     | isAlgTyCon tc && not (isClassTyCon tc) = do
-        (hasFieldChecker, excludedFieldsList) <- checkFieldCheckerInstance tc
+        (hasFieldChecker, excludedFieldsList) <- checkFieldCheckerInstance cliOpts tc
 
         if not hasFieldChecker
             then return []
@@ -265,11 +267,12 @@ extractFieldsFromTyCon modName currentPkgName tc
                 let dataCons = tyConDataCons tc
                     typeName = pack $ showSDocUnsafe $ ppr $ tyConName tc
                     typeConstructor = pack $ nameStableString $ tyConName tc
-                concat <$> mapM (extractFieldsFromDataCon modName currentPkgName typeName typeConstructor hasFieldChecker excludedFieldsList) dataCons
+                concat <$> mapM (extractFieldsFromDataCon cliOpts modName currentPkgName typeName typeConstructor hasFieldChecker excludedFieldsList) dataCons
     | otherwise = return []
 
-checkFieldCheckerInstance :: TyCon -> TcM (Bool, [String])
-checkFieldCheckerInstance tc = do
+checkFieldCheckerInstance :: CliOptions -> TyCon -> TcM (Bool, [String])
+checkFieldCheckerInstance cliOpts tc = do
+    let enableLogs = logs cliOpts
     gblEnv <- getGblEnv
 #if __GLASGOW_HASKELL__ >= 900
     eps <- getEps
@@ -288,16 +291,17 @@ checkFieldCheckerInstance tc = do
 
         mbMatchingInst = find (isFieldCheckerInstanceFor tyConType) allInsts
 
-    liftIO $ putStrLn $ "[FieldChecker] Type " ++ T.unpack typeName ++ " has instance: " ++ show (not $ null $ filter (isFieldCheckerInstanceFor tyConType) allInsts)
-    liftIO $ putStrLn $ "[FieldChecker] Checked " ++ show (length homeInsts) ++ " home instances and " ++ show (length extInsts) ++ " external instances"
+    when enableLogs $ do
+        liftIO $ putStrLn $ "[FieldChecker] Type " ++ T.unpack typeName ++ " has instance: " ++ show (not $ null $ filter (isFieldCheckerInstanceFor tyConType) allInsts)
+        liftIO $ putStrLn $ "[FieldChecker] Checked " ++ show (length homeInsts) ++ " home instances and " ++ show (length extInsts) ++ " external instances"
 
     case mbMatchingInst of
         Nothing -> return (False, [])
         Just inst -> do
 #if __GLASGOW_HASKELL__ >= 900
             -- Extract excludedFields from the instance
-            excluded <- extractExcludedFieldsFromInst inst
-            liftIO $ putStrLn $ "[FieldChecker] Extracted excluded fields: " ++ show excluded
+            excluded <- extractExcludedFieldsFromInst enableLogs inst
+            when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] Extracted excluded fields: " ++ show excluded
             return (True, excluded)
 #else
             -- Cannot extract from older GHC versions easily
@@ -317,9 +321,10 @@ checkFieldCheckerInstance tc = do
             t2Str = pack $ showSDocUnsafe $ ppr t2
         in t1Str == t2Str
 
-extractFieldsFromDataCon :: Text -> Text -> Text -> Text -> Bool -> [String] -> DataCon -> TcM [FieldDefinition]
-extractFieldsFromDataCon modName currentPkgName typeName typeConstructor hasFieldChecker excludedFieldsList dc = do
-    let fieldLabels = dataConFieldLabels dc
+extractFieldsFromDataCon :: CliOptions -> Text -> Text -> Text -> Text -> Bool -> [String] -> DataCon -> TcM [FieldDefinition]
+extractFieldsFromDataCon cliOpts modName currentPkgName typeName typeConstructor hasFieldChecker excludedFieldsList dc = do
+    let enableLogs = logs cliOpts
+        fieldLabels = dataConFieldLabels dc
         fieldTypes = dataConRepArgTys dc
         dcName = getName dc
         tyConName = getName $ dataConTyCon dc
@@ -329,7 +334,7 @@ extractFieldsFromDataCon modName currentPkgName typeName typeConstructor hasFiel
                           currentPkgName `T.isInfixOf` typePackage ||
                           typePackage `T.isInfixOf` currentPkgName
 
-    liftIO $ putStrLn $ "[PACKAGE FILTER] Type: " ++ T.unpack typeName ++
+    when enableLogs $ liftIO $ putStrLn $ "[PACKAGE FILTER] Type: " ++ T.unpack typeName ++
                        ", currentPkg: " ++ T.unpack currentPkgName ++
                        ", typePackage: " ++ T.unpack typePackage ++
                        ", typeConstructor: " ++ T.unpack typeConstructor ++
@@ -339,14 +344,15 @@ extractFieldsFromDataCon modName currentPkgName typeName typeConstructor hasFiel
 
     if not isCurrentPackage
         then do
-            liftIO $ putStrLn $ "[PACKAGE FILTER] SKIPPING " ++ T.unpack typeName ++ " (typePackage: " ++ T.unpack typePackage ++ " != currentPkg: " ++ T.unpack currentPkgName ++ ")"
+            when enableLogs $ liftIO $ putStrLn $ "[PACKAGE FILTER] SKIPPING " ++ T.unpack typeName ++ " (typePackage: " ++ T.unpack typePackage ++ " != currentPkg: " ++ T.unpack currentPkgName ++ ")"
             return []
-        else extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker excludedFieldsList fieldLabels fieldTypes dcName tyConName
+        else extractFieldsForCurrentPackage cliOpts modName typeName typeConstructor hasFieldChecker excludedFieldsList fieldLabels fieldTypes dcName tyConName
 
 #if __GLASGOW_HASKELL__ >= 900
-extractFieldsForCurrentPackage :: Text -> Text -> Text -> Bool -> [String] -> [FieldLabel] -> [Scaled Type] -> Name -> Name -> TcM [FieldDefinition]
-extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker excludedFieldsList fieldLabels fieldTypes dcName tyConName = do
-    liftIO $ putStrLn $ "[FIELD EXTRACTION] Type: " ++ T.unpack typeName ++
+extractFieldsForCurrentPackage :: CliOptions -> Text -> Text -> Text -> Bool -> [String] -> [FieldLabel] -> [Scaled Type] -> Name -> Name -> TcM [FieldDefinition]
+extractFieldsForCurrentPackage cliOpts modName typeName typeConstructor hasFieldChecker excludedFieldsList fieldLabels fieldTypes dcName tyConName = do
+    let enableLogs = logs cliOpts
+    when enableLogs $ liftIO $ putStrLn $ "[FIELD EXTRACTION] Type: " ++ T.unpack typeName ++
                        ", fieldLabels: " ++ show (length fieldLabels) ++
                        ", fieldTypes: " ++ show (length fieldTypes) ++
                        ", excludedFields: " ++ show excludedFieldsList
@@ -360,7 +366,7 @@ extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker 
                 -- Check if field is excluded
                 if fieldNameStr `elem` excludedFieldsList
                     then do
-                        liftIO $ putStrLn $ "[FieldChecker] Excluding field: " ++ fieldNameStr ++ " in type " ++ T.unpack typeName
+                        when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] Excluding field: " ++ fieldNameStr ++ " in type " ++ T.unpack typeName
                         return Nothing
                     else do
                         let fieldTypeStr = pack $ showSDocUnsafe $ ppr $ TyCo.scaledThing fieldType
@@ -386,15 +392,16 @@ extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker 
                             , fieldDefHasFieldChecker = hasFieldChecker
                             }
             let filteredDefs = catMaybes fieldDefs
-            liftIO $ putStrLn $ "[FIELD EXTRACTION] CREATED " ++ show (length filteredDefs) ++ " field definitions for " ++ T.unpack typeName
+            when enableLogs $ liftIO $ putStrLn $ "[FIELD EXTRACTION] CREATED " ++ show (length filteredDefs) ++ " field definitions for " ++ T.unpack typeName
             return filteredDefs
         else do
-            liftIO $ putStrLn $ "[FIELD EXTRACTION] SKIPPING " ++ T.unpack typeName ++ " - no fields or length mismatch"
+            when enableLogs $ liftIO $ putStrLn $ "[FIELD EXTRACTION] SKIPPING " ++ T.unpack typeName ++ " - no fields or length mismatch"
             return []
 #else
-extractFieldsForCurrentPackage :: Text -> Text -> Text -> Bool -> [String] -> [FieldLabel] -> [Type] -> Name -> Name -> TcM [FieldDefinition]
-extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker excludedFieldsList fieldLabels fieldTypes dcName tyConName = do
-    liftIO $ putStrLn $ "[FIELD EXTRACTION] Type: " ++ T.unpack typeName ++
+extractFieldsForCurrentPackage :: CliOptions -> Text -> Text -> Text -> Bool -> [String] -> [FieldLabel] -> [Type] -> Name -> Name -> TcM [FieldDefinition]
+extractFieldsForCurrentPackage cliOpts modName typeName typeConstructor hasFieldChecker excludedFieldsList fieldLabels fieldTypes dcName tyConName = do
+    let enableLogs = logs cliOpts
+    when enableLogs $ liftIO $ putStrLn $ "[FIELD EXTRACTION] Type: " ++ T.unpack typeName ++
                        ", fieldLabels: " ++ show (length fieldLabels) ++
                        ", fieldTypes: " ++ show (length fieldTypes) ++
                        ", excludedFields: " ++ show excludedFieldsList
@@ -408,7 +415,7 @@ extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker 
                 -- Check if field is excluded
                 if fieldNameStr `elem` excludedFieldsList
                     then do
-                        liftIO $ putStrLn $ "[FieldChecker] Excluding field: " ++ fieldNameStr ++ " in type " ++ T.unpack typeName
+                        when enableLogs $ liftIO $ putStrLn $ "[FieldChecker] Excluding field: " ++ fieldNameStr ++ " in type " ++ T.unpack typeName
                         return Nothing
                     else do
                         let fieldTypeStr = pack $ showSDocUnsafe $ ppr fieldType
@@ -434,10 +441,10 @@ extractFieldsForCurrentPackage modName typeName typeConstructor hasFieldChecker 
                             , fieldDefHasFieldChecker = hasFieldChecker
                             }
             let filteredDefs = catMaybes fieldDefs
-            liftIO $ putStrLn $ "[FIELD EXTRACTION] CREATED " ++ show (length filteredDefs) ++ " field definitions for " ++ T.unpack typeName
+            when enableLogs $ liftIO $ putStrLn $ "[FIELD EXTRACTION] CREATED " ++ show (length filteredDefs) ++ " field definitions for " ++ T.unpack typeName
             return filteredDefs
         else do
-            liftIO $ putStrLn $ "[FIELD EXTRACTION] SKIPPING " ++ T.unpack typeName ++ " - no fields or length mismatch"
+            when enableLogs $ liftIO $ putStrLn $ "[FIELD EXTRACTION] SKIPPING " ++ T.unpack typeName ++ " - no fields or length mismatch"
             return []
 #endif
 
