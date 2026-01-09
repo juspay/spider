@@ -1,0 +1,207 @@
+{
+    "outputModuleDefinitions": {
+        "FailingTypes": [
+            {
+                "fieldDefFullyQualifiedType": "FailingTypes.Person",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/FailingTypes.hs:(9,15)-(14,5)",
+                "fieldDefModule": "FailingTypes",
+                "fieldDefName": "personName",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "String",
+                "fieldDefTypeConstructor": "$main$FailingTypes$Person",
+                "fieldDefTypeName": "Person"
+            },
+            {
+                "fieldDefFullyQualifiedType": "FailingTypes.Person",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/FailingTypes.hs:(9,15)-(14,5)",
+                "fieldDefModule": "FailingTypes",
+                "fieldDefName": "personAge",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Int",
+                "fieldDefTypeConstructor": "$main$FailingTypes$Person",
+                "fieldDefTypeName": "Person"
+            },
+            {
+                "fieldDefFullyQualifiedType": "FailingTypes.Person",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": false,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/FailingTypes.hs:(9,15)-(14,5)",
+                "fieldDefModule": "FailingTypes",
+                "fieldDefName": "unusedField",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "String",
+                "fieldDefTypeConstructor": "$main$FailingTypes$Person",
+                "fieldDefTypeName": "Person"
+            },
+            {
+                "fieldDefFullyQualifiedType": "FailingTypes.Person",
+                "fieldDefHasFieldChecker": true,
+                "fieldDefIsMaybe": true,
+                "fieldDefIsSingleField": false,
+                "fieldDefLocation": "test/FailingTypes.hs:(9,15)-(14,5)",
+                "fieldDefModule": "FailingTypes",
+                "fieldDefName": "optionalField",
+                "fieldDefPackageName": "main",
+                "fieldDefType": "Maybe Int",
+                "fieldDefTypeConstructor": "$main$FailingTypes$Person",
+                "fieldDefTypeName": "Person"
+            }
+        ]
+    },
+    "outputModuleUsages": {
+        "FailingTypes": [
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/FailingTypes.hs:21:16-60",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "personName",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Person",
+                "fieldUsageTypeName": "Person"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/FailingTypes.hs:21:16-60",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "personAge",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Person",
+                "fieldUsageTypeName": "Person"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/FailingTypes.hs:10:7-16",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "personName",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Person",
+                "fieldUsageTypeName": "Person"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/FailingTypes.hs:11:7-15",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "personAge",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Person",
+                "fieldUsageTypeName": "Person"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/FailingTypes.hs:12:7-17",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "unusedField",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Person",
+                "fieldUsageTypeName": "Person"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed test/FailingTypes.hs:13:7-19",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "optionalField",
+                "fieldUsageType": "PatternMatch",
+                "fieldUsageTypeConstructor": "Person",
+                "fieldUsageTypeName": "Person"
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "showParen",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            },
+            {
+                "fieldUsageLocation": "SrcSpanAnn EpAnnNotUsed <no location info>",
+                "fieldUsageModule": "FailingTypes",
+                "fieldUsageName": "showString",
+                "fieldUsageType": "AccessorFunction",
+                "fieldUsageTypeConstructor": "",
+                "fieldUsageTypeName": ""
+            }
+        ]
+    },
+    "outputUnusedFields": [
+        {
+            "fieldDefFullyQualifiedType": "FailingTypes.Person",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/FailingTypes.hs:(9,15)-(14,5)",
+            "fieldDefModule": "FailingTypes",
+            "fieldDefName": "personName",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "String",
+            "fieldDefTypeConstructor": "$main$FailingTypes$Person",
+            "fieldDefTypeName": "Person"
+        },
+        {
+            "fieldDefFullyQualifiedType": "FailingTypes.Person",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/FailingTypes.hs:(9,15)-(14,5)",
+            "fieldDefModule": "FailingTypes",
+            "fieldDefName": "personAge",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "Int",
+            "fieldDefTypeConstructor": "$main$FailingTypes$Person",
+            "fieldDefTypeName": "Person"
+        },
+        {
+            "fieldDefFullyQualifiedType": "FailingTypes.Person",
+            "fieldDefHasFieldChecker": true,
+            "fieldDefIsMaybe": false,
+            "fieldDefIsSingleField": false,
+            "fieldDefLocation": "test/FailingTypes.hs:(9,15)-(14,5)",
+            "fieldDefModule": "FailingTypes",
+            "fieldDefName": "unusedField",
+            "fieldDefPackageName": "main",
+            "fieldDefType": "String",
+            "fieldDefTypeConstructor": "$main$FailingTypes$Person",
+            "fieldDefTypeName": "Person"
+        }
+    ]
+}
