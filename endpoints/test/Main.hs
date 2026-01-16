@@ -41,13 +41,16 @@ type UsersAPI =
   :<|> Capture "userId" Int :> ReqBody '[JSON] User :> Put '[JSON] User
   :<|> Capture "userId" Int :> Delete '[JSON] NoContent
 
+type XResponseIdHeader = Text
+type XJpApiTag = Text
+
 type ProductsAPI =
        Get '[JSON] [Product]
   :<|> Capture "productId" Int :> Get '[JSON] Product
   :<|> ReqBody '[JSON] Product :> Post '[JSON] Product
   :<|> Capture "productId" Int :> ReqBody '[JSON] Product :> Put '[JSON] Product
   :<|> Capture "productId" Int :> Delete '[JSON] NoContent
-  :<|> "search" :> QueryParam "query" Text :> Get '[JSON] [Product]
+  :<|> "search" :> QueryParam "query" Text :> Header "batchSize" Int :> Get '[JSON] (Headers [XResponseIdHeader, XJpApiTag]  [Product])
 
 -- The main API type that your plugin will analyze
 type EulerAPI = "v1" :> SampleAPI
