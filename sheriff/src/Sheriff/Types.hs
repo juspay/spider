@@ -315,15 +315,41 @@ instance FromJSON GeneralRule where
                 ruleInfo   <- o .: "ruleInfo"
                 return GeneralRule {..}
 
+data ColumnAccessRule =
+  ColumnAccessRule
+    { column_access_rule_name    :: String
+    , column_name                :: String
+    , allowed_tables             :: [String]
+    , column_access_rule_fixes   :: Suggestions
+    }
+  deriving (Show, Eq)
+
+defaultColumnAccessRule :: ColumnAccessRule
+defaultColumnAccessRule = ColumnAccessRule {
+    column_access_rule_name  = "NA",
+    column_name              = "NA",
+    allowed_tables           = [],
+    column_access_rule_fixes = []
+  }
+
+instance FromJSON ColumnAccessRule where
+  parseJSON = withObject "ColumnAccessRule" $ \o -> do
+                column_access_rule_name  <- o .: "column_access_rule_name"
+                column_name              <- o .: "column_name"
+                allowed_tables           <- o .: "allowed_tables"
+                column_access_rule_fixes <- o .: "column_access_rule_fixes"
+                return ColumnAccessRule {..}
+
 data Rule = 
     DBRuleT DBRule
   | FunctionRuleT FunctionRule
   | InfiniteRecursionRuleT InfiniteRecursionRule
   | GeneralRuleT GeneralRule
+  | ColumnAccessRuleT ColumnAccessRule
   deriving (Show, Eq)  
 
 instance FromJSON Rule where
-  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (InfiniteRecursionRuleT <$> parseJSON str) <|> (GeneralRuleT <$> parseJSON str) <|> (fail $ "Invalid Rule: " <> show str)
+  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (InfiniteRecursionRuleT <$> parseJSON str) <|> (GeneralRuleT <$> parseJSON str) <|> (ColumnAccessRuleT <$> parseJSON str) <|> (fail $ "Invalid Rule: " <> show str)
 
 data LocalVar = FnArg Var | FnWhere Var | FnLocal Var
   deriving (Eq)
@@ -348,6 +374,7 @@ data Violation =
   | FnUseBlocked String FunctionRule
   | FnSigBlocked String String FunctionRule
   | InfiniteRecursionDetected InfiniteRecursionRule
+  | ColumnAccessViolation String String ColumnAccessRule
   | NoViolation
   deriving (Eq)
 
@@ -360,4 +387,5 @@ instance Show Violation where
     (NonIndexedDBColumn colName tableName _)         -> "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
     (EmptyWhereClause tableName _)                   -> "Query with empty where clause on table '" <> (tableName) <> "' is not allowed."
     (InfiniteRecursionDetected _)                    -> "Infinite recursion detected in expression"
+    (ColumnAccessViolation colName tableName _)      -> "Accessing column '" <> colName <> "' on table '" <> tableName <> "' is not allowed."
     NoViolation                                      -> "NoViolation"
