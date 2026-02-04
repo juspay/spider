@@ -531,13 +531,27 @@ extractTableAndColumn fieldArg = do
                               AppTy ty1 _    -> showS ty1
                               TyConApp ty1 _ -> showS ty1
                               ty             -> showS ty
-              pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
+              let strippedName = take (length tblName' - 1) tblName'
+                  knownTables = knownDBTables ?pluginOpts
+                  finalTableName = if strippedName `elem` knownTables 
+                                       then strippedName 
+                                       else if tblName' `elem` knownTables 
+                                            then tblName' 
+                                            else strippedName
+              pure $ Just (getStrFromHsWildCardBndrs fldName, finalTableName)
             (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) ->
               let tblName' = case tableType of
                                   AppTy ty1 _    -> showS ty1
                                   TyConApp ty1 _ -> showS ty1
                                   ty             -> showS ty
-              in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
+                  strippedName = take (length tblName' - 1) tblName'
+                  knownTables = knownDBTables ?pluginOpts
+                  finalTableName = if strippedName `elem` knownTables 
+                                       then strippedName 
+                                       else if tblName' `elem` knownTables 
+                                            then tblName' 
+                                            else strippedName
+              in pure $ Just (getStrFromHsWildCardBndrs fldName, finalTableName)
             _ -> pure Nothing
         else pure Nothing
     Lens -> do
@@ -553,7 +567,14 @@ extractTableAndColumn fieldArg = do
                               AppTy ty1 _    -> showS ty1
                               TyConApp ty1 _ -> showS ty1
                               ty             -> showS ty
-              pure $ Just (fldName, take (length tblName' - 1) tblName')
+              let strippedName = take (length tblName' - 1) tblName'
+                  knownTables = knownDBTables ?pluginOpts
+                  finalTableName = if strippedName `elem` knownTables 
+                                       then strippedName 
+                                       else if tblName' `elem` knownTables 
+                                            then tblName' 
+                                            else strippedName
+              pure $ Just (fldName, finalTableName)
             (SectionR _ _ (L _ lens)) -> do
               let tys = traverseAst lens :: [Type]
                   typeForTableName = filter (\typ -> case typ of 
@@ -565,7 +586,14 @@ extractTableAndColumn fieldArg = do
                                   AppTy ty1 _    -> showS ty1
                                   TyConApp ty1 _ -> showS ty1
                                   ty             -> showS ty
-              pure $ Just (tail $ showS lens, take (length tblName' - 1) tblName')
+              let strippedName = take (length tblName' - 1) tblName'
+                  knownTables = knownDBTables ?pluginOpts
+                  finalTableName = if strippedName `elem` knownTables 
+                                       then strippedName 
+                                       else if tblName' `elem` knownTables 
+                                            then tblName' 
+                                            else strippedName
+              pure $ Just (tail $ showS lens, finalTableName)
 #if __GLASGOW_HASKELL__ >= 900
             (PatHsExpansion orig (HsApp _ (L _ (HsApp _ _ tableVar)) fldVar)) -> do
               let fldName = tail $ showS fldVar
@@ -574,7 +602,14 @@ extractTableAndColumn fieldArg = do
                               AppTy ty1 _    -> showS ty1
                               TyConApp ty1 _ -> showS ty1
                               ty             -> showS ty
-              pure $ Just (fldName, take (length tblName' - 1) tblName')
+              let strippedName = take (length tblName' - 1) tblName'
+                  knownTables = knownDBTables ?pluginOpts
+                  finalTableName = if strippedName `elem` knownTables 
+                                       then strippedName 
+                                       else if tblName' `elem` knownTables 
+                                            then tblName' 
+                                            else strippedName
+              pure $ Just (fldName, finalTableName)
 #endif                            
             _ -> pure Nothing
   where
