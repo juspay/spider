@@ -104,6 +104,7 @@ getRuleIgnoreModules rule = case rule of
   FunctionRuleT fnRule -> fn_rule_ignore_modules fnRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_modules infiniteRecursionRule
   DBRuleT dbRule -> db_rule_ignore_modules dbRule
+  ColumnAccessRuleT columnAccessRule -> column_access_rule_ignore_modules columnAccessRule
   _ -> []
 
 getRuleIgnoreFunctions :: Rule -> Modules

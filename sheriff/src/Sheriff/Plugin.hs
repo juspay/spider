@@ -497,7 +497,7 @@ validateColumnAccessRule :: (HasPluginOpts PluginOpts) => ColumnAccessRule -> LH
 validateColumnAccessRule rule expr = do
   mbTableCol <- extractTableAndColumn expr
   case mbTableCol of
-    Just (colName, tableName) -> do
+    Just (colName, tableName, locExpr) -> do
       let knownTables = knownDBTables ?pluginOpts
       if tableName `notElem` knownTables
         then pure []
@@ -507,7 +507,7 @@ validateColumnAccessRule rule expr = do
     Nothing -> pure []
 
 -- Extract (ColumnName, TableName) from an expression if possible
-extractTableAndColumn :: (HasPluginOpts PluginOpts) => LHsExpr GhcTc -> TcM (Maybe (String, String))
+extractTableAndColumn :: (HasPluginOpts PluginOpts) => LHsExpr GhcTc -> TcM (Maybe (String, String, LHsExpr GhcTc))
 extractTableAndColumn fieldArg = do
   let fieldSpecType = getDBFieldSpecType fieldArg
   case fieldSpecType of
@@ -518,40 +518,48 @@ extractTableAndColumn fieldArg = do
                         (L loc (PatHsWrap _ wExpr)) -> modFieldArg (L loc wExpr)
                         (L _ expr)                  -> showS expr
       case (splitOn ":" $ modFieldArg fieldArg) of
-        ("$sel" : colName : tableName : []) -> pure $ Just (colName, tableName)
+        ("$sel" : colName : tableName : []) ->
+           let tblName' = last $ splitOn "." tableName
+           in pure $ Just (colName, tblName', fieldArg)
         _ -> pure Nothing
     RecordDot -> do
-      let tyApps = mapMaybe getRecordDotSelector $ (traverseAst fieldArg :: [HsExpr GhcTc])
+      let tyApps = mapMaybe getRecordDotSelectorL $ (traverseAst fieldArg :: [LHsExpr GhcTc])
       if length tyApps > 0 
-        then 
-          case head tyApps of
+        then do
+          let (lExpr, expr) = head tyApps
+          case expr of
             (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> do
               typ <- getHsExprType (logTypeDebugging . pluginOpts $ ?pluginOpts) tableVar
               let tblName' = case typ of
                               AppTy ty1 _    -> showS ty1
                               TyConApp ty1 _ -> showS ty1
                               ty             -> showS ty
-              let strippedName = take (length tblName' - 1) tblName'
+              let unqualifiedTblName = last $ splitOn "." tblName'
+              let strippedName = take (length unqualifiedTblName - 1) unqualifiedTblName
                   knownTables = knownDBTables ?pluginOpts
                   finalTableName = if strippedName `elem` knownTables 
                                        then strippedName 
-                                       else if tblName' `elem` knownTables 
-                                            then tblName' 
+                                       else if unqualifiedTblName `elem` knownTables 
+                                            then unqualifiedTblName 
                                             else strippedName
-              pure $ Just (getStrFromHsWildCardBndrs fldName, finalTableName)
-            (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) ->
+              -- Fallback to tableVar if the full expression has no source span
+              let bestLocExpr = if isGoodSrcSpan (getLoc2 lExpr) then lExpr else tableVar
+              pure $ Just (getStrFromHsWildCardBndrs fldName, finalTableName, bestLocExpr)
+            (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) -> do
               let tblName' = case tableType of
                                   AppTy ty1 _    -> showS ty1
                                   TyConApp ty1 _ -> showS ty1
                                   ty             -> showS ty
-                  strippedName = take (length tblName' - 1) tblName'
+                  unqualifiedTblName = last $ splitOn "." tblName'
+                  strippedName = take (length unqualifiedTblName - 1) unqualifiedTblName
                   knownTables = knownDBTables ?pluginOpts
                   finalTableName = if strippedName `elem` knownTables 
                                        then strippedName 
-                                       else if tblName' `elem` knownTables 
-                                            then tblName' 
+                                       else if unqualifiedTblName `elem` knownTables 
+                                            then unqualifiedTblName 
                                             else strippedName
-              in pure $ Just (getStrFromHsWildCardBndrs fldName, finalTableName)
+                  bestLocExpr = if isGoodSrcSpan (getLoc2 lExpr) then lExpr else fieldArg
+              pure $ Just (getStrFromHsWildCardBndrs fldName, finalTableName, bestLocExpr)
             _ -> pure Nothing
         else pure Nothing
     Lens -> do
@@ -567,14 +575,15 @@ extractTableAndColumn fieldArg = do
                               AppTy ty1 _    -> showS ty1
                               TyConApp ty1 _ -> showS ty1
                               ty             -> showS ty
-              let strippedName = take (length tblName' - 1) tblName'
+              let unqualifiedTblName = last $ splitOn "." tblName'
+              let strippedName = take (length unqualifiedTblName - 1) unqualifiedTblName
                   knownTables = knownDBTables ?pluginOpts
                   finalTableName = if strippedName `elem` knownTables 
                                        then strippedName 
-                                       else if tblName' `elem` knownTables 
-                                            then tblName' 
+                                       else if unqualifiedTblName `elem` knownTables 
+                                            then unqualifiedTblName 
                                             else strippedName
-              pure $ Just (fldName, finalTableName)
+              pure $ Just (fldName, finalTableName, fieldArg)
             (SectionR _ _ (L _ lens)) -> do
               let tys = traverseAst lens :: [Type]
                   typeForTableName = filter (\typ -> case typ of 
@@ -586,14 +595,15 @@ extractTableAndColumn fieldArg = do
                                   AppTy ty1 _    -> showS ty1
                                   TyConApp ty1 _ -> showS ty1
                                   ty             -> showS ty
-              let strippedName = take (length tblName' - 1) tblName'
+              let unqualifiedTblName = last $ splitOn "." tblName'
+              let strippedName = take (length unqualifiedTblName - 1) unqualifiedTblName
                   knownTables = knownDBTables ?pluginOpts
                   finalTableName = if strippedName `elem` knownTables 
                                        then strippedName 
-                                       else if tblName' `elem` knownTables 
-                                            then tblName' 
+                                       else if unqualifiedTblName `elem` knownTables 
+                                            then unqualifiedTblName 
                                             else strippedName
-              pure $ Just (tail $ showS lens, finalTableName)
+              pure $ Just (tail $ showS lens, finalTableName, fieldArg)
 #if __GLASGOW_HASKELL__ >= 900
             (PatHsExpansion orig (HsApp _ (L _ (HsApp _ _ tableVar)) fldVar)) -> do
               let fldName = tail $ showS fldVar
@@ -602,23 +612,24 @@ extractTableAndColumn fieldArg = do
                               AppTy ty1 _    -> showS ty1
                               TyConApp ty1 _ -> showS ty1
                               ty             -> showS ty
-              let strippedName = take (length tblName' - 1) tblName'
+              let unqualifiedTblName = last $ splitOn "." tblName'
+              let strippedName = take (length unqualifiedTblName - 1) unqualifiedTblName
                   knownTables = knownDBTables ?pluginOpts
                   finalTableName = if strippedName `elem` knownTables 
                                        then strippedName 
-                                       else if tblName' `elem` knownTables 
-                                            then tblName' 
+                                       else if unqualifiedTblName `elem` knownTables 
+                                            then unqualifiedTblName 
                                             else strippedName
-              pure $ Just (fldName, finalTableName)
+              pure $ Just (fldName, finalTableName, fieldArg)
 #endif                            
             _ -> pure Nothing
   where
-    getRecordDotSelector :: HsExpr GhcTc -> Maybe (HsExpr GhcTc)
-    getRecordDotSelector recordDotExpr = 
-      case recordDotExpr of 
-        (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> Just recordDotExpr
-        (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> Just recordDotExpr
-        (PatHsWrap (WpCompose _ wp@(WpCompose _ _)) hsat@(HsAppType _ _ fldName)) -> getRecordDotSelector (PatHsWrap wp hsat)
+    getRecordDotSelectorL :: LHsExpr GhcTc -> Maybe (LHsExpr GhcTc, HsExpr GhcTc)
+    getRecordDotSelectorL lExpr@(L loc expr) = 
+      case expr of 
+        (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> Just (lExpr, expr)
+        (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> Just (lExpr, expr)
+        (PatHsWrap (WpCompose _ wp@(WpCompose _ _)) hsat@(HsAppType _ _ fldName)) -> getRecordDotSelectorL (L loc (PatHsWrap wp hsat))
         _ -> Nothing
 
 --------------------------- Function Rule Validation Logic ---------------------------
@@ -874,7 +885,9 @@ getIsClauseData fieldArg _comp _clause = do
                         (L loc (PatHsWrap _ wExpr)) -> modFieldArg (L loc wExpr)
                         (L _ expr)                  -> showS expr
       case (splitOn ":" $ modFieldArg fieldArg) of
-        ("$sel" : colName : tableName : []) -> pure $ Just (colName, tableName)
+        ("$sel" : colName : tableName : []) -> do
+           let tblName' = last $ splitOn "." tableName
+           pure $ Just (colName, tblName')
         _ -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ print "Invalid pattern for Selector way") >> pure Nothing
     RecordDot -> do
       let tyApps = mapMaybe getRecordDotSelector $ (traverseAst fieldArg :: [HsExpr GhcTc])
@@ -887,13 +900,30 @@ getIsClauseData fieldArg _comp _clause = do
                               AppTy ty1 _    -> showS ty1
                               TyConApp ty1 _ -> showS ty1
                               ty             -> showS ty
-              pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
+              let unqualifiedTblName = last $ splitOn "." tblName'
+              let strippedName = take (length unqualifiedTblName - 1) unqualifiedTblName
+                  knownTables = knownDBTables ?pluginOpts
+                  finalTableName = if strippedName `elem` knownTables 
+                                       then strippedName 
+                                       else if unqualifiedTblName `elem` knownTables 
+                                            then unqualifiedTblName 
+                                            else strippedName
+              pure $ Just (getStrFromHsWildCardBndrs fldName, finalTableName)
             (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) ->
               let tblName' = case tableType of
                                   AppTy ty1 _    -> showS ty1
                                   TyConApp ty1 _ -> showS ty1
                                   ty             -> showS ty
-              in pure $ Just (getStrFromHsWildCardBndrs fldName, take (length tblName' - 1) tblName')
+                  unqualifiedTblName = last $ splitOn "." tblName'
+                  strippedName = take (length unqualifiedTblName - 1) unqualifiedTblName
+                  knownTables = knownDBTables ?pluginOpts
+                  finalTableName = if strippedName `elem` knownTables 
+                                       then strippedName 
+                                       else if unqualifiedTblName `elem` knownTables 
+                                            then unqualifiedTblName 
+                                            else strippedName
+              in do
+                pure $ Just (getStrFromHsWildCardBndrs fldName, finalTableName)
             _ -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ putStrLn "HsAppType not present. Should never be the case as we already filtered.") >> pure Nothing
         else when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ putStrLn "HsAppType not present after filtering. Should never reach as already deduced RecordDot.") >> pure Nothing
     Lens -> do
@@ -909,7 +939,15 @@ getIsClauseData fieldArg _comp _clause = do
                               AppTy ty1 _    -> showS ty1
                               TyConApp ty1 _ -> showS ty1
                               ty             -> showS ty
-              pure $ Just (fldName, take (length tblName' - 1) tblName')
+              let unqualifiedTblName = last $ splitOn "." tblName'
+              let strippedName = take (length unqualifiedTblName - 1) unqualifiedTblName
+                  knownTables = knownDBTables ?pluginOpts
+                  finalTableName = if strippedName `elem` knownTables 
+                                       then strippedName 
+                                       else if unqualifiedTblName `elem` knownTables 
+                                            then unqualifiedTblName 
+                                            else strippedName
+              pure $ Just (fldName, finalTableName)
             (SectionR _ _ (L _ lens)) -> do
               let tys = traverseAst lens :: [Type]
                   typeForTableName = filter (\typ -> case typ of 
@@ -921,7 +959,15 @@ getIsClauseData fieldArg _comp _clause = do
                                   AppTy ty1 _    -> showS ty1
                                   TyConApp ty1 _ -> showS ty1
                                   ty             -> showS ty
-              pure $ Just (tail $ showS lens, take (length tblName' - 1) tblName')
+              let unqualifiedTblName = last $ splitOn "." tblName'
+              let strippedName = take (length unqualifiedTblName - 1) unqualifiedTblName
+                  knownTables = knownDBTables ?pluginOpts
+                  finalTableName = if strippedName `elem` knownTables 
+                                       then strippedName 
+                                       else if unqualifiedTblName `elem` knownTables 
+                                            then unqualifiedTblName 
+                                            else strippedName
+              pure $ Just (tail $ showS lens, finalTableName)
 #if __GLASGOW_HASKELL__ >= 900
             (PatHsExpansion orig (HsApp _ (L _ (HsApp _ _ tableVar)) fldVar)) -> do
               let fldName = tail $ showS fldVar
@@ -930,7 +976,15 @@ getIsClauseData fieldArg _comp _clause = do
                               AppTy ty1 _    -> showS ty1
                               TyConApp ty1 _ -> showS ty1
                               ty             -> showS ty
-              pure $ Just (fldName, take (length tblName' - 1) tblName')
+              let unqualifiedTblName = last $ splitOn "." tblName'
+              let strippedName = take (length unqualifiedTblName - 1) unqualifiedTblName
+                  knownTables = knownDBTables ?pluginOpts
+                  finalTableName = if strippedName `elem` knownTables 
+                                       then strippedName 
+                                       else if unqualifiedTblName `elem` knownTables 
+                                            then unqualifiedTblName 
+                                            else strippedName
+              pure $ Just (fldName, finalTableName)
 #endif                            
             _ -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ putStrLn "OpApp not present. Should never be the case as we already filtered.") >> pure Nothing
   

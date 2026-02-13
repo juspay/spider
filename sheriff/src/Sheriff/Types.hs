@@ -317,27 +317,30 @@ instance FromJSON GeneralRule where
 
 data ColumnAccessRule =
   ColumnAccessRule
-    { column_access_rule_name    :: String
-    , column_name                :: String
-    , allowed_tables             :: [String]
-    , column_access_rule_fixes   :: Suggestions
+    { column_access_rule_name           :: String
+    , column_name                       :: String
+    , allowed_tables                    :: [String]
+    , column_access_rule_fixes          :: Suggestions
+    , column_access_rule_ignore_modules :: Modules
     }
   deriving (Show, Eq)
 
 defaultColumnAccessRule :: ColumnAccessRule
 defaultColumnAccessRule = ColumnAccessRule {
-    column_access_rule_name  = "NA",
-    column_name              = "NA",
-    allowed_tables           = [],
-    column_access_rule_fixes = []
+    column_access_rule_name           = "NA",
+    column_name                       = "NA",
+    allowed_tables                    = [],
+    column_access_rule_fixes          = [],
+    column_access_rule_ignore_modules = []
   }
 
 instance FromJSON ColumnAccessRule where
   parseJSON = withObject "ColumnAccessRule" $ \o -> do
-                column_access_rule_name  <- o .: "column_access_rule_name"
-                column_name              <- o .: "column_name"
-                allowed_tables           <- o .: "allowed_tables"
-                column_access_rule_fixes <- o .: "column_access_rule_fixes"
+                column_access_rule_name           <- o .: "column_access_rule_name"
+                column_name                       <- o .: "column_name"
+                allowed_tables                    <- o .: "allowed_tables"
+                column_access_rule_fixes          <- o .: "column_access_rule_fixes"
+                column_access_rule_ignore_modules <- o .:? "column_access_rule_ignore_modules" .!= (column_access_rule_ignore_modules defaultColumnAccessRule)
                 return ColumnAccessRule {..}
 
 data Rule = 

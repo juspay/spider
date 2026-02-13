@@ -186,3 +186,14 @@ rules:
     db_rule_fixes: 
       - "You might want to include an indexed column in the `where` clause of the query."
     db_rule_exceptions: []
+  - column_access_rule_name: "Restrict MerchantId Access"
+    column_name: "merchantId"
+    allowed_tables: 
+      - "MerchantAccount"
+      - "TxnDetail"
+      - "GatewayOutage"
+    column_access_rule_fixes:
+      - "Please ensure you are fetching merchantId only from MerchantAccount or Tracker tables."
+    column_access_rule_ignore_modules:
+      - "Euler.API.Gateway.Domain.MerchantGatewayAccount"
+      - "Euler.API.Gateway.Utils.Gateway.Transformer"
