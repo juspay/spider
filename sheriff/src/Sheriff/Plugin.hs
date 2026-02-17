@@ -885,9 +885,7 @@ getIsClauseData fieldArg _comp _clause = do
                         (L loc (PatHsWrap _ wExpr)) -> modFieldArg (L loc wExpr)
                         (L _ expr)                  -> showS expr
       case (splitOn ":" $ modFieldArg fieldArg) of
-        ("$sel" : colName : tableName : []) -> do
-           let tblName' = last $ splitOn "." tableName
-           pure $ Just (colName, tblName')
+        ("$sel" : colName : tableName : []) -> pure $ Just (colName, tableName)
         _ -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ print "Invalid pattern for Selector way") >> pure Nothing
     RecordDot -> do
       let tyApps = mapMaybe getRecordDotSelector $ (traverseAst fieldArg :: [HsExpr GhcTc])
