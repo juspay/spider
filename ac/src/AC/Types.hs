@@ -2,15 +2,8 @@
 
 module AC.Types where
 
-import qualified Data.HashMap.Strict as HM
 import Data.Aeson
 import GHC hiding (typeKind)
-import GHC.Generics (Generic)
-#if __GLASGOW_HASKELL__ >= 900
-import GHC.Data.FastString
-#else
-import GhcPlugins hiding ((<>))
-#endif
 
 data PluginOpts = PluginOpts {
     failOnFileNotFound :: Bool,

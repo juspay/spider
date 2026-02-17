@@ -10,6 +10,8 @@ module Main (main) where
 
 import Data.Maybe
 import GHC.StaticPtr
+import qualified Test1 as T1
+import qualified Test2 as T2
 
 -- Data type with records
 data Person = Person
@@ -160,6 +162,9 @@ handleSurchargeAmount surchargeAmount =
     case surchargeAmount of
         Just amt -> surchargeAmount
         Nothing  -> Nothing
+
+handleHelperFunctionTest2 :: T2.TxnDetail -> Maybe Int
+handleHelperFunctionTest2 txnDetail = T2.getHelperFunction txnDetail
 
 -- Main function
 main :: IO ()

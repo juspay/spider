@@ -100,7 +100,7 @@ test-suite ac-test
 
     -- The entrypoint to the test suite.
     main-is:          Main.hs
-    other-modules:    Test1
+    other-modules:    Test1, Test2
 
     -- Test dependencies.
     build-depends:

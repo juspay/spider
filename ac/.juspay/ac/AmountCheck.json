@@ -15,11 +15,17 @@
         "getSurchargeWithTypeApp": [
             "surchargeAmount"
         ],
+        "handleHelperFunctionTest2": [
+            "Test2.getHelperFunction"
+        ],
         "john": [
             "surchargeAmount"
         ],
         "listAmount": [
             "surchargeAmount"
+        ],
+        "main": [
+            "Main.john"
         ],
         "myAmount": [
             "surchargeAmount"
@@ -55,7 +61,8 @@
             "surchargeAmount"
         ],
         "testMultiIf": [
-            "surchargeAmount"
+            "surchargeAmount",
+            "Main.john"
         ],
         "tupleAmount": [
             "surchargeAmount"
@@ -68,6 +75,9 @@
         ],
         "value": [
             "surchargeAmount"
+        ],
+        "x": [
+            "Main.amountList"
         ]
     },
     "Test1": {
@@ -126,7 +136,8 @@
             "surchargeAmount"
         ],
         "testMultiIf": [
-            "surchargeAmount"
+            "surchargeAmount",
+            "Test1.john"
         ],
         "tupleAmount": [
             "surchargeAmount"
@@ -138,6 +149,14 @@
             "surchargeAmount"
         ],
         "value": [
+            "surchargeAmount"
+        ],
+        "x": [
+            "Test1.amountList"
+        ]
+    },
+    "Test2": {
+        "getHelperFunction": [
             "surchargeAmount"
         ]
     }
