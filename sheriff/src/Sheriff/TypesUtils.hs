@@ -39,6 +39,7 @@ getViolationSuggestions v = case v of
   NonIndexedDBColumn _ _ r -> db_rule_fixes r
   EmptyWhereClause _ r -> db_rule_fixes r
   InfiniteRecursionDetected r -> infinite_recursion_rule_fixes r
+  ColumnAccessViolation _ _ r -> column_access_rule_fixes r
   NoViolation -> []
 
 getViolationType :: Violation -> String
@@ -50,6 +51,7 @@ getViolationType v = case v of
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
   EmptyWhereClause _ _ -> "EmptyWhereClause"
   InfiniteRecursionDetected _ -> "InfiniteRecursionDetected"
+  ColumnAccessViolation _ _ _ -> "ColumnAccessViolation"
   NoViolation -> "NoViolation"
 
 getViolationRule :: Violation -> Rule
@@ -61,6 +63,7 @@ getViolationRule v = case v of
   NonIndexedDBColumn _ _ r -> DBRuleT r
   EmptyWhereClause _ r -> DBRuleT r
   InfiniteRecursionDetected r -> InfiniteRecursionRuleT r
+  ColumnAccessViolation _ _ r -> ColumnAccessRuleT r
   NoViolation -> defaultRule
 
 getViolationRuleName :: Violation -> String
@@ -72,6 +75,7 @@ getViolationRuleName v = case v of
   NonIndexedDBColumn _ _ r -> db_rule_name r
   EmptyWhereClause _ r -> db_rule_name r
   InfiniteRecursionDetected r -> infinite_recursion_rule_name r
+  ColumnAccessViolation _ _ r -> column_access_rule_name r
   NoViolation -> "NA"
 
 getViolationRuleExceptions :: Violation -> Rules
@@ -100,6 +104,7 @@ getRuleIgnoreModules rule = case rule of
   FunctionRuleT fnRule -> fn_rule_ignore_modules fnRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_modules infiniteRecursionRule
   DBRuleT dbRule -> db_rule_ignore_modules dbRule
+  ColumnAccessRuleT columnAccessRule -> column_access_rule_ignore_modules columnAccessRule
   _ -> []
 
 getRuleIgnoreFunctions :: Rule -> Modules
@@ -121,6 +126,7 @@ getRuleName rule = case rule of
   FunctionRuleT fnRule -> fn_rule_name fnRule
   DBRuleT dbRule -> db_rule_name dbRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_name infiniteRecursionRule
+  ColumnAccessRuleT columnAccessRule -> column_access_rule_name columnAccessRule
   _ -> "Rule not handled"
 
 noSuggestion :: Suggestions

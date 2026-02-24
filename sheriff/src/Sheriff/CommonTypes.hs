@@ -35,6 +35,7 @@ instance Show NameModuleValue where
 data PluginCommonOpts a = PluginCommonOpts {
     currentModule :: String,
     nameModuleMap :: HM.HashMap NameModuleValue NameModuleValue,
+    knownDBTables :: [String],
     pluginOpts    :: a
   }
   deriving (Show, Eq)

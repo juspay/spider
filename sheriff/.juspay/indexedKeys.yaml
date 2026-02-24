@@ -8,6 +8,11 @@ tables:
     indexedKeys:
       - status
       - partitionKey
+  
+  - name: MerchantGatewayAccount
+    indexedKeys:
+      - status
+      - partitionKey
       
   - name: Token
     ignoredModules: []
