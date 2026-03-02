@@ -1,3 +1,4 @@
+
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -159,7 +160,7 @@ sheriff opts modSummary tcEnv = do
                                   pure []
                                 Right (SheriffRules exceptionRules) -> pure exceptionRules
   
-  let rawGlobalRules          = defaultSheriffRules <> dbRules <> configuredRules
+  let rawGlobalRules          = defaultSheriffRules <> (if skipIndexedKeysCheck then [] else dbRules) <> configuredRules
       globalRules             = filter (isAllowedOnCurrentModule moduleName') rawGlobalRules
       rawExceptionRules       = defaultSheriffExceptionsRules <> configuredExceptionRules 
       globalExceptionRules    = filter (isAllowedOnCurrentModule moduleName') rawExceptionRules 
