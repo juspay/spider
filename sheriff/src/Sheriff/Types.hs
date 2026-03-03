@@ -30,10 +30,11 @@ data PluginOpts = PluginOpts {
     logDebugInfo          :: Bool,
     logWarnInfo           :: Bool,
     logTypeDebugging      :: Bool,
-    useIOForSourceCode    :: Bool
+    useIOForSourceCode    :: Bool,
+    skipIndexedKeysCheck  :: Bool
   } deriving (Show, Eq)
 
-defaultPluginOpts :: PluginOpts
+defaultPluginOpts :: PluginOpts 
 defaultPluginOpts = 
   PluginOpts { 
     saveToFile            = False, 
@@ -49,7 +50,8 @@ defaultPluginOpts =
     logWarnInfo           = True,
     logTypeDebugging      = False,
     shouldCheckExceptions = True,
-    useIOForSourceCode    = False
+    useIOForSourceCode    = False,
+    skipIndexedKeysCheck  = False
   }
 
 instance FromJSON PluginOpts where
@@ -68,6 +70,7 @@ instance FromJSON PluginOpts where
     logWarnInfo           <- o .:? "logWarnInfo"           .!= (logWarnInfo defaultPluginOpts)
     logTypeDebugging      <- o .:? "logTypeDebugging"      .!= (logTypeDebugging defaultPluginOpts)
     useIOForSourceCode    <- o .:? "useIOForSourceCode"    .!= (useIOForSourceCode defaultPluginOpts)
+    skipIndexedKeysCheck  <- o .:? "skipIndexedKeysCheck"  .!= (skipIndexedKeysCheck defaultPluginOpts)
     return PluginOpts {..}
 
 type Rules = [Rule]
@@ -317,12 +320,13 @@ instance FromJSON GeneralRule where
 
 data ColumnAccessRule =
   ColumnAccessRule
-    { column_access_rule_name           :: String
-    , column_name                       :: String
-    , allowed_tables                    :: [String]
-    , column_access_rule_fixes          :: Suggestions
+    { column_access_rule_name             :: String
+    , column_name                         :: String
+    , allowed_tables                      :: [String]
+    , column_access_rule_fixes            :: Suggestions
     , column_access_rule_ignore_modules   :: Modules
     , column_access_rule_ignore_functions :: ModulesWithFunctions
+    , skip_known_tables_check             :: Bool
     }
   deriving (Show, Eq)
 
@@ -333,7 +337,8 @@ defaultColumnAccessRule = ColumnAccessRule {
     allowed_tables                      = [],
     column_access_rule_fixes            = [],
     column_access_rule_ignore_modules   = [],
-    column_access_rule_ignore_functions = []
+    column_access_rule_ignore_functions = [],
+    skip_known_tables_check             = False
   }
 
 instance FromJSON ColumnAccessRule where
@@ -344,6 +349,7 @@ instance FromJSON ColumnAccessRule where
                 column_access_rule_fixes            <- o .: "column_access_rule_fixes"
                 column_access_rule_ignore_modules   <- o .:? "column_access_rule_ignore_modules"   .!= (column_access_rule_ignore_modules defaultColumnAccessRule)
                 column_access_rule_ignore_functions <- o .:? "column_access_rule_ignore_functions" .!= (column_access_rule_ignore_functions defaultColumnAccessRule)
+                skip_known_tables_check             <- o .:? "skip_known_tables_check"             .!= (skip_known_tables_check defaultColumnAccessRule)
                 return ColumnAccessRule {..}
 
 data Rule = 
