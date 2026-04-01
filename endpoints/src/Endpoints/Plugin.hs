@@ -165,6 +165,7 @@ data Endpoint = Endpoint
     , responseBody :: Maybe String
     , requestBody  :: Maybe String
     , requestContentType  :: Maybe String
+    , responseHeaders :: [String]
     } deriving (Generic,Show)
 
 deriving instance ToJSON Endpoint
@@ -183,7 +184,7 @@ mergeAllURLOptions list =
     let (headers,queryParams,verbs,captures,reqBodyList,contentTypeList) = processList list
     in concatMap (\x ->
         case x of
-            (Verb method status responseType responseBody) -> [(Endpoint method captures queryParams headers status responseType responseBody (if null $ concat reqBodyList then Nothing else Just $ concat reqBodyList) (if null $ concat contentTypeList then Nothing else Just $ concat contentTypeList))]
+            (Verb method status responseType responseBody responseHeaders) -> [(Endpoint method captures queryParams headers status responseType responseBody (if null $ concat reqBodyList then Nothing else Just $ concat reqBodyList) (if null $ concat contentTypeList then Nothing else Just $ concat contentTypeList) responseHeaders)]
             _ -> mempty
     ) verbs
     where
@@ -192,7 +193,7 @@ mergeAllURLOptions list =
                 case x of
                     (QueryParam p) -> (rh,qp <> [p],verb,capture,reqBodyList,contentTypeList)
                     (Header p) -> (rh <> [p], qp,verb,capture,reqBodyList,contentTypeList)
-                    (Verb method status responseType responseBody) -> (rh,qp,verb <> [x],capture,reqBodyList,contentTypeList)
+                    (Verb method status responseType responseBody responseHeaders) -> (rh,qp,verb <> [x],capture,reqBodyList,contentTypeList)
                     (ReqBody contentType reqBody) -> (rh,qp,verb,capture,(reqBodyList <> [reqBody]),contentTypeList <> [contentType])
                     (Group "" l)  ->
                         let (a,b,c,cc,reqBodyL,contentTypeL) = processList l
@@ -206,23 +207,23 @@ mergeAllURLOptions list =
                 ) ([],[],[],([] :: [String]),[],[]) list
 
 parseApiDefinition :: ApiComponent -> IO [Endpoint]
-parseApiDefinition (Path p) = pure [Endpoint mempty [p] [] mempty "" Nothing Nothing Nothing Nothing]
-parseApiDefinition (Verb method status responseType _) = pure [Endpoint (method) [] [] mempty status (responseType) Nothing Nothing Nothing]
-parseApiDefinition (Group p []) = pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing Nothing Nothing]
-parseApiDefinition (Group "" [(Verb method status responseType responseBody)]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody Nothing Nothing]
-parseApiDefinition (Group "" [(ReqBody contentType reqBody),(Verb method status responseType responseBody)]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody (Just reqBody) (Just contentType)]
+parseApiDefinition (Path p) = pure [Endpoint mempty [p] [] mempty "" Nothing Nothing Nothing Nothing []]
+parseApiDefinition (Verb method status responseType _ responseHeaders) = pure [Endpoint (method) [] [] mempty status (responseType) Nothing Nothing Nothing responseHeaders]
+parseApiDefinition (Group p []) = pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing Nothing Nothing []]
+parseApiDefinition (Group "" [(Verb method status responseType responseBody responseHeaders)]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody Nothing Nothing responseHeaders]
+parseApiDefinition (Group "" [(ReqBody contentType reqBody),(Verb method status responseType responseBody responseHeaders)]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody (Just reqBody) (Just contentType) responseHeaders]
 -- parseApiDefinition (Group "" [(Verb method status responseType responseBody)]) = pure [Endpoint (method) [] [] mempty status (responseType) responseBody]
 parseApiDefinition (Group "" (x:xs)) = do
     pure $ mergeAllURLOptions (x:xs)
-parseApiDefinition (Group p [(ReqBody contentType reqBody),(Verb method status responseType responseBody)]) = pure [Endpoint (method) [p] [] mempty status (responseType) responseBody (Just reqBody) (Just contentType)]
-parseApiDefinition (Group p [(Verb method status responseType responseBody)]) = pure [Endpoint (method) [p] [] mempty status (responseType) responseBody Nothing Nothing]
+parseApiDefinition (Group p [(ReqBody contentType reqBody),(Verb method status responseType responseBody responseHeaders)]) = pure [Endpoint (method) [p] [] mempty status (responseType) responseBody (Just reqBody) (Just contentType) responseHeaders]
+parseApiDefinition (Group p [(Verb method status responseType responseBody responseHeaders)]) = pure [Endpoint (method) [p] [] mempty status (responseType) responseBody Nothing Nothing responseHeaders]
 parseApiDefinition x@(Group p comps) = do
     endpointsList <- mapM parseApiDefinition comps
     let filteredList = concat $ filter (not . null) endpointsList
     case filteredList of
         [] -> do
-            pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing Nothing Nothing]
-        [(endpoint)] -> pure [(\(Endpoint method path qp h rs rt rb reqBody contentType) -> Endpoint method ([p] <> path) qp h rs rt rb reqBody contentType) endpoint]
+            pure [Endpoint mempty [p] [] mempty mempty Nothing Nothing Nothing Nothing []]
+        [(endpoint)] -> pure [(\(Endpoint method path qp h rs rt rb reqBody contentType responseHeaders) -> Endpoint method ([p] <> path) qp h rs rt rb reqBody contentType responseHeaders) endpoint]
         _ -> pure $ (map (\endpoint -> endpoint { path' = [p] <> (path' endpoint) })) filteredList
 parseApiDefinition (Alternative comps) = concat <$> mapM parseApiDefinition comps
 parseApiDefinition _ = pure []
@@ -269,7 +270,7 @@ data ApiComponent
   | Header String
   | AddArgs String
   | ReqBody String String
-  | Verb String String (Maybe String) (Maybe String)
+  | Verb String String (Maybe String) (Maybe String) [String]
   | Group String [ApiComponent]
   | Alternative [ApiComponent]
   | Tag String
@@ -295,6 +296,33 @@ tailMaybe (x:xs) = Just xs
 --         _ -> pure $ Just $ ResponseType mempty mempty rawStr
 
 -- extractRequestTypeToLink x@(TyConApp tyCon args) raw = pure $ Just $ RequestType [showSDocUnsafe $ ppr x] (raw)
+
+parseHeaders :: Type -> Maybe [Type]
+parseHeaders = go
+  where
+    go (TyConApp tc (_k:elems))
+      | occ tc == "[]" = Just (drop 1 elems)
+    go (TyConApp tc [_k,x,xs])
+      | occ tc == ":"  = (x:) <$> go xs
+    go (TyConApp tc [_k])
+      | occ tc == "[]" = Just []
+    go _               = Nothing
+    occ = getOccString . tyConName
+
+parseResponseType :: Type -> IO ([Type], Type)
+parseResponseType responseType = do
+    case splitTyConApp_maybe responseType of
+        Nothing -> pure $ ([], responseType)
+        Just (tyCon', args') -> do
+            let tyConName' = getOccString (tyConName tyCon')
+            case tyConName' of
+                "Headers" -> 
+                    case args' of
+                        [respHeaders, responseBodyType] -> do
+                            let hd = parseHeaders respHeaders
+                            pure $ (fromMaybe [] hd, responseBodyType)
+                        _ -> pure $ ([], responseType)
+                _ -> pure $ ([], responseType)
 
 parseApiType :: Type -> IO (Maybe ApiComponent)
 parseApiType ty = do
@@ -342,9 +370,16 @@ parseApiType ty = do
                         then pure Nothing
                         else pure $ Just $ Group "" $ catMaybes res
                 "Verb" -> do
+                    let l1 = []
+                    (respHeaders, respBody) <- 
+                        case args of
+                            [_,_,_,_,responseType] -> do
+                                (respHeaderType, respBodyType) <- parseResponseType responseType
+                                pure $ (map (showSDocUnsafe . ppr) respHeaderType, showSDocUnsafe $ ppr respBodyType)
+                            other -> pure $ ([], showSDocUnsafe $ ppr other)
                     res <- mapM (\x -> pure $ (showSDocUnsafe $ ppr x)) args
                     case res of
-                        ["StdMethod",method,statusCode,encodeType,responseTypeName] -> pure $ Just $ Verb method statusCode (Just encodeType) (Just $ showSDocUnsafe $ ppr $ last $ args)
+                        ["StdMethod",method,statusCode,encodeType,_] -> pure $ Just $ Verb method statusCode (Just encodeType) (Just $ respBody) respHeaders
                         _ -> pure Nothing
                 "ReqBody'" -> do
                     res <- mapM (\x -> pure $ (showSDocUnsafe $ ppr x)) args
