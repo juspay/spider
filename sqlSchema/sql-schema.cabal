@@ -1,0 +1,64 @@
+cabal-version:      3.0
+name:               sql-schema
+version:            0.1.0.0
+synopsis:           A GHC plugin to check SQL schema consistency between Haskell code and DB schema
+license:            MIT
+license-file:       LICENSE
+author:             juspay
+maintainer:         saurabh.saini@juspay.in
+category:           Database
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+
+common warnings
+    ghc-options: -Wall
+
+library
+    import:           warnings
+    exposed-modules:
+        SqlSchema.Plugin
+      , SqlSchema.Types
+      , SqlSchema.Merge
+    build-depends:
+        base
+      , bytestring
+      , containers
+      , directory
+      , filepath
+      , ghc
+      , text
+      , aeson
+      , yaml
+      , ordered-containers
+      , unordered-containers
+      , extra
+      , uniplate
+      , references
+    hs-source-dirs:   src
+    default-language: Haskell2010
+
+executable sql-schema-merge
+    import:           warnings
+    main-is:          Merge.hs
+    hs-source-dirs:   app
+    build-depends:
+        base
+      , sql-schema
+      , directory
+      , filepath
+    default-language: Haskell2010
+
+test-suite sql-schema-test
+    import:           warnings
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    build-depends:
+        base
+      , bytestring
+      , directory
+      , filepath
+      , sql-schema
+      , temporary
+      , yaml
