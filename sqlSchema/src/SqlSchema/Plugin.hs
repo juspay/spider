@@ -104,7 +104,7 @@ writeFragment opts modSummary hpm = do
     else do
       let decls        = hsmodDecls (unLoc (hpm_module hpm))
           rm           = foldl' visitDecl emptyRawModule decls
-          rows         = extractFromModule cli modStr srcPath rm
+          rows         = extractFromModule cli modStr rm
           errs         = concat [es | (_, Left es) <- rows]
           okTables     = [ts | (_, Right ts) <- rows]
           dbOverrides  = extractDbOverrides modStr srcPath rm
@@ -116,7 +116,6 @@ writeFragment opts modSummary hpm = do
         createDirectoryIfMissing True fragDir
         let fragment = Fragment
               { fragmentModule           = modStr
-              , fragmentFile             = srcPath
               , fragmentTables           = okTables
               , fragmentDbEntityOverrides = dbOverrides
               }
@@ -198,11 +197,10 @@ data RawTableInst = RawTableInst
 extractFromModule
   :: CliOptions
   -> String
-  -> FilePath
   -> RawModule
   -> [(String, Either [SqlSchemaError] TableSchema)]
-extractFromModule cli modName srcPath rm =
-  [ assemble cli modName srcPath rm tyName rt
+extractFromModule cli modName rm =
+  [ assemble cli modName rm tyName rt
   | (_, tyName, rt) <- rmTables rm
   , Set.member tyName (rmBeamableTypes rm)
   ]
@@ -523,12 +521,11 @@ singleEquation _ = Nothing
 assemble
   :: CliOptions
   -> String          -- module name
-  -> FilePath        -- source file
   -> RawModule
   -> String          -- type name e.g. "WidgetT"
   -> RawTable
   -> (String, Either [SqlSchemaError] TableSchema)
-assemble cli modName srcPath rm typeName rt =
+assemble cli modName rm typeName rt =
   let metaM      = Map.lookup typeName (rmModelMetas rm)
       tabM       = Map.lookup typeName (rmTableInsts rm)
       fieldErrs  = [ patchTypeName typeName e | e <- rtFieldErrors rt ]
@@ -557,7 +554,6 @@ assemble cli modName srcPath rm typeName rt =
         Right TableSchema
           { haskellType    = modName <> "." <> typeName
           , sourceModule   = modName
-          , sourceFile     = srcPath
           , tableName      = nameLit
           , modelTableType = metaM >>= rmmTableType
           , primaryKey     = pkInfo

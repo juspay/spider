@@ -25,7 +25,9 @@ For every Beam table (`data XxxT (f :: Type -> Type) = Xxx { … } deriving
 
 ## How to wire it into a downstream package
 
-In the consuming package's `.cabal`:
+In the consuming package's `.cabal` (CI-only branch — keep out of the
+`if flag(Local)` dev branch so dev `cabal build` skips the plugin
+overhead):
 
 ```
 build-depends:
@@ -34,21 +36,43 @@ build-depends:
 
 ghc-options:
   -fplugin=SqlSchema.Plugin
-  -fplugin-opt=SqlSchema.Plugin:{"fragmentsDir":"./.juspay/sql-schema-fragments","blacklistModules":["Test.","Spec."]}
+  -fplugin-opt=SqlSchema.Plugin:{"fragmentsDir":"./.juspay/tmp/sql-schema","blacklistModules":["Test.","Spec."]}
 ```
 
-After building, combine fragments into the final contract:
+In the package's `flake.nix` haskell-flake settings, run the merger as
+part of `postInstall` so every `nix build .#default` publishes the
+contract:
 
-```
-cabal build
-cabal run sql-schema:exe:sql-schema-merge -- \
-  --fragments .juspay/sql-schema-fragments \
-  --out      .juspay/sql-schema.yaml \
-  --projectRoot .
+```nix
+settings.<pkg>.postInstall = ''
+  mkdir -p $out/share/sql-schema
+  sql-schema-merge \
+    --fragments .juspay/tmp/sql-schema \
+    --source-dirs src \
+    --out $out/share/sql-schema/sql-schema.yaml
+'';
 ```
 
-The merge CLI exits non-zero on duplicate Haskell types, on
-`setEntityName`/`modelTableName` disagreement, or on argument errors.
+For a package that consumes pre-built dep contracts (the typical
+service case where a dependency's tables must compose into the service's
+yaml):
+
+```nix
+settings.<service>.postInstall = ''
+  mkdir -p $out/share/sql-schema
+  sql-schema-merge \
+    --fragments .juspay/tmp/sql-schema \
+    --source-dirs src \
+    --include-merged ${inputs.app-db.packages.${system}.app-db}/share/sql-schema/sql-schema.yaml \
+    --out $out/share/sql-schema/sql-schema.yaml
+'';
+```
+
+The merge CLI exits non-zero on duplicate-type **mismatch** (identical
+duplicates are silently deduped), on `setEntityName`/`modelTableName`
+disagreement, or on argument errors.  Two different Haskell types
+mapping to the same SQL `tableName` produces a stderr warning, not an
+error.
 
 ## Plugin options (JSON in `-fplugin-opt`)
 

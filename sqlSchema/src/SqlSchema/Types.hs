@@ -36,14 +36,18 @@ import           GHC.Generics (Generic)
 data TableSchema = TableSchema
   { haskellType    :: String
     -- ^ Fully-qualified Haskell type constructor, e.g.
-    --   @App.Storage.Widget.WidgetT@.
+    --   @App.Storage.Widget.WidgetT@.  This is the
+    --   identity key in the merged YAML; uniqueness is enforced at merge
+    --   time.
   , sourceModule   :: String
-    -- ^ Module that declared the table.
-  , sourceFile     :: String
-    -- ^ Path (as reported by GHC) to the @.hs@ that declared the table.
+    -- ^ Module that declared the table.  Note: same @haskellType@ implies
+    --   same @sourceModule@ (the type is fully qualified by module), so
+    --   two fragments with matching @haskellType@ are equal iff every
+    --   other field is equal too — the merger relies on this for safe
+    --   dedup of transitively-included contracts.
   , tableName      :: String
     -- ^ Value of @modelTableName@, e.g. @"widget"@.  Must be a string
-    --   literal in the source.
+    --   literal in the source (or supplied via @tableNameOverrides@).
   , modelTableType :: Maybe String
     -- ^ Value of @modelTableType@ if present, e.g. @"TRACKER"@.
   , primaryKey     :: PrimaryKeyInfo
@@ -85,11 +89,15 @@ data DbEntityOverride = DbEntityOverride
 -- | A single module's contribution.  Each module that the plugin processes
 -- writes exactly one fragment file under the configured fragments
 -- directory; the merge CLI combines all fragments into the final YAML.
+--
+-- Staleness is detected by the merger walking @--source-dirs@: any
+-- fragment whose @fragmentModule@ is not backed by an @.hs@ file in any
+-- listed source dir is pruned.  No path lives on the fragment itself,
+-- which is what lets fragments from different repositories (e.g. a
+-- pinned dependency's contract) compose into a single merged YAML without
+-- the per-package CWD juggling that file-relative paths would require.
 data Fragment = Fragment
   { fragmentModule   :: String
-  , fragmentFile     :: String
-    -- ^ Source @.hs@ file path as reported by GHC.  Used by the merge CLI
-    --   to detect stale fragments (source no longer exists).
   , fragmentTables   :: [TableSchema]
   , fragmentDbEntityOverrides :: [DbEntityOverride]
   } deriving (Show, Eq, Generic, ToJSON, FromJSON)
