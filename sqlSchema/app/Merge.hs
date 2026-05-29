@@ -17,6 +17,7 @@
 --   2  argument error
 module Main (main) where
 
+import           Control.Monad      (when)
 import           System.Environment (getArgs)
 import           System.Exit        (ExitCode (..), exitWith)
 import           System.IO          (hPutStrLn, stderr)
@@ -31,7 +32,7 @@ main = do
       hPutStrLn stderr ("sql-schema-merge: " <> err)
       hPutStrLn stderr usage
       exitWith (ExitFailure 2)
-    Right opts -> do
+    Right (opts, allowEmpty) -> do
       result <- runMerge opts
       case result of
         Left errs -> do
@@ -46,12 +47,34 @@ main = do
             <> " duplicates collapsed, " <> show (mrTablesEmitted report)
             <> " tables emitted, " <> show (mrOverridesEmitted report)
             <> " overrides recorded -> " <> moOutFile opts
+          -- Safety gate: a contract with zero tables almost always means the
+          -- SqlSchema GHC plugin did not run during compilation (so no
+          -- per-module fragments were written), NOT that the package has no
+          -- Beam tables.  Publishing an empty contract that still exits 0 is a
+          -- downstream false-pass against the prod DB.  Fail loudly unless the
+          -- caller explicitly opted in via --allow-empty.
+          when (mrTablesEmitted report == 0 && not allowEmpty) $ do
+            mapM_ (hPutStrLn stderr)
+              [ "sql-schema-merge: ERROR: refusing to publish a contract with 0 tables."
+              , "  out:        " <> moOutFile opts
+              , "  fragments:  " <> moFragmentsDir opts
+              , "This almost always means the SqlSchema GHC plugin did not run during"
+              , "compilation, NOT that the package has no Beam tables.  An empty"
+              , "contract is a downstream false-pass against the prod DB schema."
+              , "Fixes:"
+              , "  * Ensure the package was built with the SqlSchema cabal flag enabled"
+              , "    (on by default in nix; local cabal builds opt out via -SqlSchema)."
+              , "  * If this package genuinely has no tables (only composes deps via"
+              , "    --include-merged), pass --allow-empty."
+              ]
+            exitWith (ExitFailure 1)
 
 usage :: String
 usage = unlines
   [ "Usage: sql-schema-merge --fragments DIR --out FILE"
   , "                       [--source-dirs DIR ...]"
   , "                       [--include-merged FILE ...]"
+  , "                       [--allow-empty]"
   , ""
   , "  --fragments DIR        directory holding per-module *.yaml fragments"
   , "  --out FILE             path to write the merged YAML"
@@ -63,22 +86,27 @@ usage = unlines
   , "                         the output.  Typically '${dep}/share/sql-schema/"
   , "                         sql-schema.yaml' for a dep package whose tables"
   , "                         must compose into this service's contract."
+  , "  --allow-empty          permit a contract with zero tables.  Without this,"
+  , "                         emitting 0 tables is a fatal error (exit 1), since"
+  , "                         it usually means the SqlSchema plugin did not run."
   ]
 
-parseArgs :: [String] -> Either String MergeOptions
-parseArgs = go (MergeOptions "" "" [] []) False False
+parseArgs :: [String] -> Either String (MergeOptions, Bool)
+parseArgs = go (MergeOptions "" "" [] []) False False False
   where
-    go opts haveFrag haveOut [] =
+    go opts allowEmpty haveFrag haveOut [] =
       if not haveFrag then Left "missing --fragments"
       else if not haveOut then Left "missing --out"
-      else Right opts
-    go opts _ ho ("--fragments" : v : rest) =
-      go opts { moFragmentsDir = v } True ho rest
-    go opts hf _ ("--out" : v : rest) =
-      go opts { moOutFile = v } hf True rest
-    go opts hf ho ("--include-merged" : v : rest) =
-      go opts { moIncludeMerged = moIncludeMerged opts ++ [v] } hf ho rest
-    go opts hf ho ("--source-dirs" : v : rest) =
-      go opts { moSourceDirs = moSourceDirs opts ++ [v] } hf ho rest
-    go _ _ _ (other : _) =
+      else Right (opts, allowEmpty)
+    go opts ae _ ho ("--fragments" : v : rest) =
+      go opts { moFragmentsDir = v } ae True ho rest
+    go opts ae hf _ ("--out" : v : rest) =
+      go opts { moOutFile = v } ae hf True rest
+    go opts ae hf ho ("--include-merged" : v : rest) =
+      go opts { moIncludeMerged = moIncludeMerged opts ++ [v] } ae hf ho rest
+    go opts ae hf ho ("--source-dirs" : v : rest) =
+      go opts { moSourceDirs = moSourceDirs opts ++ [v] } ae hf ho rest
+    go opts _ hf ho ("--allow-empty" : rest) =
+      go opts True hf ho rest
+    go _ _ _ _ (other : _) =
       Left ("unrecognised argument: " <> other)

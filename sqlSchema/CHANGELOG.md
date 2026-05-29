@@ -1,5 +1,16 @@
 # sql-schema
 
+## 0.3.0
+
+* `sql-schema-merge` now **exits non-zero when it would emit a contract with
+  zero tables**, unless `--allow-empty` is passed. A zero-table contract almost
+  always means the `SqlSchema` plugin did not run during compilation (e.g. the
+  package was built with the plugin disabled), and silently publishing an empty
+  contract is a downstream false-pass against the production DB. Packages that
+  genuinely define no Beam tables (and only compose dependency contracts via
+  `--include-merged`) should pass `--allow-empty`. The library `runMerge` and
+  its return type are unchanged; the gate lives in the CLI.
+
 ## 0.1.0.0
 
 * Initial release. GHC plugin that extracts the SQL schema implied by Beam
