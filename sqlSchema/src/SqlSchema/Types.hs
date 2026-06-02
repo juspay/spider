@@ -14,6 +14,7 @@ module SqlSchema.Types
     TableSchema(..)
   , ColumnInfo(..)
   , PrimaryKeyInfo(..)
+  , ModelSchemaName(..)
   , DbEntityOverride(..)
   , Fragment(..)
   , MergedSchema(..)
@@ -50,6 +51,20 @@ data TableSchema = TableSchema
     --   literal in the source (or supplied via @tableNameOverrides@).
   , modelTableType :: Maybe String
     -- ^ Value of @modelTableType@ if present, e.g. @"TRACKER"@.
+  , modelSchemaName :: Maybe ModelSchemaName
+    -- ^ Source-level form of the table's @modelSchemaName@ ModelMeta
+    --   binding when it is @Just <something>@.  @Nothing@ here covers
+    --   both "field not declared" and "@modelSchemaName = Nothing@" —
+    --   downstream validation treats both the same (no schema → MySQL).
+    --
+    --   The two recognised RHS forms map to distinct constructors so the
+    --   validator can split PG tables (which need a PG @information_schema@
+    --   lookup) from MySQL ones at YAML-read time:
+    --
+    --       modelSchemaName = Just "public"
+    --         → 'SchemaLiteral' "public"
+    --       modelSchemaName = Just Config.getAppDbSchema
+    --         → 'SchemaConfig' "Config.getAppDbSchema"
   , primaryKey     :: PrimaryKeyInfo
   , columns        :: [ColumnInfo]
     -- ^ Columns in source order from the record definition.
@@ -69,6 +84,20 @@ data PrimaryKeyInfo = PrimaryKeyInfo
   { pkConstructor :: String
   , pkColumns     :: [String]
   } deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+
+-- | Captures the two source-level shapes of @modelSchemaName = Just _@
+-- that the codebase uses today.  The qualifier on a 'SchemaConfig' value
+-- is preserved verbatim from the source (e.g. @"Config.getAppDbSchema"@,
+-- @"C.getAppDbSchema"@) so the validator can recognise the PG dynamic-
+-- schema marker without having to resolve imports.
+--
+-- A 'SchemaLiteral' carries the unquoted SQL schema text (e.g. @"public"@).
+-- Forms other than @Just "lit"@ or @Just <var>@ are not currently
+-- extracted — they become 'Nothing' on the table.
+data ModelSchemaName
+  = SchemaLiteral String
+  | SchemaConfig   String
+  deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
 
 -- | A @setEntityName@-style override discovered in a @withDbModification@
 -- block on a @defaultDbSettings@ binding.  At Beam runtime this overrides

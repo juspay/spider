@@ -333,12 +333,13 @@ sampleFragment modName ht tname = Fragment
 
 sampleTable :: String -> String -> String -> TableSchema
 sampleTable ht modName tname = TableSchema
-  { haskellType    = ht
-  , sourceModule   = modName
-  , tableName      = tname
-  , modelTableType = Just "CONFIG"
-  , primaryKey     = PrimaryKeyInfo "Id" ["id"]
-  , columns        =
+  { haskellType     = ht
+  , sourceModule    = modName
+  , tableName       = tname
+  , modelTableType  = Just "CONFIG"
+  , modelSchemaName = Nothing
+  , primaryKey      = PrimaryKeyInfo "Id" ["id"]
+  , columns         =
       [ ColumnInfo
           { hsField = "id", column = "id"
           , hsType = "Int", nullable = False

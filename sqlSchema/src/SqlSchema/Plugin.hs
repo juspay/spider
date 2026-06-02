@@ -184,9 +184,10 @@ data RawFieldOrError
   | RFErr SqlSchemaError
 
 data RawModelMeta = RawModelMeta
-  { rmmTableNameLit :: Maybe String
-  , rmmModifierName :: Maybe String
-  , rmmTableType    :: Maybe String
+  { rmmTableNameLit  :: Maybe String
+  , rmmModifierName  :: Maybe String
+  , rmmTableType     :: Maybe String
+  , rmmSchemaName    :: Maybe ModelSchemaName
   }
 
 data RawTableInst = RawTableInst
@@ -483,7 +484,7 @@ setEntityNameLit = \case
 extractModelMeta :: LHsBinds GhcPs -> RawModelMeta
 extractModelMeta binds = foldl' step empty (bagToList binds)
   where
-    empty = RawModelMeta Nothing Nothing Nothing
+    empty = RawModelMeta Nothing Nothing Nothing Nothing
     step acc (L _ (FunBind{ fun_id = L _ nm, fun_matches = mg }))
       | Just rhs <- singleRhs mg =
           case occToString nm of
@@ -493,6 +494,8 @@ extractModelMeta binds = foldl' step empty (bagToList binds)
               acc { rmmModifierName = varName (unLoc rhs) }
             "modelTableType"         ->
               acc { rmmTableType = justConstructorOf (unLoc rhs) }
+            "modelSchemaName"        ->
+              acc { rmmSchemaName = extractModelSchemaName (unLoc rhs) }
             _                        -> acc
     step acc _ = acc
 
@@ -552,12 +555,13 @@ assemble cli modName rm typeName rt =
                        }
                    | f <- rtFields rt ]
         Right TableSchema
-          { haskellType    = modName <> "." <> typeName
-          , sourceModule   = modName
-          , tableName      = nameLit
-          , modelTableType = metaM >>= rmmTableType
-          , primaryKey     = pkInfo
-          , columns        = cols
+          { haskellType     = modName <> "." <> typeName
+          , sourceModule    = modName
+          , tableName       = nameLit
+          , modelTableType  = metaM >>= rmmTableType
+          , modelSchemaName = metaM >>= rmmSchemaName
+          , primaryKey      = pkInfo
+          , columns         = cols
           }
   in (typeName, result)
 
@@ -934,3 +938,35 @@ justConstructorOf = \case
     | varName j == Just "Just" -> conName x
   HsPar _ (L _ e) -> justConstructorOf e
   _ -> Nothing
+
+-- | Classify the RHS of a @modelSchemaName = Just _@ binding.
+--
+-- Recognised inner forms:
+--
+--   * a string literal @"public"@           → 'SchemaLiteral'
+--   * a (possibly qualified) value name
+--     @Config.getAppDbSchema@               → 'SchemaConfig'
+--
+-- The qualifier on a value reference is preserved by pretty-printing the
+-- 'RdrName' directly rather than going through 'rdrNameOcc' (which would
+-- strip the module qualifier and lose the PG marker the validator looks
+-- for).  Anything else (literals other than strings, function
+-- applications, etc.) yields 'Nothing' — silently dropping unknown shapes
+-- is fine here because the validator's fallback is "treat as MySQL",
+-- which is the same behaviour as a missing @modelSchemaName@.
+extractModelSchemaName :: HsExpr GhcPs -> Maybe ModelSchemaName
+extractModelSchemaName = peel
+  where
+    peel = \case
+      HsPar _ (L _ e)           -> peel e
+      ExprWithTySig _ (L _ e) _ -> peel e
+      HsApp _ (L _ j) (L _ x)
+        | varName j == Just "Just" -> inner x
+      _ -> Nothing
+
+    inner expr = case expr of
+      HsPar _ (L _ e)             -> inner e
+      ExprWithTySig _ (L _ e) _   -> inner e
+      HsLit _ (HsString _ fs)     -> Just (SchemaLiteral (unpackFS fs))
+      HsVar _ (L _ rn)            -> Just (SchemaConfig (sdocText rn))
+      _                           -> Nothing

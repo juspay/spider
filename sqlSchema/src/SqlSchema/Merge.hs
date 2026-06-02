@@ -333,12 +333,13 @@ mismatchMessage ht ts = unlines $
   where
     oneCopy n t = unlines
       [ "  copy " <> show n <> ":"
-      , "    sourceModule:   " <> sourceModule t
-      , "    tableName:      " <> tableName t
-      , "    modelTableType: " <> show (modelTableType t)
-      , "    column count:   " <> show (length (columns t))
-      , "    pk constructor: " <> pkConstructor (primaryKey t)
-      , "    pk columns:     " <> show (pkColumns (primaryKey t))
+      , "    sourceModule:    " <> sourceModule t
+      , "    tableName:       " <> tableName t
+      , "    modelTableType:  " <> show (modelTableType t)
+      , "    modelSchemaName: " <> show (modelSchemaName t)
+      , "    column count:    " <> show (length (columns t))
+      , "    pk constructor:  " <> pkConstructor (primaryKey t)
+      , "    pk columns:      " <> show (pkColumns (primaryKey t))
       ]
 
 
