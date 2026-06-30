@@ -209,22 +209,25 @@ extractFromModule cli modName rm =
 
 visitDecl :: RawModule -> LHsDecl GhcPs -> RawModule
 visitDecl rm (L l decl) = case decl of
-  -- Beam-table-shaped data decl: stash as a candidate regardless of
-  -- deriving clause (the actual is-a-Beam-table filter happens at
-  -- extraction time, gated by 'rmBeamableTypes').  If the decl HAS an
-  -- inline 'deriving Beamable', mark the type as Beam-confirmed too.
+  -- A data decl may be a Beam TABLE (single-ctor record + type var, deriving
+  -- Beamable) OR a Beam DB-record (same shape, deriving Database, e.g.
+  -- `data AppDb f = … deriving Database`).  Both fit the table-record shape
+  -- that extractRawTable matches, so the DB-record case (deriving Database)
+  -- MUST be checked FIRST — otherwise extractRawTable claims the DB-record as a
+  -- (non-Beamable, ultimately dropped) table candidate, rmDbRecords stays empty,
+  -- and the setEntityName overrides in its withDbModification are never extracted.
   TyClD _ (DataDecl { tcdLName = L _ lname
                     , tcdTyVars = tyVars
                     , tcdDataDefn = defn })
+    | hasDatabaseDeriving defn
+    , Just dbMap <- extractDbRecord tyVars defn ->
+        rm { rmDbRecords = Map.insert (occToString lname) dbMap (rmDbRecords rm) }
     | Just tbl <- extractRawTable tyVars defn ->
         let tyName = occToString lname
             rm'   = rm { rmTables = rmTables rm <> [(GHC.locA l, tyName, tbl)] }
         in  if hasBeamableDeriving defn
               then rm' { rmBeamableTypes = Set.insert tyName (rmBeamableTypes rm') }
               else rm'
-    | hasDatabaseDeriving defn
-    , Just dbMap <- extractDbRecord tyVars defn ->
-        rm { rmDbRecords = Map.insert (occToString lname) dbMap (rmDbRecords rm) }
   InstD _ (ClsInstD _ ClsInstDecl{ cid_poly_ty, cid_binds }) ->
     case headTypeOfInstance cid_poly_ty of
       -- Standalone 'instance Beamable XxxT' — marks XxxT as a Beam
@@ -555,9 +558,9 @@ assemble cli modName rm typeName rt =
                        }
                    | f <- rtFields rt ]
         Right TableSchema
-          { haskellType     = modName <> "." <> typeName
+          { codeName        = typeName
           , sourceModule    = modName
-          , tableName       = nameLit
+          , modelTableName  = nameLit
           , modelTableType  = metaM >>= rmmTableType
           , modelSchemaName = metaM >>= rmmSchemaName
           , primaryKey      = pkInfo

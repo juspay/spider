@@ -234,7 +234,7 @@ validate
 validate tables overrides =
   let groupedByHt :: Map.Map String [TableSchema]
       groupedByHt =
-        Map.fromListWith (<>) [(haskellType t, [t]) | t <- tables]
+        Map.fromListWith (<>) [(qualifiedType t, [t]) | t <- tables]
 
       -- Dedup: if every entry in a group is byte-equal, keep one.
       -- Otherwise produce a mismatch error.
@@ -248,7 +248,7 @@ validate tables overrides =
 
       -- Warn (don't fail) when distinct haskellTypes share a tableName.
       tableNameGroups =
-        Map.fromListWith (<>) [(tableName t, [haskellType t]) | t <- uniqTables]
+        Map.fromListWith (<>) [(modelTableName t, [qualifiedType t]) | t <- uniqTables]
       tnWarns =
         [ "sql-schema-merge: warning: SQL table '" <> tn
             <> "' modelled by multiple Haskell types: "
@@ -260,10 +260,10 @@ validate tables overrides =
       -- Cross-check setEntityName overrides against tableName.
       checkOverride DbEntityOverride{..} =
         let matches = [t | t <- uniqTables
-                         , dbTableType `isSuffixOfDot` haskellType t]
+                         , dbTableType `isSuffixOfDot` qualifiedType t]
         in case matches of
              []  -> Right (Just (warnUnmatched dbTableType overrideSourceModule))
-             [t] | tableName t == sqlName -> Right Nothing
+             [t] | modelTableName t == sqlName -> Right Nothing
                  | otherwise              -> Left (mismatchMsg t)
              _   -> Left (ambiguousMsg matches)
         where
@@ -273,8 +273,8 @@ validate tables overrides =
             <> " has no matching table in any fragment"
           mismatchMsg t = unlines
             [ "setEntityName override disagrees with modelTableName:"
-            , "  table:           " <> haskellType t
-            , "  modelTableName:  " <> tableName t
+            , "  table:           " <> qualifiedType t
+            , "  modelTableName:  " <> modelTableName t
             , "  setEntityName:   " <> sqlName
             , "  declared in:     " <> overrideSourceModule <> " (" <> overrideSourceFile <> ")"
             , "Beam's runtime uses setEntityName, so the YAML would misreport"
@@ -285,7 +285,7 @@ validate tables overrides =
             [ "Ambiguous dbEntityOverride for table-type suffix '"
               <> dbTableType <> "': matches "
               <> show (length ms) <> " tables:"
-            ] <> [ "  - " <> haskellType m | m <- ms ]
+            ] <> [ "  - " <> qualifiedType m | m <- ms ]
 
       overrideResults = map checkOverride overrides
       overrideErrs    = [e | Left e <- overrideResults]
@@ -302,7 +302,7 @@ validate tables overrides =
               then Left overrideErrs
               else Right
                 ( MergedSchema
-                    { mergedTables = sortOn haskellType uniqTables
+                    { mergedTables = sortOn qualifiedType uniqTables
                     , mergedDbEntityOverrides = sortOn sortKey dedupedOverrides
                     }
                 , dedupCount
@@ -323,7 +323,7 @@ resolveGroup ht []         = Left ("internal: empty group for " <> ht)
 
 mismatchMessage :: String -> [TableSchema] -> String
 mismatchMessage ht ts = unlines $
-  [ "Duplicate haskellType '" <> ht <> "' with conflicting definitions:"
+  [ "Duplicate table type '" <> ht <> "' with conflicting definitions:"
   ] <> zipWith oneCopy [(1 :: Int)..] ts
   <> [ "All copies of the same Haskell type must agree exactly.  This"
      , "usually means two different pinned versions of the same upstream"
@@ -334,7 +334,7 @@ mismatchMessage ht ts = unlines $
     oneCopy n t = unlines
       [ "  copy " <> show n <> ":"
       , "    sourceModule:    " <> sourceModule t
-      , "    tableName:       " <> tableName t
+      , "    modelTableName:  " <> modelTableName t
       , "    modelTableType:  " <> show (modelTableType t)
       , "    modelSchemaName: " <> show (modelSchemaName t)
       , "    column count:    " <> show (length (columns t))

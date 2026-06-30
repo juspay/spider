@@ -1,5 +1,23 @@
 # sql-schema
 
+## 0.4.0
+
+* **Breaking (contract shape).** Each `TableSchema` now carries `codeName` (the
+  Haskell table type constructor, e.g. `WidgetT`) and `modelTableName` (the
+  `ModelMeta` SQL name) in place of the old `tableName` field, and the redundant
+  `haskellType` field is dropped — it was always `sourceModule <> "." <> codeName`
+  and is now exposed as the `qualifiedType` helper. Consumers reading
+  `haskellType` / `tableName` must switch to `sourceModule`+`codeName` /
+  `modelTableName`.
+* **Fix: `setEntityName` overrides are now extracted.** A Beam DB-record
+  (`data Db f = … deriving Database`) is shaped like a Beam table (single-
+  constructor record with a type variable), so `visitDecl` claimed it as a
+  (non-Beamable, ultimately dropped) table candidate *before* the DB-record
+  branch ran — leaving `rmDbRecords` empty and `mergedDbEntityOverrides`
+  perpetually `[]`. The `deriving Database` branch is now checked first, so
+  `withDbModification` / `setEntityName` renames are captured (and cross-checked
+  against each table's `modelTableName`).
+
 ## 0.3.0
 
 * `sql-schema-merge` now **exits non-zero when it would emit a contract with

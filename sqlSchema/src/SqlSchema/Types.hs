@@ -12,6 +12,7 @@
 module SqlSchema.Types
   ( -- * On-disk contract
     TableSchema(..)
+  , qualifiedType
   , ColumnInfo(..)
   , PrimaryKeyInfo(..)
   , ModelSchemaName(..)
@@ -31,24 +32,27 @@ import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import           GHC.Generics (Generic)
 
--- | One @TableSchema@ per Beam table.  Keyed in the merged YAML by
--- 'haskellType' so renaming a SQL table shows up as a 'tableName' diff
--- rather than as a table-drop + table-add.
+-- | One @TableSchema@ per Beam table.  Keyed in the merged YAML by its
+-- fully-qualified type ('qualifiedType' = @sourceModule '.' codeName@) so
+-- renaming a SQL table shows up as a 'modelTableName' diff rather than as a
+-- table-drop + table-add.
 data TableSchema = TableSchema
-  { haskellType    :: String
-    -- ^ Fully-qualified Haskell type constructor, e.g.
-    --   @App.Storage.Widget.WidgetT@.  This is the
-    --   identity key in the merged YAML; uniqueness is enforced at merge
-    --   time.
+  { codeName       :: String
+    -- ^ Code-side identity: the Beam table's Haskell type constructor, e.g.
+    --   @WidgetT@.  With 'sourceModule' this gives the fully-qualified
+    --   type ('qualifiedType'), which is the merge identity key.
   , sourceModule   :: String
-    -- ^ Module that declared the table.  Note: same @haskellType@ implies
-    --   same @sourceModule@ (the type is fully qualified by module), so
-    --   two fragments with matching @haskellType@ are equal iff every
-    --   other field is equal too — the merger relies on this for safe
-    --   dedup of transitively-included contracts.
-  , tableName      :: String
-    -- ^ Value of @modelTableName@, e.g. @"widget"@.  Must be a string
-    --   literal in the source (or supplied via @tableNameOverrides@).
+    -- ^ Module that declared the table.  @sourceModule '.' codeName@ is the
+    --   fully-qualified type, so two fragments with matching
+    --   ('sourceModule','codeName') are equal iff every other field is equal
+    --   too — the merger relies on this for safe dedup of transitively-
+    --   included contracts.
+  , modelTableName :: String
+    -- ^ Value of @modelTableName@ (the ModelMeta SQL name), e.g.
+    --   @"widget"@.  Must be a string literal in the source (or supplied
+    --   via @tableNameOverrides@).  This is the name validation matches the
+    --   live DB against; a @setEntityName@ override, when present, supersedes
+    --   it (see 'DbEntityOverride').
   , modelTableType :: Maybe String
     -- ^ Value of @modelTableType@ if present, e.g. @"TRACKER"@.
   , modelSchemaName :: Maybe ModelSchemaName
@@ -69,6 +73,13 @@ data TableSchema = TableSchema
   , columns        :: [ColumnInfo]
     -- ^ Columns in source order from the record definition.
   } deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+
+-- | Fully-qualified Haskell type, reconstructed from the module and the
+-- code-side type name.  Replaces the former standalone @haskellType@ field
+-- (which was exactly @sourceModule <> "." <> codeName@), so the redundant
+-- string no longer rides in every fragment; the merge identity key uses it.
+qualifiedType :: TableSchema -> String
+qualifiedType t = sourceModule t <> "." <> codeName t
 
 data ColumnInfo = ColumnInfo
   { hsField      :: String

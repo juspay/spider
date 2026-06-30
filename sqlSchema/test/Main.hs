@@ -61,7 +61,7 @@ testHappyPath = withTmpProject $ \tmp -> do
   assertEq "tablesEmitted" 2 (mrTablesEmitted report)
   merged <- decodeFile outFile
   assertEq "merged.tables.size" 2 (length (mergedTables merged))
-  let names = map tableName (mergedTables merged)
+  let names = map modelTableName (mergedTables merged)
   unless (names == ["bar", "foo"]) $
     failWith ("expected sorted ['bar','foo'] got " <> show names)
 
@@ -88,7 +88,7 @@ testStalePruneByModule = withTmpProject $ \tmp -> do
   assertEq "stalePruned" 1 (mrStalePruned report)
   assertEq "tablesEmitted" 1 (mrTablesEmitted report)
   merged <- decodeFile outFile
-  let names = map tableName (mergedTables merged)
+  let names = map modelTableName (mergedTables merged)
   unless (names == ["alive"]) $
     failWith ("expected only ['alive'], got " <> show names)
 
@@ -333,9 +333,9 @@ sampleFragment modName ht tname = Fragment
 
 sampleTable :: String -> String -> String -> TableSchema
 sampleTable ht modName tname = TableSchema
-  { haskellType     = ht
+  { codeName        = drop (length modName + 1) ht
   , sourceModule    = modName
-  , tableName       = tname
+  , modelTableName  = tname
   , modelTableType  = Just "CONFIG"
   , modelSchemaName = Nothing
   , primaryKey      = PrimaryKeyInfo "Id" ["id"]
