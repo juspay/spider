@@ -541,7 +541,7 @@ extractTableAndColumn fieldArg = do
     Selector -> do
       let modFieldArg arg = case arg of
 #if __GLASGOW_HASKELL__ >= 904
-                        (L _ (HsRecSel _ fldOcc))   -> showS $ foExt fldOcc
+                        (L _ (HsRecSel _ fldOcc))   -> mkSelectorString fldOcc
 #else
                         (L _ (HsRecFld _ fldOcc))   -> showS $ selectorAmbiguousFieldOcc fldOcc
 #endif
@@ -912,7 +912,7 @@ getIsClauseData fieldArg _comp _clause = do
     Selector -> do
       let modFieldArg arg = case arg of
 #if __GLASGOW_HASKELL__ >= 904
-                        (L _ (HsRecSel _ fldOcc))   -> showS $ foExt fldOcc
+                        (L _ (HsRecSel _ fldOcc))   -> mkSelectorString fldOcc
 #else
                         (L _ (HsRecFld _ fldOcc))   -> showS $ selectorAmbiguousFieldOcc fldOcc
 #endif
@@ -1030,12 +1030,30 @@ getIsClauseData fieldArg _comp _clause = do
         (PatHsWrap (WpCompose _ wp@(WpCompose _ _)) hsat@(PatHsAppType _ fldName)) -> getRecordDotSelector (PatHsWrap wp hsat)
         _ -> Nothing
 
+#if __GLASGOW_HASKELL__ >= 904
+-- On GHC 9.4+ record-field selectors are `HsRecSel (FieldOcc GhcTc)`, and the
+-- FieldOcc's selector `Id` prints as the plain field label -- GHC dropped the
+-- `$sel:<column>:<table>` name mangling that `selectorAmbiguousFieldOcc`
+-- surfaced on <= 9.2. Reconstruct that same string here (column = field label,
+-- table = the selector's parent record TyCon) so all the downstream
+-- `splitOn ":"`-based extraction and the `$sel` classification keep working
+-- exactly as before.
+mkSelectorString :: FieldOcc GhcTc -> String
+mkSelectorString fldOcc =
+  let selId   = foExt fldOcc
+      colName = occNameString (getOccName selId)
+      tblName = case idDetails selId of
+                  RecSelId { sel_tycon = RecSelData tc } -> occNameString (getOccName tc)
+                  _                                      -> ""
+  in "$sel:" <> colName <> ":" <> tblName
+#endif
+
 -- Get how DB field is being extracted in sequelize
 getDBFieldSpecType :: LHsExpr GhcTc -> DBFieldSpecType
 getDBFieldSpecType (L loc expr)
   | (PatHsWrap _ wExpr) <- expr = getDBFieldSpecType (L loc wExpr)
 #if __GLASGOW_HASKELL__ >= 904
-  | (HsRecSel _ fldOcc) <- expr = checkExprString . showS $ foExt fldOcc
+  | (HsRecSel _ fldOcc) <- expr = checkExprString $ mkSelectorString fldOcc
 #else
   | (HsRecFld _ fldOcc) <- expr = checkExprString . showS $ selectorAmbiguousFieldOcc fldOcc
 #endif
