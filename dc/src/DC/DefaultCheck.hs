@@ -1,6 +1,7 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE DeriveAnyClass, CPP, TypeApplications #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE DeriveGeneric, ScopedTypeVariables, TypeFamilies, RecordWildCards, PartialTypeSignatures #-}
 -- {-# OPTIONS_GHC -ddump-parsed-ast #-}
 
@@ -50,6 +51,60 @@ import TcRnTypes (TcGblEnv (..), TcM)
 import GhcPlugins hiding ((<>)) --(Plugin(..), defaultPlugin, purePlugin, CommandLineOption, ModSummary(..), Module (..), liftIO, moduleNameString, showSDocUnsafe, ppr, nameStableString, varName)
 #endif
 import           Data.IORef (readIORef, writeIORef, IORef, newIORef)
+#if __GLASGOW_HASKELL__ >= 904
+import GHC.Hs.Expr (XXExprGhcTc(..))
+import GHC.Tc.Errors.Types (TcRnMessage, mkTcRnUnknownMessage)
+import GHC.Types.Error (mkPlainError, noHints)
+#endif
+
+-- Version-stable pattern synonyms bridging the GHC 9.4 AST changes so the call
+-- sites below stay identical to the pre-9.4 code.
+#if __GLASGOW_HASKELL__ >= 904
+-- The `HsConLikeOut` constructor was removed in GHC 9.4; the typechecked conlike
+-- is now carried by the `ConLikeTc` extension constructor.
+pattern HsConLikeOut :: [Var] -> ConLike -> HsExpr GhcTc
+pattern HsConLikeOut tvs con <- XExpr (ConLikeTc con tvs _)
+
+pattern PatHsPar :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsPar e <- HsPar _ _ e _
+
+pattern PAbsBinds :: LHsBinds GhcTc -> HsBindLR GhcTc GhcTc
+pattern PAbsBinds binds <- XHsBindsLR (AbsBinds{abs_binds = binds})
+
+-- GHC 9.4 renamed `HsRecField'`/`HsRecField` to `HsFieldBind` (fields
+-- hsRecFieldLbl/hsRecFieldArg -> hfbLHS/hfbRHS). Keep the old shapes usable.
+type HsRecFieldCompat id arg = HsFieldBind id arg
+pattern PHsField lbl arg <- HsFieldBind {hfbLHS = lbl, hfbRHS = arg}
+
+-- GHC 9.4 replaced the `Either regular overloaded` record-update field payload
+-- with the `LHsRecUpdFields` GADT; normalise it back to the old `Either` so the
+-- downstream logic is unchanged.
+recUpdFieldsToEither :: LHsRecUpdFields GhcTc -> Either [LHsRecUpdFieldTc] [LHsRecUpdProj GhcTc]
+recUpdFieldsToEither (RegularRecUpdFields _ fs)    = Left fs
+recUpdFieldsToEither (OverloadedRecUpdFields _ fs) = Right fs
+
+-- GHC 9.4 gave LHsRecUpdField a second (rhs) type parameter.
+type LHsRecUpdFieldTc = LHsRecUpdField GhcTc GhcTc
+#else
+pattern PatHsPar :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsPar e <- HsPar _ e
+
+pattern PAbsBinds :: LHsBinds GhcTc -> HsBindLR GhcTc GhcTc
+pattern PAbsBinds binds <- AbsBinds{abs_binds = binds}
+
+type HsRecFieldCompat id arg = HsRecField' id arg
+pattern PHsField lbl arg <- HsRecField {hsRecFieldLbl = lbl, hsRecFieldArg = arg}
+
+type LHsRecUpdFieldTc = LHsRecUpdField GhcTc
+#endif
+
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 removed `instance Outputable Char`; restore its pre-9.4 definition so
+-- that `ppr` on String-typed values resolves and renders exactly as it did on
+-- 9.2 (via the unchanged Outputable [a] / Maybe a instances).
+instance Outputable Char where
+  ppr c = text [c]
+#endif
 
 plugin :: Plugin
 plugin =
@@ -151,7 +206,7 @@ lookupEachKey hm alreadyVisited x = case HM.lookup (name x) hm of
 
 processAllLetPats :: LHsBindLR GhcTc GhcTc -> (Maybe (String, [FunctionInfo]))
 #if __GLASGOW_HASKELL__ >= 900
-processAllLetPats (L _ (FunBind _ name matches _)) = do
+processAllLetPats (L _ (FunBind {fun_id = name, fun_matches = matches})) = do
 #else
 processAllLetPats (L _ (FunBind _ name matches _ _)) = do
 #endif
@@ -163,7 +218,7 @@ processAllLetPats (L _ _) = do
 
 
 loopOverLHsBindLRTot :: [String] -> CheckerConfig -> String -> UpdateInfo -> String -> IORef (HM.HashMap String UpdateInfoAsText) -> LHsBindLR GhcTc GhcTc -> TcM ErrorCase
-loopOverLHsBindLRTot allPaths conf path allFuns moduleName' hmIORef vals@(L _ AbsBinds {abs_binds = binds}) = do
+loopOverLHsBindLRTot allPaths conf path allFuns moduleName' hmIORef vals@(L _ (PAbsBinds binds)) = do
   case conf of
     FunctionCheck (FunctionCheckConfig{..}) ->
       if moduleName' == moduleNameToCheck
@@ -341,7 +396,9 @@ throwFunctionErrorRules x allPaths path moduleName' (UpdateInfo _ _ _ _ _ otherF
 
 getLocGhc :: _ -> SrcSpan
 getLocGhc val =
-#if __GLASGOW_HASKELL__ >= 900
+#if __GLASGOW_HASKELL__ >= 904
+  getLocA val
+#elif __GLASGOW_HASKELL__ >= 900
   RealSrcSpan (la2r $ getLoc val) Nothing
 #else
   getLoc val
@@ -489,7 +546,7 @@ checkInOtherModsWithoutErrorFuns allPaths checkerCase moduleName' fun@(FunctionI
     _ -> pure []
 
 #if __GLASGOW_HASKELL__ >= 900
-extractLHsRecUpdField :: Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> [FunctionInfo]
+extractLHsRecUpdField :: Either [LHsRecUpdFieldTc] [LHsRecUpdProj GhcTc] -> [FunctionInfo]
 extractLHsRecUpdField fields =
   case fields of
     Left fun -> concatMap (processExprCases) (fun)
@@ -502,11 +559,11 @@ extractLHsRecUpdField (L _ (HsRecField {hsRecFieldArg = fun})) = processExpr fun
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
-processExprUps :: HsRecField' id (GenLocated SrcSpanAnnA (HsExpr GhcTc)) -> [FunctionInfo]
-processExprUps (HsRecField {hsRecFieldArg = fun}) = processExpr fun
+processExprUps :: HsRecFieldCompat id (GenLocated SrcSpanAnnA (HsExpr GhcTc)) -> [FunctionInfo]
+processExprUps (PHsField _ fun) = processExpr fun
 
-processExprCases :: GenLocated l (HsRecField' id (GenLocated SrcSpanAnnA (HsExpr GhcTc))) -> [FunctionInfo]
-processExprCases (L _ (HsRecField {hsRecFieldArg = fun})) = processExpr fun
+processExprCases :: GenLocated l (HsRecFieldCompat id (GenLocated SrcSpanAnnA (HsExpr GhcTc))) -> [FunctionInfo]
+processExprCases (L _ (PHsField _ fun)) = processExpr fun
 #endif
 
 
@@ -528,12 +585,22 @@ processExpr (L _ (OpApp _ funl funm funr)) =
   processExpr funl <> processExpr funm <> processExpr funr
 processExpr (L _ (NegApp _ funl _)) =
   processExpr funl
+#if __GLASGOW_HASKELL__ >= 904
+processExpr (L _ (XExpr (HsTick _ fun))) =
+  processExpr fun
+#else
 processExpr (L _ (HsTick _ _ fun)) =
   processExpr fun
+#endif
 processExpr (L _ (HsStatic _ fun)) =
   processExpr fun
+#if __GLASGOW_HASKELL__ >= 904
+processExpr (L _ (XExpr (HsBinTick _ _ fun))) =
+  processExpr fun
+#else
 processExpr (L _ (HsBinTick _ _ _ fun)) =
   processExpr fun
+#endif
 #if __GLASGOW_HASKELL__ < 900
 processExpr (L _ (HsTickPragma _ _ _ _ fun)) =
   processExpr fun
@@ -564,24 +631,42 @@ processExpr (L _ (ExplicitList _ funList)) =
 processExpr (L _ (HsIf exprLStmt funl funm funr)) =
   let stmts = (exprLStmt ^? biplateRef :: [LHsExpr GhcTc])
    in nub (concatMap processExpr $ [funl, funm, funr] <> stmts)
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 removed HsTcBracketOut; typed/untyped brackets are now distinct
+-- constructors. Traverse their sub-expressions as before.
+processExpr (L _ (HsTypedBracket _ funl)) = processExpr funl
+processExpr (L _ (HsUntypedBracket _ q)) =
+  let stmts = (q ^? biplateRef :: [LHsExpr GhcTc])
+   in nub (concatMap processExpr stmts)
+processExpr (L _ (RecordUpd _ rupd_expr rupd_flds)) = processExpr rupd_expr <> extractLHsRecUpdField (recUpdFieldsToEither rupd_flds)
+#else
 processExpr (L _ (HsTcBracketOut _ _ exprLStmtL exprLStmtR)) =
   let stmtsL = (exprLStmtL ^? biplateRef :: [LHsExpr GhcTc])
       stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
    in nub (concatMap processExpr (stmtsL <> stmtsR))
 processExpr (L _ (RecordUpd _ rupd_expr rupd_flds)) = processExpr rupd_expr <> extractLHsRecUpdField rupd_flds
 #endif
+#endif
 processExpr (L _ (ExprWithTySig _ fun _)) =
   processExpr fun
 processExpr (L _ (HsDo _ _ exprLStmt)) =
   let stmts = exprLStmt ^? biplateRef :: [LHsExpr GhcTc]
    in nub $ concatMap processExpr stmts
+#if __GLASGOW_HASKELL__ >= 904
+processExpr (L _ (HsLet _ _ exprLStmt _ func)) =
+#else
 processExpr (L _ (HsLet _ exprLStmt func)) =
+#endif
   let stmts = exprLStmt ^? biplateRef :: [LHsExpr GhcTc]
    in processExpr func <> nub (concatMap processExpr stmts)
 processExpr (L _ (HsMultiIf _ exprLStmt)) =
   let stmts = exprLStmt ^? biplateRef :: [LHsExpr GhcTc]
    in nub (concatMap processExpr stmts)
+#if __GLASGOW_HASKELL__ >= 904
+processExpr (L _ (HsCase _ funl exprLStmt@(MG _ (L _ _)))) =
+#else
 processExpr (L _ (HsCase _ funl exprLStmt@(MG _ (L _ _) _))) =
+#endif
    let stmts = (exprLStmt ^? biplateRef :: [LHsExpr GhcTc])
    in nub (concatMap processExpr $ [funl] <> stmts)
 processExpr (L _ (ExplicitSum _ _ _ fun)) = processExpr fun
@@ -589,9 +674,17 @@ processExpr (L _ (SectionR _ funl funr)) = processExpr funl <> processExpr funr
 processExpr (L _ (ExplicitTuple _ exprLStmt _)) =
   let stmts = (exprLStmt ^? biplateRef :: [LHsExpr GhcTc])
    in nub (concatMap processExpr stmts)
-processExpr (L _ (HsPar _ fun)) = processExpr fun
+processExpr (L _ (PatHsPar fun)) = processExpr fun
+#if __GLASGOW_HASKELL__ >= 904
+processExpr (L _ (HsAppType _ fun _ _)) = processExpr fun
+#else
 processExpr (L _ (HsAppType _ fun _)) = processExpr fun
+#endif
+#if __GLASGOW_HASKELL__ >= 904
+processExpr (L _ (HsLamCase _ _ exprLStmt)) =
+#else
 processExpr (L _ (HsLamCase _ exprLStmt)) =
+#endif
   let stmts = (exprLStmt ^? biplateRef :: [LHsExpr GhcTc])
    in nub (concatMap processExpr stmts)
 processExpr (L _ (HsLam _ exprLStmt)) =
@@ -604,10 +697,18 @@ processExpr x@(L _ (HsLit _ liter)) =
 processExpr (L _ (HsOverLit _ exprLStmt)) =
   let stmts = (exprLStmt ^? biplateRef :: [LHsExpr GhcTc])
    in nub (concatMap processExpr stmts)
+#if __GLASGOW_HASKELL__ >= 904
+processExpr (L _ (HsRecSel _ exprLStmt)) =
+#else
 processExpr (L _ (HsRecFld _ exprLStmt)) =
+#endif
   let stmts = (exprLStmt ^? biplateRef :: [LHsExpr GhcTc])
    in nub (concatMap processExpr stmts)
+#if __GLASGOW_HASKELL__ >= 904
+processExpr (L _ (HsUntypedSplice exprLStmtL exprLStmtR)) =
+#else
 processExpr (L _ (HsSpliceE exprLStmtL exprLStmtR)) =
+#endif
   let stmtsL = (exprLStmtL ^? biplateRef :: [LHsExpr GhcTc])
       stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
    in nub (concatMap processExpr (stmtsL <> stmtsR))
@@ -618,10 +719,12 @@ processExpr (L _ (ArithSeq _ (Just exprLStmtL) exprLStmtR)) =
 processExpr (L _ (ArithSeq _ Nothing exprLStmtR)) =
   let stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
    in nub (concatMap processExpr stmtsR)
+#if __GLASGOW_HASKELL__ < 904
 processExpr (L _ (HsRnBracketOut _ exprLStmtL exprLStmtR)) =
   let stmtsL = (exprLStmtL ^? biplateRef :: [LHsExpr GhcTc])
       stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
    in nub (concatMap processExpr (stmtsL <> stmtsR))
+#endif
 -- processExpr (L _ (RecordCon _ (L _ (iD)) rcon_flds)) = Just ((extractRecordBinds (rcon_flds)), False)
 -- processExpr (L _ (RecordUpd _ rupd_expr rupd_flds)
 -- processExpr (L _ (HsTcBracketOut _ exprLStmtL exprLStmtR)) =
@@ -640,7 +743,11 @@ isVarPatMatch (L _ match) =
     in any isVarPat argBinds
 
 isVarPatExprBool :: LHsExpr GhcTc -> Bool
+#if __GLASGOW_HASKELL__ >= 904
+isVarPatExprBool (L _ (HsCase _ _ (MG _ (L _ mg_alts)))) =
+#else
 isVarPatExprBool (L _ (HsCase _ _ (MG _ (L _ mg_alts) _))) =
+#endif
     any isVarPatMatch mg_alts
     -- in L loc (HsCase m funl (MG mg_ext (L loc1 y) mg_org))
 isVarPatExprBool _ = False
@@ -680,9 +787,14 @@ getDataTypeDetails recordTypeArr allLetPats allArgs (RecordCon _ iD rcon_flds) =
 #else
 getDataTypeDetails recordTypeArr allLetPats allArgs (RecordCon _ iD rcon_flds) = pure $ if any (\perRecord -> (recordType perRecord) `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr $ idType $ unLoc iD)) || recordType perRecord == "ALL") recordTypeArr then Just (extractRecordBinds rcon_flds allLetPats allArgs enumList fieldType enumType) else Nothing
 #endif
-getDataTypeDetails recordTypeArr allLetPats allArgs (RecordUpd _ rupd_expr rupd_flds) = 
+getDataTypeDetails recordTypeArr allLetPats allArgs (RecordUpd _ rupd_expr rupd_flds) =
   let allVals = mapMaybe getExprTypeAsType $ rupd_expr ^? biplateRef
-  in pure $ if any (\x -> any (\perRecord -> (recordType perRecord) `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr x))) recordTypeArr) allVals || any (\perRecord -> recordType perRecord == "ALL") recordTypeArr then Just (getFieldUpdates rupd_flds allLetPats allArgs recordTypeArr) else Nothing
+#if __GLASGOW_HASKELL__ >= 904
+      rupd_flds' = recUpdFieldsToEither rupd_flds
+#else
+      rupd_flds' = rupd_flds
+#endif
+  in pure $ if any (\x -> any (\perRecord -> (recordType perRecord) `elem` ((splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr x))) recordTypeArr) allVals || any (\perRecord -> recordType perRecord == "ALL") recordTypeArr then Just (getFieldUpdates rupd_flds' allLetPats allArgs recordTypeArr) else Nothing
 getDataTypeDetails recordTypeArr allLetPats allArgs x@(OpApp _ funl funm _) = do
     -- trace (show (showSDocUnsafe $ ppr x, showSDocUnsafe $ ppr funl,showSDocUnsafe $ ppr funm, showSDocUnsafe $ ppr funr)) Nothing
     if (showSDocUnsafe $ ppr funm) == "(#)"
@@ -711,7 +823,7 @@ getDataTypeDetails recordTypeArr _ _ pat@(HsApp _ app1 (L _ _)) = do
     else pure Nothing
     -- if showSDocUnsafe $ ppr app1 
     -- pure Nothing
-getDataTypeDetails recordTypeArr allLetPats _ (HsPar _ (L _ pat)) = do
+getDataTypeDetails recordTypeArr allLetPats _ (PatHsPar (L _ pat)) = do
     -- liftIO $ print (allLetPats)
     if "setField" `isInfixOf` (showSDocUnsafe $ ppr pat) then do
       let allVals = mapMaybe getExprTypeAsType $ pat ^? biplateRef
@@ -779,7 +891,7 @@ conLikeType (PatSynCon pat_syn)    = patSynResultType pat_syn
 #endif
 
 #if __GLASGOW_HASKELL__ >= 900
-getFieldUpdates :: Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> HM.HashMap String Bool -> [String] -> [RecordType] -> TypeOfUpdate
+getFieldUpdates :: Either [LHsRecUpdFieldTc] [LHsRecUpdProj GhcTc] -> HM.HashMap String Bool -> [String] -> [RecordType] -> TypeOfUpdate
 getFieldUpdates fields allLetPats allArgs recordTypeArr =
   case fields of
     Left x -> 
@@ -794,8 +906,8 @@ getFieldUpdates fields allLetPats allArgs recordTypeArr =
         else if Update `elem` allUpdates then Update
         else NoChange
     where
-    extractField :: LHsRecUpdField GhcTc -> TypeOfUpdate
-    extractField (L _ (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr})) =
+    extractField :: LHsRecUpdFieldTc -> TypeOfUpdate
+    extractField (L _ (PHsField lbl expr)) =
         let allNrFuns = nub $ ((concatMap processExpr (map noLocA $ expr ^? biplateRef)))
             allValsTypes = mapMaybe getExprType (expr ^? biplateRef)
         in if any (\perRecord -> (isInfixOf (fieldType perRecord) (showSDocUnsafe $ ppr lbl) || (fieldType perRecord) == "ALL") && ((Just (enumType perRecord)) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes))))) recordTypeArr then
@@ -812,7 +924,7 @@ getFieldUpdates fields allLetPats allArgs recordTypeArr =
             else Update
         else NoChange
     -- extractField' :: HsRecUpdField GhcTc -> TypeOfUpdate
-    extractField' ((HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr})) =
+    extractField' ((PHsField lbl expr)) =
         let allNrFuns = nub $ ((concatMap processExpr (map noLocA $ expr ^? biplateRef)))
             allValsTypes = mapMaybe getExprType (expr ^? biplateRef)
         in if any (\perRecord -> isInfixOf (fieldType perRecord) (showSDocUnsafe $ ppr lbl) || (fieldType perRecord) == "ALL" && ((Just (enumType perRecord)) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes))))) recordTypeArr then
@@ -829,15 +941,15 @@ getFieldUpdates fields allLetPats allArgs recordTypeArr =
             else Update
         else NoChange
 #else
-getFieldUpdates :: [LHsRecUpdField GhcTc] -> HM.HashMap String Bool -> [String] -> [String] -> String -> String -> TypeOfUpdate
+getFieldUpdates :: [LHsRecUpdFieldTc] -> HM.HashMap String Bool -> [String] -> [String] -> String -> String -> TypeOfUpdate
 getFieldUpdates fields allLetPats allArgs enumList fieldType enumType =
     let allUpdates = map extractField fields
     in if UpdateWithFailure `elem` allUpdates then UpdateWithFailure 
        else if Update `elem` allUpdates then Update
        else NoChange
     where
-    extractField :: LHsRecUpdField GhcTc -> TypeOfUpdate
-    extractField (L _ (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr})) =
+    extractField :: LHsRecUpdFieldTc -> TypeOfUpdate
+    extractField (L _ (PHsField lbl expr)) =
         let allNrFuns = nub $ ((concatMap processExpr (map noLoc $ expr ^? biplateRef)))
             allValsTypes = mapMaybe getExprType (expr ^? biplateRef)
         in if isInfixOf fieldType (showSDocUnsafe $ ppr lbl) || fieldType == "ALL" && ((Just enumType) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))) then
@@ -863,7 +975,7 @@ extractRecordBinds (HsRecFields{rec_flds = fields}) allLetPats allArgs recordTyp
        else NoChange
     where
     extractField :: LHsRecField GhcTc (LHsExpr GhcTc) -> TypeOfUpdate
-    extractField (L _ (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr})) = do
+    extractField (L _ (PHsField lbl expr)) = do
 #if __GLASGOW_HASKELL__ >= 900
         let allNrFuns = nub $ ((concatMap processExpr (map (noLocA) $ expr ^? biplateRef)))
 #else
@@ -890,18 +1002,18 @@ getFunctionName :: LHsBindLR GhcTc GhcTc -> [String]
 #if __GLASGOW_HASKELL__ < 900
 getFunctionName (L _ (FunBind _ idt _ _ _)) = [nameStableString $ getName idt]
 #else
-getFunctionName (L _ (FunBind _ idt _ _)) = [nameStableString $ getName idt]
+getFunctionName (L _ (FunBind {fun_id = idt})) = [nameStableString $ getName idt]
 #endif
 getFunctionName (L _ (VarBind{var_id = var})) = [nameStableString $ varName var]
 getFunctionName (L _ (PatBind{})) = [""]
-getFunctionName (L _ (AbsBinds{abs_binds = binds})) = concatMap getFunctionName $ bagToList binds
+getFunctionName (L _ (PAbsBinds binds)) = concatMap getFunctionName $ bagToList binds
 getFunctionName _ = []
 
 getFunctionNameIfFailure :: [String] -> CheckerConfig -> [RecordType] -> String -> LHsBindLR GhcTc GhcTc -> IORef (HM.HashMap String UpdateInfoAsText) -> TcM (TypeOfUpdate, [String])
 #if __GLASGOW_HASKELL__ < 900
 getFunctionNameIfFailure allPaths checkerCase recordType moduleName' (L _ x@(FunBind _ idT _ _ _)) hmIORef = do
 #else
-getFunctionNameIfFailure allPaths checkerCase recordTypeArr moduleName' (L _ x@(FunBind _ idT _ _)) hmIORef = do
+getFunctionNameIfFailure allPaths checkerCase recordTypeArr moduleName' (L _ x@(FunBind {fun_id = idT})) hmIORef = do
 #endif
   let allValsTypes = mapMaybe getExprType (x ^? biplateRef)
   let allVals = (map unLoc (x ^? biplateRef :: [LHsExpr GhcTc]))
@@ -954,7 +1066,7 @@ getFunctionNameIfFailure allPaths checkerCase recordTypeArr moduleName' (L _ x@(
     else if any(\perRecord -> any (\val -> isInfixOf val (showSDocUnsafe $ ppr x) ) (enumList perRecord) && (Just (enumType perRecord)) == (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr (lastMaybe allValsTypes)))) recordTypeArr
           then (Default, funName)
     else (NoChange,[])
-getFunctionNameIfFailure allPaths checkerCase recordTypeArr moduleName' (L _ x@(AbsBinds{abs_binds = binds})) hmIORef = do
+getFunctionNameIfFailure allPaths checkerCase recordTypeArr moduleName' (L _ x@(PAbsBinds binds)) hmIORef = do
   let allValsTypes = mapMaybe getExprType (x ^? biplateRef)
   let allVals = (map unLoc (bagToList binds ^? biplateRef :: [LHsExpr GhcTc]))
   let allLetPats = HM.fromList $ ((mapMaybe processAllLetPats (bagToList binds ^? biplateRef :: [LHsBindLR GhcTc GhcTc])))
@@ -986,7 +1098,7 @@ getFunctionNameIfFailure allPaths checkerCase recordTypeArr moduleName' (L _ x@(
 getFunctionNameIfFailure _ _ _hasFld _ _ _ = pure $ (NoChange,[])
 
 loopOverLHsBindLR :: [String] -> CheckerConfig -> String -> IORef (HM.HashMap String UpdateInfoAsText) -> LHsBindLR GhcTc GhcTc  -> TcM ((Maybe UpdateInfo), (HM.HashMap String [FunctionInfo]))
-loopOverLHsBindLR allPaths checkerCase moduleName' hmIORef x@(L _ AbsBinds {abs_binds = binds1}) = do
+loopOverLHsBindLR allPaths checkerCase moduleName' hmIORef x@(L _ (PAbsBinds binds1)) = do
   case checkerCase of
     FieldsCheck (EnumCheck{..})   -> do
       let binds = ( bagToList binds1 ^? biplateRef)
@@ -1095,7 +1207,7 @@ getAllNeededFun recordTypeArr _ _ allBinds processedPats match = do
 --   liftIO $ print (name, showSDocUnsafe <$> ppr <$> allValsTypes, any (\val -> isInfixOf val (showSDocUnsafe $ ppr x) ) enumList , map (\val -> (lastMaybe (splitOn " " $ replace "->" "" $ showSDocUnsafe $ ppr val))) allValsTypes)
 
 loopAndColect :: HM.HashMap String [FunctionInfo] -> LHsBindLR GhcTc GhcTc -> IO ((HM.HashMap String [FunctionInfo]))
-loopAndColect allFunsList x@(L _ AbsBinds {abs_binds = binds}) = do
+loopAndColect allFunsList x@(L _ (PAbsBinds binds)) = do
   let fname = map name $ map (\y -> transformFromNameStableString (y) (showSDocUnsafe $ ppr $ getLoc $ x) False) $ (getFunctionName x)
       allVals = ((bagToList binds ^? biplateRef :: [LHsExpr GhcTc]))
 --   liftIO $ print (fname, showSDocUnsafe $ ppr x)
@@ -1108,7 +1220,7 @@ loopOverFunBindM :: LHsBindLR GhcTc GhcTc -> (IO (Maybe [String]))
 #if __GLASGOW_HASKELL__ < 900
 loopOverFunBindM (L _ (FunBind _ _ matches _ _)) = do
 #else
-loopOverFunBindM (L _ (FunBind _ _ matches _)) = do
+loopOverFunBindM (L _ (FunBind {fun_matches = matches})) = do
 #endif
     let inte = unLoc $ mg_alts matches
     -- print ("iam here", showSDocUnsafe $ ppr x, length inte)
@@ -1123,7 +1235,7 @@ processAllLetPatsM :: LHsBindLR GhcTc GhcTc -> (Maybe (String, [FunctionInfo]))
 #if __GLASGOW_HASKELL__ < 900
 processAllLetPatsM (L _ (FunBind _ name matches _ _)) = do
 #else
-processAllLetPatsM (L _ (FunBind _ name matches _)) = do
+processAllLetPatsM (L _ (FunBind {fun_id = name, fun_matches = matches})) = do
 #endif
     let inte = unLoc $ mg_alts matches
     if null inte then Nothing
@@ -1136,7 +1248,7 @@ loopOverFunBind :: LHsBindLR GhcTc GhcTc -> (Maybe [String])
 #if __GLASGOW_HASKELL__ < 900
 loopOverFunBind (L _ (FunBind _ _ matches _ _)) = do
 #else
-loopOverFunBind (L _ (FunBind _ _ matches _)) = do
+loopOverFunBind (L _ (FunBind {fun_matches = matches})) = do
 #endif
     let inte = unLoc $ mg_alts matches
     if null inte then Nothing else do
@@ -1155,8 +1267,15 @@ loopOverVarPatM (L _ _) = do
     -- print ("loopOverVarPatM", show $ toConstr x)
     pure Nothing
 
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 changed the error API from raw `SDoc` to structured `TcRnMessage`;
+-- wrap the same rendered text so the emitted error content is unchanged.
+mkGhcCompileError :: CompileError -> (SrcSpan, TcRnMessage)
+mkGhcCompileError err = (src_span err, mkTcRnUnknownMessage $ mkPlainError noHints $ OP.text $ err_msg err)
+#else
 mkGhcCompileError :: CompileError -> (SrcSpan, OP.SDoc)
 mkGhcCompileError err = (src_span err, OP.text $ err_msg err)
+#endif
 
 transformFromNameStableString :: (String) -> String -> Bool -> FunctionInfo
 transformFromNameStableString ( str) loc isF  =

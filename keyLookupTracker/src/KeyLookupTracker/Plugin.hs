@@ -75,8 +75,13 @@ checkBind :: Rules ->  LHsBindLR GhcTc GhcTc -> TcM [(String, [String])]
 checkBind rule (L _ (FunBind{..} )) = do
   let funMatches = unLoc $ mg_alts fun_matches
   concat <$> mapM (checkMatch rule (getVarNameFromIDP $ unLoc fun_id)) funMatches
+#if __GLASGOW_HASKELL__ >= 904
+checkBind rule (L _ (XHsBindsLR (AbsBinds {abs_binds = binds}))) =
+  concat <$> (mapM (checkBind rule) $ bagToList binds)
+#else
 checkBind rule (L _ (AbsBinds {abs_binds = binds})) =
   concat <$> (mapM (checkBind rule) $ bagToList binds)
+#endif
 checkBind _ _ = pure []
 
 checkMatch :: Rules -> String -> LMatch GhcTc (LHsExpr GhcTc) -> TcM [(String, [String])]
@@ -91,7 +96,11 @@ loopOverExpr rule expr =
   pure $ if any (`isInfixOf` (showS expr)) (["lookup"] <> (additionalEligibleLookupFns rule))
     then
       case expr of
+#if __GLASGOW_HASKELL__ >= 904
+        (HsApp _ _ (L _ (HsOverLit _ (OverLit (OverLitTc _ (HsApp _ _ (L _ (HsLit _ lit))) _) _)))) -> [showS lit]
+#else
         (HsApp _ _ (L _ (HsOverLit _ (OverLit _ _ (HsApp _ _ (L _ (HsLit _ lit))))))) -> [showS lit]
+#endif
         _ -> []
     else []
 

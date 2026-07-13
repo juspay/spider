@@ -5,6 +5,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE LambdaCase,RecordWildCards #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -Wno-orphans -Wno-error=unused-imports -Wno-error=unused-top-binds #-}
 
 module Warner.Plugin (plugin) where
@@ -16,6 +17,8 @@ import GHC.Data.Bag
 import GHC.Data.FastString
 import GHC.Driver.Env
 import GHC.Driver.Errors
+import GHC.Driver.Errors.Types (WarningMessages, GhcMessage, ghcUnknownMessage)
+import GHC.Driver.Config.Diagnostic (initDiagOpts)
 import GHC.Driver.Plugins
 import GHC.Driver.Session
 import GHC.Tc.Types
@@ -56,6 +59,7 @@ import Data.Text (Text)
 import GHC.Generics (Generic)
 import GHC.IO (unsafePerformIO)
 import qualified Data.ByteString as DBS
+import qualified Data.List.NonEmpty as NE
 import qualified Data.Text as T
 import System.Directory (createDirectoryIfMissing,doesFileExist)
 import System.Environment
@@ -100,41 +104,40 @@ instance ToJSON WarningFlag where
     toJSON flag = String $ T.pack $ show flag
 
 instance FromJSON WarningFlag where
-    parseJSON = withText "WarningFlag" $ \t -> do
-        let flagList = filter (\x -> (show x) == (T.unpack t)) getAllWarningFlags
-        if null flagList
-            then fail $ "Invalid WarningFlag: " ++ T.unpack t
-            else pure $ head flagList
+    parseJSON = withText "WarningFlag" $ \t ->
+        case filter (\x -> (show x) == (T.unpack t)) getAllWarningFlags of
+            (flag : _) -> pure flag
+            []         -> fail $ "Invalid WarningFlag: " ++ T.unpack t
 
-instance ToJSON WarnReason where
-    toJSON NoReason = object [
-        "type" .= ("NoReason" :: Text)
+-- GHC 9.8 replaced the old `WarnReason` type with `DiagnosticReason` (carried
+-- on a MsgEnvelope inside a `ResolvedDiagnosticReason` newtype). We only need
+-- ToJSON here, since the reason is stored as a raw aeson Value in
+-- MessageFingerprint and never decoded back into a reason.
+instance ToJSON DiagnosticReason where
+    toJSON WarningWithoutFlag = object [
+        "type" .= ("WarningWithoutFlag" :: Text)
         ]
-    toJSON (Reason flag) = object [
-        "type" .= ("Reason" :: Text),
-        "flag" .= flag
+    toJSON (WarningWithFlags flags) = object [
+        "type" .= ("WarningWithFlags" :: Text),
+        "flags" .= NE.toList flags
         ]
-    toJSON (ErrReason mbFlag) = object [
-        "type" .= ("ErrReason" :: Text),
-        "flag" .= mbFlag
+    toJSON (WarningWithCategory cat) = object [
+        "type" .= ("WarningWithCategory" :: Text),
+        "category" .= T.pack (showSDocUnsafe (ppr cat))
+        ]
+    toJSON ErrorWithoutFlag = object [
+        "type" .= ("ErrorWithoutFlag" :: Text)
         ]
 
-instance FromJSON WarnReason where
-    parseJSON = withObject "WarnReason" $ \v -> do
-        typ <- v .: "type"
-        case typ of
-            "NoReason" -> pure NoReason
-            "Reason" -> Reason <$> v .: "flag"
-            "ErrReason" -> ErrReason <$> v .: "flag"
-            _ -> fail $ "Unknown WarnReason type: " ++ T.unpack typ
+instance ToJSON ResolvedDiagnosticReason where
+    toJSON = toJSON . resolvedDiagnosticReason
 
 #if __GLASGOW_HASKELL__ >= 900
-createFingerprint :: DynFlags -> MsgEnvelope DecoratedSDoc -> MessageFingerprint
-createFingerprint dflags msg = MessageFingerprint 
-    { diagnostic = 
+createFingerprint :: DynFlags -> MsgEnvelope GhcMessage -> MessageFingerprint
+createFingerprint dflags msg = MessageFingerprint
+    { diagnostic =
         let style = mkErrStyle (errMsgContext msg)
-            ctx   = initSDocContext dflags style
-        in renderWithContext (initSDocContext dflags defaultUserStyle) $ withPprStyle style (formatBulleted ctx (renderDiagnostic (errMsgDiagnostic msg)))
+        in renderWithContext (initSDocContext dflags defaultUserStyle) $ withPprStyle style (formatBulleted (diagnosticMessage (defaultDiagnosticOpts @GhcMessage) (errMsgDiagnostic msg)))
     , reason = toJSON $ errMsgReason msg
     , severity = show $ errMsgSeverity msg
     , srcSpan = showSDocUnsafe $ ppr $ errMsgSpan msg
@@ -143,18 +146,21 @@ createFingerprint dflags msg = MessageFingerprint
 -- getCacheWarnings :: MsgEnvelope e -> MsgCache
 
 makeIntoError :: MsgEnvelope e -> MsgEnvelope e
-makeIntoError warning = warning {
-    errMsgSeverity = SevError
-    , errMsgReason = case errMsgReason warning of
-                        Reason flag -> ErrReason (Just flag)
-                        x -> x
-    }
+makeIntoError warning = warning { errMsgSeverity = SevError }
 
 getReason :: MsgEnvelope e -> String
 getReason warning =
-    case errMsgReason warning of
-        Reason flag -> show flag
+    case resolvedDiagnosticReason (errMsgReason warning) of
+        WarningWithFlags flags -> show (NE.head flags)
         _ -> mempty
+
+-- GHC 9.8 dropped `isErrorMessage`/`isWarningMessage` (severity based) from the
+-- API; re-implement the same severity partition the plugin relied on.
+isWarnSev :: MsgEnvelope e -> Bool
+isWarnSev m = errMsgSeverity m == SevWarning
+
+isErrSev :: MsgEnvelope e -> Bool
+isErrSev m = errMsgSeverity m == SevError
 
 mkFileSrcSpan :: ModLocation -> SrcSpan
 mkFileSrcSpan mod_loc
@@ -178,12 +184,12 @@ handleWarns opts mModSummary _tcGblEnv modGuts = do
 
             clearWarnings
             -- THESE WOULD BE MOVED TO ERRORS IF THEY ARE NOT IN THE CACHE
-            warningsList_ <- pure $ filter isWarningMessage $ bagToList warningsBag
+            warningsList_ <- pure $ filter isWarnSev $ bagToList (getMessages warningsBag)
 
             (warningsList,toBeErrors) <- pure $ foldl' (\(warnings,toBeErrors) x -> if ((getReason x) `elem` cacheWarningsList) then (warnings, [x] <> toBeErrors) else ([x] <> warnings,toBeErrors)) ([],[]) warningsList_
 
             -- DO NOT TOUCH ERRORS LIST
-            errorsList <- pure $ filter isErrorMessage $ bagToList warningsBag
+            errorsList <- pure $ filter isErrSev $ bagToList (getMessages warningsBag)
 
             dflags <- getDynFlags
             logger <- getLogger
@@ -192,10 +198,10 @@ handleWarns opts mModSummary _tcGblEnv modGuts = do
                 then do
                     let cacheList = map (createFingerprint dflags) toBeErrors
                     liftIO $ DBS.writeFile (modulePath <> ".json") (DBS.toStrict $ encodePretty cacheList)
-                    updatedWarningsBag <- pure $ listToBag $ errorsList <> warningsList <> (map makeIntoError toBeErrors)
-                    if (any isErrorMessage errorsList)
+                    updatedWarningsBag <- pure $ mkMessages $ listToBag $ errorsList <> warningsList <> (map makeIntoError toBeErrors)
+                    if (any isErrSev errorsList)
                         then throwErrors updatedWarningsBag
-                        else liftIO $ printOrThrowWarnings logger dflags updatedWarningsBag
+                        else liftIO $ printOrThrowDiagnostics logger (defaultDiagnosticOpts @GhcMessage) (initDiagOpts dflags) updatedWarningsBag
                 else do
                     fileExists <- liftIO $ doesFileExist (modulePath <> ".json")
                     whiteListedWarns <- if fileExists then liftIO $ DBS.readFile (modulePath <> ".json") else pure $ mempty
@@ -204,10 +210,10 @@ handleWarns opts mModSummary _tcGblEnv modGuts = do
                                 Just (l :: [MessageFingerprint]) -> 
                                     (filter (\x -> not ((createFingerprint dflags x) `elem` l)) toBeErrors,filter (\x -> ((createFingerprint dflags x) `elem` l)) toBeErrors)
                                 Nothing -> (toBeErrors,mempty)
-                    updatedWarningsBag <- pure $ listToBag $ errorsList <> warningsList <> (map makeIntoError filteredToBeErrors) <> isCacheButNeedToMention
-                    if (any isErrorMessage (bagToList updatedWarningsBag))
+                    updatedWarningsBag <- pure $ mkMessages $ listToBag $ errorsList <> warningsList <> (map makeIntoError filteredToBeErrors) <> isCacheButNeedToMention
+                    if (any isErrSev (bagToList (getMessages updatedWarningsBag)))
                         then throwErrors updatedWarningsBag
-                        else liftIO $ printOrThrowWarnings logger dflags updatedWarningsBag
+                        else liftIO $ printOrThrowDiagnostics logger (defaultDiagnosticOpts @GhcMessage) (initDiagOpts dflags) updatedWarningsBag
         Nothing -> do
             liftIO $ print ("Warner : MOD summary is Nothing" :: String)
             pure ()
@@ -217,7 +223,7 @@ handleWarns opts mModSummary _tcGblEnv modGuts = do
         getWarnings = Hsc $ \_ w -> return (w, w)
 
         clearWarnings :: Hsc ()
-        clearWarnings = Hsc $ \_ _ -> return ((), emptyBag)
+        clearWarnings = Hsc $ \_ _ -> return ((), emptyMessages)
 
 data CliOptions = CliOptions {
     error :: Maybe Bool
@@ -232,7 +238,7 @@ fixedLengthListAction opts _ tcEnv = do
     return tcEnv
     where
         checkModule :: LHsBindLR GhcTc GhcTc -> TcM ()
-        checkModule (L _ AbsBinds{abs_binds = binds}) = do
+        checkModule (L _ (XHsBindsLR AbsBinds{abs_binds = binds})) = do
             forM_ (bagToList binds) checkModule
         checkModule x = checkBind x
 
@@ -255,7 +261,7 @@ fixedLengthListAction opts _ tcEnv = do
         -- checkBind _ = pure ()
 
         checkMatchGroup :: (MatchGroup GhcTc (LHsExpr GhcTc)) -> TcM ()
-        checkMatchGroup ((MG _ (L _ matches) _)) = 
+        checkMatchGroup ((MG _ (L _ matches))) = 
             forM_ matches $ \(L _ match) -> do
                 forM_ (m_pats match) checkPattern
                 forM_ (grhssGRHSs $ m_grhss match) checkGRHSs
@@ -271,7 +277,7 @@ fixedLengthListAction opts _ tcEnv = do
                 checkCaseScrutinee (getLocA x) scrut
                 checkExpr scrut
                 checkMatchGroup matches
-            HsLet _ binds body -> do
+            HsLet _ _ binds _ body -> do
                 checkLocalBinds binds
                 checkExpr body
             HsLam _ matches -> 
@@ -279,7 +285,7 @@ fixedLengthListAction opts _ tcEnv = do
             HsApp _ e1 e2 -> do
                 checkExpr e1
                 checkExpr e2
-            HsAppType _ e _ -> 
+            HsAppType _ e _ _ ->
                 checkExpr e
             OpApp _ e1 op e2 -> do
                 checkExpr e1
@@ -287,7 +293,7 @@ fixedLengthListAction opts _ tcEnv = do
                 checkExpr e2
             NegApp _ e _ -> 
                 checkExpr e
-            HsPar _ e -> 
+            HsPar _ _ e _ ->
                 checkExpr e
             SectionL _ e1 e2 -> do
                 checkExpr e1
@@ -306,9 +312,9 @@ fixedLengthListAction opts _ tcEnv = do
                 checkStmts stmts
             ExplicitList _ elems ->
                 mapM_ checkExpr elems
-            RecordCon _ _ (HsRecFields fields _) -> 
-                forM_ fields $ \(L _ field) -> 
-                checkExpr (hsRecFieldArg field)
+            RecordCon _ _ (HsRecFields fields _) ->
+                forM_ fields $ \(L _ field) ->
+                checkExpr (hfbRHS field)
             --   RecordUpd _ e fields -> do
             --     checkExpr e
             --     forM_ fields $ \(L _ field) -> 
@@ -328,14 +334,9 @@ fixedLengthListAction opts _ tcEnv = do
                     checkExpr e1
                     checkExpr e2
                     checkExpr e3
-            HsBracket _ _ -> 
-                return ()
-            --   HsRnBracketOut _ _ _ -> 
-            --     return ()
-            HsTcBracketOut _ _ _ _ -> 
-                return ()
-            HsSpliceE _ _ -> 
-                return ()
+            -- NB: GHC 9.8 renamed the TH bracket/splice constructors
+            -- (HsBracket/HsTcBracketOut/HsSpliceE). They were no-ops here, so
+            -- they now fall through to the `_ -> return ()` case below.
             HsProc _ pat body -> do
                 checkPattern pat
                 checkCmdTop body
@@ -347,11 +348,11 @@ fixedLengthListAction opts _ tcEnv = do
             --   HsArrForm _ e _ cmds -> do
             --     checkExpr e
             --     mapM_ checkCmd cmds
-            HsTick _ _ e -> 
-                checkExpr e
-            HsBinTick _ _ _ e -> 
-                checkExpr e
-            --   HsTickPragma _ _ _ e -> 
+            -- NB: GHC 9.8 moved HsTick/HsBinTick out of HsExpr into the XExpr
+            -- (XXExprGhcTc) extension. They don't occur in typechecked binds
+            -- (ticks are inserted during desugaring), so these cases are dropped
+            -- and handled by the `_ -> return ()` fall-through below.
+            --   HsTickPragma _ _ _ e ->
             --     checkExpr e
             _ -> 
                 return ()
@@ -369,7 +370,7 @@ fixedLengthListAction opts _ tcEnv = do
                 checkExpr e
             HsCmdLam _ matches -> 
                 checkCmdMatchGroup matches
-            HsCmdPar _ c -> 
+            HsCmdPar _ _ c _ ->
                 checkCmd c
             HsCmdCase _ e matches -> do
                 checkExpr e
@@ -378,7 +379,7 @@ fixedLengthListAction opts _ tcEnv = do
                 checkExpr e
                 checkCmd c1
                 checkCmd c2
-            HsCmdLet _ binds c -> do
+            HsCmdLet _ _ binds _ c -> do
                 checkLocalBinds binds
                 checkCmd c
             HsCmdDo _ (L _ stmts) -> 
@@ -390,7 +391,7 @@ fixedLengthListAction opts _ tcEnv = do
         checkCmdTop (L _ (HsCmdTop _ cmd)) = checkCmd cmd
 
         checkCmdMatchGroup :: (MatchGroup GhcTc (LHsCmd GhcTc)) -> TcM ()
-        checkCmdMatchGroup ((MG _ (L _ matches) _)) = 
+        checkCmdMatchGroup ((MG _ (L _ matches))) = 
             forM_ matches $ \(L _ match) -> do
                 forM_ (m_pats match) checkPattern
                 -- forM_ (grhssLocalBinds $ m_grhss match) checkLocalBinds
@@ -470,7 +471,7 @@ fixedLengthListAction opts _ tcEnv = do
                 return ()
             SigPat _ p _ -> 
                 checkPattern p
-            AsPat _ _ p -> 
+            AsPat _ _ _ p ->
                 checkPattern p
             TuplePat _ pats _ -> 
                 mapM_ checkPattern pats
@@ -480,7 +481,7 @@ fixedLengthListAction opts _ tcEnv = do
                 checkPattern p
             LazyPat _ p -> 
                 checkPattern p
-            ParPat _ p -> 
+            ParPat _ _ p _ ->
                 checkPattern p
             VarPat {} -> 
                 return ()
@@ -508,16 +509,15 @@ fixedLengthListAction opts _ tcEnv = do
                                     Just (CliOptions{error=error_}) -> fromMaybe False error_
                                     Nothing -> False
             let errorMessage = "Case matching on a fixed-length list literal is not allowed. Use a tuple or cons to pattern match in case scrutinee "
-            -- let errorMsg = (loc, errorMessage)
-            let errorMessages = listToBag [
-                        if (shouldThrowError == True)
-                            then mkErr loc reallyAlwaysQualify (mkDecorated [text errorMessage])
-                            else mkWarnMsg loc reallyAlwaysQualify (text errorMessage)
-                    ]
+            dflags <- getDynFlags
+            logger <- getLogger
             if shouldThrowError
-                then throwErrors errorMessages
-                else do
-                    dflags <- getDynFlags
-                    logger <- getLogger
-                    liftIO $ printOrThrowWarnings logger dflags errorMessages
+                then throwErrors $ mkMessages $ listToBag [
+                        mkErrorMsgEnvelope loc reallyAlwaysQualify
+                            (ghcUnknownMessage (mkPlainError noHints (text errorMessage)))
+                        ]
+                else liftIO $ printOrThrowDiagnostics logger (defaultDiagnosticOpts @GhcMessage) (initDiagOpts dflags) $ mkMessages $ listToBag [
+                        mkMsgEnvelope (initDiagOpts dflags) loc reallyAlwaysQualify
+                            (ghcUnknownMessage (mkPlainDiagnostic WarningWithoutFlag noHints (text errorMessage)))
+                        ]
 #endif

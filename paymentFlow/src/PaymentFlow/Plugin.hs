@@ -38,6 +38,11 @@ import GHC.Tc.Utils.Monad
 import GHC.Tc.Utils.TcType
 import GHC.Types.Annotations
 import qualified GHC.Utils.Outputable as OP
+#if __GLASGOW_HASKELL__ >= 904
+import GHC.Tc.Errors.Types (TcRnMessage, mkTcRnUnknownMessage)
+import GHC.Types.Error (mkPlainError, noHints)
+import GHC.Hs.Type (FieldOcc(..))
+#endif
 #else
 import Bag
 import ConLike
@@ -52,8 +57,18 @@ import TcType
 import TyCoRep
 #endif
 
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 changed the error API from raw `SDoc` to structured `TcRnMessage`;
+-- wrap the same rendered text so the emitted error content is unchanged.
+mkPfDiag :: OP.SDoc -> TcRnMessage
+mkPfDiag = mkTcRnUnknownMessage . mkPlainError noHints
+
+mkInvalidYamlFileErr :: String -> TcRnMessage
+mkInvalidYamlFileErr err = mkPfDiag (OP.text err)
+#else
 mkInvalidYamlFileErr :: String -> OP.SDoc
 mkInvalidYamlFileErr err = OP.text err
+#endif
 
 parseYAMLFile :: (FromJSON a) => FilePath -> IO (Either ParseException a)
 parseYAMLFile file = decodeFileEither file
@@ -99,15 +114,24 @@ paymentFlow opts modSummary tcEnv = do
               then Nothing
               else listToMaybe srcGrpErrArr
           filteredErrors = (\srcGrpErrArr -> childFnFilterLogic srcGrpErrArr) <$> groupedErrors
+#if __GLASGOW_HASKELL__ >= 904
+      mapM_ (\ (VoilationRuleResult {..}) ->  addErrAt srcSpan $ mkPfDiag $ OP.text $ field_rule_fixes rule ) (catMaybes filteredErrors)
+#else
       mapM_ (\ (VoilationRuleResult {..}) ->  addErrAt srcSpan $ OP.text $ field_rule_fixes rule ) (catMaybes filteredErrors)
+#endif
   return tcEnv
 
 checkBind :: [Rule] ->  LHsBindLR GhcTc GhcTc -> TcM [VoilationRuleResult]
 checkBind rule (L _ (FunBind{..} )) = do
   let funMatches = unLoc $ mg_alts fun_matches
   concat <$> mapM (checkMatch rule (getVarNameFromIDP $ unLoc fun_id)) funMatches
+#if __GLASGOW_HASKELL__ >= 904
+checkBind rule (L _ (XHsBindsLR (AbsBinds {abs_binds = binds}))) =
+  concat <$> (mapM (checkBind rule) $ bagToList binds)
+#else
 checkBind rule (L _ (AbsBinds {abs_binds = binds})) =
   concat <$> (mapM (checkBind rule) $ bagToList binds)
+#endif
 checkBind _ _ = pure []
 
 checkMatch :: [Rule] -> String ->  LMatch GhcTc (LHsExpr GhcTc) -> TcM [VoilationRuleResult]
@@ -132,7 +156,7 @@ lookOverExpr rules funId (fnName, args) = do
 checkExpr :: [Rule]-> LHsExpr GhcTc -> TcM (Maybe (SrcSpan, Rule))
 checkExpr rules expr =
   case expr of
-    L _ (HsPar _ exp) -> checkExpr rules exp
+    L _ (PatHsPar exp) -> checkExpr rules exp
 
 #if __GLASGOW_HASKELL__ >= 900
     L loc (PatHsExpansion orig expanded) -> checkExpr rules (L loc expanded)
@@ -143,13 +167,17 @@ checkExpr rules expr =
         Nothing -> pure Nothing
         Just rule -> pure $ Just (loc1, rule)
 
-    L _ (HsApp _ (L _ (PatHsWrap _ (HsAppType _ _ (HsWC _ (L (SrcSpanAnn _ loc) (HsTyLit _ (HsStrTy _ fieldName)))) ))) (L _ (HsVar _ (L _ var)))) -> do
+    L _ (HsApp _ (L _ (PatHsWrap _ (PatHsAppType _ (HsWC _ (L (SrcSpanAnn _ loc) (HsTyLit _ (HsStrTy _ fieldName)))) ))) (L _ (HsVar _ (L _ var)))) -> do
       let voilationSatisfiedRules = verifyAndGetRuleVoilatedFnInfoWithExprAndFieldAsName (showS fieldName) var rules
       case listToMaybe voilationSatisfiedRules of
         Nothing -> pure Nothing
         Just rule -> pure $ Just (loc, rule)
 
+#if __GLASGOW_HASKELL__ >= 904
+    L (SrcSpanAnn _ loc) (HsApp _ (L _ (HsRecSel _ (FieldOcc name _))) (L _ (HsVar _ (L _ var)))) -> do
+#else
     L (SrcSpanAnn _ loc) (HsApp _ (L _ (HsRecFld _ (Unambiguous name _))) (L _ (HsVar _ (L _ var)))) -> do
+#endif
       let voilationSatisfiedRules = verifyAndGetRuleVoilatedFnInfoWithExprAndFieldAsName (showS name) var rules
       case listToMaybe voilationSatisfiedRules of
         Nothing -> pure Nothing
@@ -258,11 +286,16 @@ verifyAndGetRuleVoilatedFnInfoWithRightExprAsType var rules = do
 
 getTyConInStringFormat :: Type -> Maybe [String]
 getTyConInStringFormat vType =
-#if __GLASGOW_HASKELL__ >= 900
+#if __GLASGOW_HASKELL__ >= 906
+  -- GHC 9.6 added the FunTyFlag to splitFunTy_maybe's result tuple.
+  case splitFunTy_maybe vType of
+    Just (_, _, tyCon, _) -> Just [showS tyCon]
+    Nothing -> Nothing
+#elif __GLASGOW_HASKELL__ >= 900
   case splitFunTy_maybe vType of
     Just (_, tyCon, _) -> Just [showS tyCon]
-    Nothing -> Nothing 
-#else 
+    Nothing -> Nothing
+#else
   case splitFunTy_maybe vType of
     Just (tyCon, _) -> Just [showS tyCon]
     Nothing -> Nothing
@@ -288,7 +321,7 @@ getLocated ap = L (getLocA ap) (unLoc ap)
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
 getFnNameWithAllArgs (L _ (HsVar _ v))                      = Just (getLocated v, [])
 getFnNameWithAllArgs (L _ (HsConLikeOut _ cl))              = (\clId -> (noExprLoc clId, [])) <$> conLikeWrapId cl
-getFnNameWithAllArgs (L _ (HsAppType _ expr _))             = getFnNameWithAllArgs expr
+getFnNameWithAllArgs (L _ (PatHsAppType expr _))            = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ (L _ (HsVar _ v)) funr)) = Just (getLocated v, [funr])
 getFnNameWithAllArgs (L _ (HsApp _ funl funr))              = do
   let res = getFnNameWithAllArgs funl

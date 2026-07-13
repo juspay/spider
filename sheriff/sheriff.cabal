@@ -36,6 +36,11 @@ common common-options
                        StandaloneDeriving
                        TypeApplications
                        CPP
+  -- GHC 9.8 promotes `head`/`tail` to -Wx-partial; the plugin uses them on
+  -- lists it has already proven non-empty, so keep the existing behaviour.
+  if impl(ghc >= 9.8)
+    ghc-options:       -Wno-x-partial
+
 library
     import:              common-options
     exposed-modules:    
