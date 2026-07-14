@@ -35,7 +35,7 @@
       flake = false;
     };
     record-dot-preprocessor = {
-      url = "github:AyushChaturvedi-7/record-dot-preprocessor/2b126423423fba113547f3a01bc66ef0cf38b263";
+      url = "github:AyushChaturvedi-7/record-dot-preprocessor/de31a3a89b1d89a94fb4b5f8c0506d2f2cde89bf";
       flake = false;
     };
     # NOTE: the large-anon family (large-anon / large-records / large-generics /
@@ -114,6 +114,12 @@
                 broken = false;
               };
               record-dot-preprocessor.jailbreak = true;
+              # The de31a3a record-dot-preprocessor rev no longer auto-injects
+              # GHC.Records(.Extra) imports (downstream modules import them
+              # themselves now). ghc-hasfield-plugin's bundled test suite relied
+              # on that injection and no longer compiles; its library is fine and
+              # spider never runs the test, so skip the check.
+              ghc-hasfield-plugin.check = false;
               # Hackage large-anon 0.3.3 / typelet — same overrides euler-nix-common
               # uses to build the family under GHC 9.8.4. large-records and
               # large-generics build with nixpkgs defaults (no override needed).
