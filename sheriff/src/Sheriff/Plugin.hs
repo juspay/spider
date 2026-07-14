@@ -885,11 +885,11 @@ trfWhereToSOP (clause : ls) = do
   let res = getWhereClauseFnNameWithAllArgs clause
       (fnName, args) = fromMaybe ("NA", []) res
   case (fnName, args) of
-    ("And", [(L _ (PatExplicitList _ arg))]) -> do
+    ("And", [lst]) | Just arg <- whereClauseListElems lst -> do
       curr <- trfWhereToSOP arg
       rem  <- trfWhereToSOP ls
       pure [x <> y | x <- curr, y <- rem]
-    ("Or", [(L _ (PatExplicitList _ arg))]) -> do
+    ("Or", [lst]) | Just arg <- whereClauseListElems lst -> do
       curr <- foldM (\r cls -> fmap (<> r) $ trfWhereToSOP [cls]) [] arg
       rem  <- trfWhereToSOP ls
       pure [x <> y | x <- curr, y <- rem]
@@ -900,6 +900,21 @@ trfWhereToSOP (clause : ls) = do
         Nothing -> pure rem
         Just (tblName, colName) -> pure $ fmap (\lst -> (clause, tblName, colName) : lst) rem
     (fn, _) -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ print $ "Invalid/unknown clause in `where` clause : " <> fn <> " at " <> (showS . getLoc2 $ clause)) >> trfWhereToSOP ls
+
+-- Peel paren / type-wrap / `HsExpanded` (incl. the OverloadedLists `fromListN [..]`
+-- expansion GHC >= 9.4 introduces) down to the underlying list literal, so that
+-- `Se.And` / `Se.Or` arguments are still recognised. Returns the raw list on the
+-- bare-`ExplicitList` shape, i.e. a no-op for pre-expansion ASTs.
+whereClauseListElems :: LHsExpr GhcTc -> Maybe [LHsExpr GhcTc]
+whereClauseListElems (L loc e) = case e of
+  PatExplicitList _ xs      -> Just xs
+  PatHsPar inner            -> whereClauseListElems inner
+  PatHsWrap _ inner         -> whereClauseListElems (L loc inner)
+#if __GLASGOW_HASKELL__ >= 900
+  PatHsExpansion _ expanded -> whereClauseListElems (L loc expanded)
+#endif
+  HsApp _ f x               -> maybe (whereClauseListElems f) Just (whereClauseListElems x)
+  _                         -> Nothing
 
 -- Get table field name and table name for the `Se.Is` clause
 -- Patterns to match 'getField`, `recordDot`, `overloadedRecordDot` (ghc > 9), selector (duplicate record fields), rec fields (ghc 9), lens
