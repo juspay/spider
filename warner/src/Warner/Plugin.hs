@@ -113,20 +113,32 @@ instance FromJSON WarningFlag where
 -- on a MsgEnvelope inside a `ResolvedDiagnosticReason` newtype). We only need
 -- ToJSON here, since the reason is stored as a raw aeson Value in
 -- MessageFingerprint and never decoded back into a reason.
+--
+-- The encoding below deliberately keeps the pre-9.8 `WarnReason` tag names
+-- ("NoReason"/"Reason"/"ErrReason") rather than the new constructor names: the
+-- fingerprints cached under ./.juspay/existing-errors are a persisted on-disk
+-- format written by older compilers, and `reason` is compared as a raw aeson
+-- Value. Renaming the tags would make every existing baseline entry miss,
+-- silently promoting already-grandfathered warnings to build errors.
+--
+-- `WarningWithFlags` carries a NonEmpty where `Reason` carried a single flag.
+-- Taking the head matches getReason below, which selects messages for caching
+-- on the head flag too, so the two stay consistent.
 instance ToJSON DiagnosticReason where
     toJSON WarningWithoutFlag = object [
-        "type" .= ("WarningWithoutFlag" :: Text)
+        "type" .= ("NoReason" :: Text)
         ]
     toJSON (WarningWithFlags flags) = object [
-        "type" .= ("WarningWithFlags" :: Text),
-        "flags" .= NE.toList flags
+        "type" .= ("Reason" :: Text),
+        "flag" .= NE.head flags
         ]
     toJSON (WarningWithCategory cat) = object [
         "type" .= ("WarningWithCategory" :: Text),
         "category" .= T.pack (showSDocUnsafe (ppr cat))
         ]
     toJSON ErrorWithoutFlag = object [
-        "type" .= ("ErrorWithoutFlag" :: Text)
+        "type" .= ("ErrReason" :: Text),
+        "flag" .= (Nothing :: Maybe WarningFlag)
         ]
 
 instance ToJSON ResolvedDiagnosticReason where
