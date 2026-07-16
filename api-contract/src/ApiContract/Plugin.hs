@@ -505,7 +505,10 @@ getAppliedOnTypeName _ _ = Nothing
 
 processHsSplice (HsUntypedSpliceExpr _ expr) = do
     let types = expr ^? biplateRef :: [HsExpr GhcPs]
-        typeName = map (\(_,y) -> replace "''" "" y) $ Prelude.filter (\(const,_) -> const `Prelude.elem` ["HsBracket"]) $ map (\x -> (show $ toConstr x,showSDocUnsafe $ ppr x)) types
+        -- GHC 9.4 renamed the bracket constructor HsBracket -> HsUntypedBracket
+        -- (typed splices got HsTypedBracket); match both so the ''Type quote in
+        -- $(deriveJSON ... ''Type) splices is still detected on every version.
+        typeName = map (\(_,y) -> replace "''" "" y) $ Prelude.filter (\(const,_) -> const `Prelude.elem` ["HsBracket","HsUntypedBracket"]) $ map (\x -> (show $ toConstr x,showSDocUnsafe $ ppr x)) types
         possibleInstances = map (\(_,y) -> y) $ Prelude.filter (\(const,_) -> const `Prelude.elem` ["HsVar"]) $ map (\x -> (show $ toConstr x,showSDocUnsafe $ ppr x)) types
     pure $ Prelude.concat $ map (\x -> map (\y -> (y,x)) possibleInstances) typeName
 -- HsQuasiQuote / XUntypedSplice: no-op, as the typed-splice and HsSpliced cases were before
