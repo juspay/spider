@@ -134,18 +134,12 @@
               servant.jailbreak = true;
               servant-server.jailbreak = true;
 
-              # Local plugin packages self-apply their plugin in the test-suite
-              # (needs a running collector / extra setup); skip checks.
+              # sheriff's test-suite self-applies the plugin on files that
+              # intentionally violate its rules (same setting existed pre-9.8.4).
+              # All other plugins' test-suites build & run sandboxed: their
+              # plugins swallow collector-connection failures (socket_lib) and
+              # fall back to defaults on missing .juspay configs.
               sheriff.check = false;
-              fdep.check = false;
-              api-contract.check = false;
-              fieldInspector.check = false;
-              warner.check = false;
-              paymentFlow.check = false;
-              endpoints.check = false;
-              dc.check = false;
-              keyLookupTracker.check = false;
-              coresyn2chart.check = false;
 
               # api-contract disables its own profiling library; fieldInspector
               # imports ApiContract.Plugin at compile time, so match it — otherwise
