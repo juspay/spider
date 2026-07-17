@@ -525,11 +525,22 @@ validateColumnAccessRule rule expr = do
   case mbTableCol of
     Just (colName, tableName, locExpr) -> do
       let knownTables = knownDBTables ?pluginOpts
-      if tableName `notElem` knownTables
+      -- Skip accesses that have no real source span. On GHC >= 9.4 the
+      -- record-dot-preprocessor emits every field's HasField getter as
+      -- `GHC.Records.getField @"col" r`, and those generated instance bodies
+      -- carry noSrcSpan. On GHC < 9.4 the same getter was emitted as a plain
+      -- annotated selector that this check never matched, so generated field
+      -- accesses were always invisible. Honouring the span preserves that
+      -- behaviour and stops us flagging compiler-generated boilerplate for API
+      -- DTOs whose type name merely coincides with a known DB table (e.g. a
+      -- `Customer` request record vs. the `Customer` DB table).
+      if not (isGoodSrcSpan (getLoc2 locExpr))
         then pure []
-        else if colName == column_name rule && tableName `notElem` allowed_tables rule
-          then pure [(expr, ColumnAccessViolation colName tableName rule)]
-          else pure []
+        else if tableName `notElem` knownTables
+          then pure []
+          else if colName == column_name rule && tableName `notElem` allowed_tables rule
+            then pure [(expr, ColumnAccessViolation colName tableName rule)]
+            else pure []
     Nothing -> pure []
 
 -- Extract (ColumnName, TableName) from an expression if possible
