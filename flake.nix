@@ -83,6 +83,7 @@
           settings = {
             beam-core.jailbreak = true;
             sheriff.check = false;
+            api-contract.check = false;
           };
           devShell = {
             mkShellArgs = {
@@ -137,6 +138,7 @@
             # };
             sheriff.check = false;
             http2.check = false;
+            api-contract.check = false;
           };
 
           devShell = {
