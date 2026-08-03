@@ -56,6 +56,7 @@ import GHC.Types.Annotations
 import qualified GHC.Utils.Outputable as OP
 #if __GLASGOW_HASKELL__ >= 904
 import GHC.Hs.Type (foExt)
+import GHC.Types.FieldLabel (DuplicateRecordFields(..))
 import GHC.Tc.Errors.Types (TcRnMessage, mkTcRnUnknownMessage)
 import GHC.Types.Error (mkPlainError, noHints)
 #endif
@@ -1059,19 +1060,39 @@ getIsClauseData fieldArg _comp _clause = do
 #if __GLASGOW_HASKELL__ >= 904
 -- On GHC 9.4+ record-field selectors are `HsRecSel (FieldOcc GhcTc)`, and the
 -- FieldOcc's selector `Id` prints as the plain field label -- GHC dropped the
--- `$sel:<column>:<table>` name mangling that `selectorAmbiguousFieldOcc`
--- surfaced on <= 9.2. Reconstruct that same string here (column = field label,
--- table = the selector's parent record TyCon) so all the downstream
--- `splitOn ":"`-based extraction and the `$sel` classification keep working
--- exactly as before.
+-- `$sel:<column>:<constructor>` OccName mangling that
+-- `selectorAmbiguousFieldOcc` surfaced on <= 9.2 (disambiguation moved to the
+-- linker symbol, `$fld:<constructor>:<column>`). Reconstruct the 9.2 string
+-- here so the downstream `splitOn ":"` extraction and the `$sel`
+-- classification keep working, preserving *both* halves of the old condition:
+--
+--   * 9.2 only mangled when the module defining the record had
+--     DuplicateRecordFields on. GHC 9.4+ records that per field on the
+--     FieldLabel, so gate on it -- otherwise every plain record selector in
+--     every module gets manufactured into a Selector and enters rule paths it
+--     never entered on 9.2. Non-DRF selectors keep returning the plain label,
+--     which `getDBFieldSpecType` classifies as `None`, exactly as before.
+--
+--   * the third component is the first data constructor carrying the field,
+--     not the parent TyCon (GHC's own scheme is `$sel:x:MkT`). For beam tables
+--     `data CustomerT f = Customer {..}` that is `Customer` -- which is what
+--     the rule and indexedKeys table names are written against. The TyCon
+--     `CustomerT` would never compare equal to them, silently no-opping the
+--     DB rules for every selector-style where clause.
 mkSelectorString :: FieldOcc GhcTc -> String
 mkSelectorString fldOcc =
-  let selId   = foExt fldOcc
-      colName = occNameString (getOccName selId)
-      tblName = case idDetails selId of
-                  RecSelId { sel_tycon = RecSelData tc } -> occNameString (getOccName tc)
-                  _                                      -> ""
-  in "$sel:" <> colName <> ":" <> tblName
+  let selId    = foExt fldOcc
+      selNm    = idName selId
+      colName  = occNameString (getOccName selId)
+      isFld fl = flSelector fl == selNm
+      mangled  = case idDetails selId of
+        RecSelId { sel_tycon = RecSelData tc }
+          | Just fl <- find isFld (tyConFieldLabels tc)
+          , flHasDuplicateRecordFields fl == DuplicateRecordFields
+          , Just dc <- find (any isFld . dataConFieldLabels) (tyConDataCons tc)
+          -> Just $ "$sel:" <> colName <> ":" <> occNameString (getOccName dc)
+        _ -> Nothing
+  in fromMaybe colName mangled
 #endif
 
 -- Get how DB field is being extracted in sequelize
