@@ -102,10 +102,25 @@ paymentFlow opts modSummary tcEnv = do
     else do
       errors <- concat <$> mapM (checkBind ruleList) (bagToList binds)
 
-      let sortedErrors = sortBy (leftmost_smallest `on` srcSpan) errors
-          groupedErrors = groupBy (\a b -> srcSpan a == srcSpan b) sortedErrors
+      -- A violation's own span is unusable when GHC marks the expression as
+      -- compiler-generated: on GHC >= 9.4 a record-dot access `r.f` elaborates
+      -- to `getField @"f" r` carrying noSrcSpan. Fall back to the enclosing
+      -- binding so the error stays locatable instead of printing `<generated>`.
+      let reportSpanOf r = if isGoodSrcSpan (srcSpan r) then srcSpan r else coreFnSpan r
+          -- Key the grouping on the enclosing function and the rule as well as
+          -- the span. Keying on the span alone made every unlocatable violation
+          -- in a module collapse into ONE group, where `listToMaybe` dropped all
+          -- but one of them and a single whitelisted reader suppressed the rest
+          -- (including violations in unrelated functions, under unrelated rules).
+          groupKeyOf r = (coreFnName r, type_name (rule r), blocked_field (rule r))
+          sortedErrors =
+            sortBy (\a b -> (leftmost_smallest (reportSpanOf a) (reportSpanOf b))
+                              <> compare (groupKeyOf a) (groupKeyOf b)) errors
+          groupedErrors =
+            groupBy (\a b -> reportSpanOf a == reportSpanOf b
+                               && groupKeyOf a == groupKeyOf b) sortedErrors
           childFnFilterLogic srcGrpErrArr = do
-            let srcSpn = maybe Nothing (\value -> Just $ srcSpan value) (listToMaybe srcGrpErrArr)
+            let srcSpn = reportSpanOf <$> listToMaybe srcGrpErrArr
                 srcSpanLine = getSrcSpanLine srcSpn
                 shouldThroughError = (any (\(VoilationRuleResult{..}) -> do
                         let whitelistedRules = field_access_whitelisted_fns rule
@@ -115,16 +130,16 @@ paymentFlow opts modSummary tcEnv = do
               else listToMaybe srcGrpErrArr
           filteredErrors = (\srcGrpErrArr -> childFnFilterLogic srcGrpErrArr) <$> groupedErrors
 #if __GLASGOW_HASKELL__ >= 904
-      mapM_ (\ (VoilationRuleResult {..}) ->  addErrAt srcSpan $ mkPfDiag $ OP.text $ field_rule_fixes rule ) (catMaybes filteredErrors)
+      mapM_ (\ r ->  addErrAt (reportSpanOf r) $ mkPfDiag $ OP.text $ field_rule_fixes (rule r) ) (catMaybes filteredErrors)
 #else
-      mapM_ (\ (VoilationRuleResult {..}) ->  addErrAt srcSpan $ OP.text $ field_rule_fixes rule ) (catMaybes filteredErrors)
+      mapM_ (\ r ->  addErrAt (reportSpanOf r) $ OP.text $ field_rule_fixes (rule r) ) (catMaybes filteredErrors)
 #endif
   return tcEnv
 
 checkBind :: [Rule] ->  LHsBindLR GhcTc GhcTc -> TcM [VoilationRuleResult]
-checkBind rule (L _ (FunBind{..} )) = do
+checkBind rule lbind@(L _ (FunBind{..} )) = do
   let funMatches = unLoc $ mg_alts fun_matches
-  concat <$> mapM (checkMatch rule (getVarNameFromIDP $ unLoc fun_id)) funMatches
+  concat <$> mapM (checkMatch rule (getVarNameFromIDP $ unLoc fun_id, getLoc2 lbind)) funMatches
 #if __GLASGOW_HASKELL__ >= 904
 checkBind rule (L _ (XHsBindsLR (AbsBinds {abs_binds = binds}))) =
   concat <$> (mapM (checkBind rule) $ bagToList binds)
@@ -134,24 +149,27 @@ checkBind rule (L _ (AbsBinds {abs_binds = binds})) =
 #endif
 checkBind _ _ = pure []
 
-checkMatch :: [Rule] -> String ->  LMatch GhcTc (LHsExpr GhcTc) -> TcM [VoilationRuleResult]
+-- The (String, SrcSpan) pair is the enclosing binding's name and span; the span
+-- is carried so a violation with no real source span can still be reported
+-- against the function it occurs in. See 'coreFnSpan'.
+checkMatch :: [Rule] -> (String, SrcSpan) ->  LMatch GhcTc (LHsExpr GhcTc) -> TcM [VoilationRuleResult]
 checkMatch rule coreFn (L _ (Match _ _ _ grhss)) = do
   let whereBinds = (grhssLocalBinds grhss) ^? biplateRef :: [LHsExpr GhcTc]
       nonWhereBinds = (grhssGRHSs grhss) ^? biplateRef :: [LHsExpr GhcTc]
   loopOverExprInArgsPerFnName (nonWhereBinds <> whereBinds) rule coreFn
 checkMatch _ _ _ = pure []
 
-loopOverExprInArgsPerFnName :: [LHsExpr GhcTc] -> [Rule] -> String -> TcM [VoilationRuleResult]
+loopOverExprInArgsPerFnName :: [LHsExpr GhcTc] -> [Rule] -> (String, SrcSpan) -> TcM [VoilationRuleResult]
 loopOverExprInArgsPerFnName exprs rules coreFn = do
   let fnArgTuple = catMaybes (getFnNameWithAllArgs <$> exprs)
   nub <$> concat <$> mapM (lookOverExpr rules coreFn) fnArgTuple
 loopOverExprInArgsPerFnName _ _ _ = pure []
 
-lookOverExpr :: [Rule] -> String ->  (Located Var, [LHsExpr GhcTc]) -> TcM [VoilationRuleResult]
-lookOverExpr rules funId (fnName, args) = do
+lookOverExpr :: [Rule] -> (String, SrcSpan) ->  (Located Var, [LHsExpr GhcTc]) -> TcM [VoilationRuleResult]
+lookOverExpr rules (funId, funSpan) (fnName, args) = do
   let updatedArgs = args ^? biplateRef :: [LHsExpr GhcTc]
   tupleResponse <- catMaybes <$> sequence (checkExpr rules <$> updatedArgs)
-  pure $ (\(x, y) -> VoilationRuleResult { fnName = getVarName fnName, srcSpan = x, rule = y, coreFnName = funId }) <$> tupleResponse
+  pure $ (\(x, y) -> VoilationRuleResult { fnName = getVarName fnName, srcSpan = x, rule = y, coreFnName = funId, coreFnSpan = funSpan }) <$> tupleResponse
 
 checkExpr :: [Rule]-> LHsExpr GhcTc -> TcM (Maybe (SrcSpan, Rule))
 checkExpr rules expr =
