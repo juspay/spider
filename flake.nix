@@ -38,13 +38,12 @@
       url = "github:AyushChaturvedi-7/record-dot-preprocessor/de31a3a89b1d89a94fb4b5f8c0506d2f2cde89bf";
       flake = false;
     };
-    # NOTE: the large-anon family (large-anon / large-records / large-generics /
-    # typelet) is intentionally NOT pinned to a fork here. It resolves from
-    # Hackage via the shared all-cabal-hashes pin below (large-anon 0.3.3,
-    # large-records 0.4.4), exactly as euler-nix-common's ghc984 set does — that
-    # is the combination proven to build under GHC 9.8.4. The old
-    # infinitumkiran/large-records fork resolved to large-anon 0.2, which does
-    # not build under 9.8.4.
+    # Pin the same GHC 9.8.4 port revision as euler-api-txns. All three packages
+    # are consumed from this monorepo; compatibility settings are applied below.
+    large-records = {
+      url = "git+https://github.com/infinitumkiran/large-records.git?ref=ghc984-port&rev=35005b63a183ca8da3d05b22cefbf41d6a1ba3cf";
+      flake = false;
+    };
   };
 
   outputs = inputs@{ self, nixpkgs, flake-parts, ... }:
@@ -103,8 +102,9 @@
               instance-control.source = inputs.instance-control;
               ghc-hasfield-plugin.source = inputs.ghc-hasfield-plugin;
               record-dot-preprocessor.source = inputs.record-dot-preprocessor;
-              # large-anon / large-records / large-generics / typelet come from
-              # Hackage (all-cabal-hashes pin above), matching euler-nix-common.
+              large-anon.source = inputs.large-records + /large-anon;
+              large-generics.source = inputs.large-records + /large-generics;
+              large-records.source = inputs.large-records + /large-records;
               ghc-tcplugin-api.source = "0.16.1.0";
             };
 
@@ -120,12 +120,18 @@
               # on that injection and no longer compiles; its library is fine and
               # spider never runs the test, so skip the check.
               ghc-hasfield-plugin.check = false;
-              # Hackage large-anon 0.3.3 / typelet — same overrides euler-nix-common
-              # uses to build the family under GHC 9.8.4. large-records and
-              # large-generics build with nixpkgs defaults (no override needed).
+              # The pinned releases still carry pre-GHC-9.8 bounds. large-records
+              # also needs a small ImportDecl compatibility patch for GHC 9.8.
+              large-generics.jailbreak = true;
+              large-records = {
+                check = false;
+                jailbreak = true;
+                patches = [ ./patches/large-records-ghc98.patch ];
+              };
               large-anon = {
                 broken = false;
                 check = false;
+                jailbreak = true;
               };
               typelet = {
                 broken = false;

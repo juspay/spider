@@ -1,0 +1,876 @@
+diff --git a/src/Data/Record/Internal/GHC/Fresh.hs b/src/Data/Record/Internal/GHC/Fresh.hs
+--- a/src/Data/Record/Internal/GHC/Fresh.hs
++++ b/src/Data/Record/Internal/GHC/Fresh.hs
+@@ -32,7 +32,7 @@
+   freshName' pfx (L l name) = WrapFresh $ ReaderT $ \nc -> do
+       newUniq <- takeUniqFromNameCacheIO nc
+       return $ L l $ Exact $
+-        mkInternalName newUniq (newOccName (rdrNameOcc name)) l
++        mkInternalName newUniq (newOccName (rdrNameOcc name)) (toSrcSpan l)
+     where
+       -- Even when we generate fresh names, ghc can still complain about name
+       -- shadowing, because this check only considers the 'OccName', not the
+@@ -52,4 +52,3 @@
+     env <- getHscEnv
+     liftIO $ runFresh fa (hscNameCacheIO env)
+ 
+-
+diff --git a/src/Data/Record/Internal/GHC/Shim.hs b/src/Data/Record/Internal/GHC/Shim.hs
+--- a/src/Data/Record/Internal/GHC/Shim.hs
++++ b/src/Data/Record/Internal/GHC/Shim.hs
+@@ -141,6 +141,9 @@
+ #if __GLASGOW_HASKELL__ < 904
+     , trace
+ #endif
++#if __GLASGOW_HASKELL__ >= 908
++    , fieldName
++#endif
+     )
+ 
+ #if __GLASGOW_HASKELL__ < 902
+@@ -153,6 +156,10 @@
+ import GHC.Unit.Finder (findImportedModule, FindResult(Found))
+ #endif
+ 
++#if __GLASGOW_HASKELL__ >= 906
++import qualified GHC.Types.Basic
++#endif
++
+ #if __GLASGOW_HASKELL__ < 904
+ import Data.IORef
+ import GHC.Iface.Env (lookupOrigIO)
+@@ -165,6 +172,10 @@
+ 
+ #endif
+ 
++#if __GLASGOW_HASKELL__ >= 906
++import Language.Haskell.Syntax.Basic (FieldLabelString(..))
++#endif
++
+ {-------------------------------------------------------------------------------
+   Name resolution
+ -------------------------------------------------------------------------------}
+@@ -226,8 +237,18 @@
+ -- | Optionally @qualified@ import declaration
+ importDecl :: ModuleName -> Bool -> LImportDecl GhcPs
+ importDecl name qualified = noLocA $ ImportDecl {
++#if __GLASGOW_HASKELL__ < 906
+       ideclExt       = defExt
++#else
++      ideclExt       = XImportDeclPass {
++                           ideclAnn        = defExt
++                         , ideclSourceText = NoSourceText
++                         , ideclImplicit   = False
++                         }
++#endif
++#if __GLASGOW_HASKELL__ < 906
+     , ideclSourceSrc = NoSourceText
++#endif
+     , ideclName      = noLocA name
+ #if __GLASGOW_HASKELL__ >= 904
+     , ideclPkgQual   = NoRawPkgQual
+@@ -235,9 +256,13 @@
+     , ideclPkgQual   = Nothing
+ #endif
+     , ideclSafe      = False
++#if __GLASGOW_HASKELL__ < 906
+     , ideclImplicit  = False
++#endif
+     , ideclAs        = Nothing
++#if __GLASGOW_HASKELL__ < 906
+     , ideclHiding    = Nothing
++#endif
+ #if __GLASGOW_HASKELL__ < 810
+     , ideclQualified = qualified
+ #else
+@@ -248,18 +273,25 @@
+ #else
+     , ideclSource    = NotBoot
+ #endif
++#if __GLASGOW_HASKELL__ >= 906
++    , ideclImportList = Nothing
++#endif
+     }
+ 
+-conPat :: Located RdrName -> HsConPatDetails GhcPs -> Pat GhcPs
++conPat :: LRdrName -> HsConPatDetails GhcPs -> Pat GhcPs
+ #if __GLASGOW_HASKELL__ < 900
+ conPat x y = ConPatIn x y
++#elif __GLASGOW_HASKELL__ >= 908
++conPat x y = ConPat defExt x y
+ #else
+ conPat x y = ConPat defExt (reLocA x) y
+ #endif
+ 
+-mkFunBind :: Located RdrName -> [LMatch GhcPs (LHsExpr GhcPs)] -> HsBind GhcPs
++mkFunBind :: LRdrName -> [LMatch GhcPs (LHsExpr GhcPs)] -> HsBind GhcPs
+ #if __GLASGOW_HASKELL__ < 810
+ mkFunBind = GHC.mkFunBind
++#elif __GLASGOW_HASKELL__ >= 908
++mkFunBind n = GHC.mkFunBind (Generated DoPmc) n
+ #else
+ mkFunBind (reLocA -> n) = GHC.mkFunBind Generated n
+ #endif
+@@ -270,8 +302,16 @@
+ type HsModule = GHC.HsModule
+ #endif
+ 
++#if __GLASGOW_HASKELL__ >= 906
++type LHsModule = Located (HsModule GhcPs)
++#else
+ type LHsModule = Located HsModule
++#endif
++#if __GLASGOW_HASKELL__ >= 908
++type LRdrName  = LIdP GhcPs
++#else
+ type LRdrName  = Located RdrName
++#endif
+ 
+ {-------------------------------------------------------------------------------
+   NameCache
+@@ -331,11 +371,22 @@
+   defExt = noExtField
+ #endif
+ 
+-#if __GLASGOW_HASKELL__ >= 900
++#if __GLASGOW_HASKELL__ >= 906
++instance HasDefaultExt (LayoutInfo GhcPs) where
++  defExt = NoLayoutInfo
++
++instance HasDefaultExt SourceText where
++  defExt = NoSourceText
++#elif __GLASGOW_HASKELL__ >= 900
+ instance HasDefaultExt LayoutInfo where
+   defExt = NoLayoutInfo
+ #endif
+ 
++#if __GLASGOW_HASKELL__ >= 908
++instance HasDefaultExt GHC.Types.Basic.Origin where
++  defExt = Generated DoPmc
++#endif
++
+ instance (HasDefaultExt a, HasDefaultExt b) => HasDefaultExt (a, b) where
+   defExt = (defExt, defExt)
+ 
+@@ -366,7 +417,10 @@
+   Generalized @forall@ in 9.0
+ -------------------------------------------------------------------------------}
+ 
+-#if __GLASGOW_HASKELL__ >= 900
++#if __GLASGOW_HASKELL__ >= 908
++type  HsTyVarBndr pass =  GHC.HsTyVarBndr (HsBndrVis GhcPs) pass
++type LHsTyVarBndr pass = GHC.LHsTyVarBndr (HsBndrVis GhcPs) pass
++#elif __GLASGOW_HASKELL__ >= 900
+ type  HsTyVarBndr pass =  GHC.HsTyVarBndr () pass
+ type LHsTyVarBndr pass = GHC.LHsTyVarBndr () pass
+ #endif
+@@ -382,21 +436,25 @@
+ 
+ userTyVar ::
+      XUserTyVar GhcPs
+-  -> Located (IdP GhcPs)
++  -> LRdrName
+   -> HsTyVarBndr GhcPs
+ #if __GLASGOW_HASKELL__ < 900
+ userTyVar = UserTyVar
++#elif __GLASGOW_HASKELL__ >= 908
++userTyVar ext x = UserTyVar ext HsBndrRequired x
+ #else
+ userTyVar ext x = UserTyVar ext () (reLocA x)
+ #endif
+ 
+ kindedTyVar ::
+      XKindedTyVar GhcPs
+-  -> Located (IdP GhcPs)
++  -> LRdrName
+   -> LHsKind GhcPs
+   -> HsTyVarBndr GhcPs
+ #if __GLASGOW_HASKELL__ < 900
+ kindedTyVar = KindedTyVar
++#elif __GLASGOW_HASKELL__ >= 908
++kindedTyVar ext k = KindedTyVar ext HsBndrRequired k
+ #else
+ kindedTyVar ext k = KindedTyVar ext () (reLocA k)
+ #endif
+@@ -407,6 +465,9 @@
+ hsTyVarLName (UserTyVar   _ n  ) = n
+ hsTyVarLName (KindedTyVar _ n _) = n
+ hsTyVarLName _ = panic "hsTyVarLName"
++#elif __GLASGOW_HASKELL__ >= 908
++hsTyVarLName (UserTyVar   _ _ n  ) = n
++hsTyVarLName (KindedTyVar _ _ n _) = n
+ #else
+ hsTyVarLName (UserTyVar   _ _ n  ) = reLoc n
+ hsTyVarLName (KindedTyVar _ _ n _) = reLoc n
+@@ -418,8 +479,8 @@
+ #else
+ setDefaultSpecificity :: LHsTyVarBndr GhcPs -> GHC.LHsTyVarBndr Specificity GhcPs
+ setDefaultSpecificity = mapXRec @GhcPs $ \v -> case v of
+-    UserTyVar   ext () name      -> UserTyVar   ext SpecifiedSpec name
+-    KindedTyVar ext () name kind -> KindedTyVar ext SpecifiedSpec name kind
++    UserTyVar   ext _ name      -> UserTyVar   ext SpecifiedSpec name
++    KindedTyVar ext _ name kind -> KindedTyVar ext SpecifiedSpec name kind
+ #if __GLASGOW_HASKELL__ < 900
+     XTyVarBndr  ext              -> XTyVarBndr  ext
+ #endif
+@@ -525,7 +586,9 @@
+   Records
+ -------------------------------------------------------------------------------}
+ 
+-#if __GLASGOW_HASKELL__ >= 902
++#if __GLASGOW_HASKELL__ >= 908
++type RupdFlds = LHsRecUpdFields GhcPs
++#elif __GLASGOW_HASKELL__ >= 902
+ type RupdFlds = Either [LHsRecUpdField GhcPs] [LHsRecUpdProj GhcPs]
+ #else
+ type RupdFlds = [LHsRecUpdField GhcPs]
+@@ -538,8 +601,15 @@
+ 
+ simpleRecordUpdates =
+     \case
++#if __GLASGOW_HASKELL__ >= 908
++      RegularRecUpdFields _ flds ->
++        mapM (aux (isUnambigous  . unLoc)) flds
++      OverloadedRecUpdFields _ flds ->
++        mapM (aux (isSingleLabel . unLoc)) flds
++#else
+       Left  flds -> mapM (aux (isUnambigous  . unLoc)) flds
+       Right flds -> mapM (aux (isSingleLabel . unLoc)) flds
++#endif
+   where
+     aux :: forall lhs rhs.
+          (lhs -> Maybe LRdrName)
+@@ -553,14 +623,26 @@
+         (, val) <$> f lbl
+ 
+     isUnambigous :: AmbiguousFieldOcc GhcPs -> Maybe LRdrName
++#if __GLASGOW_HASKELL__ >= 908
++    isUnambigous (Unambiguous _ name) = Just name
++#else
+     isUnambigous (Unambiguous _ name) = Just $ reLoc name
++#endif
+     isUnambigous _                    = Nothing
+ 
+     isSingleLabel :: FieldLabelStrings GhcPs -> Maybe LRdrName
+     isSingleLabel (FieldLabelStrings labels) =
+         case labels of
++#if __GLASGOW_HASKELL__ >= 906
++          [L _ (DotFieldOcc _ (L l (FieldLabelString label)))] ->
++#else
+           [L _ (DotFieldOcc _ (L l label))] ->
++#endif
++#if __GLASGOW_HASKELL__ >= 908
++            Just $ L l (Unqual $ mkVarOccFS label)
++#else
+             Just $ reLoc $ L l (Unqual $ mkVarOccFS label)
++#endif
+           _otherwise ->
+             Nothing
+ 
+@@ -614,4 +696,4 @@
+     isUnambigous (Unambiguous _ name) = Just $ reLoc name
+     isUnambigous _                    = Nothing
+ 
+-#endif
+\ No newline at end of file
++#endif
+diff --git a/src/Data/Record/Internal/GHC/TemplateHaskellStyle.hs b/src/Data/Record/Internal/GHC/TemplateHaskellStyle.hs
+--- a/src/Data/Record/Internal/GHC/TemplateHaskellStyle.hs
++++ b/src/Data/Record/Internal/GHC/TemplateHaskellStyle.hs
+@@ -133,15 +133,15 @@
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Syntax.mkName', for expression vars
+ mkExpVar :: SrcSpan -> String -> LRdrName
+-mkExpVar l = L l . mkRdrUnqual . mkVarOcc
++mkExpVar l = inheritLoc l . mkRdrUnqual . mkVarOcc
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Syntax.mkName', for type vars
+ mkTyVar :: SrcSpan -> String -> LRdrName
+-mkTyVar l = L l . mkRdrUnqual . mkTyVarOcc
++mkTyVar l = inheritLoc l . mkRdrUnqual . mkTyVarOcc
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Syntax.mkName', for type constructors
+ mkTyCon :: SrcSpan -> String -> LRdrName
+-mkTyCon l = L l . mkRdrUnqual . mkTcOcc
++mkTyCon l = inheritLoc l . mkRdrUnqual . mkTcOcc
+ 
+ -- | Inverse to 'mkExpVar'
+ --
+@@ -181,12 +181,20 @@
+ -- | Equivalent of 'Language.Haskell.TH.Lib.varE'
+ varE :: HasCallStack => LRdrName -> LHsExpr GhcPs
+ varE name
++#if __GLASGOW_HASKELL__ >= 908
++  | isTermVar name = inheritLoc name $ HsVar defExt name
++#else
+   | isTermVar name = inheritLoc name $ HsVar defExt (reLocA name)
++#endif
+   | otherwise      = error "varE: incorrect name type"
+ 
+ -- | Inverse to 'varE'
+ viewVarE :: LHsExpr GhcPs -> Maybe LRdrName
++#if __GLASGOW_HASKELL__ >= 908
++viewVarE (L _ (HsVar _ name)) | isTermVar name = Just name
++#else
+ viewVarE (L _ (HsVar _ (reLoc -> name))) | isTermVar name = Just name
++#endif
+ viewVarE _ = Nothing
+ 
+ pattern VarE :: HasCallStack => () => LRdrName -> LHsExpr GhcPs
+@@ -197,12 +205,20 @@
+ -- | Equivalent of 'Language.Haskell.TH.Lib.conE'
+ conE :: HasCallStack => LRdrName -> LHsExpr GhcPs
+ conE name
++#if __GLASGOW_HASKELL__ >= 908
++  | isTermCon name = inheritLoc name $ HsVar defExt name
++#else
+   | isTermCon name = inheritLoc name $ HsVar defExt (reLocA name)
++#endif
+   | otherwise      = error "conE: incorrect name type"
+ 
+ -- | Inverse to 'conE'
+ viewConE :: LHsExpr GhcPs -> Maybe LRdrName
++#if __GLASGOW_HASKELL__ >= 908
++viewConE (L _ (HsVar _ name)) | isTermCon name = Just name
++#else
+ viewConE (L _ (HsVar _ (reLoc -> name))) | isTermCon name = Just name
++#endif
+ viewConE _ = Nothing
+ 
+ pattern ConE :: HasCallStack => () => LRdrName -> LHsExpr GhcPs
+@@ -224,7 +240,11 @@
+   where
+     mkRec :: LRdrName -> [LHsRecField GhcPs (LHsExpr GhcPs)] -> LHsExpr GhcPs
+     mkRec name fields = inheritLoc name $
++#if __GLASGOW_HASKELL__ >= 908
++        RecordCon defExt name (HsRecFields fields Nothing)
++#else
+         RecordCon defExt (reLocA name) (HsRecFields fields Nothing)
++#endif
+ 
+     mkFld :: LRdrName -> LHsExpr GhcPs -> LHsRecField GhcPs (LHsExpr GhcPs)
+     mkFld name val = inheritLoc name $
+@@ -235,21 +255,35 @@
+ #else
+         HsRecField
+ #endif
++#if __GLASGOW_HASKELL__ >= 908
++          (inheritLoc name (mkFieldOcc name)) val False
++#else
+           (inheritLoc name (mkFieldOcc (reLocA name))) val False
++#endif
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Lib.recUpdE'
+ recUpdE :: LHsExpr GhcPs -> [(LRdrName, LHsExpr GhcPs)] -> LHsExpr GhcPs
+ recUpdE = \recExpr -> updRec recExpr . map (uncurry updFld)
+   where
++#if __GLASGOW_HASKELL__ >= 908
++    updRec :: LHsExpr GhcPs -> [LHsRecUpdField GhcPs GhcPs] -> LHsExpr GhcPs
++#else
+     updRec :: LHsExpr GhcPs -> [LHsRecUpdField GhcPs] -> LHsExpr GhcPs
++#endif
+     updRec expr fields = inheritLoc expr $
+         RecordUpd defExt expr
+-#if __GLASGOW_HASKELL__ >= 902
++#if __GLASGOW_HASKELL__ >= 908
++          $ RegularRecUpdFields noExtField
++#elif __GLASGOW_HASKELL__ >= 902
+           $ Left
+ #endif
+             fields
+ 
++#if __GLASGOW_HASKELL__ >= 908
++    updFld :: LRdrName -> LHsExpr GhcPs -> LHsRecUpdField GhcPs GhcPs
++#else
+     updFld :: LRdrName -> LHsExpr GhcPs -> LHsRecUpdField GhcPs
++#endif
+     updFld name val = inheritLoc name $
+ #if __GLASGOW_HASKELL__ >= 904
+         HsFieldBind
+@@ -259,7 +293,11 @@
+ #if __GLASGOW_HASKELL__ >= 902
+           defExt
+ #endif
++#if __GLASGOW_HASKELL__ >= 908
++          (inheritLoc name (mkAmbiguousFieldOcc name)) val False
++#else
+           (inheritLoc name (mkAmbiguousFieldOcc (reLocA name))) val False
++#endif
+ 
+ viewRecUpdE ::
+      LHsExpr GhcPs
+@@ -289,10 +327,14 @@
+ lamE :: NonEmpty (LPat GhcPs) -> LHsExpr GhcPs -> LHsExpr GhcPs
+ lamE pats body = inheritLoc body $
+     HsLam defExt $
++#if __GLASGOW_HASKELL__ >= 906
++      MG defExt (inheritLoc body [inheritLoc body match])
++#else
+       MG defExt (inheritLoc body [inheritLoc body match]) Generated
++#endif
+   where
+     match :: Match GhcPs (LHsExpr GhcPs)
+-    match = Match defExt LambdaExpr (NE.toList pats) (simpleGHRSs body)
++    match = Match defExt LambdaExpr (inheritLoc pats (NE.toList pats)) (simpleGHRSs body)
+ 
+ -- | Convenience wrapper around 'lamE' for a single argument
+ lamE1 :: LPat GhcPs -> LHsExpr GhcPs -> LHsExpr GhcPs
+@@ -301,11 +343,15 @@
+ -- | Equivalent of 'Language.Haskell.TH.Lib.caseE'
+ caseE :: LHsExpr GhcPs -> [(LPat GhcPs, LHsExpr GhcPs)] -> LHsExpr GhcPs
+ caseE x alts = inheritLoc x $
++#if __GLASGOW_HASKELL__ >= 906
++    HsCase defExt x (MG defExt (inheritLoc x (map mkAlt alts)))
++#else
+     HsCase defExt x (MG defExt (inheritLoc x (map mkAlt alts)) Generated)
++#endif
+   where
+     mkAlt :: (LPat GhcPs, LHsExpr GhcPs) -> LMatch GhcPs (LHsExpr GhcPs)
+     mkAlt (pat, body) = inheritLoc x $
+-        Match defExt CaseAlt [pat] (simpleGHRSs body)
++        Match defExt CaseAlt (inheritLoc pat [pat]) (simpleGHRSs body)
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Lib.appsE'
+ appsE :: LHsExpr GhcPs -> [LHsExpr GhcPs] -> LHsExpr GhcPs
+@@ -314,6 +360,9 @@
+ -- | Equivalent of 'Language.Haskell.TH.Lib.appT'
+ appTypeE :: LHsExpr GhcPs -> LHsType GhcPs -> LHsExpr GhcPs
+ appTypeE expr typ = inheritLoc expr $
++#if __GLASGOW_HASKELL__ >= 906
++    HsAppType noExtField expr noHsTok (HsWC defExt typ)
++#else
+     HsAppType
+ #if __GLASGOW_HASKELL__ >= 902
+       (toSrcSpan expr)
+@@ -322,6 +371,7 @@
+ #endif
+       expr
+       (HsWC defExt typ)
++#endif
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Lib.tupE'
+ tupE :: NonEmpty (LHsExpr GhcPs) -> LHsExpr GhcPs
+@@ -353,18 +403,30 @@
+ parensT = noLocA . HsParTy defExt
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Lib.litT'
++#if __GLASGOW_HASKELL__ >= 906
++litT :: HsTyLit GhcPs -> LHsType GhcPs
++#else
+ litT :: HsTyLit -> LHsType GhcPs
++#endif
+ litT = noLocA . HsTyLit defExt
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Lib.varT'
+ varT :: HasCallStack => LRdrName -> LHsType GhcPs
+ varT name
++#if __GLASGOW_HASKELL__ >= 908
++  | isTypeVar name = inheritLoc name (HsTyVar defExt NotPromoted name)
++#else
+   | isTypeVar name = inheritLoc name (HsTyVar defExt NotPromoted (reLocA name))
++#endif
+   | otherwise      = error "varT: incorrect name type"
+ 
+ -- | Inverse to 'varT'
+ viewVarT :: LHsType GhcPs -> Maybe LRdrName
++#if __GLASGOW_HASKELL__ >= 908
++viewVarT (L _ (HsTyVar _ _ name)) | isTypeVar name = Just name
++#else
+ viewVarT (L _ (HsTyVar _ _ (reLoc -> name))) | isTypeVar name = Just name
++#endif
+ viewVarT _otherwise = Nothing
+ 
+ pattern VarT :: HasCallStack => () => LRdrName -> LHsType GhcPs
+@@ -375,12 +437,20 @@
+ -- | Equivalent of 'Language.Haskell.TH.Lib.conT'
+ conT :: HasCallStack => LRdrName -> LHsType GhcPs
+ conT name
++#if __GLASGOW_HASKELL__ >= 908
++  | isTypeCon name = inheritLoc name (HsTyVar defExt NotPromoted name)
++#else
+   | isTypeCon name = inheritLoc name (HsTyVar defExt NotPromoted (reLocA name))
++#endif
+   | otherwise      = error "varT: incorrect name type"
+ 
+ -- | Inverse to 'conT'
+ viewConT :: LHsType GhcPs -> Maybe LRdrName
++#if __GLASGOW_HASKELL__ >= 908
++viewConT (L _ (HsTyVar _ _ name)) | isTypeCon name = Just name
++#else
+ viewConT (L _ (HsTyVar _ _ (reLoc -> name))) | isTypeCon name = Just name
++#endif
+ viewConT _otherwise = Nothing
+ 
+ pattern ConT :: HasCallStack => () => LRdrName -> LHsType GhcPs
+@@ -429,7 +499,11 @@
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Lib.varP'
+ varP :: LRdrName -> LPat GhcPs
++#if __GLASGOW_HASKELL__ >= 908
++varP name = inheritLoc name (VarPat defExt name)
++#else
+ varP name = inheritLoc name (VarPat defExt (reLocA name))
++#endif
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Lib.conP'
+ conP :: LRdrName -> [LPat GhcPs] -> LPat GhcPs
+@@ -503,7 +577,11 @@
+          , con_mb_cxt = Nothing
+          , con_args   = RecCon (L _ fields)
+          }
++#if __GLASGOW_HASKELL__ >= 908
++    ) = (conName ,) <$> mapM viewRecField fields
++#else
+     ) = (reLoc conName ,) <$> mapM viewRecField fields
++#endif
+   where
+     viewRecField :: LConDeclField GhcPs -> Maybe (LRdrName, LHsType GhcPs)
+     viewRecField
+@@ -516,7 +594,11 @@
+     viewRecField _otherwise = Nothing
+ 
+     viewFieldOcc :: FieldOcc GhcPs -> LRdrName
++#if __GLASGOW_HASKELL__ >= 908
++    viewFieldOcc (FieldOcc _ name) = name
++#else
+     viewFieldOcc (FieldOcc _ (reLoc -> name)) = name
++#endif
+ #if __GLASGOW_HASKELL__ < 900
+     viewFieldOcc _ = panic "viewFieldOcc"
+ #endif
+@@ -537,7 +619,11 @@
+   -> LConDecl GhcPs
+ forallRecC vars ctxt conName args = inheritLoc conName $ ConDeclH98 {
+       con_ext    = defExt
++#if __GLASGOW_HASKELL__ >= 908
++    , con_name   = conName
++#else
+     , con_name   = reLocA conName
++#endif
+     , con_forall = inheritLoc conName True
+     , con_ex_tvs = map (setDefaultSpecificity . mkBndr) vars
+     , con_mb_cxt = Just (inheritLoc conName ctxt)
+@@ -551,7 +637,11 @@
+     mkRecField :: LRdrName -> LHsType GhcPs -> LConDeclField GhcPs
+     mkRecField name ty = inheritLoc name $ ConDeclField {
+           cd_fld_ext   = defExt
++#if __GLASGOW_HASKELL__ >= 908
++        , cd_fld_names = [inheritLoc name $ mkFieldOcc name]
++#else
+         , cd_fld_names = [inheritLoc name $ mkFieldOcc $ reLocA name]
++#endif
+         , cd_fld_type  = ty
+         , cd_fld_doc   = Nothing
+         }
+@@ -580,7 +670,11 @@
+ sigD name ty = inheritLoc name $ SigD defExt sig
+   where
+     sig :: Sig GhcPs
++#if __GLASGOW_HASKELL__ >= 908
++    sig = TypeSig defExt [name] $ HsWC defExt (implicitBndrs ty)
++#else
+     sig = TypeSig defExt [reLocA name] $ HsWC defExt (implicitBndrs ty)
++#endif
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Lib.valD'
+ --
+@@ -599,12 +693,18 @@
+ dataD typeName tyVars cons derivs = inheritLoc typeName $
+     TyClD defExt $ DataDecl {
+         tcdDExt     = defExt
++#if __GLASGOW_HASKELL__ >= 908
++      , tcdLName    = typeName
++#else
+       , tcdLName    = reLocA typeName
++#endif
+       , tcdTyVars   = mkHsQTvs tyVars
+       , tcdFixity   = Prefix
+       , tcdDataDefn = HsDataDefn {
+             dd_ext     = defExt
++#if __GLASGOW_HASKELL__ < 906
+           , dd_ND      = DataType
++#endif
+ #if __GLASGOW_HASKELL__ >= 902
+           , dd_ctxt    = Nothing
+ #else
+@@ -612,7 +712,11 @@
+ #endif
+           , dd_cType   = Nothing
+           , dd_kindSig = Nothing
++#if __GLASGOW_HASKELL__ >= 906
++          , dd_cons    = DataTypeCons False cons
++#else
+           , dd_cons    = cons
++#endif
+           , dd_derivs  = inheritLoc typeName derivs
+           }
+       }
+@@ -635,15 +739,25 @@
+            , tcdTyVars   = HsQTvs {hsq_explicit = tyVars}
+            , tcdFixity   = Prefix
+            , tcdDataDefn = HsDataDefn {
++#if __GLASGOW_HASKELL__ < 906
+                    dd_ND      = DataType
++#endif
+ #if __GLASGOW_HASKELL__ >= 902
++#if __GLASGOW_HASKELL__ < 906
+                  , dd_ctxt    = Nothing
+ #else
++                   dd_ctxt    = Nothing
++#endif
++#else
+                  , dd_ctxt    = L _ []
+ #endif
+                  , dd_cType   = Nothing
+                  , dd_kindSig = Nothing
++#if __GLASGOW_HASKELL__ >= 906
++                 , dd_cons    = DataTypeCons False cons
++#else
+                  , dd_cons    = cons
++#endif
+ #if __GLASGOW_HASKELL__ >= 902
+                  , dd_derivs  = derivs
+ #else
+@@ -652,7 +766,11 @@
+                  }
+            }
+        )
++#if __GLASGOW_HASKELL__ >= 908
++    ) = Just (typeName, tyVars, cons, derivs)
++#else
+     ) = Just (reLoc typeName, tyVars, cons, derivs)
++#endif
+ viewDataD _otherwise = Nothing
+ 
+ pattern DataD ::
+@@ -746,12 +864,19 @@
+ classD = \ctx name clsVars sigs -> inheritLoc name $
+     TyClD defExt $ ClassDecl {
+         tcdCExt   = defExt
++#if __GLASGOW_HASKELL__ >= 906 && __GLASGOW_HASKELL__ < 910
++      , tcdLayout = NoLayoutInfo
++#endif
+ #if __GLASGOW_HASKELL__ >= 902
+       , tcdCtxt   = Just (inheritLoc name ctx)
+ #else
+       , tcdCtxt   = inheritLoc name ctx
+ #endif
++#if __GLASGOW_HASKELL__ >= 908
++      , tcdLName  = name
++#else
+       , tcdLName  = reLocA name
++#endif
+       , tcdTyVars = mkHsQTvs clsVars
+       , tcdFixity = Prefix
+       , tcdFDs    = []
+@@ -764,7 +889,11 @@
+   where
+     classOpSig :: LRdrName -> LHsType GhcPs -> LSig GhcPs
+     classOpSig name ty = inheritLoc name $
++#if __GLASGOW_HASKELL__ >= 908
++        ClassOpSig defExt False [name] (implicitBndrs ty)
++#else
+         ClassOpSig defExt False [reLocA name] (implicitBndrs ty)
++#endif
+ 
+ -- | Approximate equivalent of 'Language.Haskell.TH.Lib.tySynEqn'
+ tySynEqn ::
+@@ -780,7 +909,11 @@
+       $ implicitBndrs $
+ #endif
+         FamEqn defExt
++#if __GLASGOW_HASKELL__ >= 908
++               name
++#else
+                (reLocA name)
++#endif
+ #if __GLASGOW_HASKELL__ >= 902
+                (HsOuterImplicit defExt)
+ #else
+@@ -806,11 +939,19 @@
+ 
+ -- | Equivalent of 'Language.Haskell.TH.Lib.typeAnnotation'
+ typeAnnotation :: LRdrName -> AnnProvenancePs
++#if __GLASGOW_HASKELL__ >= 908
++typeAnnotation name = TypeAnnProvenance name
++#else
+ typeAnnotation name = TypeAnnProvenance (reLocA name)
++#endif
+ 
+ -- | Inverse to 'typeAnnotation'
+ viewTypeAnnotation :: AnnProvenancePs -> Maybe LRdrName
++#if __GLASGOW_HASKELL__ >= 908
++viewTypeAnnotation (TypeAnnProvenance name) = Just name
++#else
+ viewTypeAnnotation (TypeAnnProvenance name) = Just (reLoc name)
++#endif
+ viewTypeAnnotation _otherwise               = Nothing
+ 
+ pattern TypeAnnotation :: LRdrName -> AnnProvenancePs
+@@ -821,14 +962,22 @@
+ -- | Equivalent of 'Language.Haskell.TH.Lib.pragAnnD'
+ pragAnnD :: AnnProvenancePs -> LHsExpr GhcPs -> AnnDecl GhcPs
+ pragAnnD prov value =
++#if __GLASGOW_HASKELL__ >= 906
++    HsAnnotation defExt prov value
++#else
+     HsAnnotation
+       defExt
+       NoSourceText
+       prov
+       value
++#endif
+ 
+ viewPragAnnD :: AnnDecl GhcPs -> (AnnProvenancePs, LHsExpr GhcPs)
++#if __GLASGOW_HASKELL__ >= 906
++viewPragAnnD (HsAnnotation _ prov value) = (prov, value)
++#else
+ viewPragAnnD (HsAnnotation _ _ prov value) = (prov, value)
++#endif
+ #if __GLASGOW_HASKELL__ < 900
+ viewPragAnnD _ = panic "viewPragAnnD"
+ #endif
+@@ -871,7 +1020,11 @@
+     match :: LMatch GhcPs (LHsExpr GhcPs)
+     match = inheritLoc fnName $
+         Match defExt
++#if __GLASGOW_HASKELL__ >= 908
++              (FunRhs fnName Prefix NoSrcStrict)
++#else
+               (FunRhs (reLocA fnName) Prefix NoSrcStrict)
++#endif
+               []
+               grhs
+ 
+@@ -881,5 +1034,3 @@
+     GRHSs defExt
+           [inheritLoc body $ GRHS defExt [] body]
+           (inheritLoc body $ EmptyLocalBinds defExt)
+-
+-
+diff --git a/src/Data/Record/Internal/Plugin/CodeGen.hs b/src/Data/Record/Internal/Plugin/CodeGen.hs
+--- a/src/Data/Record/Internal/Plugin/CodeGen.hs
++++ b/src/Data/Record/Internal/Plugin/CodeGen.hs
+@@ -204,7 +204,7 @@
+                     )
+                   , ( wildP
+                        -- VarE unq_error `appE` stringE matchErr
+-                    ,  VarE (noLoc $ mkRdrQual (mkModuleName "Prelude") (mkVarOcc "error")) `appE` stringE matchErr
++                    ,  VarE (withoutLoc $ mkRdrQual (mkModuleName "Prelude") (mkVarOcc "error")) `appE` stringE matchErr
+                     )
+                   ]
+           ]
+diff --git a/src/Data/Record/Internal/Plugin/Names.hs b/src/Data/Record/Internal/Plugin/Names.hs
+--- a/src/Data/Record/Internal/Plugin/Names.hs
++++ b/src/Data/Record/Internal/Plugin/Names.hs
+@@ -1,3 +1,4 @@
++{-# LANGUAGE CPP               #-}
+ {-# LANGUAGE OverloadedStrings #-}
+ {-# LANGUAGE RecordWildCards   #-}
+ 
+@@ -171,7 +172,11 @@
+ 
+   where
+    exact :: Name -> LRdrName
++#if __GLASGOW_HASKELL__ >= 908
++   exact = noLocA . Exact
++#else
+    exact = noLoc . Exact
++#endif
+ 
+    runtime, recordHasField, ghcGenerics, largeGenerics :: ModuleName
+    runtime        = mkModuleName "Data.Record.Plugin.Runtime"
+@@ -207,5 +212,10 @@
+     }
+   where
+     var, tc :: String -> LRdrName
++#if __GLASGOW_HASKELL__ >= 908
++    var x = noLocA $ mkRdrUnqual $ mkVarOcc x
++    tc  x = noLocA $ mkRdrUnqual $ mkTcOcc  x
++#else
+     var x = noLoc $ mkRdrUnqual $ mkVarOcc x
+     tc  x = noLoc $ mkRdrUnqual $ mkTcOcc  x
++#endif
+diff --git a/src/Data/Record/Internal/Plugin/Options.hs b/src/Data/Record/Internal/Plugin/Options.hs
+--- a/src/Data/Record/Internal/Plugin/Options.hs
++++ b/src/Data/Record/Internal/Plugin/Options.hs
+@@ -1,3 +1,4 @@
++{-# LANGUAGE CPP                   #-}
+ {-# LANGUAGE DataKinds             #-}
+ {-# LANGUAGE DeriveDataTypeable    #-}
+ {-# LANGUAGE DerivingStrategies    #-}
+@@ -67,7 +68,11 @@
+ -- | Extract all 'LargeRecordOptions' in a module
+ --
+ -- Additionally returns the location of the ANN pragma.
++#if __GLASGOW_HASKELL__ >= 906
++getLargeRecordOptions :: HsModule GhcPs -> Map String [(SrcSpan, LargeRecordOptions)]
++#else
+ getLargeRecordOptions :: HsModule -> Map String [(SrcSpan, LargeRecordOptions)]
++#endif
+ getLargeRecordOptions =
+       Map.fromListWith (++)
+     . map (second (:[]))
+@@ -77,7 +82,7 @@
+ viewAnnotation :: AnnDecl GhcPs -> Maybe (String, (SrcSpan, LargeRecordOptions))
+ viewAnnotation = \case
+     PragAnnD (TypeAnnotation tyName) (intOptions -> Just options) ->
+-      Just (nameBase tyName, (getLoc tyName, options))
++      Just (nameBase tyName, (toSrcSpan tyName, options))
+     _otherwise ->
+       Nothing
+ 
+diff --git a/src/Data/Record/Plugin.hs b/src/Data/Record/Plugin.hs
+--- a/src/Data/Record/Plugin.hs
++++ b/src/Data/Record/Plugin.hs
+@@ -39,7 +39,9 @@
+   , plugin
+   ) where
+ 
++import Control.Monad (unless, when)
+ import Control.Monad.Except
++import Control.Monad.Trans.Class (lift)
+ import Control.Monad.Trans.Writer.CPS
+ import Data.List (intersperse)
+ import Data.Map.Strict (Map)
+@@ -47,6 +49,11 @@
+ import Data.Traversable (for)
+ import Language.Haskell.TH (Extension(..))
+ 
++#if __GLASGOW_HASKELL__ >= 908
++import GHC.Driver.Config.Diagnostic (initPrintConfig)
++import GHC.Types.Error (mkSimpleUnknownDiagnostic)
++#endif
++
+ import qualified Data.Map.Strict as Map
+ import qualified Data.Set        as Set
+ 
+@@ -213,6 +220,12 @@
+ #if __GLASGOW_HASKELL__ == 902
+     throwOneError $
+       mkErr l neverQualify (mkDecorated [errMsg])
++#elif __GLASGOW_HASKELL__ >= 908
++    throwOneError $
++      mkErrorMsgEnvelope
++        l
++        neverQualify
++        (GhcUnknownMessage $ mkSimpleUnknownDiagnostic $ mkPlainError [] errMsg)
+ #elif __GLASGOW_HASKELL__ >= 904
+     throwOneError $
+       mkErrorMsgEnvelope
+@@ -232,6 +245,15 @@
+     logger <- getLogger
+     liftIO $ printOrThrowWarnings logger dynFlags . bag $
+       mkWarnMsg l neverQualify errMsg
++#elif __GLASGOW_HASKELL__ >= 908
++    logger <- getLogger
++    let printConfig = initPrintConfig dynFlags
++    liftIO $ printOrThrowDiagnostics logger printConfig (initDiagOpts dynFlags) . mkMessages . bag $
++      mkMsgEnvelope
++        (initDiagOpts dynFlags)
++        l
++        neverQualify
++        (GhcUnknownMessage $ mkSimpleUnknownDiagnostic $ mkPlainDiagnostic WarningWithoutFlag [] errMsg)
+ #elif __GLASGOW_HASKELL__ >= 904
+     logger <- getLogger
+     liftIO $ printOrThrowDiagnostics logger (initDiagOpts dynFlags) . mkMessages . bag $
