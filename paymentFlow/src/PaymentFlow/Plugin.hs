@@ -38,6 +38,11 @@ import GHC.Tc.Utils.Monad
 import GHC.Tc.Utils.TcType
 import GHC.Types.Annotations
 import qualified GHC.Utils.Outputable as OP
+#if __GLASGOW_HASKELL__ >= 904
+import GHC.Tc.Errors.Types (TcRnMessage, mkTcRnUnknownMessage)
+import GHC.Types.Error (mkPlainError, noHints)
+import GHC.Hs.Type (FieldOcc(..))
+#endif
 #else
 import Bag
 import ConLike
@@ -52,8 +57,18 @@ import TcType
 import TyCoRep
 #endif
 
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 changed the error API from raw `SDoc` to structured `TcRnMessage`;
+-- wrap the same rendered text so the emitted error content is unchanged.
+mkPfDiag :: OP.SDoc -> TcRnMessage
+mkPfDiag = mkTcRnUnknownMessage . mkPlainError noHints
+
+mkInvalidYamlFileErr :: String -> TcRnMessage
+mkInvalidYamlFileErr err = mkPfDiag (OP.text err)
+#else
 mkInvalidYamlFileErr :: String -> OP.SDoc
 mkInvalidYamlFileErr err = OP.text err
+#endif
 
 parseYAMLFile :: (FromJSON a) => FilePath -> IO (Either ParseException a)
 parseYAMLFile file = decodeFileEither file
@@ -87,10 +102,25 @@ paymentFlow opts modSummary tcEnv = do
     else do
       errors <- concat <$> mapM (checkBind ruleList) (bagToList binds)
 
-      let sortedErrors = sortBy (leftmost_smallest `on` srcSpan) errors
-          groupedErrors = groupBy (\a b -> srcSpan a == srcSpan b) sortedErrors
+      -- A violation's own span is unusable when GHC marks the expression as
+      -- compiler-generated: on GHC >= 9.4 a record-dot access `r.f` elaborates
+      -- to `getField @"f" r` carrying noSrcSpan. Fall back to the enclosing
+      -- binding so the error stays locatable instead of printing `<generated>`.
+      let reportSpanOf r = if isGoodSrcSpan (srcSpan r) then srcSpan r else coreFnSpan r
+          -- Key the grouping on the enclosing function and the rule as well as
+          -- the span. Keying on the span alone made every unlocatable violation
+          -- in a module collapse into ONE group, where `listToMaybe` dropped all
+          -- but one of them and a single whitelisted reader suppressed the rest
+          -- (including violations in unrelated functions, under unrelated rules).
+          groupKeyOf r = (coreFnName r, type_name (rule r), blocked_field (rule r))
+          sortedErrors =
+            sortBy (\a b -> (leftmost_smallest (reportSpanOf a) (reportSpanOf b))
+                              <> compare (groupKeyOf a) (groupKeyOf b)) errors
+          groupedErrors =
+            groupBy (\a b -> reportSpanOf a == reportSpanOf b
+                               && groupKeyOf a == groupKeyOf b) sortedErrors
           childFnFilterLogic srcGrpErrArr = do
-            let srcSpn = maybe Nothing (\value -> Just $ srcSpan value) (listToMaybe srcGrpErrArr)
+            let srcSpn = reportSpanOf <$> listToMaybe srcGrpErrArr
                 srcSpanLine = getSrcSpanLine srcSpn
                 shouldThroughError = (any (\(VoilationRuleResult{..}) -> do
                         let whitelistedRules = field_access_whitelisted_fns rule
@@ -99,40 +129,52 @@ paymentFlow opts modSummary tcEnv = do
               then Nothing
               else listToMaybe srcGrpErrArr
           filteredErrors = (\srcGrpErrArr -> childFnFilterLogic srcGrpErrArr) <$> groupedErrors
-      mapM_ (\ (VoilationRuleResult {..}) ->  addErrAt srcSpan $ OP.text $ field_rule_fixes rule ) (catMaybes filteredErrors)
+#if __GLASGOW_HASKELL__ >= 904
+      mapM_ (\ r ->  addErrAt (reportSpanOf r) $ mkPfDiag $ OP.text $ field_rule_fixes (rule r) ) (catMaybes filteredErrors)
+#else
+      mapM_ (\ r ->  addErrAt (reportSpanOf r) $ OP.text $ field_rule_fixes (rule r) ) (catMaybes filteredErrors)
+#endif
   return tcEnv
 
 checkBind :: [Rule] ->  LHsBindLR GhcTc GhcTc -> TcM [VoilationRuleResult]
-checkBind rule (L _ (FunBind{..} )) = do
+checkBind rule lbind@(L _ (FunBind{..} )) = do
   let funMatches = unLoc $ mg_alts fun_matches
-  concat <$> mapM (checkMatch rule (getVarNameFromIDP $ unLoc fun_id)) funMatches
+  concat <$> mapM (checkMatch rule (getVarNameFromIDP $ unLoc fun_id, getLoc2 lbind)) funMatches
+#if __GLASGOW_HASKELL__ >= 904
+checkBind rule (L _ (XHsBindsLR (AbsBinds {abs_binds = binds}))) =
+  concat <$> (mapM (checkBind rule) $ bagToList binds)
+#else
 checkBind rule (L _ (AbsBinds {abs_binds = binds})) =
   concat <$> (mapM (checkBind rule) $ bagToList binds)
+#endif
 checkBind _ _ = pure []
 
-checkMatch :: [Rule] -> String ->  LMatch GhcTc (LHsExpr GhcTc) -> TcM [VoilationRuleResult]
+-- The (String, SrcSpan) pair is the enclosing binding's name and span; the span
+-- is carried so a violation with no real source span can still be reported
+-- against the function it occurs in. See 'coreFnSpan'.
+checkMatch :: [Rule] -> (String, SrcSpan) ->  LMatch GhcTc (LHsExpr GhcTc) -> TcM [VoilationRuleResult]
 checkMatch rule coreFn (L _ (Match _ _ _ grhss)) = do
   let whereBinds = (grhssLocalBinds grhss) ^? biplateRef :: [LHsExpr GhcTc]
       nonWhereBinds = (grhssGRHSs grhss) ^? biplateRef :: [LHsExpr GhcTc]
   loopOverExprInArgsPerFnName (nonWhereBinds <> whereBinds) rule coreFn
 checkMatch _ _ _ = pure []
 
-loopOverExprInArgsPerFnName :: [LHsExpr GhcTc] -> [Rule] -> String -> TcM [VoilationRuleResult]
+loopOverExprInArgsPerFnName :: [LHsExpr GhcTc] -> [Rule] -> (String, SrcSpan) -> TcM [VoilationRuleResult]
 loopOverExprInArgsPerFnName exprs rules coreFn = do
   let fnArgTuple = catMaybes (getFnNameWithAllArgs <$> exprs)
   nub <$> concat <$> mapM (lookOverExpr rules coreFn) fnArgTuple
 loopOverExprInArgsPerFnName _ _ _ = pure []
 
-lookOverExpr :: [Rule] -> String ->  (Located Var, [LHsExpr GhcTc]) -> TcM [VoilationRuleResult]
-lookOverExpr rules funId (fnName, args) = do
+lookOverExpr :: [Rule] -> (String, SrcSpan) ->  (Located Var, [LHsExpr GhcTc]) -> TcM [VoilationRuleResult]
+lookOverExpr rules (funId, funSpan) (fnName, args) = do
   let updatedArgs = args ^? biplateRef :: [LHsExpr GhcTc]
   tupleResponse <- catMaybes <$> sequence (checkExpr rules <$> updatedArgs)
-  pure $ (\(x, y) -> VoilationRuleResult { fnName = getVarName fnName, srcSpan = x, rule = y, coreFnName = funId }) <$> tupleResponse
+  pure $ (\(x, y) -> VoilationRuleResult { fnName = getVarName fnName, srcSpan = x, rule = y, coreFnName = funId, coreFnSpan = funSpan }) <$> tupleResponse
 
 checkExpr :: [Rule]-> LHsExpr GhcTc -> TcM (Maybe (SrcSpan, Rule))
 checkExpr rules expr =
   case expr of
-    L _ (HsPar _ exp) -> checkExpr rules exp
+    L _ (PatHsPar exp) -> checkExpr rules exp
 
 #if __GLASGOW_HASKELL__ >= 900
     L loc (PatHsExpansion orig expanded) -> checkExpr rules (L loc expanded)
@@ -143,13 +185,17 @@ checkExpr rules expr =
         Nothing -> pure Nothing
         Just rule -> pure $ Just (loc1, rule)
 
-    L _ (HsApp _ (L _ (PatHsWrap _ (HsAppType _ _ (HsWC _ (L (SrcSpanAnn _ loc) (HsTyLit _ (HsStrTy _ fieldName)))) ))) (L _ (HsVar _ (L _ var)))) -> do
+    L _ (HsApp _ (L _ (PatHsWrap _ (PatHsAppType _ (HsWC _ (L (SrcSpanAnn _ loc) (HsTyLit _ (HsStrTy _ fieldName)))) ))) (L _ (HsVar _ (L _ var)))) -> do
       let voilationSatisfiedRules = verifyAndGetRuleVoilatedFnInfoWithExprAndFieldAsName (showS fieldName) var rules
       case listToMaybe voilationSatisfiedRules of
         Nothing -> pure Nothing
         Just rule -> pure $ Just (loc, rule)
 
+#if __GLASGOW_HASKELL__ >= 904
+    L (SrcSpanAnn _ loc) (HsApp _ (L _ (HsRecSel _ (FieldOcc name _))) (L _ (HsVar _ (L _ var)))) -> do
+#else
     L (SrcSpanAnn _ loc) (HsApp _ (L _ (HsRecFld _ (Unambiguous name _))) (L _ (HsVar _ (L _ var)))) -> do
+#endif
       let voilationSatisfiedRules = verifyAndGetRuleVoilatedFnInfoWithExprAndFieldAsName (showS name) var rules
       case listToMaybe voilationSatisfiedRules of
         Nothing -> pure Nothing
@@ -258,11 +304,16 @@ verifyAndGetRuleVoilatedFnInfoWithRightExprAsType var rules = do
 
 getTyConInStringFormat :: Type -> Maybe [String]
 getTyConInStringFormat vType =
-#if __GLASGOW_HASKELL__ >= 900
+#if __GLASGOW_HASKELL__ >= 906
+  -- GHC 9.6 added the FunTyFlag to splitFunTy_maybe's result tuple.
+  case splitFunTy_maybe vType of
+    Just (_, _, tyCon, _) -> Just [showS tyCon]
+    Nothing -> Nothing
+#elif __GLASGOW_HASKELL__ >= 900
   case splitFunTy_maybe vType of
     Just (_, tyCon, _) -> Just [showS tyCon]
-    Nothing -> Nothing 
-#else 
+    Nothing -> Nothing
+#else
   case splitFunTy_maybe vType of
     Just (tyCon, _) -> Just [showS tyCon]
     Nothing -> Nothing
@@ -288,7 +339,7 @@ getLocated ap = L (getLocA ap) (unLoc ap)
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
 getFnNameWithAllArgs (L _ (HsVar _ v))                      = Just (getLocated v, [])
 getFnNameWithAllArgs (L _ (HsConLikeOut _ cl))              = (\clId -> (noExprLoc clId, [])) <$> conLikeWrapId cl
-getFnNameWithAllArgs (L _ (HsAppType _ expr _))             = getFnNameWithAllArgs expr
+getFnNameWithAllArgs (L _ (PatHsAppType expr _))            = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ (L _ (HsVar _ v)) funr)) = Just (getLocated v, [funr])
 getFnNameWithAllArgs (L _ (HsApp _ funl funr))              = do
   let res = getFnNameWithAllArgs funl

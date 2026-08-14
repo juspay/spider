@@ -4,6 +4,7 @@
 {-# LANGUAGE NamedFieldPuns,PartialTypeSignatures #-}
 {-# OPTIONS_GHC -Werror=unused-imports -Werror=incomplete-patterns -Werror=name-shadowing #-}
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE PatternSynonyms #-}
 
 module Fdep.Plugin (plugin,collectDecls) where
 
@@ -34,12 +35,19 @@ import GHC.IO (unsafePerformIO)
 import GHC.Tc.Utils.TcType
 import GHC.Core.Type hiding (tyConsOfType)
 import GHC.Core.TyCo.Rep
+#if __GLASGOW_HASKELL__ >= 904
+import GHC.Data.Bag hiding (headMaybe)
+#else
 import GHC.Data.Bag
+#endif
 import GHC.Core.TyCon
 import GHC.Core.DataCon
 import GHC.Hs.Pat
 import GHC.Unit.Types
 import GHC
+#if __GLASGOW_HASKELL__ >= 904
+import GHC.Plugins (CoreToDo(..))
+#endif
 import GHC.Types.SourceText
 import GHC.Driver.Plugins
 import GHC.Types.Name.Reader
@@ -47,7 +55,7 @@ import GHC.Driver.Env
 import GHC.Tc.Types
 import GHC.Unit.Module.ModSummary
 import GHC.Utils.Outputable (showSDocUnsafe,ppr)
-import GHC.Types.Name hiding (varName)
+import GHC.Types.Name hiding (varName, fieldName)
 import GHC.Types.Var
 import qualified Data.Aeson.KeyMap as HM
 import GHC.Types.Id
@@ -55,6 +63,10 @@ import GHC.Core
 import GHC.Core.Opt.Monad
 import GHC.Unit.Module.ModGuts 
 import GHC.Data.FastString
+#if __GLASGOW_HASKELL__ >= 904
+import GHC.Types.PkgQual (RawPkgQual(..))
+import GHC.Core.ConLike (ConLike)
+#endif
 #else
 import CoreMonad
 import CoreSyn
@@ -70,6 +82,38 @@ import GhcPlugins hiding ((<>),tyConsOfType,tyConsOfType)
 import Outputable ()
 import TcRnTypes (TcGblEnv (..), TcM)
 #endif
+
+-- Version-stable pattern synonyms / helpers bridging the GHC 9.4 AST changes.
+#if __GLASGOW_HASKELL__ >= 904
+pattern HsConLikeOut :: [Var] -> ConLike -> HsExpr GhcTc
+pattern HsConLikeOut tvs con <- XExpr (ConLikeTc con tvs _)
+
+pattern PatHsPar :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsPar e <- HsPar _ _ e _
+
+pattern PatHsAppType :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsAppType e <- HsAppType _ e _ _
+
+pattern PHsRecField :: lhs -> rhs -> Bool -> HsFieldBind lhs rhs
+pattern PHsRecField lbl expr pun <- HsFieldBind{hfbLHS=lbl, hfbRHS=expr, hfbPun=pun}
+
+type LHsRecUpdFieldTc = LHsRecUpdField GhcTc GhcTc
+
+recUpdFieldsToEither :: LHsRecUpdFields GhcTc -> Either [LHsRecUpdFieldTc] [LHsRecUpdProj GhcTc]
+recUpdFieldsToEither (RegularRecUpdFields _ fs)    = Left fs
+recUpdFieldsToEither (OverloadedRecUpdFields _ fs) = Right fs
+#else
+pattern PatHsPar :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsPar e <- HsPar _ e
+
+pattern PatHsAppType :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsAppType e <- HsAppType _ e _
+
+pattern PHsRecField lbl expr pun <- HsRecField{hsRecFieldLbl=lbl, hsRecFieldArg=expr, hsRecPun=pun}
+
+type LHsRecUpdFieldTc = LHsRecUpdField GhcTc
+#endif
+{-# COMPLETE PHsRecField #-}
 
 plugin :: Plugin
 plugin =
@@ -114,8 +158,16 @@ toLBind (NonRec binder expr) = [(nameStableString $ idName binder,filter (\(name
 toLBind (Rec binds) = map (\(b, e) -> (nameStableString $ idName b,filter (\(name,_) -> "$f" `Data.List.isPrefixOf` name) $ map (\x -> (showSDocUnsafe $ ppr $ varName x,showSDocUnsafe $ ppr $ varType x)) (e ^? biplateRef :: [Id])) ) binds
 
 
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 changed parsedResultAction to take/return `ParsedResult` (wrapping the
+-- HsParsedModule + parse messages); unwrap it and return it unchanged.
+collectDecls :: [CommandLineOption] -> ModSummary -> ParsedResult -> Hsc ParsedResult
+collectDecls opts modSummary parsedResult = do
+    let hsParsedModule = parsedResultModule parsedResult
+#else
 collectDecls :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
 collectDecls opts modSummary hsParsedModule = do
+#endif
     let cliOptions = case opts of
                     [] ->  defaultCliOptions
                     (local : _) -> 
@@ -140,8 +192,38 @@ collectDecls opts modSummary hsParsedModule = do
             -- writeFile (modulePath <> ".types_code.json") (encodePretty $ typesCodeString)
             -- writeFile (modulePath <> ".class_code.json") (encodePretty $ classCodeString)
             -- writeFile (modulePath <> ".instance_code.json") (encodePretty $ instanceCodeString)
+#if __GLASGOW_HASKELL__ >= 904
+    pure parsedResult
+#else
     pure hsParsedModule
+#endif
 
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 reworked ImportDecl: ideclPkgQual -> RawPkgQual, ideclImplicit moved
+-- into ideclExt, ideclHiding -> ideclImportList (ImportListInterpretation).
+fromGHCImportDecl :: LImportDecl GhcPs -> [SimpleImportDecl]
+fromGHCImportDecl (L _span ImportDecl{..}) = [SimpleImportDecl {
+    moduleName' = moduleNameToText (unLoc ideclName),
+    packageName = case ideclPkgQual of
+            RawPkgQual sl -> Just (stringLiteralToText sl)
+            NoRawPkgQual  -> Nothing,
+    isBootSource = case ideclSource of
+            IsBoot -> True
+            NotBoot -> False,
+    isSafe = ideclSafe,
+    qualifiedStyle = convertQualifiedStyle ideclQualified,
+    isImplicit = ideclImplicit ideclExt,
+    asModuleName = fmap (moduleNameToText . unLoc) ideclAs,
+    hidingSpec = case ideclImportList of
+        Nothing -> Nothing
+        Just (interp, names) -> Just $ HidingSpec {
+            isHiding = interp == EverythingBut,
+            names = convertLIEsToText names
+        },
+    line_number = spanToLine _span
+}]
+fromGHCImportDecl (L span (XImportDecl _)) = []
+#else
 fromGHCImportDecl :: LImportDecl GhcPs -> [SimpleImportDecl]
 fromGHCImportDecl (L _span ImportDecl{..}) = [SimpleImportDecl {
     moduleName' = moduleNameToText (unLoc ideclName),
@@ -166,6 +248,7 @@ fromGHCImportDecl (L _span ImportDecl{..}) = [SimpleImportDecl {
     line_number = spanToLine _span
 }]
 fromGHCImportDecl (L span (XImportDecl _)) = []
+#endif
 
 moduleNameToText :: ModuleName -> T.Text
 moduleNameToText = T.pack . moduleNameString
@@ -173,7 +256,11 @@ moduleNameToText = T.pack . moduleNameString
 stringLiteralToText :: StringLiteral -> T.Text
 stringLiteralToText StringLiteral {sl_st} =
     case sl_st  of
+#if __GLASGOW_HASKELL__ >= 904
+        SourceText s -> T.pack (unpackFS s)
+#else
         SourceText s -> T.pack s
+#endif
         _ -> T.pack "NoSourceText"
 
 convertQualifiedStyle :: ImportDeclQualifiedStyle -> QualifiedStyle
@@ -184,7 +271,9 @@ convertQualifiedStyle QualifiedPost    = Fdep.Types.Qualified
 -- (GenLocated (Anno [GenLocated l (IE GhcPs)]) [GenLocated l (IE GhcPs)])
 convertLIEsToText :: _ -> [T.Text]
 convertLIEsToText lies = 
-#if __GLASGOW_HASKELL__ >= 900
+#if __GLASGOW_HASKELL__ >= 904
+    concatMap (ieNameToText . unLoc) (unXRec @(GhcPs) lies :: [LIE GhcPs])
+#elif __GLASGOW_HASKELL__ >= 900
     concatMap (ieNameToText . unLoc) (unXRec @(GhcPs) lies)
 #else
     concatMap (ieNameToText . unLoc) (unLoc lies)
@@ -204,6 +293,11 @@ processDecls decls = do
          , concatMap (\(_,_,_,i) -> i) results
          )
 
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 removed the `la2r` helper (SrcSpanAnn' -> RealSrcSpan).
+la2r :: SrcSpanAnn' a -> RealSrcSpan
+la2r = realSrcSpan . locA
+#endif
 #if __GLASGOW_HASKELL__ >= 900
 spanToLine :: _ -> (Int,Int)
 spanToLine s = (srcSpanStartLine $ la2r s,srcSpanEndLine $ la2r s)
@@ -507,13 +601,17 @@ instance Show PayloadType where
   show FUNCTION_IO    = "functionIO"
 
 loopOverLHsBindLR :: CliOptions -> _ -> (Maybe Text) -> Text -> LHsBindLR GhcTc GhcTc -> IO ()
+#if __GLASGOW_HASKELL__ >= 904
+loopOverLHsBindLR cliOptions con mParentName path (L _ (XHsBindsLR AbsBinds{abs_binds = binds})) =
+#else
 loopOverLHsBindLR cliOptions con mParentName path (L _ AbsBinds{abs_binds = binds}) =
+#endif
     void $ mapM (loopOverLHsBindLR cliOptions con mParentName path) $ bagToList binds
 loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
     let typesUsed = (map varType $ (bind ^? biplateRef :: [Var])) <> (map idType $ (bind ^? biplateRef :: [Id])) <> (bind ^? biplateRef :: [Type])
     case bind of
 #if __GLASGOW_HASKELL__ >= 900
-        (FunBind _ id matches _) -> do
+        (FunBind {fun_id = id, fun_matches = matches}) -> do
 #else
         (FunBind _ id matches _ _) -> do
 #endif
@@ -591,7 +689,11 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             name <- pure (fName <> "**" <> (T.pack ((showSDocUnsafe . ppr) $ locA location)))
             nestedNameWithParent <- pure $ (maybe (name) (\x -> x <> "::" <> name) mParentName)
             processAndSendTypeDetails cliOptions con _path nestedNameWithParent typesUsed
+#if __GLASGOW_HASKELL__ >= 904
+            processFunctionInputOutput (fst pat_ext) cliOptions con _path nestedNameWithParent
+#else
             processFunctionInputOutput (pat_ext) cliOptions con _path nestedNameWithParent
+#endif
             if (maybeBool $ tc_funcs cliOptions)
                 then void $ mapM (processExpr nestedNameWithParent _path) (stmts <> map (\v -> wrapXRec @(GhcTc) $ HsVar noExtField v) (tail' ids))
                 else when (not $ "$$" `T.isInfixOf` name) $
@@ -643,15 +745,29 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             processExpr keyFunction path funr
         processExpr keyFunction path (L _ (NegApp _ funl _)) =
             processExpr keyFunction path funl
+#if __GLASGOW_HASKELL__ >= 904
+        processExpr keyFunction path (L _ (XExpr (HsTick _ fun))) =
+            processExpr keyFunction path fun
+#else
         processExpr keyFunction path (L _ (HsTick _ _ fun)) =
             processExpr keyFunction path fun
+#endif
         processExpr keyFunction path (L _ (HsStatic _ fun)) =
             processExpr keyFunction path fun
+#if __GLASGOW_HASKELL__ >= 904
+        processExpr keyFunction path (L _ (XExpr (HsBinTick _ _ fun))) =
+            processExpr keyFunction path fun
+#else
         processExpr keyFunction path (L _ (HsBinTick _ _ _ fun)) =
             processExpr keyFunction path fun
+#endif
         processExpr keyFunction path (L _ (ExprWithTySig _ fun _)) =
             processExpr keyFunction path fun
+#if __GLASGOW_HASKELL__ >= 904
+        processExpr keyFunction path (L _ (HsLet _ _ exprLStmt _ func)) = do
+#else
         processExpr keyFunction path (L _ (HsLet _ exprLStmt func)) = do
+#endif
 #if __GLASGOW_HASKELL__ >= 900
             processHsLocalBinds keyFunction path exprLStmt
 #else
@@ -665,10 +781,14 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             void $ mapM (processMatch keyFunction path) (unLoc $ mg_alts exprLStmt)
         processExpr keyFunction path (L _ (ExplicitSum _ _ _ fun)) = processExpr keyFunction path fun
         processExpr keyFunction path (L _ (SectionR _ funl funr)) = processExpr keyFunction path funl <> processExpr keyFunction path funr
-        processExpr keyFunction path (L _ (HsPar _ fun)) =
+        processExpr keyFunction path (L _ (PatHsPar fun)) =
             processExpr keyFunction path fun
-        processExpr keyFunction path (L _ (HsAppType _ fun _)) = processExpr keyFunction path fun
+        processExpr keyFunction path (L _ (PatHsAppType fun)) = processExpr keyFunction path fun
+#if __GLASGOW_HASKELL__ >= 904
+        processExpr keyFunction path (L _ x@(HsLamCase _ _ exprLStmt)) =
+#else
         processExpr keyFunction path (L _ x@(HsLamCase _ exprLStmt)) =
+#endif
             void $ mapM (processMatch keyFunction path) (unLoc $ mg_alts exprLStmt)
         processExpr keyFunction path (L _ x@(HsLam _ exprLStmt)) =
             void $ mapM (processMatch keyFunction path) (unLoc $ mg_alts exprLStmt)
@@ -682,8 +802,10 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
         --     let stmtsL = (exprLStmtL ^? biplateRef :: [LHsExpr GhcTc])
         --         stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
         --     in void $ mapM (processExpr keyFunction path) (stmtsL <> stmtsR)
+#if __GLASGOW_HASKELL__ < 904
         processExpr keyFunction path (L _ (HsSpliceE _ splice)) =
             void $ mapM (processExpr keyFunction path) (extractExprsFromSplice splice)
+#endif
         processExpr keyFunction path y@(L _ x@(HsConLikeOut _ hsType)) = do
             expr <- pure $ toJSON $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr hsType)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr hsType), mempty)
             sendTextData' cliOptions con path (transformPayload path keyFunction EXPR expr)
@@ -724,11 +846,17 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                     processExpr keyFunction path l
                     processExpr keyFunction path m
                     processExpr keyFunction path r
+#if __GLASGOW_HASKELL__ < 904
         processExpr keyFunction path (L _ (HsRnBracketOut _ exprLStmtL exprLStmtR)) =
             let stmtsLNoLoc = (exprLStmtL ^? biplateRef :: [HsExpr GhcTc])
                 stmtsRNoLoc = (exprLStmtR ^? biplateRef :: [HsExpr GhcTc])
             in void $ mapM (processExpr keyFunction path) (map (wrapXRec @(GhcTc)) $ (stmtsLNoLoc <> stmtsRNoLoc))
+#endif
+#if __GLASGOW_HASKELL__ >= 904
+        processExpr keyFunction path x@(L _ (HsRecSel _ exprLStmt)) = getDataTypeDetails keyFunction path x
+#else
         processExpr keyFunction path x@(L _ (HsRecFld _ exprLStmt)) = getDataTypeDetails keyFunction path x
+#endif
         processExpr keyFunction path y@(L _ x@(RecordCon expr (L _ (iD)) rcon_flds)) = getDataTypeDetails keyFunction path y
         processExpr keyFunction path x@(L _ (RecordUpd _ rupd_expr rupd_flds)) = getDataTypeDetails keyFunction path x
         processExpr keyFunction path (L _ (ExplicitTuple _ exprLStmt _)) =
@@ -739,13 +867,25 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                         _ -> pure ()) l
         processExpr keyFunction path y@(L _ (XExpr overLitVal)) = do
             processXXExpr keyFunction path overLitVal
+#if __GLASGOW_HASKELL__ >= 904
+        processExpr keyFunction path y@(L _ x@(HsOverLabel _ _ fs)) = do
+#else
         processExpr keyFunction path y@(L _ x@(HsOverLabel _ fs)) = do
+#endif
             expr <- pure $ toJSON $ transformFromNameStableString (Just $ ("$_overLabel$" <> (T.pack $ showSDocUnsafe $ ppr fs)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr x), mempty)
             sendTextData' cliOptions con path (transformPayload path keyFunction EXPR expr)
+#if __GLASGOW_HASKELL__ >= 904
+        processExpr keyFunction path (L _ (HsTypedBracket _ funl)) =
+            processExpr keyFunction path funl
+        processExpr keyFunction path (L _ (HsUntypedBracket _ hsQuote)) =
+            let stmts = (hsQuote ^? biplateRef :: [LHsExpr GhcTc])
+            in void $ mapM (processExpr keyFunction path) stmts
+#else
         processExpr keyFunction path (L _ (HsTcBracketOut b mQW exprLStmtL exprLStmtR)) =
             let stmtsL = (exprLStmtL ^? biplateRef :: [LHsExpr GhcTc])
                 stmtsR = (exprLStmtR ^? biplateRef :: [LHsExpr GhcTc])
             in void $ mapM (processExpr keyFunction path) (stmtsL <> stmtsR)
+#endif
         processExpr keyFunction path (L _ x) =
             let stmts = (x ^? biplateRef :: [LHsExpr GhcTc])
                 stmtsNoLoc = (x ^? biplateRef :: [HsExpr GhcTc])
@@ -929,7 +1069,11 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
         extractExprsFromCmdLStmt keyFunction path (L _ stmt) = extractExprsFromStmtLR keyFunction path stmt
 
         extractExprsFromMatchGroup :: Text -> Text -> MatchGroup GhcTc (LHsCmd GhcTc) -> IO ()
+#if __GLASGOW_HASKELL__ >= 904
+        extractExprsFromMatchGroup keyFunction path (MG _ (L _ matches)) = void $ mapM (extractExprsFromMatch keyFunction path) matches
+#else
         extractExprsFromMatchGroup keyFunction path (MG _ (L _ matches) _) = void $ mapM (extractExprsFromMatch keyFunction path) matches
+#endif
         extractExprsFromMatchGroup keyFunction path (_) = pure ()
 
         extractExprsFromMatch :: Text -> Text ->  LMatch GhcTc (LHsCmd GhcTc) -> IO ()
@@ -1041,7 +1185,11 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                 extractExprsFromLHsCmd keyFunction path cmd'
                 processExpr keyFunction path e
             HsCmdLam _ mg -> extractExprsFromMatchGroup keyFunction path mg
+#if __GLASGOW_HASKELL__ >= 904
+            HsCmdPar _ _ cmd' _ ->
+#else
             HsCmdPar _ cmd' ->
+#endif
                 extractExprsFromLHsCmd keyFunction path cmd'
             HsCmdCase _ e mg -> do
                 extractExprsFromMatchGroup keyFunction path mg
@@ -1099,7 +1247,11 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                 _ -> pure ()
             where
             extractExprsFromOverLit :: HsOverLit GhcTc -> IO ()
+#if __GLASGOW_HASKELL__ >= 904
+            extractExprsFromOverLit (OverLit (OverLitTc _ e _) _) = processExpr keyFunction path (noLoc e)
+#else
             extractExprsFromOverLit (OverLit _ _ e) = processExpr keyFunction path (noLoc e)
+#endif
             extractExprsFromOverLit _ = pure ()
 
             extractExprsFromHsConPatDetails :: Text -> Text -> HsConPatDetails GhcTc -> IO ()
@@ -1140,7 +1292,7 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
 #else
         getDataTypeDetails keyFunction path (L _ (RecordCon _ (iD) rcon_flds)) = (extractRecordBinds keyFunction path (T.pack $ nameStableString $ getName (GHC.unLoc iD)) (rcon_flds))
 #endif
-        getDataTypeDetails keyFunction path y@(L _ (RecordUpd x@(RecordUpdTc rupd_cons rupd_in_tys rupd_out_tys rupd_wrap) rupd_expr rupd_flds)) = do
+        getDataTypeDetails keyFunction path y@(L _ (RecordUpd x rupd_expr rupd_flds)) = do
             let names = (x ^? biplateRef :: [DataCon])
                 types = (x ^? biplateRef :: [Type])
             void $ mapM (\xx -> do
@@ -1153,8 +1305,16 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                 expr <- pure $ toJSON $ transformFromNameStableString (Just $ ("$_type$" <> (T.pack $ showSDocUnsafe $ ppr xx)), (Just $ T.pack $ getLocTC' $ y), (Just $ T.pack $ show $ toConstr xx), mempty)
                 sendTextData' cliOptions con path (transformPayload path keyFunction EXPR expr)
                 ) types
+#if __GLASGOW_HASKELL__ >= 904
+            (getFieldUpdates y keyFunction path (T.pack $ showSDocUnsafe $ ppr rupd_expr) (recUpdFieldsToEither rupd_flds))
+#else
             (getFieldUpdates y keyFunction path (T.pack $ showSDocUnsafe $ ppr rupd_expr) rupd_flds)
+#endif
+#if __GLASGOW_HASKELL__ >= 904
+        getDataTypeDetails keyFunction path y@(L _ (HsRecSel _ (FieldOcc id' lnrdrname))) = do
+#else
         getDataTypeDetails keyFunction path y@(L _ (HsRecFld _ (Unambiguous id' lnrdrname))) = do
+#endif
             let name = T.pack $ nameStableString $ varName id'
                 _type = T.pack $ showSDocUnsafe $ ppr $ varType id'
             expr <- pure $ toJSON $ transformFromNameStableString (Just name, Just $ T.pack $ getLocTC' $ y, Just _type, mempty)
@@ -1162,6 +1322,7 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             -- case reLocN lnrdrname of
             --     (L l rdrname) -> do
             --         print $ (handleRdrName rdrname,showSDocUnsafe $ ppr id')
+#if __GLASGOW_HASKELL__ < 904
         getDataTypeDetails keyFunction path y@(L _ (HsRecFld _ (Ambiguous   id'  lnrdrname))) = do
             let name = T.pack $ nameStableString $ varName id'
                 _type = T.pack $ showSDocUnsafe $ ppr $ varType id'
@@ -1170,13 +1331,22 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             -- case reLocN lnrdrname of
             --     (L l rdrname) -> do
             --         print $ (handleRdrName rdrname,showSDocUnsafe $ ppr id')
+#endif
+#if __GLASGOW_HASKELL__ >= 904
+        getDataTypeDetails keyFunction path (L _ y@(HsRecSel _ _)) = pure ()
+#else
         getDataTypeDetails keyFunction path (L _ y@(HsRecFld _ _)) = pure ()
+#endif
         getDataTypeDetails keyFunction path _ = pure ()
 
         -- inferFieldType :: Name -> String
         inferFieldTypeFieldOcc (L _ (FieldOcc _ (L _ rdrName))) = handleRdrName rdrName
         inferFieldTypeFieldOcc (L _ (XFieldOcc _)) = mempty--handleRdrName rdrName
+#if __GLASGOW_HASKELL__ >= 904
+        inferFieldTypeAFieldOcc = (handleRdrName . ambiguousFieldOccRdrName . unLoc)
+#else
         inferFieldTypeAFieldOcc = (handleRdrName . rdrNameAmbiguousFieldOcc . unLoc)
+#endif
 
         handleRdrName :: RdrName -> String
         handleRdrName rdrName = case rdrName of
@@ -1193,14 +1363,14 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
         --         Exact name -> nameStableString name
 
 #if __GLASGOW_HASKELL__ >= 900
-        getFieldUpdates :: GenLocated (SrcSpanAnn' a) e -> Text -> Text -> Text -> Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> IO ()
+        getFieldUpdates :: GenLocated (SrcSpanAnn' a) e -> Text -> Text -> Text -> Either [LHsRecUpdFieldTc] [LHsRecUpdProj GhcTc] -> IO ()
         getFieldUpdates _ keyFunction path type_ fields =
             case fields of
                 Left x -> void $ mapM (extractField) x
                 Right x -> (void $ mapM (processRecordProj) x)
             where
             processRecordProj :: LHsRecProj GhcTc (LHsExpr GhcTc) -> IO ()
-            processRecordProj (L _ (HsRecField { hsRecFieldAnn, hsRecFieldLbl=lbl , hsRecFieldArg=expr ,hsRecPun=pun })) = do
+            processRecordProj (L _ (PHsRecField lbl expr pun)) = do
                 let fieldName = (T.pack $ showSDocUnsafe $ ppr lbl)
                 case lbl of
                     (L _ (FieldLabelStrings ll)) -> void $ mapM (processHsFieldLabel keyFunction path) ll
@@ -1208,24 +1378,32 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                 processExpr keyFunction path expr
 
             -- extractField :: HsRecUpdField GhcTc -> IO ()
-            extractField y@(L _ (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun})) =do
+            extractField y@(L _ (PHsRecField lbl expr pun)) =do
                 let fieldName = (T.pack $ showSDocUnsafe $ ppr lbl)
                     fieldType = (T.pack $ inferFieldTypeAFieldOcc lbl)
                 processExpr keyFunction path expr
                 expr' <- pure $ toJSON $ transformFromNameStableString (Just $ ("$_fieldName$" <> fieldName), (Just $ T.pack $ getLocTC' $ y), (Just $ fieldType), mempty)
                 sendTextData' cliOptions con path (transformPayload path keyFunction EXPR expr')
 
+#if __GLASGOW_HASKELL__ >= 904
+        processHsFieldLabel :: Text -> Text -> XRec GhcTc (DotFieldOcc GhcTc) -> IO ()
+        processHsFieldLabel keyFunction path y@(L l x@(DotFieldOcc _ (L _ hflLabel))) = do
+            expr <- pure $ toJSON $ transformFromNameStableString (Just $ ("$_fieldName$" <> (T.pack $ showSDocUnsafe $ ppr hflLabel)), (Just $ T.pack $ showSDocUnsafe $ ppr $ getLocA $ y), (Just $ T.pack $ show $ toConstr x), mempty)
+            sendTextData' cliOptions con path (transformPayload path keyFunction EXPR expr)
+        processHsFieldLabel keyFunction path (L _ (XDotFieldOcc _)) = pure ()
+#else
         processHsFieldLabel :: Text -> Text -> Located (HsFieldLabel GhcTc) -> IO ()
         processHsFieldLabel keyFunction path y@(L l x@(HsFieldLabel _ (L _ hflLabel))) = do
             expr <- pure $ toJSON $ transformFromNameStableString (Just $ ("$_fieldName$" <> (T.pack $ showSDocUnsafe $ ppr hflLabel)), (Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc $ y), (Just $ T.pack $ show $ toConstr x), mempty)
             sendTextData' cliOptions con path (transformPayload path keyFunction EXPR expr)
         processHsFieldLabel keyFunction path (L _ (XHsFieldLabel _)) = pure ()
+#endif
 #else
         getFieldUpdates :: _ -> Text -> Text -> Text -> [LHsRecUpdField GhcTc]-> IO ()
         getFieldUpdates y keyFunction path type_ fields = void $ mapM extractField fields
             where
             extractField :: LHsRecUpdField GhcTc -> IO ()
-            extractField (L l x@(HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr', hsRecPun = pun})) =do
+            extractField (L l x@(PHsRecField lbl expr' pun)) =do
                 let fieldName = (T.pack $ showSDocUnsafe $ ppr lbl)
                     fieldType = (T.pack $ inferFieldTypeAFieldOcc lbl)
                 processExpr keyFunction path expr'
@@ -1238,7 +1416,7 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             void $ mapM extractField fields
             where
             extractField :: LHsRecField GhcTc (LHsExpr GhcTc) -> IO ()
-            extractField (L l x@(HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun})) = do
+            extractField (L l x@(PHsRecField lbl expr pun)) = do
                 let fieldName = (T.pack $ showSDocUnsafe $ ppr lbl)
                     fieldType = (T.pack $ inferFieldTypeFieldOcc lbl)
                 processExpr keyFunction path expr
@@ -1260,7 +1438,11 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
         extractExprsFromCmdLStmt keyFunction path (L _ stmt) = extractExprsFromStmtLR keyFunction path stmt
 
         extractExprsFromMatchGroup :: Text -> Text -> MatchGroup GhcTc (LHsCmd GhcTc) -> IO ()
+#if __GLASGOW_HASKELL__ >= 904
+        extractExprsFromMatchGroup keyFunction path (MG _ (L _ matches)) = void $ mapM (extractExprsFromMatch keyFunction path) matches
+#else
         extractExprsFromMatchGroup keyFunction path (MG _ (L _ matches) _) = void $ mapM (extractExprsFromMatch keyFunction path) matches
+#endif
 
         extractExprsFromMatch :: Text -> Text ->  LMatch GhcTc (LHsCmd GhcTc) -> IO ()
         extractExprsFromMatch keyFunction path (L _ (Match _ _ _ grhs)) = extractExprsFromGRHSs keyFunction path grhs
@@ -1365,18 +1547,30 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                 extractExprsFromLHsCmd keyFunction path cmd'
                 processExpr keyFunction path e
             HsCmdLam _ mg -> extractExprsFromMatchGroup keyFunction path mg
+#if __GLASGOW_HASKELL__ >= 904
+            HsCmdPar _ _ cmd' _ ->
+#else
             HsCmdPar _ cmd' ->
+#endif
                 extractExprsFromLHsCmd keyFunction path cmd'
             HsCmdCase _ e mg -> do
                 extractExprsFromMatchGroup keyFunction path mg
                 processExpr keyFunction path e
+#if __GLASGOW_HASKELL__ >= 904
+            HsCmdLamCase _ _ mg ->
+#else
             HsCmdLamCase _ mg ->
+#endif
                 extractExprsFromMatchGroup keyFunction path mg
             HsCmdIf _ _ predExpr thenCmd elseCmd -> do
                 extractExprsFromLHsCmd keyFunction path elseCmd
                 extractExprsFromLHsCmd keyFunction path thenCmd
                 processExpr keyFunction path predExpr
+#if __GLASGOW_HASKELL__ >= 904
+            HsCmdLet _ _ binds _ cmd' -> do
+#else
             HsCmdLet _ binds cmd' -> do
+#endif
                 processHsLocalBinds keyFunction path binds
                 extractExprsFromLHsCmd keyFunction path cmd'
             HsCmdDo _ stmts ->
@@ -1391,10 +1585,18 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                     sendTextData' cliOptions con path (transformPayload path keyFunction EXPR expr)
                 VarPat _ var    -> processExpr keyFunction path ((wrapXRec @(GhcTc)) (HsVar noExtField (var)))
                 LazyPat _ p   -> (extractExprsFromPat keyFunction path) p
+#if __GLASGOW_HASKELL__ >= 904
+                AsPat _ var _ p   -> do
+#else
                 AsPat _ var p   -> do
+#endif
                     processExpr keyFunction path ((wrapXRec @(GhcTc)) (HsVar noExtField (var)))
                     (extractExprsFromPat keyFunction path) p
+#if __GLASGOW_HASKELL__ >= 904
+                ParPat _ _ p _    -> (extractExprsFromPat keyFunction path) p
+#else
                 ParPat _ p    -> (extractExprsFromPat keyFunction path) p
+#endif
                 BangPat _ p   -> (extractExprsFromPat keyFunction path) p
                 ListPat _ ps  -> void $ mapM (extractExprsFromPat keyFunction path) ps
                 TuplePat _ ps _ -> void $ mapM (extractExprsFromPat keyFunction path) ps
@@ -1422,7 +1624,11 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
                 XPat _         -> pure ()
             where
             extractExprsFromOverLit :: HsOverLit GhcTc -> IO ()
+#if __GLASGOW_HASKELL__ >= 904
+            extractExprsFromOverLit (OverLit (OverLitTc _ e _) _) = processExpr keyFunction path $ wrapXRec @(GhcTc) e
+#else
             extractExprsFromOverLit (OverLit _ _ e) = processExpr keyFunction path $ wrapXRec @(GhcTc) e
+#endif
             extractExprsFromOverLit _ = pure ()
 
             extractExprsFromHsConPatDetails :: Text -> Text -> HsConPatDetails GhcTc -> IO ()
@@ -1447,6 +1653,11 @@ loopOverLHsBindLR cliOptions con mParentName _path (L location bind) = do
             processExpr keyFunction path (wrapXRec @(GhcTc) hsExpr)
         processXXExpr keyFunction path (ExpansionExpr (HsExpanded _ expansionExpr)) =
             void $ mapM (processExpr keyFunction path . (wrapXRec @(GhcTc))) [expansionExpr]
+#if __GLASGOW_HASKELL__ >= 904
+        -- ConLikeTc/HsTick/HsBinTick joined XXExprGhcTc in GHC 9.4; they are
+        -- already handled at the HsExpr level in processExpr, so ignore here.
+        processXXExpr _ _ _ = pure ()
+#endif
 
 getLocTC' :: GenLocated (SrcSpanAnn' a) e -> String
 getLocTC' = (showSDocUnsafe . ppr . la2r . getLoc)
@@ -1458,9 +1669,16 @@ getLocTC' = (showSDocUnsafe . ppr . getLoc)
 getLoc' = (showSDocUnsafe . ppr . getLoc)
 #endif
 
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 split HsSplice into HsUntypedSplice (expr splices / quasiquotes).
+extractExprsFromSplice :: HsUntypedSplice GhcTc -> [LHsExpr GhcTc]
+extractExprsFromSplice (HsUntypedSpliceExpr _ e) = [e]
+extractExprsFromSplice _ = []
+#else
 extractExprsFromSplice :: HsSplice GhcTc -> [LHsExpr GhcTc]
 extractExprsFromSplice (HsTypedSplice _ _ _ e) = [e]
 extractExprsFromSplice (HsUntypedSplice _ _ _ e) = [e]
 extractExprsFromSplice (HsQuasiQuote _ _ _ _ _) = []
 extractExprsFromSplice (HsSpliced _ _ _) = []
 extractExprsFromSplice _ = []
+#endif
