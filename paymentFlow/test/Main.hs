@@ -1,4 +1,5 @@
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DisambiguateRecordFields #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
@@ -18,6 +19,10 @@ import Data.Aeson as A
 import Types as PT
 import Types1 as PT1
 import Control.Lens
+-- The pinned record-dot-preprocessor rev no longer auto-injects these;
+-- RDP-generated code references them qualified.
+import qualified GHC.Records
+import qualified GHC.Records.Extra
 
 main :: IO ()
 main = putStrLn "Test suite not yet implemented."

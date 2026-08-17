@@ -1,0 +1,444 @@
+From f06be801bedafa4e46845bc6ab5e8842ec7c94e2 Mon Sep 17 00:00:00 2001
+From: Kiransai Abhishek <kiransai.abhishek@juspay.in>
+Date: Fri, 10 Jul 2026 12:00:00 +0530
+Subject: [PATCH] Add a primop to get the thread statistics
+
+Rebased from GHC 9.2.8 onto GHC 9.8.4.
+---
+ compiler/GHC/Builtin/primops.txt.pp |   6 ++
+ compiler/GHC/StgToCmm/Prim.hs       |   1 +
+ compiler/GHC/StgToJS/Prim.hs        |   1 +
+ configure.ac                        |   2 +-
+ rts/PrimOps.cmm                     |  36 +++++++
+ rts/RtsSymbols.c                    |   1 +
+ rts/Schedule.c                      | 139 ++++++++++++++++++++++++++++
+ rts/Schedule.h                      |   8 ++
+ rts/Threads.c                       |   5 +
+ rts/include/rts/storage/TSO.h       |   8 ++
+ rts/include/stg/MiscClosures.h      |   1 +
+ rts/sm/Storage.c                    |  24 +++++
+ rts/sm/Storage.h                    |   3 +
+ utils/deriveConstants/Main.hs       |   6 ++
+ 14 files changed, 240 insertions(+), 1 deletion(-)
+
+diff --git a/compiler/GHC/Builtin/primops.txt.pp b/compiler/GHC/Builtin/primops.txt.pp
+index 0838116..5a10c66 100644
+--- a/compiler/GHC/Builtin/primops.txt.pp
++++ b/compiler/GHC/Builtin/primops.txt.pp
+@@ -3219,6 +3219,12 @@ primop  ThreadStatusOp "threadStatus#" GenPrimOp
+    out_of_line = True
+    has_side_effects = True
+ 
++primop  ThreadCPUTimeOp "threadCPUTime#" GenPrimOp
++   State# RealWorld -> (# State# RealWorld, Int64#, Int64#, Int32#, Int32# #)
++   with
++   out_of_line = True
++   has_side_effects = True
++
+ primop ListThreadsOp "listThreads#" GenPrimOp
+    State# RealWorld -> (# State# RealWorld, Array# ThreadId# #)
+    { Returns an array of the threads started by the program. Note that this
+diff --git a/compiler/GHC/StgToCmm/Prim.hs b/compiler/GHC/StgToCmm/Prim.hs
+index edf5abf..a54d8d8 100644
+--- a/compiler/GHC/StgToCmm/Prim.hs
++++ b/compiler/GHC/StgToCmm/Prim.hs
+@@ -1615,6 +1615,7 @@ emitPrimOp cfg primop =
+   NoDuplicateOp -> alwaysExternal
+   GetThreadLabelOp -> alwaysExternal
+   ThreadStatusOp -> alwaysExternal
++  ThreadCPUTimeOp -> alwaysExternal
+   MkWeakOp -> alwaysExternal
+   MkWeakNoFinalizerOp -> alwaysExternal
+   AddCFinalizerToWeakOp -> alwaysExternal
+diff --git a/compiler/GHC/StgToJS/Prim.hs b/compiler/GHC/StgToJS/Prim.hs
+index 77ba4cf..119c2d4 100644
+--- a/compiler/GHC/StgToJS/Prim.hs
++++ b/compiler/GHC/StgToJS/Prim.hs
+@@ -878,6 +878,7 @@ genPrim prof bound ty op = case op of
+   IsCurrentThreadBoundOp -> \[r] []        -> PrimInline $ r |= one_
+   NoDuplicateOp          -> \[] []         -> PrimInline mempty -- don't need to do anything as long as we have eager blackholing
+   ThreadStatusOp         -> \[stat,cap,locked] [tid] -> PrimInline $ appT [stat, cap, locked] "h$threadStatus" [tid]
++  ThreadCPUTimeOp        -> unhandledPrimop op
+   ListThreadsOp          -> \[r] [] -> PrimInline $ appT [r] "h$listThreads" []
+   GetThreadLabelOp       -> \[r1, r2] [t]  -> PrimInline $ appT [r1, r2] "h$getThreadLabel" [t]
+   LabelThreadOp          -> \[] [t,l]      -> PrimInline $ t .^ "label" |= l
+diff --git a/configure.ac b/configure.ac
+index 9c7faba..af8b806 100644
+--- a/configure.ac
++++ b/configure.ac
+@@ -22,7 +22,7 @@ AC_INIT([The Glorious Glasgow Haskell Compilation System], [9.8.4], [glasgow-has
+ AC_CONFIG_MACRO_DIRS([m4])
+ 
+ # Set this to YES for a released version, otherwise NO
+-: ${RELEASE=YES}
++: ${RELEASE=NO}
+ 
+ # The primary version (e.g. 7.5, 7.4.1) is set in the AC_INIT line
+ # above.  If this is not a released version, then we will append the
+diff --git a/rts/PrimOps.cmm b/rts/PrimOps.cmm
+index baa6487..817f748 100644
+--- a/rts/PrimOps.cmm
++++ b/rts/PrimOps.cmm
+@@ -1202,6 +1202,42 @@ stg_threadStatuszh ( gcptr tso )
+     return (ret,cap,locked);
+ }
+ 
++stg_threadCPUTimezh (/* no args */)
++{
++    // I64 sec, nsec;
++    I64 sec_res, nsec_res;
++    I32 count_thread_sched_out, cur_allocated_res;
++    W_ tmp, sec_ptr, nsec_ptr, cur_allocated_ptr;
++
++    // sec   = StgTSO_cur_sec(CurrentTSO);
++    // nsec  = StgTSO_cur_nsec(CurrentTSO);
++
++    // Use the deriveConstants-generated accessor instead of a hardcoded
++    // struct offset, so this stays correct across GHC/TSO layout changes.
++    count_thread_sched_out = StgTSO_count_thread_sched_out(CurrentTSO);
++
++    //ccall traceThreadCPUTime(sec, nsec, SIZEOF_StgHeader+OFFSET_StgTSO_cur_nsec, SIZEOF_StgHeader);
++
++    STK_CHK_GEN_N (20);
++    reserve 20 = tmp {
++        sec_ptr = tmp;
++        nsec_ptr = tmp + 8;
++        cur_allocated_ptr = tmp + 16;
++
++        // Need to close the nursery to update the rCurrentNursery->free so that we
++        // can use it to get the accurate allocation count.
++        CLOSE_NURSERY();
++        ccall updateThreadCPUTimePostPrim(MyCapability(), CurrentTSO "ptr", sec_ptr "ptr", nsec_ptr "ptr", cur_allocated_ptr "ptr");
++        OPEN_NURSERY();
++
++        sec_res = I64[sec_ptr];
++        nsec_res = I64[nsec_ptr];
++        cur_allocated_res = I32[cur_allocated_ptr];
++    }
++
++    return (sec_res, nsec_res, cur_allocated_res, count_thread_sched_out);
++}
++
+ /* -----------------------------------------------------------------------------
+  * TVar primitives
+  * -------------------------------------------------------------------------- */
+diff --git a/rts/RtsSymbols.c b/rts/RtsSymbols.c
+index 92d10a6..1ad8549 100644
+--- a/rts/RtsSymbols.c
++++ b/rts/RtsSymbols.c
+@@ -876,6 +876,7 @@ extern char **environ;
+       SymI_HasDataProto(stg_takeMVarzh)                                     \
+       SymI_HasDataProto(stg_readMVarzh)                                     \
+       SymI_HasDataProto(stg_threadStatuszh)                                 \
++      SymI_HasDataProto(stg_threadCPUTimezh)                                \
+       SymI_HasDataProto(stg_tryPutMVarzh)                                   \
+       SymI_HasDataProto(stg_tryTakeMVarzh)                                  \
+       SymI_HasDataProto(stg_tryReadMVarzh)                                  \
+diff --git a/rts/Schedule.c b/rts/Schedule.c
+index 8f12429..27383f6 100644
+--- a/rts/Schedule.c
++++ b/rts/Schedule.c
+@@ -183,6 +183,137 @@ static void deleteThread_(StgTSO *tso);
+ 
+    ------------------------------------------------------------------------ */
+ 
++#define TEN_POWER9 1000000000
++
++static void updateThreadCPUTimePre (Capability *cap, StgTSO *t)
++{
++/*
++    fprintf (stderr, "PRE.0: \
++tid = %d, \
++t->cur_sec = %ld, \
++t->cur_nsec = %ld, \
++t->cur_allocated = %d\n", t->id, t->cur_sec, t->cur_nsec, t->cur_allocated);
++*/
++    struct timespec ts;
++    int retval;
++    retval = clock_gettime (CLOCK_THREAD_CPUTIME_ID, &ts);
++    if (retval != 0) {
++        fprintf (stderr, "clock_gettime before failed");
++    } else {
++        if (t->cur_sec < 0 || t->cur_nsec < 0) {
++            fprintf (stderr, "ON ENTRY ERROR: \
++tid = %d, \
++t->cur_sec = %ld \
++t->cur_nsec = %ld \
++t->cur_allocated = %d\n", t->id, t->cur_sec, t->cur_nsec, t->cur_allocated);
++        }
++        t->cur_sec -= ts.tv_sec;
++        t->cur_nsec -= ts.tv_nsec;
++
++        // nsec offset is 128
++        //fprintf (stderr, "tso nsec offset: %ld", (char *)(&t->cur_nsec) - (char *)t);
++        //exit (1);
++        // nsec sizeof = 8
++        //fprintf (stderr, "tso nsec size: %d", sizeof(t->cur_nsec));
++    };
++
++    t->cur_allocated -= getCurrentAllocated (cap);
++/*
++    fprintf (stderr, "PRE.-: \
++tid = %d, \
++t->cur_sec = %ld, \
++t->cur_nsec = %ld, \
++t->cur_allocated = %d\n",
++             t->id,
++             ts.tv_sec,
++             ts.tv_nsec,
++             getCurrentAllocated (cap));
++
++    fprintf (stderr, "PRE.1: \
++tid = %d, \
++t->cur_sec = %ld, \
++t->cur_nsec = %ld, \
++t->cur_allocated = %d\n", t->id, t->cur_sec, t->cur_nsec, t->cur_allocated);
++*/
++}
++
++// This is also used in the PrimOps as a foreign call
++void updateThreadCPUTimePostPrim
++    (Capability *cap,
++     StgTSO *t,
++     StgInt64 *cur_sec_res,
++     StgInt64 *cur_nsec_res,
++     StgInt32 *cur_allocated_res)
++{
++/*
++    fprintf (stderr, "POST.0: \
++tid = %d, \
++t->cur_sec = %ld, \
++t->cur_nsec = %ld, \
++t->cur_allocated = %d\n", t->id, t->cur_sec, t->cur_nsec, t->cur_allocated);
++*/
++    *cur_allocated_res = t->cur_allocated + getCurrentAllocated (cap);
++    // fprintf (stderr, "POST: %d\n", t->cur_allocated);
++
++    struct timespec ts;
++    int retval;
++    retval = clock_gettime (CLOCK_THREAD_CPUTIME_ID, &ts);
++    if (retval != 0) {
++        fprintf (stderr, "clock_gettime after failed");
++    } else {
++        //fprintf (stderr, "sec = %ld nsec = %ld\n", ts.tv_sec, ts.tv_nsec);
++        *cur_sec_res = t->cur_sec + ts.tv_sec;
++        *cur_nsec_res = t->cur_nsec + ts.tv_nsec;
++        if (*cur_nsec_res < 0) {
++            *cur_nsec_res += TEN_POWER9;
++            *cur_sec_res -= 1;
++        } else if (*cur_nsec_res >= TEN_POWER9) {
++            *cur_nsec_res -= TEN_POWER9;
++            *cur_sec_res += 1;
++        }
++        // fprintf (stderr, "AFTER DONE: tid = %d, t->cur_sec = %ld t->cur_nsec = %ld\n", t->id, t->cur_sec, t->cur_nsec);
++        if (*cur_sec_res < 0 || *cur_nsec_res < 0) {
++            fprintf (stderr, "ON EXIT ERROR PRIM: \
++tid = %d, \
++t->cur_sec = %ld \
++t->cur_nsec = %ld \
++t->cur_allocated = %d\n",
++             t->id,
++             *cur_sec_res,
++             *cur_nsec_res,
++             *cur_allocated_res);
++        }
++        //fprintf (stderr, "acc sec = %ld acc nsec = %ld\n", t->cur_sec, t->cur_nsec);
++    }
++/*
++    fprintf (stderr, "POST.+: \
++tid = %d, \
++t->cur_sec = %ld, \
++t->cur_nsec = %ld, \
++t->cur_allocated = %d\n",
++             t->id,
++             ts.tv_sec,
++             ts.tv_nsec,
++             getCurrentAllocated (cap));
++
++    fprintf (stderr, "POST.1: \
++tid = %d, \
++t->cur_sec = %ld, \
++t->cur_nsec = %ld, \
++t->cur_allocated = %d\n",
++             t->id,
++             *cur_sec_res,
++             *cur_nsec_res,
++             *cur_allocated_res);
++             */
++}
++
++static void updateThreadCPUTimePost (Capability *cap, StgTSO *t)
++{
++    updateThreadCPUTimePostPrim(cap, t, &t->cur_sec, &t->cur_nsec, &t->cur_allocated);
++    t->count_thread_sched_out += 1;
++}
++
+ static Capability *
+ schedule (Capability *initialCapability, Task *task)
+ {
+@@ -477,8 +608,13 @@ run_thread:
+     case ThreadRunGHC:
+     {
+         StgRegTable *r;
++
++        updateThreadCPUTimePre (cap, t);
+         r = StgRun((StgFunPtr) stg_returnToStackTop, &cap->r);
+         cap = regTableToCapability(r);
++        t = cap->r.rCurrentTSO;
++        updateThreadCPUTimePost (cap, t);
++
+         ret = r->rRet;
+         break;
+     }
+@@ -2492,6 +2628,7 @@ suspendThread (StgRegTable *reg, bool interruptible)
+   task = cap->running_task;
+   tso = cap->r.rCurrentTSO;
+ 
++  updateThreadCPUTimePost (cap, tso);
+   traceEventStopThread(cap, tso, THREAD_SUSPENDED_FOREIGN_CALL, 0);
+ 
+   // XXX this might not be necessary --SDM
+@@ -2591,6 +2728,8 @@ resumeThread (void *task_)
+ 
+     IF_DEBUG(sanity, checkTSO(tso));
+ 
++    updateThreadCPUTimePre (cap, tso);
++
+     return &cap->r;
+ }
+ 
+diff --git a/rts/Schedule.h b/rts/Schedule.h
+index e4f17af..f13ba82 100644
+--- a/rts/Schedule.h
++++ b/rts/Schedule.h
+@@ -23,6 +23,14 @@ void initScheduler (void);
+ void exitScheduler (bool wait_foreign);
+ void freeScheduler (void);
+ 
++// Primitive operation used to update the threadCPUTime prim-op
++void updateThreadCPUTimePostPrim
++    (Capability *cap,
++     StgTSO *t,
++     StgInt64 *cur_sec_res,
++     StgInt64 *cur_nsec_res,
++     StgInt32 *cur_allocated_res);
++
+ // Place a new thread on the run queue of the current Capability
+ void scheduleThread (Capability *cap, StgTSO *tso);
+ 
+diff --git a/rts/Threads.c b/rts/Threads.c
+index 46a70a1..7a7e992 100644
+--- a/rts/Threads.c
++++ b/rts/Threads.c
+@@ -118,6 +118,11 @@ createThread(Capability *cap, W_ size)
+     tso->prof.cccs = CCS_MAIN;
+ #endif
+ 
++    tso->cur_sec = 0;
++    tso->cur_nsec = 0;
++    tso->count_thread_sched_out = 0;
++    tso->cur_allocated = 0;
++
+     // put a stop frame on the stack
+     stack->sp -= sizeofW(StgStopFrame);
+     SET_HDR((StgClosure*)stack->sp,
+diff --git a/rts/include/rts/storage/TSO.h b/rts/include/rts/storage/TSO.h
+index 4ca1985..d0a1a45 100644
+--- a/rts/include/rts/storage/TSO.h
++++ b/rts/include/rts/storage/TSO.h
+@@ -188,6 +188,14 @@ typedef struct StgTSO_ {
+     StgWord32 saved_winerror;
+ #endif
+ 
++    // Can this go in the thread cost centre stack or a similar data structure
++    // for perf stats? We can enable the use of this using an RTS option.
++    // See compiler/profiling/CostCentre.hs
++    StgInt64 cur_sec;
++    StgInt64 cur_nsec;
++    StgInt32 count_thread_sched_out;
++    StgInt32 cur_allocated;
++
+ } *StgTSOPtr; // StgTSO defined in rts/Types.h
+ 
+ /* Note [StgStack dirtiness flags and concurrent marking]
+diff --git a/rts/include/stg/MiscClosures.h b/rts/include/stg/MiscClosures.h
+index 9d52d4b..4905775 100644
+--- a/rts/include/stg/MiscClosures.h
++++ b/rts/include/stg/MiscClosures.h
+@@ -549,6 +549,7 @@ RTS_FUN_DECL(stg_labelThreadzh);
+ RTS_FUN_DECL(stg_isCurrentThreadBoundzh);
+ RTS_FUN_DECL(stg_threadLabelzh);
+ RTS_FUN_DECL(stg_threadStatuszh);
++RTS_FUN_DECL(stg_threadCPUTimezh);
+ RTS_FUN_DECL(stg_listThreadszh);
+ 
+ RTS_FUN_DECL(stg_mkWeakzh);
+diff --git a/rts/sm/Storage.c b/rts/sm/Storage.c
+index 424ab84..8d9a571 100644
+--- a/rts/sm/Storage.c
++++ b/rts/sm/Storage.c
+@@ -1610,6 +1610,30 @@ calcTotalAllocated (void)
+     return tot_alloc;
+ }
+ 
++StgWord64
++getCurrentAllocated (Capability *cap)
++{
++    bdescr *bd;
++    StgWord64 allocated;
++
++    allocated = cap->total_allocated;
++
++    // Add unfinished nursery blocks
++    bd = cap->r.rCurrentNursery;
++    if (bd) {
++      allocated += bd->free - bd->start;
++    }
++    bd = cap->r.rCurrentAlloc;
++    if (bd) {
++      allocated += bd->free - bd->start;
++    }
++    bd = cap->pinned_object_block;
++    if (bd) {
++      allocated += bd->free - bd->start;
++    }
++    return allocated;
++}
++
+ //
+ // Update the per-cap total_allocated numbers with an approximation of
+ // the amount of memory used in each cap's nursery.
+diff --git a/rts/sm/Storage.h b/rts/sm/Storage.h
+index e911d19..f28e0c9 100644
+--- a/rts/sm/Storage.h
++++ b/rts/sm/Storage.h
+@@ -100,6 +100,9 @@ INLINE_HEADER void newNurseryBlock (bdescr *bd) {
+ void     updateNurseriesStats (void);
+ uint64_t calcTotalAllocated   (void);
+ 
++StgWord64
++getCurrentAllocated (Capability *cap);
++
+ /* -----------------------------------------------------------------------------
+    Stats 'n' DEBUG stuff
+    -------------------------------------------------------------------------- */
+diff --git a/utils/deriveConstants/Main.hs b/utils/deriveConstants/Main.hs
+index d037199..053d7ea 100644
+--- a/utils/deriveConstants/Main.hs
++++ b/utils/deriveConstants/Main.hs
+@@ -471,6 +471,12 @@ wanteds os = concat
+           ,closureField_ Both "StgTSO_cccs" "StgTSO" "prof.cccs"
+           ,closureField  Both "StgTSO"      "stackobj"
+ 
++          -- XXX These fields might not be required for our use case
++          ,closureField  C "StgTSO"      "cur_sec"
++          ,closureField  C "StgTSO"      "cur_nsec"
++          ,closureField  C "StgTSO"      "count_thread_sched_out"
++          ,closureField  C "StgTSO"      "cur_allocated"
++
+           ,closureField       Both "StgStack" "sp"
+           ,closureFieldOffset Both "StgStack" "stack"
+           ,closureField       C    "StgStack" "stack_size"
+-- 
+2.51.2
+
