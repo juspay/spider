@@ -41,6 +41,9 @@ import GHC.Tc.Module
 import GHC.Tc.Types
 import GHC.Tc.Utils.TcType
 import Language.Haskell.GHC.ExactPrint (ExactPrint)
+#if __GLASGOW_HASKELL__ >= 906
+import GHC.Types.Var (isInvisibleFunArg)
+#endif
 #else
 import ConLike
 import DsMonad
@@ -60,6 +63,16 @@ import TyCoRep
   These are the common utility functions which can be used for building any plugin of any sort
   Mainly it has generic functions for all - parse, rename and typecheck plugin.
 -}
+
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 changed `initDsTc :: DsM a -> TcM (Messages DsMessage, Maybe a)`
+-- (previously it returned the desugared result directly). For a typechecked
+-- expression desugaring always succeeds, so unwrap the `Maybe` to keep the
+-- original behaviour of yielding the core expression.
+unwrapDsResult :: (msgs, Maybe a) -> a
+unwrapDsResult (_, Just x)  = x
+unwrapDsResult (_, Nothing) = error "Sheriff: desugaring produced no core expression"
+#endif
 
 -- Debug Show any haskell internal representation type
 showS :: (Outputable a) => a -> String
@@ -216,6 +229,10 @@ getLitType (HsFloatPrim _ _) = [floatTy]
 getLitType (HsDoublePrim _ _) = [doubleTy]
 #if __GLASGOW_HASKELL__ < 900
 getLitType _ = []
+#elif __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4+ added sized primitive literals (HsInt8Prim/HsWord8Prim/…); they are
+-- not types we introspect, so fall through to the empty result as before.
+getLitType _ = []
 #endif
 
 -- Check if 1st array has any element in 2nd array
@@ -305,7 +322,11 @@ traverseConditionalUni p (x : xs) =
 -- Get type for a LHsExpr GhcTc
 getHsExprType :: Bool -> LHsExpr GhcTc -> TcM Type
 getHsExprType logTypeDebugging expr = do
+#if __GLASGOW_HASKELL__ >= 904
+  coreExpr <- unwrapDsResult <$> (initDsTc $ dsLExpr expr)
+#else
   coreExpr <- initDsTc $ dsLExpr expr
+#endif
   let typ = exprType coreExpr
   when logTypeDebugging $ liftIO . print $ "DebugType = " <> (debugPrintType typ)
   pure typ
@@ -323,7 +344,14 @@ getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg typ = case ty
   TyConApp tycon tys -> [NestedTy $ [TextTy $ getNameWithModuleName (tyConName tycon)] <> (concat $ fmap (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg) tys)]
   AppTy ty1 ty2 -> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty1 <> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2
   ForAllTy _ ty -> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty
-  PatFunTy anonArgFlag ty1 ty2 -> bool (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty1 <> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2) (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2) (ignoreConstraintArg && anonArgFlag == InvisArg)
+  PatFunTy anonArgFlag ty1 ty2 ->
+    let isInvis =
+#if __GLASGOW_HASKELL__ >= 906
+          isInvisibleFunArg anonArgFlag
+#else
+          anonArgFlag == InvisArg
+#endif
+    in bool (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty1 <> getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2) (getHsExprTypeAsTypeDataListWithConstraintCheck ignoreConstraintArg ty2) (ignoreConstraintArg && isInvis)
   _ -> []
 
 -- Get Qualified Types as List Ignoring constraint checks
@@ -387,7 +415,11 @@ getHsExprTypeGeneric logTypeDebugging expr = case ghcPass @p of
       pure (Just typ)
     GhcTc -> do
       e <- getEnv
+#if __GLASGOW_HASKELL__ >= 904
+      typ <- liftIO $ runIOEnv e $ (exprType . unwrapDsResult) <$> initDsTc (dsLExpr expr)
+#else
       typ <- liftIO $ runIOEnv e $ exprType <$> initDsTc (dsLExpr expr)
+#endif
       when logTypeDebugging $ liftIO . print $ "DebugType = " <> (debugPrintType typ)
       pure (Just typ)
 
@@ -405,8 +437,13 @@ trfPatToSimpleTcExpr :: Pat GhcTc -> SimpleTcExpr
 trfPatToSimpleTcExpr pat = case pat of
   VarPat _ (L _ var)           -> SimpleVar var
   LazyPat _ (L _ lPat)         -> trfPatToSimpleTcExpr lPat
+#if __GLASGOW_HASKELL__ >= 904
+  AsPat _ (L _ var) _ (L _ sPat) -> SimpleAliasPat (SimpleVar var) (trfPatToSimpleTcExpr sPat)
+  ParPat _ _ (L _ sPat) _      -> trfPatToSimpleTcExpr sPat
+#else
   AsPat _ (L _ var) (L _ sPat) -> SimpleAliasPat (SimpleVar var) (trfPatToSimpleTcExpr sPat)
   ParPat _ (L _ sPat)          -> trfPatToSimpleTcExpr sPat
+#endif
   BangPat _ (L _ sPat)         -> trfPatToSimpleTcExpr sPat
   SigPat _ (L _ sPat) _        -> trfPatToSimpleTcExpr sPat
   ListPat _ lPatList           -> SimpleList (fmap (trfPatToSimpleTcExpr . unLoc) lPatList)
@@ -428,8 +465,8 @@ trfLHsExprToSimpleTcExpr (L loc hsExpr) = case hsExpr of
   HsVar _ (L _ var)            -> SimpleVar var
   HsConLikeOut _ cl            -> SimpleDataCon (conLikeWrapId cl) []
   HsLit _ lit                  -> SimpleLit lit
-  HsPar _ expr                 -> trfLHsExprToSimpleTcExpr expr
-  HsAppType _ expr _           -> trfLHsExprToSimpleTcExpr expr
+  PatHsPar expr                -> trfLHsExprToSimpleTcExpr expr
+  PatHsAppType expr _          -> trfLHsExprToSimpleTcExpr expr
   PatHsWrap _ expr             -> trfLHsExprToSimpleTcExpr (L loc expr)
   ExplicitTuple _ ls _         -> SimpleTuple (fmap trfTupleArg ls)
   PatExplicitList _ ls         -> SimpleList (fmap trfLHsExprToSimpleTcExpr ls)

@@ -26,6 +26,7 @@ import GHC.Types.Name hiding (varName)
 import GHC.Types.Var
 import qualified Data.Aeson.KeyMap as HM
 import GHC.Core.Opt.Monad
+import GHC.Core.Opt.Pipeline.Types (CoreToDo(..))
 import GHC.Core
 import GHC.Unit.Module.ModGuts
 import GHC.Types.Name.Reader
@@ -314,7 +315,7 @@ getAllTypeManipulations binds = do
 
     -- inferFieldType :: Name -> String
     inferFieldTypeFieldOcc (L _ (FieldOcc _ (L _ rdrName))) = handleRdrName rdrName
-    inferFieldTypeAFieldOcc = (handleRdrName . rdrNameAmbiguousFieldOcc . unLoc)
+    inferFieldTypeAFieldOcc = (handleRdrName . ambiguousFieldOccRdrName . unLoc)
 
     handleRdrName :: RdrName -> String
     handleRdrName x =
@@ -325,14 +326,17 @@ getAllTypeManipulations binds = do
             Exact name -> nameStableString name
 
 #if __GLASGOW_HASKELL__ >= 900
-    getFieldUpdates :: Either [LHsRecUpdField GhcTc] [LHsRecUpdProj GhcTc] -> Either [FieldRep] [Text]
-    getFieldUpdates fields = 
+    -- GHC 9.8 replaced `rupd_flds :: Either [LHsRecUpdField] [LHsRecUpdProj]`
+    -- with the `LHsRecUpdFields` GADT (RegularRecUpdFields | OverloadedRecUpdFields);
+    -- the two constructors map 1:1 onto the old Left/Right, so behavior is preserved.
+    getFieldUpdates :: LHsRecUpdFields GhcTc -> Either [FieldRep] [Text]
+    getFieldUpdates fields =
         case fields of
-           Left x -> (Left . map (extractField . unLoc)) x 
-           Right x -> (Right . map (T.pack . showSDocUnsafe . ppr)) x
+           RegularRecUpdFields{recUpdFields = x} -> (Left . map (extractField . unLoc)) x
+           OverloadedRecUpdFields{olRecUpdFields = x} -> (Right . map (T.pack . showSDocUnsafe . ppr)) x
       where
-        extractField :: HsRecUpdField GhcTc -> FieldRep
-        extractField (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun}) =
+        extractField :: HsRecUpdField GhcTc GhcTc -> FieldRep
+        extractField (HsFieldBind{hfbLHS = lbl, hfbRHS = expr, hfbPun = pun}) =
             if pun
                 then (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ inferFieldTypeAFieldOcc lbl))
                 else (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr (unLoc expr)) (T.pack $ inferFieldTypeAFieldOcc lbl))
@@ -352,20 +356,20 @@ getAllTypeManipulations binds = do
         Left $ map extractField fields
       where
         extractField :: LHsRecField GhcTc (LHsExpr GhcTc) -> FieldRep
-        extractField (L _ (HsRecField{hsRecFieldLbl = lbl, hsRecFieldArg = expr, hsRecPun = pun})) =
+        extractField (L _ (HsFieldBind{hfbLHS = lbl, hfbRHS = expr, hfbPun = pun})) =
             if pun
                 then (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ inferFieldTypeFieldOcc lbl))
                 else (FieldRep (T.pack $ showSDocUnsafe $ ppr lbl) (T.pack $ showSDocUnsafe $ ppr $ unLoc expr) (T.pack $ inferFieldTypeFieldOcc lbl))
 
     getFunctionName :: LHsBindLR GhcTc GhcTc -> [Text]
 #if __GLASGOW_HASKELL__ >= 900
-    getFunctionName (L _ x@(FunBind fun_ext id matches _)) = [T.pack $ nameStableString $ getName id]
+    getFunctionName (L _ x@(FunBind fun_ext id matches)) = [T.pack $ nameStableString $ getName id]
 #else
     getFunctionName (L _ x@(FunBind fun_ext id matches _ _)) = [T.pack $ nameStableString $ getName id]
 #endif
     getFunctionName (L _ (VarBind{var_id = var, var_rhs = expr})) = [T.pack $ nameStableString $ getName var]
     getFunctionName (L _ (PatBind{pat_lhs = pat, pat_rhs = expr})) = [""]
-    getFunctionName (L _ (AbsBinds{abs_binds = binds})) = Prelude.concatMap getFunctionName $ bagToList binds
+    getFunctionName (L _ (XHsBindsLR (AbsBinds{abs_binds = binds}))) = Prelude.concatMap getFunctionName $ bagToList binds
 
 processPat :: LPat GhcTc -> [(Name, Maybe Text)]
 processPat (L _ pat) = case pat of
@@ -375,7 +379,7 @@ processPat (L _ pat) = case pat of
     ConPatIn _ details -> processDetails details
 #endif
     VarPat _ x@(L _ var) -> [(varName var, Just $ T.pack $ showSDocUnsafe $ ppr $ getLoc $ x)]
-    ParPat _ pat' -> processPat pat'
+    ParPat _ _ pat' _ -> processPat pat'
     _ -> []
 
 processDetails :: HsConPatDetails GhcTc -> [(Name, Maybe Text)]
@@ -388,7 +392,7 @@ processDetails (InfixCon arg1 arg2) = processPat arg1 <> processPat arg2
 processDetails (RecCon rec) = Prelude.concatMap processPatField (rec_flds rec)
 
 processPatField :: LHsRecField GhcTc (LPat GhcTc) -> [(Name, Maybe Text)]
-processPatField (L _ HsRecField{hsRecFieldArg = arg}) = processPat arg
+processPatField (L _ HsFieldBind{hfbRHS = arg}) = processPat arg
 
 #if __GLASGOW_HASKELL__ >= 900
 getFilePath :: SrcSpan -> String

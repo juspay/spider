@@ -66,4 +66,9 @@ data VoilationRuleResult = VoilationRuleResult
   , srcSpan :: SrcSpan
   , rule    :: Rule
   , coreFnName :: String
+  -- | Span of the binding the violation was found in. Used as a fallback when
+  -- 'srcSpan' is not a real source span: on GHC >= 9.4 a record-dot access
+  -- @r.f@ elaborates to a @getField \@"f" r@ carrying noSrcSpan, so without
+  -- this every dot access in a module reports at @<generated>@.
+  , coreFnSpan :: SrcSpan
   } deriving (Show, Eq)

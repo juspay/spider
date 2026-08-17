@@ -16,9 +16,12 @@ import GHC.Utils.Outputable ()
 import qualified Data.IntMap.Internal as IntMap
 import GHC
 import GHC.Unit.Types
-import GHC.Driver.Plugins (Plugin(..),CommandLineOption,defaultPlugin,PluginRecompile(..))
+import GHC.Driver.Plugins (Plugin(..),CommandLineOption,defaultPlugin,PluginRecompile(..),ParsedResult(..))
+import qualified Data.Foldable as DF
+import Language.Haskell.Syntax.Basic (field_label)
 import GHC.Driver.Env
 import GHC.Tc.Types
+import GHC.Types.Unique.FM (plusUFM)
 import GHC.Unit.Module.ModSummary
 import GHC.Utils.Outputable (showSDocUnsafe,ppr,SDoc,Outputable)
 import GHC.Data.Bag (bagToList)
@@ -88,9 +91,15 @@ import System.Directory (createDirectoryIfMissing, removeFile)
 import System.Directory.Internal.Prelude hiding (mapM, mapM_,log)
 import Prelude hiding (id, mapM_,log)
 import Control.Exception (evaluate)
+-- Only imported to compose the LR plugins under ENABLE_LR_PLUGINS. Importing them
+-- unconditionally pulls large-anon's orphan `Outputable (GenLocated l e)` instance,
+-- which overlaps GHC 9.8's AST instance and breaks all `ppr` here. RecordDotPreprocessor
+-- (composed unconditionally below) is a separate package that does not pull large-anon.
+#if defined(ENABLE_LR_PLUGINS)
 import qualified Data.Record.Plugin as DRP
 import qualified Data.Record.Anon.Plugin as DRAP
 import qualified Data.Record.Plugin.HasFieldPattern as DRPH
+#endif
 import qualified RecordDotPreprocessor as RDP
 import qualified ApiContract.Plugin as ApiContract
 -- import qualified Fdep.Plugin as Fdep
@@ -140,22 +149,26 @@ instance Semigroup Plugin where
           (Nothing, Nothing) -> Nothing
           (Just tp, Nothing) -> Just tp
           (Nothing, Just tq) -> Just tq
-          (Just (TcPlugin tcPluginInit1 tcPluginSolve1 tcPluginStop1), Just (TcPlugin tcPluginInit2 tcPluginSolve2 tcPluginStop2)) -> Just $ TcPlugin 
+          (Just (TcPlugin tcPluginInit1 tcPluginSolve1 tcPluginRewrite1 tcPluginStop1), Just (TcPlugin tcPluginInit2 tcPluginSolve2 tcPluginRewrite2 tcPluginStop2)) -> Just $ TcPlugin
             { tcPluginInit = do
                 ip <- tcPluginInit1
                 iq <- tcPluginInit2
                 return (ip, iq)
-            , tcPluginSolve = \(sp,sq) given derived wanted -> do
-                solveP <- tcPluginSolve1 sp given derived wanted
-                solveQ <- tcPluginSolve2 sq given derived wanted
+            -- GHC 9.4+: tcPluginSolve dropped the `derived` list and gained an
+            -- EvBindsVar; tcPluginRewrite is a new field. Union the two plugins'
+            -- rewriter maps (left-biased on TyCon clashes) — behavior-preserving.
+            , tcPluginSolve = \(sp,sq) evBindsVar given wanted -> do
+                solveP <- tcPluginSolve1 sp evBindsVar given wanted
+                solveQ <- tcPluginSolve2 sq evBindsVar given wanted
                 return $ combineTcPluginResults solveP solveQ
+            , tcPluginRewrite = \(sp,sq) -> plusUFM (tcPluginRewrite1 sp) (tcPluginRewrite2 sq)
             , tcPluginStop = \(solveP,solveQ) -> do
                 tcPluginStop1 solveP
                 tcPluginStop2 solveQ
             }
     }
 
-combineTcPluginResults :: TcPluginResult -> TcPluginResult -> TcPluginResult
+combineTcPluginResults :: TcPluginSolveResult -> TcPluginSolveResult -> TcPluginSolveResult
 combineTcPluginResults resP resQ =
   case (resP, resQ) of
     (TcPluginContradiction ctsP, TcPluginContradiction ctsQ) ->
@@ -183,8 +196,11 @@ pprDataCon = ppr
 defaultCliOptions :: CliOptions
 defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False,api_conteact=Just True}
 
-collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
-collectTypeInfoParser opts modSummary hpm = do
+-- GHC 9.4 changed parsedResultAction to take/return `ParsedResult` (wrapping the
+-- HsParsedModule + parse messages); unwrap it for analysis and return it unchanged.
+collectTypeInfoParser :: [CommandLineOption] -> ModSummary -> ParsedResult -> Hsc ParsedResult
+collectTypeInfoParser opts modSummary parsedResult = do
+    let hpm = parsedResultModule parsedResult
     _ <- liftIO $ forkIO $
             do
                 let cliOptions = case opts of
@@ -201,7 +217,7 @@ collectTypeInfoParser opts modSummary hpm = do
                 types <- mapM (pure . getTypeInfo moduleName') (hsmodDecls hm_module)
                 -- DBS.writeFile (modulePath <> ".type.parser.json") (toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
                 sendViaUnixSocket (path cliOptions) (T.pack $ "/" <> modulePath <> ".types.parser.json") (decodeUtf8 $ toStrict $ A.encode $ Map.fromList $ Prelude.concat types)
-    pure hpm
+    pure parsedResult
 
 collectTypesTC :: [CommandLineOption] -> ModSummary -> TcGblEnv -> TcM TcGblEnv
 collectTypesTC opts modSummary tcg = do
@@ -229,7 +245,7 @@ getTypeInfo modName (L _ decl) = case decl of
         [(showSDocUnsafe' lname, TypeInfo
             { name = showSDocUnsafe' lname
             , typeKind = "data"
-            , dataConstructors = map (getDataConInfo modName) (dd_cons defn)
+            , dataConstructors = map (getDataConInfo modName) (DF.toList (dd_cons defn))
             })]
     TyClD _ (SynDecl _ lname _ _ rhs) ->
         [(showSDocUnsafe' lname, TypeInfo
@@ -277,7 +293,11 @@ getTypeInfo modName (L _ decl) = case decl of
 
 
 
+-- GHC 9.8's GHC.Utils.Outputable provides `instance Outputable Void`; only
+-- declare our own on older compilers that lack it, to avoid a duplicate instance.
+#if __GLASGOW_HASKELL__ < 908
 instance Outputable Void where
+#endif
 
 getDataConInfo :: String -> LConDecl GhcPs -> DataConInfo
 #if __GLASGOW_HASKELL__ >= 900
@@ -290,7 +310,7 @@ getDataConInfo modName (L _ decl) = case decl of
             }
     ConDeclGADT{con_names = lnames, con_res_ty = ty} ->
         DataConInfo
-            { dataConNames = intercalate ", " (map showSDocUnsafe' lnames)
+            { dataConNames = intercalate ", " (map showSDocUnsafe' (DF.toList lnames))
             , fields = Map.singleton "gadt" (StructuredTypeRep (pack $ showSDocUnsafe $ ppr $ unLoc ty) (parseTypeToComplexType $ unLoc ty))
             , sumTypes = []
             }
@@ -458,8 +478,9 @@ parseTypeToComplexType typ = case typ of
     
     HsQualTy _ mContext body -> 
         let contextTypes = case mContext of
-                            Nothing -> []
-                            Just (L _ ctx) -> map (parseTypeToComplexType . unLoc) ctx
+                            -- GHC 9.8: HsQualTy's context is `LHsContext` (was `Maybe LHsContext`);
+                            -- an empty context is now `L _ []`, so this still yields [] for none.
+                            (L _ ctx) -> map (parseTypeToComplexType . unLoc) ctx
             bodyType = parseTypeToComplexType $ unLoc body
         in QualType contextTypes bodyType
     
@@ -471,7 +492,7 @@ parseTypeToComplexType typ = case typ of
             argType = parseTypeToComplexType (unLoc x)
         in AppType baseType [argType]
     
-    HsAppKindTy _ ty kind ->
+    HsAppKindTy _ ty _ kind ->
         let baseType = parseTypeToComplexType (unLoc ty)
             kindType = parseTypeToComplexType (unLoc kind)
         in KindSigType baseType kindType
@@ -488,15 +509,15 @@ parseTypeToComplexType typ = case typ of
     HsSumTy _ types ->
         TupleType (map (parseTypeToComplexType . unLoc) types)
     
-    HsOpTy _ ty1 op ty2 ->
+    HsOpTy _ _ ty1 op ty2 ->
         let left = parseTypeToComplexType $ unLoc ty1
             right = parseTypeToComplexType $ unLoc ty2
             opComp = AtomicType $ extractTypeComponent $ convertLIdP op
         in AppType opComp [left, right]
-    
+
     HsParTy _ ty ->
         parseTypeToComplexType (unLoc ty)
-    
+
     HsIParamTy _ (L _ name) ty ->
         IParamType (showSDocUnsafe $ ppr name) (parseTypeToComplexType $ unLoc ty)
     
@@ -507,10 +528,10 @@ parseTypeToComplexType typ = case typ of
         KindSigType (parseTypeToComplexType $ unLoc ty) (parseTypeToComplexType $ unLoc kind)
     
     HsSpliceTy _ splice ->
-        UnknownType $ pack $ "Splice: " ++ showSDocUnsafe (ppr splice)
+        UnknownType $ pack $ "Splice: " ++ showSDocUnsafe (pprUntypedSplice True Nothing splice)
     
     HsDocTy _ ty (L _ doc) ->
-        DocType (parseTypeToComplexType $ unLoc ty) (unpackHDS doc)
+        DocType (parseTypeToComplexType $ unLoc ty) (renderHsDocString $ hsDocString doc)
     
     HsBangTy _ _ ty ->
         BangType (parseTypeToComplexType $ unLoc ty)
@@ -592,7 +613,7 @@ parseTypeToComplexType typ = case typ of
         KindSigType (parseTypeToComplexType $ unLoc ty) (parseTypeToComplexType $ unLoc kind)
     
     HsSpliceTy _ splice ->
-        UnknownType $ pack $ "Splice: " ++ showSDocUnsafe (ppr splice)
+        UnknownType $ pack $ "Splice: " ++ showSDocUnsafe (pprUntypedSplice True Nothing splice)
     
 #if __GLASGOW_HASKELL__ >= 810
     HsDocTy _ ty doc ->
@@ -935,7 +956,7 @@ dataConToDataConInfo dflags dc = do
             -- Normal case: build field map with real labels
             Map.fromList <$> zipWithM (\l t -> do
                     structType <- typeToStructuredTypeRep dflags (scaledThing t)
-                    return (unpackFS (flLabel l), structType)
+                    return (unpackFS (field_label (flLabel l)), structType)
                 ) fieldLabels fieldTypes
         else
             -- For non-record constructors, we still need to capture the arguments

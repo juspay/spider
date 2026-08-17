@@ -54,6 +54,12 @@ import GHC.Tc.Utils.Monad
 import GHC.Tc.Utils.TcType
 import GHC.Types.Annotations
 import qualified GHC.Utils.Outputable as OP
+#if __GLASGOW_HASKELL__ >= 904
+import GHC.Hs.Type (foExt)
+import GHC.Types.FieldLabel (DuplicateRecordFields(..))
+import GHC.Tc.Errors.Types (TcRnMessage, mkTcRnUnknownMessage)
+import GHC.Types.Error (mkPlainError, noHints)
+#endif
 #else
 import Bag
 import Class
@@ -244,7 +250,11 @@ checkInfiniteRecursion recurseForBinds rule (L _ ap@(FunBind{fun_id = funVar, fu
   let ?pluginOpts = ?pluginOpts {nameModuleMap = currNameModMap}
   errs <- mapM (checkAndVerifyAlt recurseForBinds rule funVar) (fmap unLoc . unLoc $ mg_alts matches)
   pure $ concat errs
+#if __GLASGOW_HASKELL__ >= 904
+checkInfiniteRecursion recurseForBinds rule (L _ (XHsBindsLR ap@(AbsBinds{abs_binds = binds, abs_exports = bindVars}))) = do
+#else
 checkInfiniteRecursion recurseForBinds rule (L _ ap@(AbsBinds{abs_binds = binds, abs_exports = bindVars})) = do
+#endif
   let mbVar = case bindVars of
                 x : _ -> Just $ (varName $ abe_poly x, varName $ abe_mono x)
                 _ -> Nothing
@@ -343,7 +353,11 @@ checkAndVerifyAlt recurseForBinds rule ap@(L loc fnVar) match = do
 
     checkAndGetExpr :: LHsExpr GhcTc -> [LHsExpr GhcTc]
     checkAndGetExpr (L loc expr) = case expr of
+#if __GLASGOW_HASKELL__ >= 904
+      HsLet _ _ _ _ inStmt -> checkAndGetExpr inStmt
+#else
       HsLet _ _ inStmt -> checkAndGetExpr inStmt
+#endif
       HsApp _ _ _ -> [L loc expr]
       HsVar _ _ -> [L loc expr]
       HsDo _ _ doStmts -> concatMap checkAndGetExpr $ foldr isLastStmt [] (traverseAst doStmts)
@@ -371,9 +385,17 @@ checkAndVerifyAlt recurseForBinds rule ap@(L loc fnVar) match = do
 
     checkAndGetMaybeLambdaCaseOrLambdaMG :: LHsExpr GhcTc -> Maybe (MatchGroup GhcTc (LHsExpr GhcTc))
     checkAndGetMaybeLambdaCaseOrLambdaMG (L loc expr) = case expr of
+#if __GLASGOW_HASKELL__ >= 904
+      (HsLamCase _ _ mg) -> Just mg -- LambdaCase
+#else
       (HsLamCase _ mg)   -> Just mg -- LambdaCase
+#endif
       (HsLam _ mg)       -> Just mg -- Lambda Function
+#if __GLASGOW_HASKELL__ >= 904
+      (HsLet _ _ _ _ inStmt) -> checkAndGetMaybeLambdaCaseOrLambdaMG inStmt
+#else
       (HsLet _ _ inStmt) -> checkAndGetMaybeLambdaCaseOrLambdaMG inStmt
+#endif
       PatHsWrap _ wrapExpr -> checkAndGetMaybeLambdaCaseOrLambdaMG (L loc wrapExpr)
       OpApp _ _ op rApp -> case showS op of
         "(.)" -> checkAndGetMaybeLambdaCaseOrLambdaMG rApp
@@ -404,7 +426,11 @@ loopOverModBinds _ (L _ ap@(PatBind{})) = do
 loopOverModBinds _ (L _ ap@(VarBind{})) = do 
   -- liftIO $ print "VarBinds" >> showOutputable ap
   pure []
+#if __GLASGOW_HASKELL__ >= 904
+loopOverModBinds rules (L _ (XHsBindsLR ap@(AbsBinds {abs_binds = binds}))) = do
+#else
 loopOverModBinds rules (L _ ap@(AbsBinds {abs_binds = binds})) = do
+#endif
   -- liftIO $ print "AbsBinds" >> showOutputable ap
   list <- mapM (loopOverModBinds rules) $ bagToList binds
   pure (concat list)
@@ -500,11 +526,22 @@ validateColumnAccessRule rule expr = do
   case mbTableCol of
     Just (colName, tableName, locExpr) -> do
       let knownTables = knownDBTables ?pluginOpts
-      if tableName `notElem` knownTables
+      -- Skip accesses that have no real source span. On GHC >= 9.4 the
+      -- record-dot-preprocessor emits every field's HasField getter as
+      -- `GHC.Records.getField @"col" r`, and those generated instance bodies
+      -- carry noSrcSpan. On GHC < 9.4 the same getter was emitted as a plain
+      -- annotated selector that this check never matched, so generated field
+      -- accesses were always invisible. Honouring the span preserves that
+      -- behaviour and stops us flagging compiler-generated boilerplate for API
+      -- DTOs whose type name merely coincides with a known DB table (e.g. a
+      -- `Customer` request record vs. the `Customer` DB table).
+      if not (isGoodSrcSpan (getLoc2 locExpr))
         then pure []
-        else if colName == column_name rule && tableName `notElem` allowed_tables rule
-          then pure [(expr, ColumnAccessViolation colName tableName rule)]
-          else pure []
+        else if tableName `notElem` knownTables
+          then pure []
+          else if colName == column_name rule && tableName `notElem` allowed_tables rule
+            then pure [(expr, ColumnAccessViolation colName tableName rule)]
+            else pure []
     Nothing -> pure []
 
 -- Extract (ColumnName, TableName) from an expression if possible
@@ -515,7 +552,11 @@ extractTableAndColumn fieldArg = do
     None     -> pure Nothing
     Selector -> do
       let modFieldArg arg = case arg of
+#if __GLASGOW_HASKELL__ >= 904
+                        (L _ (HsRecSel _ fldOcc))   -> mkSelectorString fldOcc
+#else
                         (L _ (HsRecFld _ fldOcc))   -> showS $ selectorAmbiguousFieldOcc fldOcc
+#endif
                         (L loc (PatHsWrap _ wExpr)) -> modFieldArg (L loc wExpr)
                         (L _ expr)                  -> showS expr
       case (splitOn ":" $ modFieldArg fieldArg) of
@@ -529,7 +570,7 @@ extractTableAndColumn fieldArg = do
         then do
           let (lExpr, expr) = head tyApps
           case expr of
-            (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> do
+            (HsApp _ (L _ (PatHsAppType _ fldName)) tableVar) -> do
               typ <- getHsExprType (logTypeDebugging . pluginOpts $ ?pluginOpts) tableVar
               let tblName' = case typ of
                               AppTy ty1 _    -> showS ty1
@@ -546,7 +587,7 @@ extractTableAndColumn fieldArg = do
               -- Fallback to tableVar if the full expression has no source span
               let bestLocExpr = if isGoodSrcSpan (getLoc2 lExpr) then lExpr else tableVar
               pure $ Just (getStrFromHsWildCardBndrs fldName, finalTableName, bestLocExpr)
-            (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) -> do
+            (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (PatHsAppType _ fldName)) -> do
               let tblName' = case tableType of
                                   AppTy ty1 _    -> showS ty1
                                   TyConApp ty1 _ -> showS ty1
@@ -628,9 +669,9 @@ extractTableAndColumn fieldArg = do
     getRecordDotSelectorL :: LHsExpr GhcTc -> Maybe (LHsExpr GhcTc, HsExpr GhcTc)
     getRecordDotSelectorL lExpr@(L loc expr) = 
       case expr of 
-        (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> Just (lExpr, expr)
-        (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> Just (lExpr, expr)
-        (PatHsWrap (WpCompose _ wp@(WpCompose _ _)) hsat@(HsAppType _ _ fldName)) -> getRecordDotSelectorL (L loc (PatHsWrap wp hsat))
+        (HsApp _ (L _ (PatHsAppType _ fldName)) tableVar) -> Just (lExpr, expr)
+        (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (PatHsAppType _ fldName)) -> Just (lExpr, expr)
+        (PatHsWrap (WpCompose _ wp@(WpCompose _ _)) hsat@(PatHsAppType _ fldName)) -> getRecordDotSelectorL (L loc (PatHsWrap wp hsat))
         _ -> Nothing
 
 --------------------------- Function Rule Validation Logic ---------------------------
@@ -856,11 +897,11 @@ trfWhereToSOP (clause : ls) = do
   let res = getWhereClauseFnNameWithAllArgs clause
       (fnName, args) = fromMaybe ("NA", []) res
   case (fnName, args) of
-    ("And", [(L _ (PatExplicitList _ arg))]) -> do
+    ("And", [lst]) | Just arg <- whereClauseListElems lst -> do
       curr <- trfWhereToSOP arg
       rem  <- trfWhereToSOP ls
       pure [x <> y | x <- curr, y <- rem]
-    ("Or", [(L _ (PatExplicitList _ arg))]) -> do
+    ("Or", [lst]) | Just arg <- whereClauseListElems lst -> do
       curr <- foldM (\r cls -> fmap (<> r) $ trfWhereToSOP [cls]) [] arg
       rem  <- trfWhereToSOP ls
       pure [x <> y | x <- curr, y <- rem]
@@ -872,6 +913,21 @@ trfWhereToSOP (clause : ls) = do
         Just (tblName, colName) -> pure $ fmap (\lst -> (clause, tblName, colName) : lst) rem
     (fn, _) -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ print $ "Invalid/unknown clause in `where` clause : " <> fn <> " at " <> (showS . getLoc2 $ clause)) >> trfWhereToSOP ls
 
+-- Peel paren / type-wrap / `HsExpanded` (incl. the OverloadedLists `fromListN [..]`
+-- expansion GHC >= 9.4 introduces) down to the underlying list literal, so that
+-- `Se.And` / `Se.Or` arguments are still recognised. Returns the raw list on the
+-- bare-`ExplicitList` shape, i.e. a no-op for pre-expansion ASTs.
+whereClauseListElems :: LHsExpr GhcTc -> Maybe [LHsExpr GhcTc]
+whereClauseListElems (L loc e) = case e of
+  PatExplicitList _ xs      -> Just xs
+  PatHsPar inner            -> whereClauseListElems inner
+  PatHsWrap _ inner         -> whereClauseListElems (L loc inner)
+#if __GLASGOW_HASKELL__ >= 900
+  PatHsExpansion _ expanded -> whereClauseListElems (L loc expanded)
+#endif
+  HsApp _ f x               -> maybe (whereClauseListElems f) Just (whereClauseListElems x)
+  _                         -> Nothing
+
 -- Get table field name and table name for the `Se.Is` clause
 -- Patterns to match 'getField`, `recordDot`, `overloadedRecordDot` (ghc > 9), selector (duplicate record fields), rec fields (ghc 9), lens
 -- TODO: Refactor this to use HasField instance if possible
@@ -882,7 +938,11 @@ getIsClauseData fieldArg _comp _clause = do
     None     -> when ((logWarnInfo . pluginOpts $ ?pluginOpts)) (liftIO $ print $ "Can't identify the way in which DB field is specified: " <> showS fieldArg) >> pure Nothing
     Selector -> do
       let modFieldArg arg = case arg of
+#if __GLASGOW_HASKELL__ >= 904
+                        (L _ (HsRecSel _ fldOcc))   -> mkSelectorString fldOcc
+#else
                         (L _ (HsRecFld _ fldOcc))   -> showS $ selectorAmbiguousFieldOcc fldOcc
+#endif
                         (L loc (PatHsWrap _ wExpr)) -> modFieldArg (L loc wExpr)
                         (L _ expr)                  -> showS expr
       case (splitOn ":" $ modFieldArg fieldArg) of
@@ -893,7 +953,7 @@ getIsClauseData fieldArg _comp _clause = do
       if length tyApps > 0 
         then 
           case head tyApps of
-            (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> do
+            (HsApp _ (L _ (PatHsAppType _ fldName)) tableVar) -> do
               typ <- getHsExprType (logTypeDebugging . pluginOpts $ ?pluginOpts) tableVar
               let tblName' = case typ of
                               AppTy ty1 _    -> showS ty1
@@ -908,7 +968,7 @@ getIsClauseData fieldArg _comp _clause = do
                                             then unqualifiedTblName 
                                             else strippedName
               pure $ Just (getStrFromHsWildCardBndrs fldName, finalTableName)
-            (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (HsAppType _ _ fldName)) ->
+            (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableType))) (PatHsAppType _ fldName)) ->
               let tblName' = case tableType of
                                   AppTy ty1 _    -> showS ty1
                                   TyConApp ty1 _ -> showS ty1
@@ -992,16 +1052,58 @@ getIsClauseData fieldArg _comp _clause = do
     getRecordDotSelector :: HsExpr GhcTc -> Maybe (HsExpr GhcTc)
     getRecordDotSelector recordDotExpr = 
       case recordDotExpr of 
-        (HsApp _ (L _ (HsAppType _ _ fldName)) tableVar) -> Just recordDotExpr
-        (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (HsAppType _ _ fldName)) -> Just recordDotExpr
-        (PatHsWrap (WpCompose _ wp@(WpCompose _ _)) hsat@(HsAppType _ _ fldName)) -> getRecordDotSelector (PatHsWrap wp hsat)
+        (HsApp _ (L _ (PatHsAppType _ fldName)) tableVar) -> Just recordDotExpr
+        (PatHsWrap (WpCompose (WpEvApp (EvExpr _hasFld)) (WpCompose (WpTyApp _fldType) (WpTyApp tableVar))) (PatHsAppType _ fldName)) -> Just recordDotExpr
+        (PatHsWrap (WpCompose _ wp@(WpCompose _ _)) hsat@(PatHsAppType _ fldName)) -> getRecordDotSelector (PatHsWrap wp hsat)
         _ -> Nothing
+
+#if __GLASGOW_HASKELL__ >= 904
+-- On GHC 9.4+ record-field selectors are `HsRecSel (FieldOcc GhcTc)`, and the
+-- FieldOcc's selector `Id` prints as the plain field label -- GHC dropped the
+-- `$sel:<column>:<constructor>` OccName mangling that
+-- `selectorAmbiguousFieldOcc` surfaced on <= 9.2 (disambiguation moved to the
+-- linker symbol, `$fld:<constructor>:<column>`). Reconstruct the 9.2 string
+-- here so the downstream `splitOn ":"` extraction and the `$sel`
+-- classification keep working, preserving *both* halves of the old condition:
+--
+--   * 9.2 only mangled when the module defining the record had
+--     DuplicateRecordFields on. GHC 9.4+ records that per field on the
+--     FieldLabel, so gate on it -- otherwise every plain record selector in
+--     every module gets manufactured into a Selector and enters rule paths it
+--     never entered on 9.2. Non-DRF selectors keep returning the plain label,
+--     which `getDBFieldSpecType` classifies as `None`, exactly as before.
+--
+--   * the third component is the first data constructor carrying the field,
+--     not the parent TyCon (GHC's own scheme is `$sel:x:MkT`). For beam tables
+--     `data CustomerT f = Customer {..}` that is `Customer` -- which is what
+--     the rule and indexedKeys table names are written against. The TyCon
+--     `CustomerT` would never compare equal to them, silently no-opping the
+--     DB rules for every selector-style where clause.
+mkSelectorString :: FieldOcc GhcTc -> String
+mkSelectorString fldOcc =
+  let selId    = foExt fldOcc
+      selNm    = idName selId
+      colName  = occNameString (getOccName selId)
+      isFld fl = flSelector fl == selNm
+      mangled  = case idDetails selId of
+        RecSelId { sel_tycon = RecSelData tc }
+          | Just fl <- find isFld (tyConFieldLabels tc)
+          , flHasDuplicateRecordFields fl == DuplicateRecordFields
+          , Just dc <- find (any isFld . dataConFieldLabels) (tyConDataCons tc)
+          -> Just $ "$sel:" <> colName <> ":" <> occNameString (getOccName dc)
+        _ -> Nothing
+  in fromMaybe colName mangled
+#endif
 
 -- Get how DB field is being extracted in sequelize
 getDBFieldSpecType :: LHsExpr GhcTc -> DBFieldSpecType
 getDBFieldSpecType (L loc expr)
   | (PatHsWrap _ wExpr) <- expr = getDBFieldSpecType (L loc wExpr)
+#if __GLASGOW_HASKELL__ >= 904
+  | (HsRecSel _ fldOcc) <- expr = checkExprString $ mkSelectorString fldOcc
+#else
   | (HsRecFld _ fldOcc) <- expr = checkExprString . showS $ selectorAmbiguousFieldOcc fldOcc
+#endif
   | otherwise                   = checkExprString $ showS expr
   where
     checkExprString exprStr
@@ -1024,7 +1126,7 @@ getWhereClauseFnNameWithAllArgs (L loc (OpApp _ lfun op rfun)) = do
   case showS op of
     "($)" -> getWhereClauseFnNameWithAllArgs $ (L loc (HsApp noExtFieldOrAnn lfun rfun))
     _ -> Nothing
-getWhereClauseFnNameWithAllArgs (L loc ap@(HsPar _ expr)) = getWhereClauseFnNameWithAllArgs expr
+getWhereClauseFnNameWithAllArgs (L loc ap@(PatHsPar expr)) = getWhereClauseFnNameWithAllArgs expr
 -- If condition inside the list, add dummy type
 getWhereClauseFnNameWithAllArgs (L loc ap@(PatHsIf _pred thenCl elseCl)) = Just ("Or", [L loc (PatExplicitList (LitTy (StrTyLit "Dummy")) [thenCl, elseCl])])
 getWhereClauseFnNameWithAllArgs (L loc ap@(PatHsWrap _ expr)) = getWhereClauseFnNameWithAllArgs (L loc expr)
@@ -1044,9 +1146,9 @@ getWhereClauseFnNameWithAllArgs _ = Nothing
 getFnNameAndTypeableExprWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, LHsExpr GhcTc, [LHsExpr GhcTc])
 getFnNameAndTypeableExprWithAllArgs ap@(L loc (HsVar _ v)) = Just (getLocated v loc, ap, [])
 getFnNameAndTypeableExprWithAllArgs ap@(L _ (HsConLikeOut _ cl)) = (\clId -> (noExprLoc clId, ap, [])) <$> conLikeWrapId cl
-getFnNameAndTypeableExprWithAllArgs (L _ (HsAppType _ expr _)) = getFnNameAndTypeableExprWithAllArgs expr
+getFnNameAndTypeableExprWithAllArgs (L _ (PatHsAppType expr _)) = getFnNameAndTypeableExprWithAllArgs expr
 getFnNameAndTypeableExprWithAllArgs (L _ (HsApp _ ap@(L loc (HsVar _ v)) funr)) = Just (getLocated v loc, ap, [funr])
-getFnNameAndTypeableExprWithAllArgs (L _ (HsPar _ expr)) = getFnNameAndTypeableExprWithAllArgs expr
+getFnNameAndTypeableExprWithAllArgs (L _ (PatHsPar expr)) = getFnNameAndTypeableExprWithAllArgs expr
 getFnNameAndTypeableExprWithAllArgs (L _ (HsApp _ funl funr)) = do
   let res = getFnNameAndTypeableExprWithAllArgs funl
   case res of
@@ -1074,9 +1176,9 @@ getFnNameAndTypeableExprWithAllArgs _ = Nothing
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
 getFnNameWithAllArgs (L loc (HsVar _ v)) = Just (getLocated v loc, [])
 getFnNameWithAllArgs (L _ (HsConLikeOut _ cl)) = (\clId -> (noExprLoc clId, [])) <$> conLikeWrapId cl
-getFnNameWithAllArgs (L _ (HsAppType _ expr _)) = getFnNameWithAllArgs expr
+getFnNameWithAllArgs (L _ (PatHsAppType expr _)) = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ (L loc (HsVar _ v)) funr)) = Just (getLocated v loc, [funr])
-getFnNameWithAllArgs (L _ (HsPar _ expr)) = getFnNameWithAllArgs expr
+getFnNameWithAllArgs (L _ (PatHsPar expr)) = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ funl funr)) = do
   let res = getFnNameWithAllArgs funl
   case res of
@@ -1146,8 +1248,19 @@ isAllowedOnCurrentFunction currentFnNameWithModule rule =
   in not $ any (matchNamesWithAsterisk AsteriskInSecond currentFnNameWithModule) ignoredFunctions
 
 -- Create GHC compilation error from CompileError
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 changed the error API from raw `SDoc` to structured `TcRnMessage`;
+-- wrap the same rendered text as an unknown-diagnostic message so the emitted
+-- error content is unchanged.
+mkSheriffDiag :: OP.SDoc -> TcRnMessage
+mkSheriffDiag = mkTcRnUnknownMessage . mkPlainError noHints
+
+mkGhcCompileError :: CompileError -> (SrcSpan, TcRnMessage)
+mkGhcCompileError err = (src_span err, mkSheriffDiag $ OP.text $ getErrMsgWithSuggestions (err_msg err) (suggested_fixes err))
+#else
 mkGhcCompileError :: CompileError -> (SrcSpan, OP.SDoc)
 mkGhcCompileError err = (src_span err, OP.text $ getErrMsgWithSuggestions (err_msg err) (suggested_fixes err))
+#endif
 
 -- Make error message with suggestion
 getErrMsgWithSuggestions :: String -> Suggestions -> String
@@ -1161,8 +1274,13 @@ getErrMsgWithSuggestions errMsg suggestions = errMsg
     sixSpaces = twoSpaces <> fourSpaces
 
 -- Create invalid yaml file compilation error
+#if __GLASGOW_HASKELL__ >= 904
+mkInvalidYamlFileErr :: String -> TcRnMessage
+mkInvalidYamlFileErr err = mkSheriffDiag (OP.text err)
+#else
 mkInvalidYamlFileErr :: String -> OP.SDoc
 mkInvalidYamlFileErr err = OP.text err
+#endif
 
 -- Create Internal Representation of Logging Error
 mkCompileError :: String -> (LHsExpr GhcTc, Violation) -> TcM CompileError
@@ -1222,13 +1340,17 @@ getArgTypeWrapper expr@(L _ (OpApp _ lfun op rfun)) =
     "(<>)" -> getArgTypeWrapper lfun
     _ -> getArgType op True
 getArgTypeWrapper (L loc (PatHsWrap _ expr)) = getArgTypeWrapper (L loc expr)
-getArgTypeWrapper (L loc (HsPar _ expr)) = getArgTypeWrapper expr
+getArgTypeWrapper (L loc (PatHsPar expr)) = getArgTypeWrapper expr
 getArgTypeWrapper expr = getArgType expr False
 
 -- [DEPRECATED] Get LHsExpr type
 getArgType :: LHsExpr GhcTc -> Bool -> [Type]
 getArgType (L _ (HsLit _ v)) _ = getLitType v
+#if __GLASGOW_HASKELL__ >= 904
+getArgType (L _ (HsOverLit _ (OverLit (OverLitTc _ _ typ) v))) _ = [typ]
+#else
 getArgType (L _ (HsOverLit _ (OverLit (OverLitTc _ typ) v _))) _ = [typ]
+#endif
 getArgType (L loc (PatHsWrap _ expr)) shouldReturnFinalType = getArgType (L loc expr) shouldReturnFinalType
 getArgType (L loc (HsApp _ lfun rfun)) shouldReturnFinalType = getArgType lfun shouldReturnFinalType
 getArgType arg shouldReturnFinalType = 
