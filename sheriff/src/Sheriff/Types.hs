@@ -197,6 +197,38 @@ instance FromJSON FunctionRule where
                 fn_rule_ignore_functions <- o .:? "fn_rule_ignore_functions" .!= (fn_rule_ignore_functions defaultFunctionRule)
                 return FunctionRule {..}
 
+data ConstructorRule =
+  ConstructorRule
+    {
+      constructor_rule_name             :: String,
+      constructor_name                  :: FunctionNames,
+      constructor_rule_fixes            :: Suggestions,
+      constructor_rule_ignore_modules   :: Modules,
+      constructor_rule_check_modules    :: Modules,
+      constructor_rule_ignore_functions :: ModulesWithFunctions
+    }
+  deriving (Show, Eq)
+
+defaultConstructorRule :: ConstructorRule
+defaultConstructorRule = ConstructorRule {
+    constructor_rule_name             = "NA",
+    constructor_name                  = [],
+    constructor_rule_fixes            = [],
+    constructor_rule_ignore_modules   = [],
+    constructor_rule_check_modules    = ["*"],
+    constructor_rule_ignore_functions = []
+  }
+
+instance FromJSON ConstructorRule where
+  parseJSON = withObject "ConstructorRule" $ \o -> do
+                constructor_rule_name             <- o .:  "constructor_rule_name"
+                constructor_name                  <- o .:  "constructor_name" >>= parseAsListOrString
+                constructor_rule_fixes            <- o .:  "constructor_rule_fixes"
+                constructor_rule_ignore_modules   <- o .:? "constructor_rule_ignore_modules"   .!= constructor_rule_ignore_modules defaultConstructorRule
+                constructor_rule_check_modules    <- o .:? "constructor_rule_check_modules"    .!= constructor_rule_check_modules defaultConstructorRule
+                constructor_rule_ignore_functions <- o .:? "constructor_rule_ignore_functions" .!= constructor_rule_ignore_functions defaultConstructorRule
+                return ConstructorRule {..}
+
 data InfiniteRecursionRule = 
   InfiniteRecursionRule
     {
@@ -355,13 +387,14 @@ instance FromJSON ColumnAccessRule where
 data Rule = 
     DBRuleT DBRule
   | FunctionRuleT FunctionRule
+  | ConstructorRuleT ConstructorRule
   | InfiniteRecursionRuleT InfiniteRecursionRule
   | GeneralRuleT GeneralRule
   | ColumnAccessRuleT ColumnAccessRule
   deriving (Show, Eq)  
 
 instance FromJSON Rule where
-  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (InfiniteRecursionRuleT <$> parseJSON str) <|> (GeneralRuleT <$> parseJSON str) <|> (ColumnAccessRuleT <$> parseJSON str) <|> (fail $ "Invalid Rule: " <> show str)
+  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (ConstructorRuleT <$> parseJSON str) <|> (InfiniteRecursionRuleT <$> parseJSON str) <|> (GeneralRuleT <$> parseJSON str) <|> (ColumnAccessRuleT <$> parseJSON str) <|> (fail $ "Invalid Rule: " <> show str)
 
 data LocalVar = FnArg Var | FnWhere Var | FnLocal Var
   deriving (Eq)
@@ -385,6 +418,7 @@ data Violation =
   | EmptyWhereClause String DBRule
   | FnUseBlocked String FunctionRule
   | FnSigBlocked String String FunctionRule
+  | ConstructorUseBlocked String ConstructorRule
   | InfiniteRecursionDetected InfiniteRecursionRule
   | ColumnAccessViolation String String ColumnAccessRule
   | NoViolation
@@ -396,6 +430,7 @@ instance Show Violation where
     (FnBlockedInArg (fnName, typ) ruleFnName _ rule) -> "Use of '" <> fnName <> "' on type '" <> typ <> "' inside argument of '" <> ruleFnName <> "' is not allowed."
     (FnUseBlocked ruleFnName rule)                   -> "Use of '" <> ruleFnName <> "' in the code is not allowed."
     (FnSigBlocked ruleFnName ruleFnSig rule)         -> "Use of '" <> ruleFnName <> "' with signature '" <> ruleFnSig <> "' is not allowed in the code."
+    (ConstructorUseBlocked constructorName _)        -> "Use of constructor '" <> constructorName <> "' in the code is not allowed."
     (NonIndexedDBColumn colName tableName _)         -> "Querying on non-indexed column '" <> colName <> "' of table '" <> (tableName) <> "' is not allowed."
     (EmptyWhereClause tableName _)                   -> "Query with empty where clause on table '" <> (tableName) <> "' is not allowed."
     (InfiniteRecursionDetected _)                    -> "Infinite recursion detected in expression"
