@@ -5,6 +5,7 @@ module Sheriff.Types where
 import Sheriff.Utils
 import Data.Aeson as A
 import Control.Applicative ((<|>))
+import Data.List (intercalate)
 import Data.Text (unpack)
 import Data.Data (Data)
 
@@ -352,16 +353,84 @@ instance FromJSON ColumnAccessRule where
                 skip_known_tables_check             <- o .:? "skip_known_tables_check"             .!= (skip_known_tables_check defaultColumnAccessRule)
                 return ColumnAccessRule {..}
 
-data Rule = 
+{-
+  Blocks a set of functions from being applied to a value whose type *is*, or
+  *transitively contains*, one of `blocked_types`.
+
+  This differs from `FunctionRule`'s `types_blocked_in_arg`, which only compares
+  the argument's own type name. Use this rule for narrow marker types such as an
+  encrypted `PII` newtype, where a match anywhere inside the value is a problem:
+
+    newtype PII = PII Text
+    data A = A { var1 :: PII }   -- `encode (a :: A)` is blocked
+    data B = B { var0 :: A }     -- `encode (b :: B)` is blocked too
+
+  Do not point it at common types like `Text`; every record contains one
+  somewhere, so it would flag nearly the whole codebase. Use `FunctionRule` for
+  that shallow case instead.
+-}
+data TypeBlockedRule =
+  TypeBlockedRule
+    {
+      type_blocked_rule_name             :: String,
+      type_blocked_fn_name               :: FunctionNames,        -- functions to check, e.g. show/encode/toJSON
+      type_blocked_arg_no                :: [ArgNo],              -- 1-based args to check; [] means every arg
+      blocked_types                      :: TypesBlockedInArg,    -- e.g. ["PII"], ["Types.PII"], ["Euler.*.PII"]
+      type_blocked_rule_ignore_types     :: [String],             -- types to neither match nor look inside
+      type_blocked_rule_fixes            :: Suggestions,
+      type_blocked_rule_exceptions       :: Rules,
+      type_blocked_rule_ignore_modules   :: Modules,
+      type_blocked_rule_check_modules    :: Modules,
+      type_blocked_rule_ignore_functions :: ModulesWithFunctions
+    }
+  deriving (Show, Eq)
+
+defaultTypeBlockedRule :: TypeBlockedRule
+defaultTypeBlockedRule = TypeBlockedRule {
+    type_blocked_rule_name             = "NA",
+    type_blocked_fn_name               = [],
+    type_blocked_arg_no                = [],
+    blocked_types                      = [],
+    type_blocked_rule_ignore_types     = [],
+    type_blocked_rule_fixes            = [],
+    type_blocked_rule_exceptions       = [],
+    type_blocked_rule_ignore_modules   = [],
+    type_blocked_rule_check_modules    = ["*"],
+    type_blocked_rule_ignore_functions = []
+  }
+
+instance FromJSON TypeBlockedRule where
+  parseJSON = withObject "TypeBlockedRule" $ \o -> do
+                type_blocked_rule_name             <- o .:  "type_blocked_rule_name"
+                type_blocked_fn_name               <- o .:  "type_blocked_fn_name"               >>= parseAsListOrSingle
+                type_blocked_arg_no                <- o .:? "type_blocked_arg_no"                .!= A.Null >>= parseArgNos
+                blocked_types                      <- o .:  "blocked_types"                      >>= parseAsListOrSingle
+                type_blocked_rule_ignore_types     <- o .:? "type_blocked_rule_ignore_types"     .!= (type_blocked_rule_ignore_types defaultTypeBlockedRule)
+                type_blocked_rule_fixes            <- o .:? "type_blocked_rule_fixes"            .!= (type_blocked_rule_fixes defaultTypeBlockedRule)
+                type_blocked_rule_exceptions       <- o .:? "type_blocked_rule_exceptions"       .!= (type_blocked_rule_exceptions defaultTypeBlockedRule)
+                type_blocked_rule_ignore_modules   <- o .:? "type_blocked_rule_ignore_modules"   .!= (type_blocked_rule_ignore_modules defaultTypeBlockedRule)
+                type_blocked_rule_check_modules    <- o .:? "type_blocked_rule_check_modules"    .!= (type_blocked_rule_check_modules defaultTypeBlockedRule)
+                type_blocked_rule_ignore_functions <- o .:? "type_blocked_rule_ignore_functions" .!= (type_blocked_rule_ignore_functions defaultTypeBlockedRule)
+                return TypeBlockedRule {..}
+    where
+      -- Accepts `type_blocked_arg_no: 1`, `type_blocked_arg_no: [1, 2]`, or omitted (= all args)
+      parseArgNos A.Null = pure (type_blocked_arg_no defaultTypeBlockedRule)
+      parseArgNos v      = parseAsListOrSingle v
+
+data Rule =
     DBRuleT DBRule
   | FunctionRuleT FunctionRule
   | InfiniteRecursionRuleT InfiniteRecursionRule
   | GeneralRuleT GeneralRule
   | ColumnAccessRuleT ColumnAccessRule
-  deriving (Show, Eq)  
+  | TypeBlockedRuleT TypeBlockedRule
+  deriving (Show, Eq)
 
+-- Rules are distinguished by which mandatory keys they carry, so each new arm must
+-- require a key no other rule has. `TypeBlockedRule` is matched last and requires
+-- `type_blocked_rule_name`, keeping the existing rules' parse order untouched.
 instance FromJSON Rule where
-  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (InfiniteRecursionRuleT <$> parseJSON str) <|> (GeneralRuleT <$> parseJSON str) <|> (ColumnAccessRuleT <$> parseJSON str) <|> (fail $ "Invalid Rule: " <> show str)
+  parseJSON str = (DBRuleT <$> parseJSON str) <|> (FunctionRuleT <$> parseJSON str) <|> (InfiniteRecursionRuleT <$> parseJSON str) <|> (GeneralRuleT <$> parseJSON str) <|> (ColumnAccessRuleT <$> parseJSON str) <|> (TypeBlockedRuleT <$> parseJSON str) <|> (fail $ "Invalid Rule: " <> show str)
 
 data LocalVar = FnArg Var | FnWhere Var | FnLocal Var
   deriving (Eq)
@@ -387,6 +456,7 @@ data Violation =
   | FnSigBlocked String String FunctionRule
   | InfiniteRecursionDetected InfiniteRecursionRule
   | ColumnAccessViolation String String ColumnAccessRule
+  | BlockedTypeInArg String String String [String] TypeBlockedRule -- fnName, argType, blockedType, containment path
   | NoViolation
   deriving (Eq)
 
@@ -400,4 +470,10 @@ instance Show Violation where
     (EmptyWhereClause tableName _)                   -> "Query with empty where clause on table '" <> (tableName) <> "' is not allowed."
     (InfiniteRecursionDetected _)                    -> "Infinite recursion detected in expression"
     (ColumnAccessViolation colName tableName _)      -> "Accessing column '" <> colName <> "' on table '" <> tableName <> "' is not allowed."
+    -- The path holds one entry per step from the argument's own type down to the
+    -- blocked type, so a single entry means the argument type matched directly.
+    (BlockedTypeInArg fnName typ blockedTyp path _)
+      | length path <= 1 -> "Use of '" <> fnName <> "' on '" <> typ <> "' is not allowed."
+      | otherwise        -> "Use of '" <> fnName <> "' on '" <> typ <> "' is not allowed as it contains '" <> blockedTyp <> "'."
+                              <> "\n      Containment path: " <> intercalate " -> " path
     NoViolation                                      -> "NoViolation"

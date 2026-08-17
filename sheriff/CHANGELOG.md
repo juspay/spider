@@ -1,5 +1,10 @@
 # Revision history for sheriff
 
+## 0.2.2.0
+* Add Type Blocked Rules: block functions applied to a type that is, or transitively contains, a given type
+* Add BlockedTypeInArg violation, reporting the containment path to the blocked type
+* Add sheriff-pii-test test suite
+
 ## 0.2.1.9
 * Add EmptyWhereClause violation
 * Add missing pattern for RecordDotSelector case

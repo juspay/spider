@@ -18,7 +18,8 @@ import Data.Data (Data)
 import Data.Generics.Uniplate.Data
 import qualified Data.HashMap.Strict as HM
 import Data.List.Extra (splitOn, trim, isInfixOf)
-import Data.Maybe (maybe)
+import Data.Maybe (maybe, catMaybes, listToMaybe)
+import qualified Data.Set as Set
 import qualified Data.Text as T
 import Data.Yaml
 import GHC hiding (exprType)
@@ -40,6 +41,7 @@ import GHC.Tc.Gen.Expr
 import GHC.Tc.Module
 import GHC.Tc.Types
 import GHC.Tc.Utils.TcType
+import GHC.Types.FieldLabel (flLabel)
 import Language.Haskell.GHC.ExactPrint (ExactPrint)
 #if __GLASGOW_HASKELL__ >= 906
 import GHC.Types.Var (isInvisibleFunArg)
@@ -48,6 +50,7 @@ import GHC.Types.Var (isInvisibleFunArg)
 import ConLike
 import DsMonad
 import DsExpr
+import FieldLabel (flLabel)
 import GhcPlugins hiding ((<>), getHscEnv)
 import HscMain
 import Language.Haskell.GHC.ExactPrint.Annotater (Annotate)
@@ -423,8 +426,138 @@ getHsExprTypeGeneric logTypeDebugging expr = case ghcPass @p of
       when logTypeDebugging $ liftIO . print $ "DebugType = " <> (debugPrintType typ)
       pure (Just typ)
 
+-- Parse a YAML/JSON field that may be written either as a single value or as a list
+parseAsListOrSingle :: (FromJSON a) => Value -> Parser [a]
+parseAsListOrSingle v = parseJSON v <|> fmap (:[]) (parseJSON v)
+
 parseAsListOrString :: Value -> Parser [String]
-parseAsListOrString v = parseJSON v <|> fmap (:[]) (parseJSON v)
+parseAsListOrString = parseAsListOrSingle
+
+{-
+  Type Containment Check
+  ~~~~~~~~~~~~~~~~~~~~~~
+  Answers "does this type contain one of the given types anywhere inside it?".
+
+  Unlike `validateType` in the plugin (which compares the pretty printed type
+  against a list of names, and only looks inside a hardcoded set of containers),
+  this walks the type structurally in two ways:
+
+    1. Type arguments   -- `Maybe PII`, `[PII]`, `(Text, PII)`, `Map Text PII`
+    2. Constructor fields -- `data A = A { var1 :: PII }`, and transitively
+                             `data B = B { var0 :: A }`
+
+  Termination
+  -----------
+  Recursion over type arguments is structural (a `Type` is a finite term), so it
+  always terminates on its own. Only field expansion can cycle, e.g.
+  `data Rec = Rec { self :: Maybe Rec }`, so the visited set guards *field
+  expansion only*. Guarding the whole node instead would be wrong: it would make
+  `Map Text (Map Text PII)` stop at the inner `Map` and miss the `PII`.
+
+  Unresolvable types fail open
+  ----------------------------
+  Abstract tycons (constructors not exported / hs-boot), type families, classes
+  and primitives are not expanded. A missed detection is preferable to a false
+  compile error the developer cannot act on.
+
+  Cost
+  ----
+  Bounded by the size of the reachable type graph, and only paid at call sites
+  whose function name already matched the rule. If this ever shows up in compile
+  times, memoise `constructorFieldsOfTyCon` on the tycon's stable name.
+-}
+
+-- A readable breadcrumb of how a blocked type is reached from the root type,
+-- e.g. ["B", "var0 :: A", "var1 :: PII"]
+type TypeContainmentPath = [String]
+
+-- Find a path from the given type down to any one of the blocked types.
+-- Returns the blocked type that matched along with the containment path.
+findBlockedTypeInType :: (HasPluginOpts a)
+  => [String]                                 -- ^ blocked type names (`PII`, `Types.PII`, `Euler.*.PII`)
+  -> [String]                                 -- ^ type names to neither match nor look inside
+  -> Type                                     -- ^ type to inspect
+  -> Maybe (String, TypeContainmentPath)
+findBlockedTypeInType blockedTypes ignoredTypes rootTy
+  | null blockedTypes = Nothing
+  | otherwise         = go mempty [showS rootTy] rootTy
+  where
+    go :: Set.Set String -> TypeContainmentPath -> Type -> Maybe (String, TypeContainmentPath)
+    go visited path ty = case expandTypeSynonyms ty of
+      TyConApp tyCon args
+        | matchesAnyOf ignoredTypes tyCon           -> Nothing
+        | Just blocked <- matchedBlockedType tyCon  -> Just (blocked, path)
+        | otherwise                                 -> firstMatch (argHits <> fieldHits)
+        where
+          argHits = fmap (\argTy -> go visited (path <> [showS argTy]) argTy) args
+
+          -- Only expand a tycon's fields once along a path; see "Termination" above
+          fieldHits
+            | Set.member tyConKey visited = []
+            | otherwise =
+                fmap
+                  (\(fieldName, fieldTy) -> go visited' (path <> [fieldName <> " :: " <> showS fieldTy]) fieldTy)
+                  (constructorFieldsOfTyCon tyCon)
+
+          tyConKey = nameStableString (tyConName tyCon)
+          visited' = Set.insert tyConKey visited
+
+      AppTy ty1 ty2    -> firstMatch [go visited (path <> [showS ty1]) ty1, go visited (path <> [showS ty2]) ty2]
+      PatFunTy _ argTy resTy -> firstMatch [go visited (path <> [showS argTy]) argTy, go visited (path <> [showS resTy]) resTy]
+      ForAllTy _ body  -> go visited path body
+      _                -> Nothing -- TyVarTy, LitTy, CastTy, CoercionTy
+
+    matchedBlockedType :: TyCon -> Maybe String
+    matchedBlockedType tyCon = findMatchingName blockedTypes tyCon
+
+    matchesAnyOf :: [String] -> TyCon -> Bool
+    matchesAnyOf names tyCon = case findMatchingName names tyCon of
+      Just _  -> True
+      Nothing -> False
+
+    -- Matches against both the plain (`PII`) and module qualified (`Types.PII`)
+    -- name, reusing the same matcher the plugin uses for function names, so
+    -- asterisk forms like `Euler.*.PII` work too.
+    findMatchingName :: [String] -> TyCon -> Maybe String
+    findMatchingName names tyCon =
+      let tyConNameWithModule = getNameWithModuleName (tyConName tyCon)
+      in listToMaybe $ filter (\n -> matchNamesWithModuleName tyConNameWithModule n AsteriskInSecond) names
+
+-- Get the (field name, field type) pairs of every constructor of a tycon.
+-- Yields [] for anything we cannot or should not look inside.
+constructorFieldsOfTyCon :: TyCon -> [(String, Type)]
+constructorFieldsOfTyCon tyCon
+  | not (isExpandableTyCon tyCon) = []
+  | otherwise = case tyConDataCons_maybe tyCon of
+      Nothing       -> [] -- abstract tycon (constructors not exported / hs-boot)
+      Just dataCons -> concatMap fieldsOfDataCon dataCons
+
+-- Type families, classes, primitives and abstract tycons have no user fields we can inspect
+isExpandableTyCon :: TyCon -> Bool
+isExpandableTyCon tyCon =
+  not (isFamilyTyCon tyCon || isClassTyCon tyCon || isPrimTyCon tyCon || isAbstractTyCon tyCon)
+
+-- Field names come from the record labels; positional constructors fall back to `Con#1`
+fieldsOfDataCon :: DataCon -> [(String, Type)]
+fieldsOfDataCon dataCon =
+  let argTys = dataConFieldTypes dataCon
+      labels = fmap (showS . flLabel) (dataConFieldLabels dataCon)
+      names  = if length labels == length argTys
+                then labels
+                else fmap (\idx -> showS (dataConName dataCon) <> "#" <> show idx) [1 .. length argTys]
+  in zip names argTys
+
+dataConFieldTypes :: DataCon -> [Type]
+#if __GLASGOW_HASKELL__ >= 900
+-- GHC 9.0 made constructor argument types linearity annotated (`Scaled Type`)
+dataConFieldTypes = fmap scaledThing . dataConOrigArgTys
+#else
+dataConFieldTypes = dataConOrigArgTys
+#endif
+
+-- First match in a lazily consumed list of results
+firstMatch :: [Maybe a] -> Maybe a
+firstMatch = listToMaybe . catMaybes
 
 -- Get Var for the data constructor
 conLikeWrapId :: ConLike -> Maybe Var

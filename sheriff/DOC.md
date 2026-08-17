@@ -87,6 +87,73 @@ Any additional rules for a package can be provided as `yaml` file. The path to t
 >     - ModuleB.fn2
 >```
 
+> Structure of Type Blocked Rules:
+>```yaml
+> - type_blocked_rule_name: "PII Rule"
+>   type_blocked_fn_name:            # functions to check; single value or list, qualified or not
+>     - show
+>     - encode
+>     - toJSON
+>   type_blocked_arg_no: 1           # single value or list, e.g. [1, 2]; omit to check every argument
+>   blocked_types:                   # "PII", "Types.PII" and "Euler.*.PII" forms all work
+>     - PII
+>   type_blocked_rule_ignore_types:  # neither matched nor looked inside
+>     - MaskedPII
+>   type_blocked_rule_fixes:
+>     - Sample Suggested Fix 1
+>   type_blocked_rule_exceptions: []
+>   type_blocked_rule_ignore_modules:
+>     - ModuleT
+>   type_blocked_rule_check_modules:
+>     - "*"
+>   type_blocked_rule_ignore_functions:
+>     - ModuleB.serialiseForVault
+>```
+
+A Type Blocked Rule blocks the listed functions from being applied to a value whose
+type **is**, or **transitively contains**, one of `blocked_types`:
+
+```haskell
+newtype PII = PII Text
+data A = A { var1 :: PII }   -- `encode (a :: A)` is blocked
+data B = B { var0 :: A }     -- `encode (b :: B)` is blocked too
+```
+
+Containment is found through both type arguments (`Maybe PII`, `[PII]`, `(Int, PII)`,
+`Map Text PII`) and data constructor fields, at any depth. The error names the path:
+
+```
+Use of 'encode' on 'B' is not allowed as it contains 'PII'.
+      Containment path: B -> var0 :: A -> var1 :: PII
+```
+
+How this differs from a Function Rule's `types_blocked_in_arg`, which only compares the
+argument's own type name:
+
+| Requirement | Rule to write |
+| --- | --- |
+| Block `show` on `Text` itself, but not on records that happen to contain a `Text` | Function Rule + `types_blocked_in_arg` |
+| Block `encode` on `PII` **and** on anything containing it | Type Blocked Rule + `blocked_types` |
+
+Point a Type Blocked Rule at narrow marker types only. Aiming it at a common type such
+as `Text` would flag nearly every record in the codebase, since almost all of them
+contain one somewhere.
+
+Note that `type_blocked_arg_no` is a list of 1-based argument positions and defaults to
+"every argument". It does **not** share the meaning of a Function Rule's `arg_no: 0`,
+which blocks the whole call.
+
+Known limitations:
+- **Polymorphic call sites are not seen.** In `f :: ToJSON a => a -> Text; f x = encode x`
+  the argument's type is the type variable `a`, so `f piiRecord` is not caught. Only
+  monomorphic uses at the concrete call site are.
+- **Abstract types are skipped.** If a type's constructors are not exported (or it comes
+  from an `hs-boot` file), the plugin cannot see its fields and will not detect
+  containment through it. Type families, classes and primitives are skipped for the same
+  reason. This fails open, so it never produces an error a developer cannot act on.
+- The strongest protection remains not deriving `Show`/`ToJSON` for the marker type at
+  all; this rule catches the cases where such instances do exist.
+
 Refer Sample Rules and exception rules in [.juspay](.juspay/sheriffRules.yaml) directory.
 
 ## How to resolve compilation errors?

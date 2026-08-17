@@ -40,6 +40,7 @@ getViolationSuggestions v = case v of
   EmptyWhereClause _ r -> db_rule_fixes r
   InfiniteRecursionDetected r -> infinite_recursion_rule_fixes r
   ColumnAccessViolation _ _ r -> column_access_rule_fixes r
+  BlockedTypeInArg _ _ _ _ r -> type_blocked_rule_fixes r
   NoViolation -> []
 
 getViolationType :: Violation -> String
@@ -52,6 +53,7 @@ getViolationType v = case v of
   EmptyWhereClause _ _ -> "EmptyWhereClause"
   InfiniteRecursionDetected _ -> "InfiniteRecursionDetected"
   ColumnAccessViolation _ _ _ -> "ColumnAccessViolation"
+  BlockedTypeInArg _ _ _ _ _ -> "BlockedTypeInArg"
   NoViolation -> "NoViolation"
 
 getViolationRule :: Violation -> Rule
@@ -64,6 +66,7 @@ getViolationRule v = case v of
   EmptyWhereClause _ r -> DBRuleT r
   InfiniteRecursionDetected r -> InfiniteRecursionRuleT r
   ColumnAccessViolation _ _ r -> ColumnAccessRuleT r
+  BlockedTypeInArg _ _ _ _ r -> TypeBlockedRuleT r
   NoViolation -> defaultRule
 
 getViolationRuleName :: Violation -> String
@@ -76,6 +79,7 @@ getViolationRuleName v = case v of
   EmptyWhereClause _ r -> db_rule_name r
   InfiniteRecursionDetected r -> infinite_recursion_rule_name r
   ColumnAccessViolation _ _ r -> column_access_rule_name r
+  BlockedTypeInArg _ _ _ _ r -> type_blocked_rule_name r
   NoViolation -> "NA"
 
 getViolationRuleExceptions :: Violation -> Rules
@@ -97,6 +101,7 @@ getRuleExceptions rule = case rule of
   DBRuleT dbRule -> db_rule_exceptions dbRule
   FunctionRuleT fnRule -> fn_rule_exceptions fnRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_exceptions infiniteRecursionRule
+  TypeBlockedRuleT typeBlockedRule -> type_blocked_rule_exceptions typeBlockedRule
   _ -> []
 
 getRuleIgnoreModules :: Rule -> Modules
@@ -105,6 +110,7 @@ getRuleIgnoreModules rule = case rule of
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_modules infiniteRecursionRule
   DBRuleT dbRule -> db_rule_ignore_modules dbRule
   ColumnAccessRuleT columnAccessRule -> column_access_rule_ignore_modules columnAccessRule
+  TypeBlockedRuleT typeBlockedRule -> type_blocked_rule_ignore_modules typeBlockedRule
   _ -> []
 
 getRuleIgnoreFunctions :: Rule -> Modules
@@ -113,6 +119,7 @@ getRuleIgnoreFunctions rule = case rule of
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_functions infiniteRecursionRule
   DBRuleT dbRule -> db_rule_ignore_functions dbRule
   ColumnAccessRuleT columnAccessRule -> column_access_rule_ignore_functions columnAccessRule
+  TypeBlockedRuleT typeBlockedRule -> type_blocked_rule_ignore_functions typeBlockedRule
   _ -> []
 
 getRuleCheckModules :: Rule -> Modules
@@ -120,6 +127,7 @@ getRuleCheckModules rule = case rule of
   FunctionRuleT fnRule -> fn_rule_check_modules fnRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_check_modules infiniteRecursionRule
   DBRuleT dbRule -> db_rule_check_modules dbRule
+  TypeBlockedRuleT typeBlockedRule -> type_blocked_rule_check_modules typeBlockedRule
   _ -> ["*"]
 
 getRuleName :: Rule -> String
@@ -128,6 +136,7 @@ getRuleName rule = case rule of
   DBRuleT dbRule -> db_rule_name dbRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_name infiniteRecursionRule
   ColumnAccessRuleT columnAccessRule -> column_access_rule_name columnAccessRule
+  TypeBlockedRuleT typeBlockedRule -> type_blocked_rule_name typeBlockedRule
   _ -> "Rule not handled"
 
 noSuggestion :: Suggestions

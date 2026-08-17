@@ -32,7 +32,7 @@ import Data.Function (on)
 import qualified Data.HashMap.Strict as HM
 import Data.List (nub, sortBy, groupBy, find, isInfixOf, isSuffixOf, isPrefixOf)
 import Data.List.Extra (splitOn)
-import Data.Maybe (catMaybes, fromMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe, mapMaybe)
 import Data.Yaml
 import Debug.Trace (traceShowId, trace)
 import GHC hiding (exprType)
@@ -514,6 +514,15 @@ checkAndApplyRule ruleT ap = case ruleT of
         case (find (\ruleFnName -> matchNamesWithModuleName fnName ruleFnName AsteriskInSecond && length args >= arg_no) ruleFnNames) of
           Just ruleFnName  -> validateFunctionRule rule ruleFnName fnName fnLHsExpr args ap 
           Nothing -> pure []
+  TypeBlockedRuleT rule@(TypeBlockedRule {type_blocked_fn_name = ruleFnNames}) -> do
+    let res = getFnNameWithAllArgs ap
+    case res of
+      Nothing                   -> pure []
+      Just (fnLocatedVar, args) -> do
+        let fnName = getLocatedVarNameWithModuleName fnLocatedVar
+        case (find (\ruleFnName -> matchNamesWithModuleName fnName ruleFnName AsteriskInSecond) ruleFnNames) of
+          Just _  -> validateTypeBlockedRule rule fnName args ap
+          Nothing -> pure []
   InfiniteRecursionRuleT rule -> pure [] --TODO: Add handling of infinite recursion rule
   GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
   ColumnAccessRuleT rule -> validateColumnAccessRule rule ap
@@ -738,6 +747,39 @@ validateFunctionRule rule ruleFnName fnName fnNameExpr args expr = do
           blockedFnsList <- getBlockedFnsList arg rule -- check if the expression has any stringification function
           mapM (\(lExpr, blockedFnName, blockedFnArgTyp) -> mkFnBlockedInArgErrorInfo expr lExpr >>= \errorInfo -> pure (lExpr, FnBlockedInArg (blockedFnName, blockedFnArgTyp) ruleFnName errorInfo rule)) blockedFnsList
       else pure []
+
+--------------------------- Type Blocked Rule Validation Logic ---------------------------
+{-
+
+  1. Pick the arguments to inspect, as per `type_blocked_arg_no` ([] means all of them)
+  2. Resolve each argument's type
+  3. Report a violation if the type is, or transitively contains, one of `blocked_types`
+
+  Step 3 is `findBlockedTypeInType`, which walks both type arguments (`Maybe PII`)
+  and data constructor fields (`data A = A { var1 :: PII }`). See its note in
+  Sheriff.Utils for how it terminates and what it deliberately does not expand.
+
+-}
+
+-- Function to check if given type blocked rule is violated or not
+validateTypeBlockedRule :: (HasPluginOpts PluginOpts) => TypeBlockedRule -> String -> [LHsExpr GhcTc] -> LHsExpr GhcTc -> TcM ([(LHsExpr GhcTc, Violation)])
+validateTypeBlockedRule rule fnName args expr = do
+  let argsToCheck = case type_blocked_arg_no rule of
+                      []     -> args -- no arg numbers configured, so check every argument
+                      argNos -> mapMaybe (\argNo -> listToMaybe $ drop (argNo - 1) args) argNos
+  catMaybes <$> mapM checkArg argsToCheck
+  where
+    checkArg :: LHsExpr GhcTc -> TcM (Maybe (LHsExpr GhcTc, Violation))
+    checkArg arg = do
+      argType <- getHsExprTypeWithResolver (logTypeDebugging . pluginOpts $ ?pluginOpts) arg
+      let res = findBlockedTypeInType (blocked_types rule) (type_blocked_rule_ignore_types rule) argType
+
+      when ((logDebugInfo . pluginOpts $ ?pluginOpts)) $ liftIO $ do
+        print $ type_blocked_rule_name rule
+        print $ (fnName, "Arg Type = " <> showS argType)
+        print $ "Blocked type match = " <> show res
+
+      pure $ fmap (\(blockedType, path) -> (expr, BlockedTypeInArg fnName (showS argType) blockedType path rule)) res
 
 -- Helper to validate types based on custom types present in the rules -- tuples, list, maybe
 validateType :: Type -> TypesToCheckInArg -> Bool

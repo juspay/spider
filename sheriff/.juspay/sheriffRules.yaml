@@ -175,6 +175,27 @@ rules:
     infinite_recursion_rule_ignore_functions:
       - Exceptions.pattern6
 
+  # PII carries encrypted data; it must never be stringified or serialised, either
+  # directly or nested anywhere inside another type.
+  - type_blocked_rule_name: "PII Rule"
+    type_blocked_fn_name:
+      - show
+      - encode
+      - toJSON
+    type_blocked_arg_no: 1
+    blocked_types:
+      - PII
+    type_blocked_rule_ignore_types:
+      # Redacting wrapper: it never emits the underlying PII, so do not look inside it
+      - MaskedPII
+    type_blocked_rule_fixes:
+      - "`PII` holds encrypted data and must never be stringified or serialised."
+      - "Drop the PII field before logging/encoding, or wrap it in a redacting type."
+    type_blocked_rule_ignore_functions:
+      - SubTests.PIITest.serialiseForVault
+    type_blocked_rule_check_modules:
+      - SubTests.PIITest
+
   - db_rule_name: "DBRuleTest"
     table_name: "Table1"
     indexed_cols_names: 

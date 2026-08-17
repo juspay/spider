@@ -13,6 +13,7 @@ It supports the following rules as of now
 6. Blocking querying in DB on non-indexed columns (indexed columns are provided in a yaml file)
 7. Detecting deterministic infinite recursion in the code
 8. Blocking use of functions with given signature
+9. Blocking use of certain functions on a type that is, or transitively contains, a given type :- Give the list of types in `blocked_types` of a Type Blocked Rule. Useful for marker types such as an encrypted `PII` newtype, where `encode` must be blocked on `PII` itself and on every type holding one, at any depth
 
 This tool is useful for developers to enforce better coding practices and prevent use of some specific unsafe function in the code.
 
