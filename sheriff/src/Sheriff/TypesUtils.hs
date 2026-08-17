@@ -36,6 +36,7 @@ getViolationSuggestions v = case v of
   FnBlockedInArg _ _ _ r -> fn_rule_fixes r
   FnUseBlocked _ r -> fn_rule_fixes r
   FnSigBlocked _ _ r -> fn_rule_fixes r
+  ConstructorUseBlocked _ r -> constructor_rule_fixes r
   NonIndexedDBColumn _ _ r -> db_rule_fixes r
   EmptyWhereClause _ r -> db_rule_fixes r
   InfiniteRecursionDetected r -> infinite_recursion_rule_fixes r
@@ -48,6 +49,7 @@ getViolationType v = case v of
   FnBlockedInArg _ _ _ _ -> "FnBlockedInArg"
   FnUseBlocked _ _ -> "FnUseBlocked"
   FnSigBlocked _ _ _ -> "FnSigBlocked"
+  ConstructorUseBlocked _ _ -> "ConstructorUseBlocked"
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
   EmptyWhereClause _ _ -> "EmptyWhereClause"
   InfiniteRecursionDetected _ -> "InfiniteRecursionDetected"
@@ -60,6 +62,7 @@ getViolationRule v = case v of
   FnBlockedInArg _ _ _ r -> FunctionRuleT r
   FnUseBlocked _ r -> FunctionRuleT r
   FnSigBlocked _ _ r -> FunctionRuleT r
+  ConstructorUseBlocked _ r -> ConstructorRuleT r
   NonIndexedDBColumn _ _ r -> DBRuleT r
   EmptyWhereClause _ r -> DBRuleT r
   InfiniteRecursionDetected r -> InfiniteRecursionRuleT r
@@ -72,6 +75,7 @@ getViolationRuleName v = case v of
   FnBlockedInArg _ _ _ r -> fn_rule_name r
   FnUseBlocked _ r -> fn_rule_name r
   FnSigBlocked _ _ r -> fn_rule_name r
+  ConstructorUseBlocked _ r -> constructor_rule_name r
   NonIndexedDBColumn _ _ r -> db_rule_name r
   EmptyWhereClause _ r -> db_rule_name r
   InfiniteRecursionDetected r -> infinite_recursion_rule_name r
@@ -102,6 +106,7 @@ getRuleExceptions rule = case rule of
 getRuleIgnoreModules :: Rule -> Modules
 getRuleIgnoreModules rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_ignore_modules fnRule
+  ConstructorRuleT constructorRule -> constructor_rule_ignore_modules constructorRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_modules infiniteRecursionRule
   DBRuleT dbRule -> db_rule_ignore_modules dbRule
   ColumnAccessRuleT columnAccessRule -> column_access_rule_ignore_modules columnAccessRule
@@ -110,6 +115,7 @@ getRuleIgnoreModules rule = case rule of
 getRuleIgnoreFunctions :: Rule -> Modules
 getRuleIgnoreFunctions rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_ignore_functions fnRule
+  ConstructorRuleT constructorRule -> constructor_rule_ignore_functions constructorRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_ignore_functions infiniteRecursionRule
   DBRuleT dbRule -> db_rule_ignore_functions dbRule
   ColumnAccessRuleT columnAccessRule -> column_access_rule_ignore_functions columnAccessRule
@@ -118,6 +124,7 @@ getRuleIgnoreFunctions rule = case rule of
 getRuleCheckModules :: Rule -> Modules
 getRuleCheckModules rule = case rule of 
   FunctionRuleT fnRule -> fn_rule_check_modules fnRule
+  ConstructorRuleT constructorRule -> constructor_rule_check_modules constructorRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_check_modules infiniteRecursionRule
   DBRuleT dbRule -> db_rule_check_modules dbRule
   _ -> ["*"]
@@ -125,6 +132,7 @@ getRuleCheckModules rule = case rule of
 getRuleName :: Rule -> String
 getRuleName rule = case rule of
   FunctionRuleT fnRule -> fn_rule_name fnRule
+  ConstructorRuleT constructorRule -> constructor_rule_name constructorRule
   DBRuleT dbRule -> db_rule_name dbRule
   InfiniteRecursionRuleT infiniteRecursionRule -> infinite_recursion_rule_name infiniteRecursionRule
   ColumnAccessRuleT columnAccessRule -> column_access_rule_name columnAccessRule

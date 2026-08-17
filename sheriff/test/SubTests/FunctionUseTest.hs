@@ -56,6 +56,16 @@ data EnumT2 = U EnumT | V
 data EnumT3 x = M | N
     deriving (Generic, Show, ToJSON, FromJSON)
 
+data BlockedStatus = JUSPAY_DECLINED | JuspayDeclined
+    deriving (Generic, Show, ToJSON, FromJSON)
+
+blockedStatusValue :: BlockedStatus
+blockedStatusValue = JUSPAY_DECLINED
+
+isBlockedStatus :: BlockedStatus -> Bool
+isBlockedStatus JuspayDeclined = True
+isBlockedStatus _ = False
+
 type P = Text
 
 en :: EnumT

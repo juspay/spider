@@ -426,8 +426,22 @@ getBadFnCalls rules (FunBind{fun_matches = matches}) = do
           -- use childrenBi and then repeated children usage as per use case
           -- (exprs :: [LHsExpr GhcTc]) = traverseConditionalUni (noWhereClauseExpansion) (childrenBi match :: [LHsExpr GhcTc])
           (exprs :: [LHsExpr GhcTc]) = traverseAstConditionally match noWhereClauseExpansion
-      concat <$> mapM (isBadExpr rules) exprs
+          (patterns :: [LPat GhcTc]) = traverseAst match
+          constructorPatternExprs = mapMaybe constructorPatternToExpr patterns
+      exprErrors <- concat <$> mapM (isBadExpr rules) exprs
+      patternErrors <- concat <$> mapM (isBadExpr rules) constructorPatternExprs
+      pure (exprErrors <> patternErrors)
 getBadFnCalls _ _ = pure []
+
+constructorPatternToExpr :: LPat GhcTc -> Maybe (LHsExpr GhcTc)
+#if __GLASGOW_HASKELL__ >= 900
+constructorPatternToExpr pat@(L _ (ConPat _ (L _ con) _)) =
+  Just $ mkGenLocated (HsConLikeOut noExtField con) (getLoc2 pat)
+#else
+constructorPatternToExpr pat@(L _ (ConPatOut (L _ con) _ _ _ _ _ _)) =
+  (\conId -> mkGenLocated (HsVar noExtField $ getLocated conId (getLoc2 pat)) (getLoc2 pat)) <$> conLikeWrapId con
+#endif
+constructorPatternToExpr _ = Nothing
 
 -- Do not expand sequelize `where` clause further
 noWhereClauseExpansion :: LHsExpr GhcTc -> Bool
@@ -447,6 +461,7 @@ noGivenFunctionCallExpansion fnName expr = case expr of
 -- Simplifies few things and handles some final transformations
 isBadExpr :: (HasPluginOpts PluginOpts) => Rules -> LHsExpr GhcTc -> TcM [(LHsExpr GhcTc, Violation)]
 isBadExpr rules ap@(L _ (HsVar _ v)) = isBadExprHelper rules ap
+isBadExpr rules ap@(L _ (HsConLikeOut _ _)) = isBadExprHelper rules ap
 isBadExpr rules ap@(L _ (HsApp _ funl funr)) = isBadExprHelper rules ap
 isBadExpr rules ap@(L _ (PatExplicitList _ _)) = isBadExprHelper rules ap
 isBadExpr rules ap@(L loc (PatHsWrap _ expr)) = isBadExpr rules (L loc expr) >>= mapM (\(x, y) -> trfViolationErrorInfo y ap x >>= \z -> pure (x, z))
@@ -488,6 +503,18 @@ checkAndApplyRule ruleT ap = case ruleT of
         case (find (\ruleFnName -> matchNamesWithModuleName fnName ruleFnName AsteriskInSecond && length args >= arg_no) ruleFnNames) of
           Just ruleFnName  -> validateFunctionRule rule ruleFnName fnName fnLHsExpr args ap 
           Nothing -> pure []
+  ConstructorRuleT rule@(ConstructorRule {constructor_name = ruleConstructorNames}) ->
+    case ap of
+      L _ (HsConLikeOut _ _) ->
+        case getFnNameWithAllArgs ap of
+          Nothing -> pure []
+          Just (constructorLocatedVar, _) -> do
+            let constructorName = getLocatedVarNameWithModuleName constructorLocatedVar
+                constructorExpr = mkLHsVar constructorLocatedVar
+            case find (\ruleConstructorName -> matchNamesWithModuleName constructorName ruleConstructorName AsteriskInSecond) ruleConstructorNames of
+              Just ruleConstructorName -> pure [(constructorExpr, ConstructorUseBlocked ruleConstructorName rule)]
+              Nothing -> pure []
+      _ -> pure []
   InfiniteRecursionRuleT rule -> pure [] --TODO: Add handling of infinite recursion rule
   GeneralRuleT rule -> pure [] --TODO: Add handling of general rule
   ColumnAccessRuleT rule -> validateColumnAccessRule rule ap
@@ -1073,7 +1100,7 @@ getFnNameAndTypeableExprWithAllArgs _ = Nothing
 -- Get function name with all it's arguments
 getFnNameWithAllArgs :: LHsExpr GhcTc -> Maybe (Located Var, [LHsExpr GhcTc])
 getFnNameWithAllArgs (L loc (HsVar _ v)) = Just (getLocated v loc, [])
-getFnNameWithAllArgs (L _ (HsConLikeOut _ cl)) = (\clId -> (noExprLoc clId, [])) <$> conLikeWrapId cl
+getFnNameWithAllArgs ap@(L _ (HsConLikeOut _ cl)) = (\clId -> (L (getLoc2 ap) clId, [])) <$> conLikeWrapId cl
 getFnNameWithAllArgs (L _ (HsAppType _ expr _)) = getFnNameWithAllArgs expr
 getFnNameWithAllArgs (L _ (HsApp _ (L loc (HsVar _ v)) funr)) = Just (getLocated v loc, [funr])
 getFnNameWithAllArgs (L _ (HsPar _ expr)) = getFnNameWithAllArgs expr
