@@ -462,7 +462,7 @@ getBadFnCalls _ _ = pure []
 constructorPatternToExpr :: LPat GhcTc -> Maybe (LHsExpr GhcTc)
 #if __GLASGOW_HASKELL__ >= 900
 constructorPatternToExpr pat@(L _ (ConPat _ (L _ con) _)) =
-  Just $ mkGenLocated (HsConLikeOut noExtField con) (getLoc2 pat)
+  Just $ mkGenLocated (HsConLikeOut [] con) (getLoc2 pat)
 #else
 constructorPatternToExpr pat@(L _ (ConPatOut (L _ con) _ _ _ _ _ _)) =
   (\conId -> mkGenLocated (HsVar noExtField $ getLocated conId (getLoc2 pat)) (getLoc2 pat)) <$> conLikeWrapId con
