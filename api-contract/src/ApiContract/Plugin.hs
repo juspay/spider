@@ -134,6 +134,7 @@ import qualified Data.Map.Ordered as OMap
 import Data.Ord (comparing)
 import qualified Data.ByteString.Lazy as BL
 import qualified Data.Aeson as A
+import ApiContract.JsonIdLaw (collectJsonIdLaw, checkJsonIdLaw)
 
 -- ENABLE_ISOLATION
 #if defined(ENABLE_LR_PLUGINS)
@@ -242,7 +243,7 @@ showSDocUnsafe' = showSDocUnsafe . ppr
 #endif
 
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="./.juspay/api-contract/",port=4444,host="::1",log=False,tc_funcs=Just False,api_contract=Just True}
+defaultCliOptions = CliOptions {path="./.juspay/api-contract/",port=4444,host="::1",log=False,tc_funcs=Just False,api_contract=Just True,id_law_check=Just True,id_law_exceptions_path=Just "./.juspay/jsonIdLawExceptions.yaml"}
 
 -- GHC 9.4 changed parsedResultAction to take/return `ParsedResult` (wrapping the
 -- HsParsedModule + parse messages); unwrap it for analysis and return it unchanged.
@@ -255,6 +256,7 @@ collectTypeInfoParser opts modSummary parsedResult = do
                                 case A.decode $ BL.fromStrict $ encodeUtf8 $ T.pack local of
                                     Just (val :: CliOptions) -> val
                                     Nothing -> defaultCliOptions
+    _ <- collectJsonIdLaw opts modSummary hpm
     let prefixPath = "./.juspay/api-contract/"
         moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
         modulePath = prefixPath <> msHsFilePath modSummary
@@ -365,6 +367,7 @@ collectInstanceInfo opts modSummary tcEnv = do
         modulePath = prefixPath <> msHsFilePath modSummary
         moduleSrcSpan = mkFileSrcSpan $ ms_location modSummary
         path = (intercalate "/" . init . splitOn "/") modulePath
+    _ <- checkJsonIdLaw opts modSummary tcEnv
     when (fromMaybe True $ api_contract cliOptions) $ do
         typeInstances <- liftIO $ toList $ mapM processInstance (fromList $ bagToList $ tcg_binds tcEnv)
         (instanceSrcSpansHM :: HashMapL SrcSpan) <- pure $ HM.fromList $ map (\(srcSpan,typeName,instanceName,_) -> (fromString' (typeName <> "--" <> instanceName), srcSpan)) $ Prelude.concat typeInstances
