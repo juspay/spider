@@ -35,6 +35,13 @@ data Rule =
     , blocked_field                :: String
     , field_rule_fixes             :: Suggestion
     , whitelisted_line_nos         :: [Int]
+    -- | Opt-in value-flow check: functions the /value/ of @blocked_field@ must
+    -- never reach, however many hops away. Empty (the default) keeps the rule
+    -- exactly as it was: a check on where the field is read.
+    , blocked_sinks                :: [String]
+    -- | Functions that make the value safe (masking, hashing). A flow that
+    -- passes through one of these is not reported.
+    , sink_sanitizers              :: [String]
     } deriving (Show, Eq)  
 
 instance FromJSON Rule where
@@ -44,12 +51,16 @@ instance FromJSON Rule where
     blocked_field <- o .: "blocked_field"
     field_rule_fixes <- o .: "field_rule_fixes"
     whitelisted_line_nos <- o .: "whitelisted_line_nos"
+    blocked_sinks <- o .:? "blocked_sinks" .!= []
+    sink_sanitizers <- o .:? "sink_sanitizers" .!= []
     return Rule
       { type_name = type_name
       , field_access_whitelisted_fns = field_access_whitelisted_fns
       , blocked_field = blocked_field
       , field_rule_fixes = field_rule_fixes
       , whitelisted_line_nos = whitelisted_line_nos
+      , blocked_sinks = blocked_sinks
+      , sink_sanitizers = sink_sanitizers
       }
 
 data PFRules = PFRules

@@ -9,7 +9,10 @@ data CliOptions = CliOptions {
     port :: Int,
     host :: String,
     log :: Bool,
-    tc_funcs :: Maybe Bool
+    tc_funcs :: Maybe Bool,
+    -- | Also dump the variable provenance graph for each module. Optional, so
+    -- existing -fplugin-opt strings keep decoding.
+    variable_graph :: Maybe Bool
 } deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data FunctionInfo = FunctionInfo

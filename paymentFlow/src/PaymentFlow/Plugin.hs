@@ -5,6 +5,9 @@
 module PaymentFlow.Plugin (plugin) where
 
 -- paymentFlow imports
+import qualified Data.Text as T
+import Control.Monad (unless)
+import VariableTracer
 import PaymentFlow.Types (VoilationRuleResult(..), PFRules(..), Rule(..), PluginOpts(..), defaultPluginOpts)
 import PaymentFlow.Patterns
 
@@ -100,7 +103,43 @@ paymentFlow opts modSummary tcEnv = do
               else listToMaybe srcGrpErrArr
           filteredErrors = (\srcGrpErrArr -> childFnFilterLogic srcGrpErrArr) <$> groupedErrors
       mapM_ (\ (VoilationRuleResult {..}) ->  addErrAt srcSpan $ OP.text $ field_rule_fixes rule ) (catMaybes filteredErrors)
+      checkBlockedSinks ruleList modSummary tcEnv
   return tcEnv
+
+{- |
+Opt-in value-flow check.
+
+The rules above police /where a blocked field is read/. Once an accessor is
+whitelisted, though, nothing stops the value it returns from travelling
+somewhere it should not go. A rule that lists @blocked_sinks@ asks the stronger
+question: does the value of this field reach one of those functions by any
+route? The provenance graph from @variableTracer@ answers it, and the reported
+error carries the whole flow.
+
+Rules without @blocked_sinks@ are unaffected, so enabling this cannot change
+the behaviour of an existing rules file.
+-}
+checkBlockedSinks :: [Rule] -> ModSummary -> TcGblEnv -> TcM ()
+checkBlockedSinks ruleList modSummary tcEnv =
+  unless (null taintRules) $ do
+    let program = link [collectModuleGraph defaultTracerOpts modSummary tcEnv]
+        findings = findTaint program defaultTraceOpts taintRules
+    mapM_ report findings
+  where
+    taintRules =
+      [ TaintRule
+          { trName = T.pack (type_name rule <> "." <> blocked_field rule)
+          , trSources = [SourceField (T.pack (type_name rule)) (T.pack (blocked_field rule))]
+          , trSinks = map (anySink . T.pack) (blocked_sinks rule)
+          , trExemptFunctions = map T.pack (field_access_whitelisted_fns rule)
+          , trSanitizers = map T.pack (sink_sanitizers rule)
+          }
+      | rule <- ruleList
+      , not (null (blocked_sinks rule))
+      ]
+
+    report finding =
+      addErrAt (locToSrcSpan (tfSinkLoc finding)) (OP.text (T.unpack (renderFinding finding)))
 
 checkBind :: [Rule] ->  LHsBindLR GhcTc GhcTc -> TcM [VoilationRuleResult]
 checkBind rule (L _ (FunBind{..} )) = do

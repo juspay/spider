@@ -1,0 +1,99 @@
+cabal-version:      3.0
+name:               variableTracer
+version:            0.1.0.0
+synopsis:           Trace a variable back to every computation that builds it
+description:
+    A reusable library (plus a ready-made GHC plugin and a CLI) that walks the
+    type-checked AST and records, for every binder, the computation that
+    produced it and what it was built out of. Per-module graphs link into a
+    whole-program graph via GHC stable names, so a value can be followed out of
+    a function through its call sites and into other modules, all the way down
+    to literals, constructors and entry-point parameters.
+
+license:            MIT
+license-file:       LICENSE
+author:             aravind.mallapureddy
+maintainer:         aravind.mallapureddy@juspay.in
+category:           Development
+build-type:         Simple
+extra-doc-files:    CHANGELOG.md
+                    README.md
+
+Flag Dev
+  Description: Run the plugin over the test module
+  Default:     False
+  Manual:      True
+
+common common-options
+  build-depends:       base
+  ghc-options:         -Wall
+                       -Wincomplete-uni-patterns
+                       -Wincomplete-record-updates
+                       -Wcompat
+                       -Widentities
+                       -fhide-source-paths
+                       -Wno-missing-signatures
+                       -Wno-orphans
+                       -- AST walks keep catch-all equations for constructors
+                       -- that only exist on some GHC versions; on any single
+                       -- version some of them are redundant by construction.
+                       -Wno-overlapping-patterns
+  default-language:    Haskell2010
+  default-extensions:  DeriveGeneric
+                       GeneralizedNewtypeDeriving
+                       InstanceSigs
+                       LambdaCase
+                       OverloadedStrings
+                       RecordWildCards
+                       ScopedTypeVariables
+                       StandaloneDeriving
+                       TypeApplications
+                       CPP
+
+library
+    import:           common-options
+    hs-source-dirs:   src
+    exposed-modules:
+        VariableTracer
+        VariableTracer.Collect
+        VariableTracer.Graph
+        VariableTracer.Plugin
+        VariableTracer.Taint
+        VariableTracer.Trace
+        VariableTracer.Types
+    build-depends:
+                  aeson
+                , bytestring
+                , containers
+                , directory
+                , filepath
+                , ghc
+                , text
+                , uniplate
+
+executable variable-tracer
+    import:           common-options
+    hs-source-dirs:   app
+    main-is:          Main.hs
+    build-depends:
+                  aeson
+                , bytestring
+                , containers
+                , directory
+                , filepath
+                , optparse-applicative
+                , text
+                , variableTracer
+
+test-suite variableTracer-test
+    import:           common-options
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          Main.hs
+    build-depends:
+                  text
+                , variableTracer
+    if flag(Dev)
+        ghc-options:
+            -fplugin=VariableTracer.Plugin
+            -fplugin-opt=VariableTracer.Plugin:{"path":"./.juspay/variableTracer/","log":true,"targets":[{"variable":"finalAmount"},{"variable":"receipt"}]}

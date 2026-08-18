@@ -17,17 +17,31 @@ instance FromJSON PluginOpts where
     rulesConfigPath <- o .:? "rulesConfigPath" .!= rulesConfigPath defaultPluginOpts
     return PluginOpts {rulesConfigPath = rulesConfigPath}
 
-newtype Rules = 
+data Rules =
   Rules
     { additionalEligibleLookupFns :: [String]
-    } deriving (Show, Eq)  
+    -- | Position of the key argument for lookup functions whose key is not the
+    -- first argument. Optional; anything unlisted uses 0, which is correct for
+    -- @Data.Map.lookup@ and @Data.HashMap.Strict.lookup@.
+    , lookupKeyArgIndexes :: [(String, Int)]
+    } deriving (Show, Eq)
 
 instance FromJSON Rules where
   parseJSON = withObject "Rule" $ \o -> do
     eligibleLookupFns <- o .: "eligible_lookup_fns"
+    keyArgIndexes <- o .:? "lookup_key_arg_indexes" .!= []
     return Rules
       { additionalEligibleLookupFns = eligibleLookupFns
+      , lookupKeyArgIndexes = map (\(KeyArgIndex fn ix) -> (fn, ix)) keyArgIndexes
       }
+
+-- | @- fn: lookupWithDefault@ / @  index: 1@ in the rules file.
+data KeyArgIndex = KeyArgIndex String Int
+  deriving (Show, Eq)
+
+instance FromJSON KeyArgIndex where
+  parseJSON = withObject "KeyArgIndex" $ \o ->
+    KeyArgIndex <$> o .: "fn" <*> o .: "index"
 
 newtype KeyLookupRules = PFRules
   { rules :: Rules

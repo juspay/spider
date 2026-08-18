@@ -26,6 +26,7 @@ import qualified Data.Text as T
 import Data.Text.Encoding (decodeUtf8, encodeUtf8)
 import Data.Time ( diffUTCTime, getCurrentTime )
 import Fdep.Types
+import VariableTracer (collectModuleGraph, defaultTracerOpts)
 import Text.Read (readMaybe)
 import Prelude hiding (id, writeFile,span)
 import qualified Prelude as P
@@ -376,7 +377,7 @@ sendTextData' cliOptions conn path data_ = do
 -- default options
 -- "{\"path\":\"/tmp/fdep/\",\"port\":9898,\"host\":\"localhost\",\"log\":true}"
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False}
+defaultCliOptions = CliOptions {path="./tmp/fdep/",port=4444,host="::1",log=False,tc_funcs=Just False,variable_graph=Just False}
 
 filterList :: [Text]
 filterList =
@@ -470,6 +471,14 @@ fDep opts modSummary tcEnv = do
                         when (shouldLog || Fdep.Types.log cliOptions) $ print err
                         --appendFile "error.log" (show err <> "\n")
                     Right _ -> pure ()
+            -- The function-level graph above says which functions call which.
+            -- This adds the layer underneath it: which values each binder was
+            -- built from, so downstream tooling can answer "what feeds this
+            -- field" and not just "what calls this function".
+            when (maybeBool $ variable_graph cliOptions) $
+                sendFileToWebSocketServer cliOptions
+                    (T.pack $ "/" <> modulePath <> ".variable_graph.json")
+                    (decodeUtf8 $ toStrict $ encode $ collectModuleGraph defaultTracerOpts modSummary tcEnv)
             t2 <- getCurrentTime
             when (shouldLog || Fdep.Types.log cliOptions) $ print ("generated dependancy for module: " <> moduleName' <> " at path: " <> path <> " total-timetaken: " <> show (diffUTCTime t2 t1))
     return tcEnv
