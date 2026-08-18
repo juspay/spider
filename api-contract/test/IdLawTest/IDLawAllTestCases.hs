@@ -4,6 +4,8 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 -- | Positive control: a law-abiding type. Must compile cleanly under the plugin.
@@ -16,7 +18,7 @@ import Data.Aeson.Types (Parser)
 import Control.Applicative ((<|>), liftA2, empty)
 import Control.Category ((<<<), (>>>))
 import Control.Monad (when)
-import Data.Text hiding (map, toLower, zip)
+import Data.Text hiding (map, toLower, zip, foldr1, all, any, concatMap, length, null)
 import qualified Data.Text as T
 import GHC.Generics (Generic)
 import Data.Aeson.Key (fromText)
@@ -1241,6 +1243,12 @@ instance FromJSON HelperNested where
   parseJSON = withObject "HelperNested" $ \o ->
     HelperNested <$> o .: "userId"
 
+---------------- Keyless hand-written encoder over a record [NO ERROR: neither side uses keys] ----------------
+-- Canary for the class-default handling: a hand-written ToJSON still leaves
+-- toEncoding to its class default, and that defaulted method must not be read as
+-- "this type is generically derived", or sField would be compared against a
+-- decoder that never reads a key.
+
 data Serialized =
   Serialized
   { sField :: Int
@@ -1254,6 +1262,12 @@ instance FromJSON Serialized where
   parseJSON =
     withText "Serialized" $
       pure . Serialized . read . unpack
+
+---------------- Encoder delegates to a tag-envelope helper [TRUE POSITIVE: encoder writes 'A', decoder expects 'AA'] ----------------
+-- The literal passed to mkTagged is a constructor tag *value*, not a JSON key;
+-- the real keys ("tag"/"payload") live inside the helper, so no key error is
+-- expected here. The tag value is traced through mkTagged's "tag" .= tag
+-- parameter, which is what exposes the HiddenA mismatch.
 
 mkTagged :: Text -> Value -> Value
 mkTagged tag payload =
@@ -1280,6 +1294,8 @@ instance FromJSON HiddenTag where
       "AA" -> HiddenA <$> o .: "payload"
       "B"  -> HiddenB <$> o .: "payload"
       _    -> fail "invalid"
+
+---------------- Sum-type tag case mismatch [TRUE POSITIVE: encoder writes 'leaf', decoder expects 'LEAF'] ----------------
 
 data Tree
   = Leaf Int
@@ -2575,9 +2591,11 @@ parseLocalFuncDecKeys = withObject "LocalFuncDecKeys" $ \o -> LocalFuncDecKeys
   <$> o .: "field1"
   <*> o .:? "field2"
 
----------------- Encoder with .= keys + decoder delegating to local function with mismatch [TRUE POSITIVE: keys unknown on both sides via delegation, limitation] ----------------
--- This is a limitation: decoder delegates to local function so keys are unknown,
--- we can't detect the mismatch. But at least no false positive.
+---------------- Encoder with .= keys + decoder delegating to local function with mismatch [TRUE POSITIVE: traced through the helper] ----------------
+-- The decoder delegates to a local function, so the keys have to be read out of
+-- parseLocalFuncDecMismatch itself.  It is simple enough to read in full (no
+-- nested parseJSON, no dynamic keys), so "wrong_key" is recovered and compared
+-- against the encoder's "field1".
 
 data LocalFuncDecMismatch = LocalFuncDecMismatch
   { lfdmField1 :: Text
@@ -2678,7 +2696,11 @@ instance ToJSON OmitNothingMatch2 where
 instance FromJSON OmitNothingMatch2 where
   parseJSON = genericParseJSON defaultOptions {fieldLabelModifier = modifyOnm2}
 
----------------- omitNothingFields differs AND sumEncoding differs [TRUE POSITIVE: sumEncoding mismatch] ----------------
+---------------- omitNothingFields differs AND sumEncoding differs [NO ERROR: single-constructor record, sumEncoding is inert] ----------------
+-- aeson only writes a constructor tag for a single-constructor type when
+-- tagSingleConstructors is set, so neither sumEncoding nor omitNothingFields
+-- can change a key here.  See SumEncodingMismatch for the multi-constructor
+-- case, where sumEncoding is live.
 
 data OmitNothingSumMismatch2 = OmitNothingSumMismatch2
   { onsm2Field1 :: Text
@@ -2908,3 +2930,253 @@ instance FromJSON StripPrefixSumType where
             pure (StripPrefixNested rest)
       _ -> fail "Invalid"
 
+
+---------------- sumEncoding differs on a multi-constructor type [TRUE POSITIVE: sumEncoding is live for sums] ----------------
+-- Counterpart to OmitNothingSumMismatch2: with more than one constructor the
+-- tag envelope really does change, so this mismatch must still be reported.
+
+data SumEncodingMismatch
+  = SEM_ConA Text
+  | SEM_ConB Int
+  deriving stock (Generic, Eq)
+
+instance ToJSON SumEncodingMismatch where
+  toJSON = genericToJSON defaultOptions {sumEncoding = UntaggedValue}
+
+instance FromJSON SumEncodingMismatch where
+  parseJSON = genericParseJSON defaultOptions
+
+---------------- tagSingleConstructors makes sumEncoding live on one constructor [TRUE POSITIVE] ----------------
+
+data TaggedSingleCtor = TaggedSingleCtor
+  { tscField1 :: Text
+  } deriving stock (Generic, Eq)
+
+instance ToJSON TaggedSingleCtor where
+  toJSON = genericToJSON defaultOptions {tagSingleConstructors = True, sumEncoding = UntaggedValue}
+
+instance FromJSON TaggedSingleCtor where
+  parseJSON = genericParseJSON defaultOptions {tagSingleConstructors = True}
+
+---------------- Encoder delegates to a local helper with matching keys [NO ERROR: helper keys match] ----------------
+-- Positive control for encoder-side helper tracing.  The helper reads record
+-- fields, which must not be mistaken for further delegation.
+
+data LocalFuncEncMatch = LocalFuncEncMatch
+  { lfemField1 :: Text
+  , lfemField2 :: Maybe Int
+  } deriving stock (Eq)
+
+mkLocalEncPayload :: LocalFuncEncMatch -> Value
+mkLocalEncPayload x = object
+  [ "field1" .= lfemField1 x
+  , "field2" .= lfemField2 x
+  ]
+
+instance ToJSON LocalFuncEncMatch where
+  toJSON x = mkLocalEncPayload x
+
+instance FromJSON LocalFuncEncMatch where
+  parseJSON = withObject "LocalFuncEncMatch" $ \o -> LocalFuncEncMatch
+    <$> o .: "field1"
+    <*> o .:? "field2"
+
+---------------- Encoder delegates to a local helper with a key mismatch [TRUE POSITIVE] ----------------
+
+data LocalFuncEncMismatch = LocalFuncEncMismatch
+  { lfemmField1 :: Text
+  } deriving stock (Eq)
+
+mkLocalEncMismatch :: LocalFuncEncMismatch -> Value
+mkLocalEncMismatch x = object
+  [ "written_key" .= lfemmField1 x
+  ]
+
+instance ToJSON LocalFuncEncMismatch where
+  toJSON x = mkLocalEncMismatch x
+
+instance FromJSON LocalFuncEncMismatch where
+  parseJSON = withObject "LocalFuncEncMismatch" $ \o -> LocalFuncEncMismatch
+    <$> o .: "read_key"
+
+---------------- Standalone-derived encoder with a leading-underscore field [NO ERROR: both sides agree on the stripped key] ----------------
+
+data UnderscoreDerivedEnc = UnderscoreDerivedEnc
+  { _UdeField1 :: Text
+  } deriving stock (Generic, Eq)
+
+deriving anyclass instance ToJSON UnderscoreDerivedEnc
+
+instance FromJSON UnderscoreDerivedEnc where
+  parseJSON = genericParseJSON defaultOptions
+
+---------------- Standalone deriving via + hand-written decoder [NO ERROR: via type keys unknown] ----------------
+-- 'deriving via' fills the instance in for you, so the encoder has a local
+-- method binding with no keys in it.  Without consulting the via strategy that
+-- reads as "this encoder writes nothing" and every decoder key looks missing.
+
+data ViaDerived = ViaDerived
+  { vdField1 :: Text
+  } deriving stock (Eq)
+
+newtype ViaCarrier = ViaCarrier ViaDerived
+
+instance ToJSON ViaCarrier where
+  toJSON (ViaCarrier x) = object [ "field_one" .= vdField1 x ]
+
+deriving via ViaCarrier instance ToJSON ViaDerived
+
+instance FromJSON ViaDerived where
+  parseJSON = withObject "ViaDerived" $ \o -> ViaDerived <$> o .: "field_one"
+
+---------------- foldr1 (liftA2 (<|>)) key fallback [NO ERROR: alternate spellings] ----------------
+
+data FoldrAltFallback = FoldrAltFallback
+  { fafOptions :: Maybe Text
+  } deriving stock (Generic, Eq)
+
+instance ToJSON FoldrAltFallback where
+  toJSON FoldrAltFallback{..} = object [ "options.add_full" .= fafOptions ]
+
+instance FromJSON FoldrAltFallback where
+  parseJSON = withObject "FoldrAltFallback" $ \o -> do
+    fafOptions <- foldr1 (liftA2 (<|>))
+      [ o .:? "options.add_full"
+      , o .:? "options_add_full"
+      ]
+    pure FoldrAltFallback{..}
+
+---------------- Required envelope key with a `<|> pure o` default [NO ERROR: envelope is optional] ----------------
+-- `o .: "DataSet" <|> pure o` succeeds whether or not the envelope is present,
+-- so DataSet is not a key the encoder has to write.
+
+data EnvelopeFallback = EnvelopeFallback
+  { efAmount :: Text
+  } deriving stock (Eq)
+
+instance ToJSON EnvelopeFallback where
+  toJSON EnvelopeFallback{..} = object [ "Amount" .= efAmount ]
+
+instance FromJSON EnvelopeFallback where
+  parseJSON = withObject "EnvelopeFallback" $ \o -> do
+    table <- o .: "DataSet" <|> pure o
+    efAmount <- table .: "Amount"
+    pure EnvelopeFallback{..}
+
+---------------- Wrapped-payload alternative reading "contents" [NO ERROR: one branch of <|>] ----------------
+
+data WrappedAltPayload = WrappedAltPayload
+  { wapId :: Text
+  } deriving stock (Eq)
+
+instance ToJSON WrappedAltPayload where
+  toJSON WrappedAltPayload{..} = object [ "id" .= wapId ]
+
+instance FromJSON WrappedAltPayload where
+  parseJSON v =
+    withObject "WrappedAltPayload" parseWapFields v
+      <|> withObject "Wrapped" (\o -> o .: "contents" >>= parseWapFields) v
+    where
+      parseWapFields o = do
+        wapId <- o .: "id"
+        pure WrappedAltPayload{..}
+
+---------------- Optional key fallback expressed with a case [NO ERROR: legacy spelling] ----------------
+
+data CaseKeyFallback = CaseKeyFallback
+  { ckfData :: Maybe Text
+  } deriving stock (Eq)
+
+instance ToJSON CaseKeyFallback where
+  toJSON CaseKeyFallback{..} = object [ "data" .= ckfData ]
+
+instance FromJSON CaseKeyFallback where
+  parseJSON = withObject "CaseKeyFallback" $ \v -> do
+    mbLegacy <- v .:? "booking"
+    d <- case mbLegacy of
+      Just b -> pure (Just b)
+      Nothing -> v .:? "data"
+    pure (CaseKeyFallback d)
+
+---------------- fromMaybe default in the decoder [NO ERROR: literal is a value, not a key] ----------------
+
+data FromMaybeDefault = FromMaybeDefault
+  { fmdMessage :: Text
+  , fmdCode    :: Text
+  } deriving stock (Eq)
+
+instance ToJSON FromMaybeDefault where
+  toJSON FromMaybeDefault{..} = object
+    [ "message" .= fmdMessage
+    , "code"    .= fmdCode
+    ]
+
+instance FromJSON FromMaybeDefault where
+  parseJSON = withObject "FromMaybeDefault" $ \o -> do
+    message <- o .: "message"
+    code <- o .:? "code"
+    pure FromMaybeDefault
+      { fmdMessage = message
+      , fmdCode = fromMaybe "request_failed" code
+      }
+
+---------------- Decoder reads one field through a local helper [NO ERROR: helper keys merged] ----------------
+
+data PartialHelperDec = PartialHelperDec
+  { phdReference :: Maybe Text
+  , phdBalance   :: Maybe Text
+  } deriving stock (Eq)
+
+parsePhdBalance :: Object -> Parser (Maybe Text)
+parsePhdBalance o = o .:? "balance"
+
+instance ToJSON PartialHelperDec where
+  toJSON PartialHelperDec{..} = object
+    [ "reference" .= phdReference
+    , "balance"   .= phdBalance
+    ]
+
+instance FromJSON PartialHelperDec where
+  parseJSON = withObject "PartialHelperDec" $ \o -> do
+    phdReference <- o .:? "reference"
+    phdBalance <- parsePhdBalance o
+    pure PartialHelperDec{..}
+
+---------------- Required decode key genuinely missing from the encoder [TRUE POSITIVE] ----------------
+-- Guard for the optional-key relaxation above: a *required* key the encoder
+-- never writes still makes fromJSON (toJSON x) fail, and must still be caught.
+
+data RequiredKeyMissing = RequiredKeyMissing
+  { rkmField1 :: Text
+  } deriving stock (Eq)
+
+instance ToJSON RequiredKeyMissing where
+  toJSON RequiredKeyMissing{..} = object [ "field1" .= rkmField1 ]
+
+instance FromJSON RequiredKeyMissing where
+  parseJSON = withObject "RequiredKeyMissing" $ \o -> RequiredKeyMissing
+    <$> o .: "field_one"
+
+---------------- Tag-envelope helper whose tags agree [NO ERROR: traced tag matches] ----------------
+-- Positive control for the tag tracing that catches HiddenTag: the tag value
+-- reaches the JSON through mkTagged's first parameter on both constructors and
+-- the decoder matches both spellings exactly, so nothing may be reported.
+
+data VisibleTag
+  = VisibleA Int
+  | VisibleB Int
+
+instance ToJSON VisibleTag where
+  toJSON (VisibleA x) =
+    mkTagged "A" (toJSON x)
+
+  toJSON (VisibleB x) =
+    mkTagged "B" (toJSON x)
+
+instance FromJSON VisibleTag where
+  parseJSON = withObject "VisibleTag" $ \o -> do
+    tag <- o .: "tag"
+    case (tag :: Text) of
+      "A" -> VisibleA <$> o .: "payload"
+      "B" -> VisibleB <$> o .: "payload"
+      _   -> fail "invalid"

@@ -7,6 +7,7 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE PatternSynonyms #-}
 {-# OPTIONS_GHC -Wno-name-shadowing #-}
 
 module ApiContract.JsonIdLaw
@@ -18,7 +19,7 @@ module ApiContract.JsonIdLaw
 import GHC
 import GHC.Data.Bag (bagToList)
 import GHC.Core.Class (className, classMethods)
-import GHC.Core.ConLike (conLikeName)
+import GHC.Core.ConLike (ConLike, conLikeName)
 import GHC.Core.DataCon (dataConFieldLabels, dataConName)
 import GHC.Core.InstEnv (ClsInst(..))
 import GHC.Core.TyCo.Rep
@@ -31,6 +32,7 @@ import GHC.Tc.Utils.Monad (TcM)
 import qualified GHC.Tc.Utils.Monad as TCError
 import GHC.Hs.Expr (HsWrap(..), XXExprGhcTc(..), HsExpansion(..))
 import GHC.Types.Name hiding (varName)
+import GHC.Types.Var (Var)
 import GHC.Types.Name.Reader (RdrName(..), rdrNameOcc)
 import GHC.Types.SrcLoc
 import GHC.Unit.Module.ModSummary
@@ -40,6 +42,15 @@ import GHC.Utils.Outputable (Outputable(..), showSDocUnsafe, ppr, docToSDoc)
 import qualified GHC.Utils.Ppr as Pretty
 import GHC.Types.FieldLabel (flLabel)
 import GHC.Data.FastString (unpackFS, mkFastString)
+#if __GLASGOW_HASKELL__ >= 904
+-- GHC 9.4 replaced the raw @SDoc@ error API with structured @TcRnMessage@s.
+import GHC.Tc.Errors.Types (mkTcRnUnknownMessage)
+import qualified GHC.Types.Error as ParseError
+#endif
+#if __GLASGOW_HASKELL__ >= 908
+-- GHC 9.8 made @FieldLabelString@ a newtype around @FastString@.
+import Language.Haskell.Syntax.Basic (field_label)
+#endif
 #else
 import GHC hiding (typeKind)
 import Bag (bagToList)
@@ -70,7 +81,7 @@ import qualified Data.Aeson as A
 import Data.Bool (bool)
 import Data.Data (Data)
 import Data.Char (toLower)
-import Data.List (foldl', nub, sort, isInfixOf)
+import Data.List (foldl', nub, sort, isInfixOf, isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust, fromJust, mapMaybe, catMaybes, listToMaybe)
@@ -95,6 +106,61 @@ unXRecTc = GHC.unXRec @GhcTc
 #else
 unXRecTc :: LHsExpr GhcTc -> HsExpr GhcTc
 unXRecTc (L _ e) = e
+#endif
+
+----------------------------------------------------------------------
+-- Version-stable pattern synonyms bridging the post-9.2 AST changes.
+-- GHC 9.4+ dropped the `HsConLikeOut` constructor (the typechecked conlike
+-- now rides on the `ConLikeTc` extension), moved `AbsBinds` behind
+-- `XHsBindsLR`, dropped `FunBind`'s tick field, and gave the paren / let /
+-- lambda-case constructors extra token fields.  Matching through these
+-- synonyms keeps every call site below identical across compilers.
+----------------------------------------------------------------------
+
+#if __GLASGOW_HASKELL__ >= 904
+pattern HsConLikeOut :: [Var] -> ConLike -> HsExpr GhcTc
+pattern HsConLikeOut tvs con <- XExpr (ConLikeTc con tvs _)
+
+pattern PatHsPar :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsPar e <- HsPar _ _ e _
+
+pattern PatParPat :: LPat (GhcPass p) -> Pat (GhcPass p)
+pattern PatParPat p <- ParPat _ _ p _
+
+pattern PatHsLet :: HsLocalBinds (GhcPass p) -> LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsLet binds body <- HsLet _ _ binds _ body
+
+pattern PatHsLamCase :: MatchGroup (GhcPass p) (LHsExpr (GhcPass p)) -> HsExpr (GhcPass p)
+pattern PatHsLamCase mg <- HsLamCase _ _ mg
+
+pattern PatFunBind :: LIdP GhcTc -> MatchGroup GhcTc (LHsExpr GhcTc) -> HsBindLR GhcTc GhcTc
+pattern PatFunBind fid mg <- FunBind _ fid mg
+
+pattern PatAbsBinds :: LHsBinds GhcTc -> HsBindLR GhcTc GhcTc
+pattern PatAbsBinds binds <- XHsBindsLR (AbsBinds{abs_binds = binds})
+#else
+pattern PatHsPar :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsPar e <- HsPar _ e
+
+pattern PatParPat :: LPat (GhcPass p) -> Pat (GhcPass p)
+pattern PatParPat p <- ParPat _ p
+
+pattern PatHsLet :: LHsLocalBinds (GhcPass p) -> LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsLet binds body <- HsLet _ binds body
+
+pattern PatHsLamCase :: MatchGroup (GhcPass p) (LHsExpr (GhcPass p)) -> HsExpr (GhcPass p)
+pattern PatHsLamCase mg <- HsLamCase _ mg
+
+#if __GLASGOW_HASKELL__ >= 900
+-- 9.0/9.2: `fun_co_fn` is gone, `fun_tick` is not.
+pattern PatFunBind :: LIdP GhcTc -> MatchGroup GhcTc (LHsExpr GhcTc) -> HsBindLR GhcTc GhcTc
+pattern PatFunBind fid mg <- FunBind _ fid mg _
+#else
+pattern PatFunBind fid mg <- FunBind _ fid mg _ _
+#endif
+
+pattern PatAbsBinds :: LHsBinds GhcTc -> HsBindLR GhcTc GhcTc
+pattern PatAbsBinds binds <- AbsBinds{abs_binds = binds}
 #endif
 
 ----------------------------------------------------------------------
@@ -177,7 +243,14 @@ handleSpliceDecl acc l (SpliceDecl _ (L _ splice) _) =
         "mkParseJSON"       -> insertField key (\psi -> psi{psiOptsDec = Just optsStr, psiSpan = l}) acc
         _ -> acc
 
-#if __GLASGOW_HASKELL__ >= 900
+#if __GLASGOW_HASKELL__ >= 904
+-- `HsSplice` was split up after 9.2: a declaration splice now carries an
+-- `HsUntypedSplice` (typed splices became an `HsExpr` constructor and cannot
+-- appear at declaration level, so nothing is lost here).
+spliceSpine :: HsUntypedSplice GhcPs -> Maybe (String, Text, String)
+spliceSpine (HsUntypedSpliceExpr _ expr) = spineOf (unLoc expr)
+spliceSpine _ = Nothing
+#elif __GLASGOW_HASKELL__ >= 900
 spliceSpine :: HsSplice GhcPs -> Maybe (String, Text, String)
 spliceSpine (HsUntypedSplice _ _ _ expr) = spineOf (unLoc expr)
 spliceSpine (HsTypedSplice _ _ _ expr) = spineOf (unLoc expr)
@@ -210,7 +283,7 @@ spineOf e = case appSpine e of
     tyNameOfExpr other = stripQuotes (T.unpack (pprText other))
 
 appSpine :: HsExpr GhcPs -> [HsExpr GhcPs]
-appSpine (HsPar _ e) = appSpine (GHC.unXRec @GhcPs e)
+appSpine (PatHsPar e) = appSpine (GHC.unXRec @GhcPs e)
 appSpine (HsApp _ f a) = appSpine (GHC.unXRec @GhcPs f) ++ [GHC.unXRec @GhcPs a]
 appSpine e = [e]
 
@@ -265,16 +338,35 @@ checkJsonIdLaw opts modSummary tcg = do
             allTypes
           errs = concatMap (checkType moduleSrcSpan parsedMap localKeys tagValues altGroups definedHere instPresence) typesToCheck
           errsNub = nub errs
+#if __GLASGOW_HASKELL__ >= 904
+      -- `addErrs` takes structured `TcRnMessage`s from GHC 9.4 onwards.
+      unless (null errsNub) $ TCError.addErrs (map (\(sp,e) -> (sp, mkTcRnUnknownMessage (ParseError.mkPlainError ParseError.noHints (docToSDoc (Pretty.text (generateJsonIdLawError e)))))) errsNub)
+#else
       unless (null errsNub) $ TCError.addErrs (map (\(sp,e) -> (sp, docToSDoc (Pretty.text (generateJsonIdLawError e)))) errsNub)
+#endif
       pure tcg
 
 -- | Per type (keyed by head tycon occNameString): the type's source span and
 -- record-field labels, so that a 'DerivedPlain' side's keys can be taken as
 -- the field labels.
-definedHereTyCons :: TcGblEnv -> ModSummary -> Map Text (SrcSpan, [Text])
+-- | What we know about a type declared in this module.
+data TyConInfo = TyConInfo
+  { tciSpan    :: SrcSpan
+  , tciFields  :: [Text]
+  -- ^ Record field labels, across all constructors.
+  , tciNumCons :: Int
+  -- ^ Number of data constructors.  aeson only emits a constructor tag for a
+  -- single-constructor type when @tagSingleConstructors@ is set, so this decides
+  -- whether the tag-related 'Options' fields can affect any JSON key.
+  }
+
+emptyTyConInfo :: SrcSpan -> TyConInfo
+emptyTyConInfo sp = TyConInfo sp [] 0
+
+definedHereTyCons :: TcGblEnv -> ModSummary -> Map Text TyConInfo
 definedHereTyCons tcg modSummary =
-  Map.fromListWith (\(s1,a) (s2,b) -> (combineSpan s1 s2, nub (a ++ b)))
-    [ (keyOfTyCon tc, (nameSrcSpan (tyConName tc), fieldLabelsOf tc))
+  Map.fromListWith mergeInfo
+    [ (keyOfTyCon tc, TyConInfo (nameSrcSpan (tyConName tc)) (fieldLabelsOf tc) (length (tyConDataCons tc)))
     | tc <- tcsOf tcg
     , isAlgTyCon tc
     , not (isClassTyCon tc)
@@ -282,6 +374,9 @@ definedHereTyCons tcg modSummary =
     ]
   where
     tcsOf = filter isSafeTyCon . maybe [] id . fmap (\e -> e ^? biplateRef) . Just . tcg_tcs
+    mergeInfo a b = TyConInfo (combineSpan (tciSpan a) (tciSpan b))
+                              (nub (tciFields a ++ tciFields b))
+                              (max (tciNumCons a) (tciNumCons b))
     combineSpan s1 s2 | s1 /= noSrcSpan = s1
                       | otherwise       = s2
 
@@ -290,7 +385,12 @@ tcDefinedHere modSummary tc = nameModule_maybe (tyConName tc) == Just (ms_mod mo
 
 fieldLabelsOf :: TyCon -> [Text]
 fieldLabelsOf tc = nub
+#if __GLASGOW_HASKELL__ >= 908
+  -- `flLabel` yields a `FieldLabelString` newtype from GHC 9.8 onwards.
+  [ T.pack (unpackFS (field_label (flLabel fl)))
+#else
   [ T.pack (unpackFS (flLabel fl))
+#endif
   | dc <- tyConDataCons tc
   , fl <- dataConFieldLabels dc
   ]
@@ -324,6 +424,26 @@ headTypeKeyOfInst inst = case is_tys inst of
 -- Local (custom) instance key extraction from @tcg_binds@.
 ----------------------------------------------------------------------
 
+-- | Markers used in place of a pretty-printed @Options@ expression when a side
+-- builds its JSON in a way we cannot read statically.  They are not valid
+-- Haskell, so they can never collide with a real @Options@ text.
+nonStandardEncoding, nonStandardDecoding :: Text
+nonStandardEncoding = "<non-standard encoding>"
+nonStandardDecoding = "<non-standard decoding>"
+
+isUnknownOptsText :: Text -> Bool
+isUnknownOptsText t = "<non-standard" `T.isPrefixOf` t
+
+-- | Is this method body just the class default method (@$dmtoJSON@ and
+-- friends)?  GHC emits a real @FunBind@ named after the method for
+-- @deriving anyclass@ instances and for any method an instance omits, so
+-- without this test such a binding looks like a hand-written method that
+-- produces no JSON keys at all.  Returns the default method's @OccName@.
+defaultMethodOf :: HsExpr GhcTc -> Maybe String
+defaultMethodOf body = case appSpineTc body of
+  (h : _) | Just (occ, _) <- opName h, "$dm" `isPrefixOf` occ -> Just occ
+  _ -> Nothing
+
 -- type occNameString key -> (encSpan, encode keys, decSpan, decode keys,
 --                              encGenericOpts, decGenericOpts, delegated enc type key)
 collectLocalKeys :: TcGblEnv -> IO (Map Text (SrcSpan, [KeyInfo], SrcSpan, [KeyInfo], Maybe Text, Maybe Text, Maybe Text))
@@ -336,18 +456,107 @@ collectLocalKeys tcg = do
       (combineSpan es1 es2, ek1++ek2, combineSpan ds1 ds2, dk1++dk2, go1 `plusOpt` go3, go2 `plusOpt` go4, del1 <|> del2)
     combineSpan s1 s2 | s1 /= noSrcSpan = s1
                       | otherwise       = s2
+    -- A type can contribute several rows (e.g. @toJSON@ and @toEncoding@).  An
+    -- "unknown keys" marker must win over a concrete @Options@ text regardless of
+    -- the order the binds happen to come out of the bag, or the verdict would
+    -- depend on @tcg_binds@ ordering.
     plusOpt Nothing x = x
-    plusOpt x _ = x
+    plusOpt x Nothing = x
+    plusOpt x@(Just a) y@(Just b)
+      | isUnknownOptsText a = x
+      | isUnknownOptsText b = y
+      | otherwise           = x
 
     processBind :: LHsBindLR GhcTc GhcTc -> IO [(Text, (SrcSpan, [KeyInfo], SrcSpan, [KeyInfo], Maybe Text, Maybe Text, Maybe Text))]
 #if __GLASGOW_HASKELL__ >= 900
-    processBind (L l (FunBind _ id' matches _)) = methodKeys (locA l) id' matches
-    processBind (L _ (AbsBinds{abs_binds = binds})) = concat <$> mapM processBind (bagToList binds)
+    processBind (L l (PatFunBind id' matches)) = methodKeys (locA l) id' matches
+    processBind (L _ (PatAbsBinds binds)) = concat <$> mapM processBind (bagToList binds)
 #else
-    processBind (L l (FunBind _ id' matches _ _)) = methodKeys l id' matches
-    processBind (L _ (AbsBinds{abs_binds = binds})) = concat <$> mapM processBind (bagToList binds)
+    processBind (L l (PatFunBind id' matches)) = methodKeys l id' matches
+    processBind (L _ (PatAbsBinds binds)) = concat <$> mapM processBind (bagToList binds)
 #endif
     processBind _ = pure []
+
+    -- Every top-level function in this module, so that a @toJSON@/@parseJSON@
+    -- that delegates to one can be followed into it.  The JSON methods
+    -- themselves are excluded: they are handled by 'methodKeys'.
+    helperBinds :: Map String (MatchGroup GhcTc (LHsExpr GhcTc))
+    helperBinds = Map.fromList (concatMap collectHelper (bagToList (tcg_binds tcg)))
+
+    collectHelper :: LHsBindLR GhcTc GhcTc -> [(String, MatchGroup GhcTc (LHsExpr GhcTc))]
+    collectHelper (L _ (PatFunBind fid mg))
+      | let occ = occNameString (nameOccName (getName (unXRecTc fid)))
+      , occ `notElem` jsonMethodNames
+      = [(occ, mg)]
+    collectHelper (L _ (PatAbsBinds binds)) = concatMap collectHelper (bagToList binds)
+    collectHelper _ = []
+
+    -- Names of same-module functions applied in these expressions -- the same
+    -- notion of "local call" that 'hasLocalFuncCall' tests for.  Record field
+    -- selectors land here too; they are harmless because they contribute no keys.
+    localCalleeNames :: [LHsExpr GhcTc] -> [String]
+    localCalleeNames es = nub
+      [ occ
+      | L _ e <- es
+      , (h : _) <- [appSpineTc e]
+      , Just (occ, Just m) <- [opName h]
+      , m == currentModName
+      , occ /= "parseJSON"
+      ]
+
+    -- The keys a same-module helper contributes, when its body can be read in
+    -- full.  'Nothing' means "not statically readable", which leaves the calling
+    -- side unknown exactly as it was before this tracing existed.  An empty key
+    -- set is also reported as unreadable: a helper we can parse but which yields
+    -- no keys (a value transformer, a dynamic @fromText k@ lookup) must not be
+    -- mistaken for a decoder that reads nothing.
+    tracedHelperKeys :: Side -> MatchGroup GhcTc (LHsExpr GhcTc) -> Maybe [KeyInfo]
+    tracedHelperKeys side mg
+      | any unreadable bodies = Nothing
+      | delegatesFurther = Nothing
+      | null keys = Nothing
+      | otherwise = Just keys
+      where
+        alts = unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])
+        subExprs = alts ^? biplateRef :: [LHsExpr GhcTc]
+        bodies = [ b | L _ m <- alts, Just b <- [matchBody m] ]
+        keys = helperOwnKeys side mg
+        unreadable b = hasObjectConstruction b || hasCompositionGeneric b
+                    || (case side of
+                          DecodeSide -> hasDecDelegation b
+                          EncodeSide -> hasDelegation b)
+        -- Does this helper hand the JSON off to a *further* helper that carries
+        -- keys of its own?  We only follow one level, so anything deeper would
+        -- give us a partial key set, which is worse than no key set.  Callees
+        -- that carry no keys -- record field selectors, formatting utilities --
+        -- are not delegation and must not block the trace.
+        delegatesFurther =
+          any (\c -> maybe False (not . null . helperOwnKeys side) (Map.lookup c helperBinds))
+              (localCalleeNames subExprs)
+
+    -- The keys a function's own body mentions, ignoring anything it delegates to.
+    helperOwnKeys :: Side -> MatchGroup GhcTc (LHsExpr GhcTc) -> [KeyInfo]
+    helperOwnKeys side mg = nub $ case side of
+        DecodeSide -> concatMap (extractKeysFromExpr (Just currentModName) DecodeSide . unLoc) subExprs
+        EncodeSide -> concatMap (walkEncKeys (Just currentModName)) bodies
+                        ++ concat [ whereClauseKeys (Just currentModName) m | L _ m <- alts ]
+      where
+        alts = unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])
+        subExprs = alts ^? biplateRef :: [LHsExpr GhcTc]
+        bodies = [ b | L _ m <- alts, Just b <- [matchBody m] ]
+
+    -- Follow a delegating method into the one helper that actually yields keys.
+    -- Ambiguity (two readable helpers) means we cannot tell which one produces
+    -- the JSON, so the side stays unknown.
+    tracedKeysFor :: Side -> [LHsExpr GhcTc] -> [KeyInfo]
+    tracedKeysFor side es =
+      case [ ks
+           | c <- localCalleeNames es
+           , Just mg <- [Map.lookup c helperBinds]
+           , Just ks <- [tracedHelperKeys side mg]
+           ] of
+        [ks] -> ks
+        _    -> []
 
     methodKeys :: SrcSpan -> LIdP GhcTc -> MatchGroup GhcTc (LHsExpr GhcTc) -> IO [(Text, (SrcSpan, [KeyInfo], SrcSpan, [KeyInfo], Maybe Text, Maybe Text, Maybe Text))]
     methodKeys l id' matches = do
@@ -365,19 +574,46 @@ collectLocalKeys tcg = do
                    | methodName == "parseJSON" = DecodeSide
                    | otherwise = EncodeSide
               mGenOpts = detectGenericDeriving matchAlts
+              allBodies = [ body | L _ m <- matchAlts, Just body <- [matchBody m] ]
+              defaultMethods = mapMaybe defaultMethodOf allBodies
+              -- Set only when *every* alternative is the class default method.
+              mDefaultMethod
+                | not (null allBodies)
+                , length defaultMethods == length allBodies = listToMaybe defaultMethods
+                | otherwise = Nothing
           case () of
-            _ | methodName `elem` ["toJSON","toEncoding"] -> do
-                  let encKeys = nub (concat
+            -- @deriving anyclass@, or a method the instance omitted: the keys are
+            -- whatever aeson's generic default produces, i.e. the field labels.
+            _ | Just "$dmtoJSON" <- mDefaultMethod ->
+                  pure [(tyKey, (l, [], noSrcSpan, [], Just "defaultOptions", Nothing, Nothing))]
+              | Just "$dmparseJSON" <- mDefaultMethod ->
+                  pure [(tyKey, (noSrcSpan, [], l, [], Nothing, Just "defaultOptions", Nothing))]
+              -- Any other defaulted method (@toEncoding@, @toJSONList@, ...) says
+              -- nothing about this type's keys.  A row here would claim the side
+              -- has a local binding producing zero keys -- which is how every
+              -- hand-written 'ToJSON' picks up a spurious empty encode row from
+              -- its defaulted @toEncoding@.
+              | isJust mDefaultMethod -> pure []
+              | methodName `elem` ["toJSON","toEncoding"] -> do
+                  let ownEncKeys = nub (concat
                                     [ walkEncKeys (Just currentModName) body
                                     | L _ m <- matchAlts, Just body <- [matchBody m] ]
                                       ++ concat [ whereClauseKeys (Just currentModName) m
                                                 | L _ m <- matchAlts ])
-                      bodies = [ body | L _ m <- matchAlts, Just body <- [matchBody m] ]
-                      hasDel = any hasDelegation bodies
-                      hasObj = any hasObjectConstruction bodies
-                      hasCompGen = any hasCompositionGeneric bodies
-                      nonStd = hasDel || hasObj || hasCompGen
-                      finalGenOpts = mGenOpts <|> (guard nonStd >> Just "<non-standard encoding>")
+                      -- An encoder that builds part or all of its object in a
+                      -- same-module helper (@toJSON x = mkPayload x@) has those
+                      -- keys nowhere in its own body; read them out of the
+                      -- helper when it is simple enough.
+                      encKeys = nub (ownEncKeys ++ tracedKeysFor EncodeSide exprs)
+                      hasDel = any hasDelegation allBodies
+                      hasObj = any hasObjectConstruction allBodies
+                      hasCompGen = any hasCompositionGeneric allBodies
+                      hasLocalCall = any (hasLocalFuncCall currentModName) exprs
+                      -- Without this, an encoder whose helper we could not read
+                      -- looks like an encoder that writes no keys at all, and
+                      -- every decoder key is reported as missing.
+                      nonStd = hasDel || hasObj || hasCompGen || (hasLocalCall && null encKeys)
+                      finalGenOpts = mGenOpts <|> (guard nonStd >> Just nonStandardEncoding)
                       mDelegatedKey = if hasDel && not hasObj && null encKeys
                                         then findDelegatedTypeKey matchAlts
                                         else Nothing
@@ -392,15 +628,25 @@ collectLocalKeys tcg = do
                         | L _ m <- matchAlts
                         , let lbs = grhssLocalBinds (matchGRHSs m)
                         ]
-                      decKeys = nub (filter (\k -> kiKey k `notElem` map kiKey badWhereKeys) decKeys')
-                      bodies = [ body | L _ m <- matchAlts, Just body <- [matchBody m] ]
-                      hasDecDel = any hasDecDelegation bodies
-                      hasCompGen = any hasCompositionGeneric bodies
+                      ownDecKeys = nub (filter (\k -> kiKey k `notElem` map kiKey badWhereKeys) decKeys')
+                      -- @parseJSON v = parseThing v@: some or all of the keys
+                      -- live in a helper, so merge whatever it yields.
+                      allDecKeys = nub (ownDecKeys ++ tracedKeysFor DecodeSide exprs)
+                      -- Envelope keys whose alternation has a keyless branch.
+                      altKeys = defaultedAltKeys (Just currentModName) exprs
+                      decKeys = [ k | k <- allDecKeys, not (kiKey k `Set.member` altKeys) ]
+                      hasDecDel = any hasDecDelegation allBodies
+                      hasCompGen = any hasCompositionGeneric allBodies
                       hasLocalCall = any (hasLocalFuncCall currentModName) (matchAlts ^? biplateRef :: [LHsExpr GhcTc])
                       nonStdDec = hasDecDel || hasCompGen || hasLocalCall
-                      finalDecGenOpts = mGenOpts <|> (guard (nonStdDec && null decKeys) >> Just "<non-standard decoding>")
+                      finalDecGenOpts = mGenOpts <|> (guard (nonStdDec && null decKeys) >> Just nonStandardDecoding)
                   pure [(tyKey, (noSrcSpan, [], l, decKeys, Nothing, finalDecGenOpts, Nothing))]
               | otherwise -> pure []
+
+-- | The aeson class methods this check reads.  Anything else bound at the top
+-- level of a module is an ordinary function, and therefore a potential helper.
+jsonMethodNames :: [String]
+jsonMethodNames = ["toJSON", "toEncoding", "parseJSON", "toJSONList", "parseJSONList"]
 
 methodAppliedType :: String -> Type -> Maybe Type
 #if __GLASGOW_HASKELL__ >= 900
@@ -456,13 +702,31 @@ collectTagValues tcg = do
     mergeRows (e1,d1,c1,ca1,ec1,dc1) (e2,d2,c2,ca2,ec2,dc2) =
       (Set.union e1 e2, Set.union d1 d2, Map.union c1 c2, ca1 <|> ca2, Set.union ec1 ec2, Set.union dc1 dc2)
 
+    -- Same-module functions that write the @"tag"@ key of a value handed to
+    -- them, keyed by name and carrying the parameter positions the tag arrives
+    -- in.  An encoder delegating to one of these still has a statically known
+    -- tag value even though its own body never mentions @"tag"@.
+    helperTagPos :: Map String [Int]
+    helperTagPos = Map.fromListWith (\a b -> nub (a ++ b))
+                     (concatMap collectTagHelper (bagToList (tcg_binds tcg)))
+
+    collectTagHelper :: LHsBindLR GhcTc GhcTc -> [(String, [Int])]
+    collectTagHelper (L _ (PatFunBind fid mg))
+      | let occ = occNameString (nameOccName (getName (unXRecTc fid)))
+      , occ `notElem` jsonMethodNames
+      , poss <- helperTagParamPositions mg
+      , not (null poss)
+      = [(occ, poss)]
+    collectTagHelper (L _ (PatAbsBinds binds)) = concatMap collectTagHelper (bagToList binds)
+    collectTagHelper _ = []
+
     processBind :: LHsBindLR GhcTc GhcTc -> IO [(Text, (Set Text, Set Text, Map Text Text, Maybe Text, Set Text, Set Text))]
 #if __GLASGOW_HASKELL__ >= 900
-    processBind (L l (FunBind _ id' matches _)) = methodTags (locA l) id' matches
-    processBind (L _ (AbsBinds{abs_binds = binds})) = concat <$> mapM processBind (bagToList binds)
+    processBind (L l (PatFunBind id' matches)) = methodTags (locA l) id' matches
+    processBind (L _ (PatAbsBinds binds)) = concat <$> mapM processBind (bagToList binds)
 #else
-    processBind (L l (FunBind _ id' matches _ _)) = methodTags l id' matches
-    processBind (L _ (AbsBinds{abs_binds = binds})) = concat <$> mapM processBind (bagToList binds)
+    processBind (L l (PatFunBind id' matches)) = methodTags l id' matches
+    processBind (L _ (PatAbsBinds binds)) = concat <$> mapM processBind (bagToList binds)
 #endif
     processBind _ = pure []
 
@@ -480,7 +744,7 @@ collectTagValues tcg = do
               exprs = matchAlts ^? biplateRef :: [LHsExpr GhcTc]
           case () of
             _ | methodName `elem` ["toJSON","toEncoding"] ->
-                  let (encTags, encConToTag, encCons) = collectEncTags matchAlts
+                  let (encTags, encConToTag, encCons) = collectEncTags currentModName helperTagPos matchAlts
                   in pure [(tyKey, (encTags, Set.empty, encConToTag, Nothing, encCons, Set.empty))]
               | methodName == "parseJSON" ->
                   let (decTagsCase, mCatchAllCase) = collectDecTags exprs
@@ -496,20 +760,16 @@ collectTagValues tcg = do
 -- keys that appear as alternatives in a @<|>@ expression (direct or via @liftA2@).
 collectAltGroups :: TcGblEnv -> IO AltGroupMap
 collectAltGroups tcg = do
-  rows <- mapM processBind (bagToList (tcg_binds tcg))
+  let currentModName = moduleNameString (moduleName (tcg_mod tcg))
+  rows <- mapM (processBind currentModName) (bagToList (tcg_binds tcg))
   pure (Map.fromListWith (Map.unionWith Set.union) (concat rows))
   where
-    processBind :: LHsBindLR GhcTc GhcTc -> IO [(Text, Map Text (Set Text))]
-#if __GLASGOW_HASKELL__ >= 900
-    processBind (L _ (FunBind _ id' matches _)) = pure (methodAlts id' matches)
-    processBind (L _ (AbsBinds{abs_binds = binds})) = concat <$> mapM processBind (bagToList binds)
-#else
-    processBind (L _ (FunBind _ id' matches _ _)) = pure (methodAlts id' matches)
-    processBind (L _ (AbsBinds{abs_binds = binds})) = concat <$> mapM processBind (bagToList binds)
-#endif
-    processBind _ = pure []
+    processBind :: String -> LHsBindLR GhcTc GhcTc -> IO [(Text, Map Text (Set Text))]
+    processBind modName (L _ (PatFunBind id' matches)) = pure (methodAlts modName id' matches)
+    processBind modName (L _ (PatAbsBinds binds)) = concat <$> mapM (processBind modName) (bagToList binds)
+    processBind _ _ = pure []
 
-    methodAlts id' matches =
+    methodAlts currentModName id' matches =
       let methodName = occNameString (nameOccName (getName (unXRecTc id')))
           ty = idType (unXRecTc id')
           mTyKey = case methodAppliedType methodName ty of
@@ -521,9 +781,62 @@ collectAltGroups tcg = do
              let matchAlts = unLoc (mg_alts matches :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])
                  exprs = matchAlts ^? biplateRef :: [LHsExpr GhcTc]
                  groups = concatMap (findAltGroups . unLoc) exprs
+                            ++ caseFallbackGroups currentModName exprs
                  keyMap = buildAltMap groups
              in [(tyKey, keyMap)]
            _ -> []
+
+-- | Fallback groups written as a @case@ over an already-parsed optional key
+-- rather than with @\<|\>@:
+--
+-- @
+--   mbBooking \<- v .:? "booking"
+--   bData \<- case mbBooking of
+--             Just b  -> pure (Just b)
+--             Nothing -> v .:? "data"
+-- @
+--
+-- \"booking\" and \"data\" fill the same field, so the encoder only has to write
+-- one of them.  Recognised by binding the scrutinee: a @do@ statement
+-- @v \<- \<expr reading exactly one key\>@ followed by a @case@ on that same @v@.
+caseFallbackGroups :: String -> [LHsExpr GhcTc] -> [[Text]]
+caseFallbackGroups currentModName exprs =
+  [ nub (boundKey : altKeys)
+  | (scrutName, boundKey) <- boundKeys
+  , (caseName, altKeys) <- caseKeys
+  , scrutName == caseName
+  , not (null altKeys)
+  ]
+  where
+    stmts = [ s | L _ e <- exprs, HsDo _ _ ss <- [peelWrap e], L _ s <- unLoc ss ]
+    boundKeys =
+      [ (v, k)
+      | BindStmt _ pat rhs <- stmts
+      , Just v <- [patVarName (unXRecTc pat)]
+      , [k] <- [nub (map kiKey (deepDecKeys rhs))]
+      ]
+    caseKeys =
+      [ (v, concatMap (map kiKey . deepDecKeys) (altBodies mg))
+      | L _ e <- exprs
+      , HsCase _ scrut mg <- [peelWrap e]
+      , Just v <- [exprVarName (unXRecTc scrut)]
+      ]
+    altBodies mg = [ b | L _ m <- unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])
+                       , Just b <- [matchBodyL m] ]
+    deepDecKeys b = [ k
+                    | L _ sub <- (b ^? biplateRef :: [LHsExpr GhcTc])
+                    , k <- extractKeysFromExpr (Just currentModName) DecodeSide sub
+                    ]
+    exprVarName e = case peelWrap e of
+      HsVar _ (L _ v) -> Just (occNameString (nameOccName (getName v)))
+      _ -> Nothing
+
+-- | The variable a pattern binds, for simple @v <- ...@ binders.
+patVarName :: Pat GhcTc -> Maybe String
+patVarName p = case p of
+  VarPat _ (L _ v) -> Just (occNameString (nameOccName (getName v)))
+  PatParPat inner -> patVarName (unXRecTc inner)
+  _ -> Nothing
 
 -- | Find @<|>@ fallback groups in an expression. Returns a list of
 --   key-groups, where each group is a list of decode keys that are
@@ -574,7 +887,14 @@ findAltGroups e0 = go 0 (peelWrap e0)
       Just ("foldr1", _) -> True
       _ -> False
 
-    hasAltOpInSpine = any (\x -> isAltOp x || isLiftA2 x)
+    -- The combining function of a @foldr1@ arrives as an argument, so it is an
+    -- application (@liftA2 (<|>)@) rather than a bare variable.  Look at the
+    -- head of each element's own spine, or @foldr1 (liftA2 (<|>)) [...]@ is
+    -- never recognised as an alternation.
+    hasAltOpInSpine = any (\x -> isAltOp x || isLiftA2 x || altOpUnderHead x)
+    altOpUnderHead x = case appSpineTc (peelWrap x) of
+      (h : args) -> isLiftA2 h && any isAltOp args
+      [] -> False
 
     isExplicitList x = case peelWrap x of
       ExplicitList _ _ -> True
@@ -591,7 +911,7 @@ findAltGroups e0 = go 0 (peelWrap e0)
           in if not (null ks) then ks
              else case peelWrap expr of
                HsApp _ f a -> extractKeys (unXRecTc f) ++ extractKeys (unXRecTc a)
-               HsPar _ p -> extractKeys (unXRecTc p)
+               PatHsPar p -> extractKeys (unXRecTc p)
                _ -> []
 
 -- | Build a map from each key to the set of its alternative keys.
@@ -614,6 +934,67 @@ extractEncTagObjValues e = case appSpineTc e of
                               (v : _) -> [v]
                               [] -> []
       _ -> []
+  _ -> []
+
+-- | Like 'extractEncTagObjValues', but returns the 'Name' of the variable in
+-- the tag position rather than a literal: @"tag" .= t@ yields @t@.  Used to
+-- work out which of a helper's parameters ends up as the constructor tag.
+encTagValueVars :: HsExpr GhcTc -> [Name]
+encTagValueVars e = case appSpineTc e of
+  (h : keyArg : valArgs)
+    | Just (occ, Just mmod) <- opName h
+    , isAesonMod (Just mmod)
+    , occ == ".="
+    , Just "tag" <- keyString keyArg
+    -> [ getName v | a <- valArgs, HsVar _ (L _ v) <- [peelWrap a] ]
+  _ -> []
+
+-- | Which of a same-module function's parameters are written out as a
+-- constructor tag by its body.  For
+--
+-- @
+--   mkTagged tag payload = object [ "tag" .= tag, "payload" .= payload ]
+-- @
+--
+-- this is @[0]@, which lets 'collectEncTags' read the tag value @"A"@ out of
+-- @toJSON (HiddenA x) = mkTagged "A" (toJSON x)@ -- an encoder that mentions
+-- no @"tag"@ key of its own.
+helperTagParamPositions :: MatchGroup GhcTc (LHsExpr GhcTc) -> [Int]
+helperTagParamPositions mg = nub
+  [ i
+  | L _ m <- alts
+  , (i, Just v) <- zip [0 ..] (matchPatVarNames m)
+  , v `elem` tagVars
+  ]
+  where
+    alts = unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])
+    tagVars = concatMap (encTagValueVars . unLoc) (alts ^? biplateRef :: [LHsExpr GhcTc])
+
+-- | The 'Name' bound by each argument pattern of a match, in order
+-- ('Nothing' for anything that is not a plain variable).
+matchPatVarNames :: Match GhcTc (LHsExpr GhcTc) -> [Maybe Name]
+#if __GLASGOW_HASKELL__ >= 900
+matchPatVarNames (Match _ _ pats _) = map (patBoundName . unXRecTc) pats
+#else
+matchPatVarNames (Match _ pats _) = map (patBoundName . unLoc) pats
+#endif
+
+patBoundName :: Pat GhcTc -> Maybe Name
+patBoundName p = case p of
+  VarPat _ (L _ v) -> Just (getName v)
+  PatParPat inner -> patBoundName (unXRecTc inner)
+  _ -> Nothing
+
+-- | Extract tag values from a call to a same-module helper that writes the
+-- @"tag"@ key itself: the literal sitting in a tag-carrying parameter position
+-- is the constructor tag.
+extractEncTagHelperValues :: String -> Map String [Int] -> HsExpr GhcTc -> [Text]
+extractEncTagHelperValues currentModName helperTagPos e = case appSpineTc e of
+  (h : args)
+    | Just (occ, Just mmod) <- opName h
+    , mmod == currentModName
+    , Just poss <- Map.lookup occ helperTagPos
+    -> [ v | i <- poss, i < length args, Just v <- [keyString (args !! i)] ]
   _ -> []
 
 -- | Extract tag values from @String "VALUE"@ at the top level of a
@@ -656,10 +1037,10 @@ patTag _ = []
 -- non-constructor patterns (wildcards, variables, etc.).
 patConName :: Pat GhcTc -> Maybe Text
 #if __GLASGOW_HASKELL__ >= 900
-patConName (ParPat _ p) = patConName (unXRecTc p)
+patConName (PatParPat p) = patConName (unXRecTc p)
 patConName (ConPat _ lcon _) = Just (T.pack (occNameString (nameOccName (conLikeName (unLoc lcon)))))
 #else
-patConName (ParPat _ p) = patConName (unLoc p)
+patConName (PatParPat p) = patConName (unLoc p)
 patConName (ConPatOut _ lcon _ _ _ _ _) = Just (T.pack (occNameString (nameOccName (conLikeName (unLoc lcon)))))
 #endif
 patConName _ = Nothing
@@ -668,9 +1049,9 @@ patConName _ = Nothing
 -- Peels through 'ParPat' for robustness.
 isWildPat :: Pat GhcTc -> Bool
 #if __GLASGOW_HASKELL__ >= 900
-isWildPat (ParPat _ p) = isWildPat (unXRecTc p)
+isWildPat (PatParPat p) = isWildPat (unXRecTc p)
 #else
-isWildPat (ParPat _ p) = isWildPat (unLoc p)
+isWildPat (PatParPat p) = isWildPat (unLoc p)
 #endif
 isWildPat (WildPat _) = True
 isWildPat _ = False
@@ -724,7 +1105,7 @@ walkEncKeys mCurrentMod e0 = go False e0
              let alts = unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])
              in concat [ go True body | L _ m <- alts, Just body <- [matchBody m] ]
            HsApp _ f a -> if inLambda then [] else go False (unXRecTc f) ++ go False (unXRecTc a)
-           HsPar _ p -> go inLambda (unXRecTc p)
+           PatHsPar p -> go inLambda (unXRecTc p)
 #if __GLASGOW_HASKELL__ >= 900
            ExplicitList _ xs -> if inLambda
                                   then concatMap (extractKeysFromExpr mCurrentMod EncodeSide . unXRecTc) xs
@@ -761,9 +1142,9 @@ walkDecKeys mCurrentMod e0 = go e0
              let alts = unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])
              in concat [ go body | L _ m <- alts, Just body <- [matchBody m] ]
            HsApp _ f a -> go (unXRecTc f) ++ go (unXRecTc a)
-           HsPar _ p -> go (unXRecTc p)
+           PatHsPar p -> go (unXRecTc p)
            OpApp _ a _ b -> go (unXRecTc a) ++ go (unXRecTc b)
-           HsLet _ _ body -> go (unXRecTc body)
+           PatHsLet _ body -> go (unXRecTc body)
 #if __GLASGOW_HASKELL__ >= 900
            HsIf _ a b c -> go (unXRecTc a) ++ go (unXRecTc b) ++ go (unXRecTc c)
            HsDo _ _ stmts -> concatMap (stmtKeys . unXRecTc) (unXRecTc stmts)
@@ -866,7 +1247,7 @@ hasDecDelegation e = case appSpineTc e of
   (h : _) | Just (occ, mmod) <- opName h, occ == "parseJSON", isAesonMod' mmod -> True
   _ -> case peelWrap e of
     HsApp _ f a -> hasDecDelegation (unXRecTc f) || hasDecDelegation (unXRecTc a)
-    HsPar _ p -> hasDecDelegation (unXRecTc p)
+    PatHsPar p -> hasDecDelegation (unXRecTc p)
     _ -> False
 
 -- | Check whether an encoder body uses non-standard JSON construction
@@ -897,7 +1278,7 @@ hasDelegation = hasNonStd checkDelegation
     isDelegation arg = case peelWrap arg of
       HsVar _ _ -> True
       HsConLikeOut _ _ -> True
-      HsPar _ p -> isDelegation (unXRecTc p)
+      PatHsPar p -> isDelegation (unXRecTc p)
       _ -> False
 
 hasObjectConstruction :: HsExpr GhcTc -> Bool
@@ -946,16 +1327,16 @@ hasNonStd check e = check e || go (peelWrap e)
   where
     go expr = check expr || case peelWrap expr of
 #if __GLASGOW_HASKELL__ >= 900
-      HsLet _ lbs body -> any go (map unLoc (lbs ^? biplateRef :: [LHsExpr GhcTc])) || go (unXRecTc body)
+      PatHsLet lbs body -> any go (map unLoc (lbs ^? biplateRef :: [LHsExpr GhcTc])) || go (unXRecTc body)
       HsCase _ _ mg -> any (maybe False go . matchBody)
                           (map unLoc (unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])))
 #else
-      HsLet _ lbs body -> any go (map unLoc (lbs ^? biplateRef :: [LHsExpr GhcTc])) || go (unLoc body)
+      PatHsLet lbs body -> any go (map unLoc (lbs ^? biplateRef :: [LHsExpr GhcTc])) || go (unLoc body)
       HsCase _ _ mg -> any (maybe False go . matchBody)
                           (map unLoc (unLoc (mg_alts mg)))
 #endif
       HsApp _ f a -> go (unXRecTc f) || go (unXRecTc a)
-      HsPar _ p -> go (unXRecTc p)
+      PatHsPar p -> go (unXRecTc p)
       _ -> False
 
 -- | Find the type key of the delegated type in a @toJSON <var>@ encoder body.
@@ -983,26 +1364,28 @@ findDelegatedTypeKey alts = listToMaybe
     isDict _ = False  -- We can't easily distinguish dict args, so we try all non-head args
 
 #if __GLASGOW_HASKELL__ >= 900
-    go (HsLet _ lbs body) = case [ findInExpr sub | L _ sub <- lbs ^? biplateRef :: [LHsExpr GhcTc] ] ++ [findInExpr (unXRecTc body)] of
+    go (PatHsLet lbs body) = case [ findInExpr sub | L _ sub <- lbs ^? biplateRef :: [LHsExpr GhcTc] ] ++ [findInExpr (unXRecTc body)] of
                               (Just k : _) -> Just k
                               _ -> Nothing
     go (HsCase _ _ mg) = listToMaybe [ k | L _ m <- unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)]), Just body <- [matchBody m], Just k <- [findInExpr body] ]
 #else
-    go (HsLet _ lbs body) = case [ findInExpr sub | L _ sub <- lbs ^? biplateRef :: [LHsExpr GhcTc] ] ++ [findInExpr (unLoc body)] of
+    go (PatHsLet lbs body) = case [ findInExpr sub | L _ sub <- lbs ^? biplateRef :: [LHsExpr GhcTc] ] ++ [findInExpr (unLoc body)] of
                               (Just k : _) -> Just k
                               _ -> Nothing
     go (HsCase _ _ mg) = listToMaybe [ k | L _ m <- unLoc (mg_alts mg), Just body <- [matchBody m], Just k <- [findInExpr body] ]
 #endif
     go (HsApp _ f a) = findInExpr (unXRecTc f) <|> findInExpr (unXRecTc a)
-    go (HsPar _ p) = findInExpr (unXRecTc p)
+    go (PatHsPar p) = findInExpr (unXRecTc p)
     go _ = Nothing
 
 -- | Collect encoder tag data from toJSON match alternatives.
 -- Returns (tag values, constructor→tag map, all encoder constructors).
 -- Pattern 1 (@"tag" .= value@): searched via 'biplateRef' anywhere in body.
 -- Pattern 2 (@String "VALUE"@): only from match body directly (not sub-expressions).
-collectEncTags :: [LMatch GhcTc (LHsExpr GhcTc)] -> (Set Text, Map Text Text, Set Text)
-collectEncTags alts =
+-- Pattern 3 (@mkTagged "A" ...@): a call to a same-module helper that writes
+-- the @"tag"@ key itself, with the tag value passed in as an argument.
+collectEncTags :: String -> Map String [Int] -> [LMatch GhcTc (LHsExpr GhcTc)] -> (Set Text, Map Text Text, Set Text)
+collectEncTags currentModName helperTagPos alts =
   let conTagPairs =
         [ (conName, tagVal)
         | alt <- alts
@@ -1021,6 +1404,7 @@ collectEncTags alts =
         , not (null ps)
         , Just conName <- [patConName (head ps)]
         , tagVal <- concatMap (extractEncTagObjValues . unLoc) ([alt] ^? biplateRef :: [LHsExpr GhcTc])
+                  ++ concatMap (extractEncTagHelperValues currentModName helperTagPos . unLoc) ([alt] ^? biplateRef :: [LHsExpr GhcTc])
                   ++ case matchBody m of
                        Just body -> extractEncTagStrValues body
                        Nothing -> []
@@ -1060,10 +1444,10 @@ collectDecTags exprs =
     decCaseAlts e0 = case peelWrap e0 of
 #if __GLASGOW_HASKELL__ >= 900
       HsCase _ _ mg -> map decAltData (map unLoc (unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])))
-      HsLamCase _ mg -> map decAltData (map unLoc (unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])))
+      PatHsLamCase mg -> map decAltData (map unLoc (unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])))
 #else
       HsCase _ _ mg -> map decAltData (map unLoc (unLoc (mg_alts mg)))
-      HsLamCase _ mg -> map decAltData (map unLoc (unLoc (mg_alts mg)))
+      PatHsLamCase mg -> map decAltData (map unLoc (unLoc (mg_alts mg)))
 #endif
       _ -> []
 
@@ -1164,7 +1548,7 @@ grhsGuardStrings (GRHS _ guards _) =
       HsLit _ (HsString _ fs) -> [T.pack (unpackFS fs)]
       HsOverLit _ OverLit{ol_val = HsIsString _ fs} -> [T.pack (unpackFS fs)]
       HsApp _ f a -> exprStrings (unXRecTc f) ++ exprStrings (unXRecTc a)
-      HsPar _ p -> exprStrings (unXRecTc p)
+      PatHsPar p -> exprStrings (unXRecTc p)
       _ -> []
 
 -- | Get the GRHSs from a Match.
@@ -1180,10 +1564,10 @@ matchGRHSs (Match _ _ grhss) = grhss
 -- or when the argument is not a string literal.
 conPatStringTag :: Pat GhcTc -> [Text]
 #if __GLASGOW_HASKELL__ >= 900
-conPatStringTag (ParPat _ p) = conPatStringTag (unXRecTc p)
+conPatStringTag (PatParPat p) = conPatStringTag (unXRecTc p)
 conPatStringTag (ConPat _ lcon details)
 #else
-conPatStringTag (ParPat _ p) = conPatStringTag (unLoc p)
+conPatStringTag (PatParPat p) = conPatStringTag (unLoc p)
 conPatStringTag (ConPatOut _ lcon _ _ _ _ details)
 #endif
   | Just ("String", mmod) <- conLikeInfo
@@ -1244,22 +1628,95 @@ extractKeysFromExpr mCurrentMod side e0 = case appSpineTc e0 of
   -- that take a string key and an Object argument (e.g. readNumberAsMoney "amount" o).
   (h : args) | Just (occ, mmod) <- opName h
              , not (occ `elem` ["<>", "$", ".", "<<<", ">>>", "<|>", ">>=", ">>", "=<<", "++", ">", "<", ">=", "<=", "==", "/=", "&&", "||", "*"])
-             , isLocalHelper mmod
-               || (not (isAesonMod mmod) && not (isTextUtilMod mmod) && length args >= 2 && isVarArg (args !! 1))
+             , isWhereBoundHelper mmod
+               || (isSameModuleHelper mmod && takesObjectArg args)
+               || (not (isAesonMod mmod) && not (isTextUtilMod mmod) && length args >= 2 && objectArg (args !! 1))
              -> let strArgs = case [k | Just k <- map keyString args] of (k:_) -> [k]; [] -> []
                 in [KeyInfo k Nothing False | k <- strArgs]
   -- Tuple syntax in encoder: ("key", value) inside object [...]
   [e] | side == EncodeSide, Just k <- tupleFirstKey e -> [KeyInfo k Nothing False]
   _ -> []
   where
-    isLocalHelper Nothing = True
-    isLocalHelper (Just m) = maybe False (== m) mCurrentMod
+    -- A @where@- or lambda-bound helper has no module.  These are written right
+    -- next to the object they build (@toE "key" val@), so a string literal in
+    -- one really is a key.
+    isWhereBoundHelper Nothing = True
+    isWhereBoundHelper (Just _) = False
+    isSameModuleHelper Nothing = False
+    isSameModuleHelper (Just m) = maybe False (== m) mCurrentMod
+    -- A top-level helper is only reading or writing a JSON key if it is also
+    -- handed the object (or record) to work on.  @mkTagged "A" (toJSON x)@ is
+    -- passing a constructor tag *value*, not a key, and reading it as a key
+    -- invents encoder keys that no decoder will ever ask for.
+    takesObjectArg as = length as >= 2 && (objectArg (head as) || objectArg (as !! 1))
+    -- On the decode side the companion argument really is the JSON object, and
+    -- we can check that from its type.  On the encode side a helper is handed
+    -- the record or the value itself, so any variable will do.
+    objectArg = case side of
+      DecodeSide -> isJsonObjectArg
+      EncodeSide -> isVarArg
 
 -- | Check if an expression is a variable reference (HsVar).
 isVarArg :: HsExpr GhcTc -> Bool
 isVarArg arg = case peelWrap arg of
   HsVar _ _ -> True
   _ -> False
+
+-- | Is this argument the JSON object being read?  A decoder helper that pulls a
+-- key out is always handed the 'Object'\/'Value'.  Without this test, any
+-- two-argument call whose first argument is a string literal looks like a key
+-- read -- @fromMaybe "request_failed" code@ being the classic false positive,
+-- where the literal is a default *value*.
+isJsonObjectArg :: HsExpr GhcTc -> Bool
+isJsonObjectArg arg = case peelWrap arg of
+  HsVar _ (L _ v) -> keyOfType (idType v) `elem` ["Object", "Value", "KeyMap", "Array"]
+  _ -> False
+
+-- | Keys read in an @\<|\>@ alternation where /another branch reads no key at
+-- all/ -- @o .: "DataSet" \<|\> pure o@, or
+-- @parseFields v \<|\> withObject "Wrapped" (\\o -> o .: "contents" >>= parseFields) v@.
+-- The parse succeeds through the keyless branch, so the encoder is under no
+-- obligation to write them; they are envelopes, not data.
+--
+-- Note this deliberately does /not/ cover an alternation between two keys
+-- (@o .:? "a" \<|\> o .:? "b"@).  There one of the two really must be written,
+-- and 'buildAltMap' is what decides whether the encoder wrote either.
+defaultedAltKeys :: Maybe String -> [LHsExpr GhcTc] -> Set Text
+defaultedAltKeys mCurrentMod es = Set.fromList
+  [ k
+  | L _ e <- es
+  , Just branches <- [altBranches (peelWrap e)]
+  , let branchKeys = map deepKeys branches
+  , any null branchKeys          -- some branch parses without reading anything
+  , any (not . null) branchKeys  -- ...and some other branch reads a key
+  , k <- concat branchKeys
+  ]
+  where
+    -- The branches of an alternation, if this expression is one.  Dictionary
+    -- arguments ride in the wrapper rather than the spine, so what is left is
+    -- exactly the operands.
+    altBranches e = case appSpineTc e of
+      sp@(h : _) | isAlt h -> case filter (not . isAlt) sp of
+                                bs | length bs >= 2 -> Just bs
+                                _ -> Nothing
+      (h : altOp : a1 : a2 : _) | isLiftA2Head h, isAlt altOp -> Just [a1, a2]
+      _ -> Nothing
+    isAlt x = spineHeadName x == Just "<|>"
+    isLiftA2Head x = spineHeadName x == Just "liftA2"
+    -- 'biplateRef' yields a node's children, so the branch expression itself
+    -- has to be included or a branch that /is/ the key read is seen as empty.
+    deepKeys b = [ kiKey k
+                 | sub <- b : [ s | L _ s <- (b ^? biplateRef :: [LHsExpr GhcTc]) ]
+                 , k <- extractKeysFromExpr mCurrentMod DecodeSide sub
+                 ]
+
+-- | The name at the head of an expression's application spine, so that an
+-- operator passed as an argument (@liftA2 (\<|\>)@, @foldr1 (liftA2 (\<|\>))@)
+-- is still recognised.
+spineHeadName :: HsExpr GhcTc -> Maybe String
+spineHeadName e = case appSpineTc (peelWrap e) of
+  (h : _) -> fst <$> opName h
+  [] -> Nothing
 
 -- | Check if a module is a text utility module (Data.Text, Text.Read,
 -- Data.List, etc.) whose functions' string arguments are prefixes,
@@ -1297,7 +1754,7 @@ appSpineTc e0 = go (peelWrap e0)
 peelWrap :: HsExpr GhcTc -> HsExpr GhcTc
 peelWrap (XExpr (WrapExpr (HsWrap _ e))) = peelWrap e
 peelWrap (XExpr (ExpansionExpr (HsExpanded _ e))) = peelWrap e
-peelWrap (HsPar _ e) = peelWrap (unXRecTc e)
+peelWrap (PatHsPar e) = peelWrap (unXRecTc e)
 peelWrap (ExprWithTySig _ e _) = peelWrap (unXRecTc e)
 peelWrap e = e
 #else
@@ -1448,7 +1905,7 @@ resolveDelegatedKeys (Just delegatedKey) localKeys =
 -- Per-type checking.
 ----------------------------------------------------------------------
 
-checkType :: SrcSpan -> Map Text ParsedSideInfo -> Map Text (SrcSpan,[KeyInfo],SrcSpan,[KeyInfo],Maybe Text,Maybe Text,Maybe Text) -> TagValueMap -> AltGroupMap -> Map Text (SrcSpan,[Text]) -> Map Text (Bool,Bool) -> Text -> [(SrcSpan, JsonIdLawError)]
+checkType :: SrcSpan -> Map Text ParsedSideInfo -> Map Text (SrcSpan,[KeyInfo],SrcSpan,[KeyInfo],Maybe Text,Maybe Text,Maybe Text) -> TagValueMap -> AltGroupMap -> Map Text TyConInfo -> Map Text (Bool,Bool) -> Text -> [(SrcSpan, JsonIdLawError)]
 checkType moduleSpan parsedMap localKeys tagValues altGroups definedHere instPresence tyKey
   | not definedHereNow = []
   | not (encPresent && decPresent) = []
@@ -1456,13 +1913,16 @@ checkType moduleSpan parsedMap localKeys tagValues altGroups definedHere instPre
       let psi = fromMaybe emptyParsedSideInfo (Map.lookup tyKey parsedMap)
           (encSpan, locEncKeys, decSpan, locDecKeys, mEncGenOpts, mDecGenOpts, mDelegatedKey) = fromMaybe (noSrcSpan,[],noSrcSpan,[],Nothing,Nothing,Nothing) (Map.lookup tyKey localKeys)
           (encInInsts, decInInsts) = fromMaybe (False,False) (Map.lookup tyKey instPresence)
-          (typeSpan, fields) = fromMaybe (moduleSpan,[]) (Map.lookup tyKey definedHere)
+          tci = fromMaybe (emptyTyConInfo moduleSpan) (Map.lookup tyKey definedHere)
+          typeSpan = tciSpan tci
+          fields = tciFields tci
+          nCons = tciNumCons tci
           -- Resolve the effective key sets per side, if computable.
-          encKeysE = resolveKeys (encSpan /= noSrcSpan) mEncGenOpts locEncKeys (psiOptsEnc psi) (psiViaEnc psi) (psiPlainEnc psi) encInInsts fields
+          encKeysE = resolveKeys nCons (encSpan /= noSrcSpan) mEncGenOpts locEncKeys (psiOptsEnc psi) (psiViaEnc psi) (psiPlainEnc psi) encInInsts fields
           -- If encoder keys are unknown due to non-standard encoding (toJSON delegation),
           -- try to resolve keys from the delegated type's localKeys entry.
           encKeysResolved = encKeysE <|> resolveDelegatedKeys mDelegatedKey localKeys
-          decKeysE = resolveKeys (decSpan /= noSrcSpan) mDecGenOpts locDecKeys (psiOptsDec psi) (psiViaDec psi) (psiPlainDec psi) decInInsts fields
+          decKeysE = resolveKeys nCons (decSpan /= noSrcSpan) mDecGenOpts locDecKeys (psiOptsDec psi) (psiViaDec psi) (psiPlainDec psi) decInInsts fields
           keyErrs = case (encKeysResolved, decKeysE) of
             (Just ek, Just dk) -> keyChecks tyKey ek dk
               (effectiveSpan [encSpan, psiSpan psi, typeSpan, moduleSpan])
@@ -1470,7 +1930,7 @@ checkType moduleSpan parsedMap localKeys tagValues altGroups definedHere instPre
               (Map.findWithDefault Map.empty tyKey altGroups)
             _ -> []
           optErrs = optionsChecks tyKey psi (effectiveSpan [psiSpan psi, moduleSpan])
-          genOptErrs = genericOptionsChecks tyKey mEncGenOpts mDecGenOpts (effectiveSpan [psiSpan psi, encSpan, decSpan, moduleSpan])
+          genOptErrs = genericOptionsChecks nCons tyKey mEncGenOpts mDecGenOpts (effectiveSpan [psiSpan psi, encSpan, decSpan, moduleSpan])
           (encTags, decTags, encConToTag, mCatchAllCon, encCons, decCons) = fromMaybe (Set.empty, Set.empty, Map.empty, Nothing, Set.empty, Set.empty) (Map.lookup tyKey tagValues)
           tagErrs = tagChecks tyKey encTags decTags encConToTag mCatchAllCon (effectiveSpan [encSpan, decSpan, typeSpan, moduleSpan])
           collapseErrs = collapseChecks tyKey encTags encCons decCons (effectiveSpan [encSpan, decSpan, typeSpan, moduleSpan])
@@ -1487,28 +1947,37 @@ checkType moduleSpan parsedMap localKeys tagValues altGroups definedHere instPre
                      (_, decInInsts) = fromMaybe (False,False) (Map.lookup tyKey instPresence)
                  in not (null locDecKeys) || decInInsts || isJust (psiOptsDec psi) || psiPlainDec psi || isJust (psiViaDec psi)
 
--- Right (Just keys) if the side's keys are statically computable, Nothing if not.
--- When @hasLocalBind@ is True the side has a locally-defined method bind; an
--- empty key list then means /genuinely empty/ (the method uses no @.:=/@.:@
--- operators), not /unknown/.  When @mGenOpts@ is @Just opts@ the method delegates
--- to @genericToJSON@/@@genericParseJSON@/@defaultEncode@/@@defaultDecode@.  If the
--- options are plain @defaultOptions@ (no @fieldLabelModifier@), the JSON keys
--- are the raw field labels (after 'decodeFieldKey' underscore stripping) and we
--- can use them.  Otherwise keys are unknown.
-resolveKeys :: Bool -> Maybe Text -> [KeyInfo] -> Maybe Text -> Maybe Text -> Bool -> Bool -> [Text] -> Maybe [KeyInfo]
-resolveKeys hasLocalBind mGenOpts locKeys mOpts mVia plain inInsts fields
-  | isJust mGenOpts, isDefaultOptionsText (fromJust mGenOpts), not (null locKeys), all kiOptional locKeys
-    = Just [KeyInfo (decodeFieldKey f) Nothing False | f <- fields]
+-- Returns @Just keys@ if the side's keys are statically computable, @Nothing@ if
+-- not.  When @mGenOpts@ is @Just opts@ the method delegates to
+-- @genericToJSON@/@genericParseJSON@/@defaultEncode@/@defaultDecode@; if those
+-- options cannot change a key (see 'isKeyPreservingOptionsText') the JSON keys
+-- are the field labels (after 'decodeFieldKey' underscore stripping).  When
+-- @hasLocalBind@ is True the side has a locally-defined method bind and an empty
+-- key list means /genuinely empty/ (the method uses no @.=@/@.:@ operators)
+-- rather than /unknown/ -- but that reading only holds once the /derived/ cases
+-- have been ruled out, hence the guard order below.
+resolveKeys :: Int -> Bool -> Maybe Text -> [KeyInfo] -> Maybe Text -> Maybe Text -> Bool -> Bool -> [Text] -> Maybe [KeyInfo]
+resolveKeys nCons hasLocalBind mGenOpts locKeys mOpts mVia plain inInsts fields
+  | isJust mGenOpts, keyPreserving (fromJust mGenOpts), not (null fields), not (null locKeys), all kiOptional locKeys
+    = Just (genericKeys fields)
   | not (null locKeys) = Just locKeys
-  | isJust mGenOpts, isDefaultOptionsText (fromJust mGenOpts) = Just [KeyInfo (decodeFieldKey f) Nothing False | f <- fields]
+  -- Generic derivation only tells us the keys of a record.  A type with no
+  -- record fields is encoded as a tag/contents envelope, which we do not model.
+  | isJust mGenOpts, keyPreserving (fromJust mGenOpts), not (null fields) = Just (genericKeys fields)
   | isJust mGenOpts = Nothing
   | isJust mOpts = Nothing
-  | hasLocalBind = Just []
+  -- 'deriving via' and plain 'deriving' also produce a local method bind (GHC
+  -- fills the instance in for you), so these must be consulted before falling
+  -- back on "has a bind, therefore writes no keys".
   | isJust mVia = Nothing
-  | plain, not (null fields) = Just [KeyInfo f Nothing False | f <- fields]
+  | plain, not (null fields) = Just (genericKeys fields)
   | plain = Nothing
+  | hasLocalBind = Just []
   | inInsts = Nothing
   | otherwise = Nothing
+  where
+    keyPreserving = isKeyPreservingOptionsText nCons
+    genericKeys fs = [KeyInfo (decodeFieldKey f) Nothing False | f <- fs]
 
 -- | Replicate the @Nau.Utils.DecodeField@ underscore-stripping logic used by
 -- the Presto framework's @defaultEncode@/@defaultDecode@.  Strips a leading
@@ -1530,6 +1999,52 @@ isDefaultOptionsText t =
   let s = T.unpack (T.strip t)
       base = reverse (takeWhile (/= '.') (reverse s))
   in base == "defaultOptions"
+
+-- | The 'Options' fields that can change a JSON key /for this type/.
+--
+-- aeson only writes a constructor tag for a single-constructor type when
+-- @tagSingleConstructors@ is set (see aeson's @D1 d (C1 c a)@ instance), so for
+-- a one-constructor type without it, @sumEncoding@, @constructorTagModifier@ and
+-- @allNullaryToStringTag@ are inert and must not be compared -- otherwise a
+-- record whose encoder says @defaultOptions {sumEncoding = UntaggedValue}@ is
+-- reported against a decoder that says @defaultOptions@, with no key ever
+-- differing.
+--
+-- The field names below are matched as substrings, so the singular spellings
+-- also match aeson's actual @tagSingleConstructors@ field.
+keyAffectingFieldsFor :: Int -> Text -> Text -> [Text]
+keyAffectingFieldsFor nCons encOpts decOpts
+  | nCons == 1, not (mentionsTagSingle encOpts || mentionsTagSingle decOpts) = alwaysKeyAffecting
+  | otherwise = alwaysKeyAffecting ++ tagRelated
+  where
+    mentionsTagSingle = T.isInfixOf "tagSingleConstructor"
+
+alwaysKeyAffecting :: [Text]
+alwaysKeyAffecting = ["fieldLabelModifier", "unwrapUnaryRecords", "tagSingleConstructor"]
+
+tagRelated :: [Text]
+tagRelated = ["constructorTagModifier", "allNullaryToStringTag", "sumEncoding"]
+
+-- | Does this pretty-printed 'Options' expression leave the JSON keys equal to
+-- the (underscore-stripped) record field labels?  True for plain
+-- @defaultOptions@ and for record updates that only set fields which cannot
+-- change a key for a type with @nCons@ constructors.
+isKeyPreservingOptionsText :: Int -> Text -> Bool
+isKeyPreservingOptionsText nCons t
+  | isDefaultOptionsText t = True
+  | isUnknownOptsText t = False
+  | otherwise =
+      let inert = ["omitNothingFields"]
+                    ++ (if nCons == 1 && not (T.isInfixOf "tagSingleConstructor" t) then tagRelated else [])
+          -- Every field assignment left after dropping the inert ones.
+          remaining = [ p
+                      | p <- T.splitOn "," (T.unwords (T.words t))
+                      , T.isInfixOf "=" p
+                      , not (any (`T.isInfixOf` p) inert)
+                      ]
+          -- What is left once the record-update braces and the base name go.
+          base = T.strip (T.takeWhile (/= '{') t)
+      in null remaining && isDefaultOptionsText base
 
 keyChecks :: Text -> [KeyInfo] -> [KeyInfo] -> SrcSpan -> SrcSpan -> Map Text (Set Text) -> [(SrcSpan, JsonIdLawError)]
 keyChecks ty enc dec encSpan decSpan altGroups =
@@ -1581,8 +2096,8 @@ stripOmitNothingFields t =
 -- | Compare key-affecting 'Options' fields between @genericToJSON@ and
 -- @genericParseJSON@ calls. Only fields that change JSON key or tag names
 -- are compared; safe-to-differ fields like @omitNothingFields@ are ignored.
-genericOptionsChecks :: Text -> Maybe Text -> Maybe Text -> SrcSpan -> [(SrcSpan, JsonIdLawError)]
-genericOptionsChecks ty mEncOpts mDecOpts sp =
+genericOptionsChecks :: Int -> Text -> Maybe Text -> Maybe Text -> SrcSpan -> [(SrcSpan, JsonIdLawError)]
+genericOptionsChecks nCons ty mEncOpts mDecOpts sp =
   case (mEncOpts, mDecOpts) of
     (Just encOpts, Just decOpts) ->
       let encFiltered = filterKeyAffecting encOpts
@@ -1593,7 +2108,7 @@ genericOptionsChecks ty mEncOpts mDecOpts sp =
     _ -> []
   where
     -- Fields that affect JSON key/tag names and must match for round-trip safety.
-    keyAffectingFields = ["fieldLabelModifier","constructorTagModifier","allNullaryToStringTag","tagSingleConstructor","sumEncoding","unwrapUnaryRecords"]
+    keyAffectingFields = keyAffectingFieldsFor nCons (fromMaybe "" mEncOpts) (fromMaybe "" mDecOpts)
     -- Keep only the lines mentioning a key-affecting field, and normalize
     -- GHC internal variable names (e.g. x_aPhB -> x_) so that the same
     -- lambda with different internal names doesn't cause a false mismatch.
@@ -1660,7 +2175,7 @@ collapseChecks ty encTags encCons decCons sp
 -- The universe of types to consider.
 ----------------------------------------------------------------------
 
-allTypesOfInterest :: Map Text ParsedSideInfo -> Map Text (SrcSpan,[KeyInfo],SrcSpan,[KeyInfo],Maybe Text,Maybe Text,Maybe Text) -> Map Text (SrcSpan,[Text]) -> Map Text (Bool,Bool) -> [Text]
+allTypesOfInterest :: Map Text ParsedSideInfo -> Map Text (SrcSpan,[KeyInfo],SrcSpan,[KeyInfo],Maybe Text,Maybe Text,Maybe Text) -> Map Text TyConInfo -> Map Text (Bool,Bool) -> [Text]
 allTypesOfInterest parsedMap localKeys definedHere instPresence =
   nub $ Map.keys definedHere
      ++ Map.keys parsedMap
