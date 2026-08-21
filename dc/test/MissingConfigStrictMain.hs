@@ -6,7 +6,7 @@ module Main (main) where
 -- FAIL TO COMPILE.
 --
 -- `cabal build dc-test-missing-config-strict` failing IS the test passing.
--- See flake.nix (dc.check = false) for why this isn't run as part of the
--- normal green build.
+-- Only built with -fnegative-tests (see dc.cabal); disabled by default so
+-- downstream consumers of this package don't need to know about it.
 main :: IO ()
 main = putStrLn "unreachable: this module must fail to typecheck"

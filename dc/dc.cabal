@@ -53,6 +53,11 @@ extra-doc-files:    CHANGELOG.md
 common warnings
     ghc-options: -Wall
 
+flag negative-tests
+    description: Build the dc test-suites that are meant to fail to compile.
+    default:      False
+    manual:       True
+
 library
     -- Import common warning flags.
     import:           warnings
@@ -110,7 +115,8 @@ test-suite dc-test-missing-config-bypass
 -- dc-test-invalid-yaml: the config file exists but is malformed YAML.
 -- checkIntegrity must now raise a compile error unconditionally instead of
 -- bypassing, so this stanza is EXPECTED TO FAIL TO BUILD -- that failure is
--- the test passing. See flake.nix (dc.check = false).
+-- the test passing. Gated behind the negative-tests flag (see above) so it
+-- isn't built by default.
 test-suite dc-test-invalid-yaml
     import:           warnings
     default-language: Haskell2010
@@ -121,11 +127,14 @@ test-suite dc-test-invalid-yaml
     build-depends:
         base,
         dc
+    if !flag(negative-tests)
+        buildable: False
 
 -- dc-test-missing-config-strict: no config file at the given path, and
 -- failOnFileNotFound left at its default (true). checkIntegrity must raise a
 -- compile error instead of bypassing, so this stanza is EXPECTED TO FAIL TO
--- BUILD -- that failure is the test passing. See flake.nix (dc.check = false).
+-- BUILD -- that failure is the test passing. Gated behind the negative-tests
+-- flag (see above) so it isn't built by default.
 test-suite dc-test-missing-config-strict
     import:           warnings
     default-language: Haskell2010
@@ -136,3 +145,5 @@ test-suite dc-test-missing-config-strict
     build-depends:
         base,
         dc
+    if !flag(negative-tests)
+        buildable: False

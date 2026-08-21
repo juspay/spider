@@ -147,14 +147,6 @@
               # fall back to defaults on missing .juspay configs.
               sheriff.check = false;
 
-              # dc's dc-test-invalid-yaml and dc-test-missing-config-strict
-              # stanzas are designed to fail to compile -- they prove that
-              # DC.DefaultCheck now raises a hard error on a malformed or
-              # (when failOnFileNotFound=true) missing domainConfig.yaml
-              # instead of silently bypassing. dc-test and
-              # dc-test-missing-config-bypass still build & run cleanly.
-              dc.check = false;
-
               # api-contract disables its own profiling library; fieldInspector
               # imports ApiContract.Plugin at compile time, so match it — otherwise
               # fieldInspector's profiling pass can't find api-contract's
