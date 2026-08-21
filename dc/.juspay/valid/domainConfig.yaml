@@ -1,0 +1,5 @@
+tag: FunctionCheck
+contents:
+  listOfRestrictedFuns: []
+  moduleNameToCheck: NoSuchModule
+  funNameToCheck: noSuchFun

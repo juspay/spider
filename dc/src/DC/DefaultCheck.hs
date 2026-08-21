@@ -121,44 +121,56 @@ checkIntegrity opts modSummary tcEnv = do
     let moduleName' = moduleNameString $ moduleName $ ms_mod modSummary
         modulePath = prefixPath <> ms_hspp_file modSummary
     if "Types" `isInfixOf` moduleName' || "ICICIPaylater" `isInfixOf` moduleName' then pure tcEnv
-    else do 
-      parsedYaml :: Either ParseException CheckerConfig  <- liftIO $ parseYAMLFile domainConfigFile
-      case parsedYaml of
-        Right conf -> do
-          let path = (intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
-          liftIO $ createDirectoryIfMissing True path
-          -- liftIO $ print $ "Started plugin " ++ path
-          hmIORef <- liftIO $ newIORef HM.empty
-          getAllUpdatesLi <- mapM (loopOverLHsBindLR pathsTobeChecked conf moduleName' hmIORef) (bagToList $ tcg_binds tcEnv)
-          let getAllUpdatesList = (\(x,_) -> x) <$> getAllUpdatesLi
-              getAllFuns = HM.unions $ (\(_,x) -> x) <$> getAllUpdatesLi
-          -- liftIO $ print $ "Started plugin 1 " ++ show getAllFuns
-          let res = foldl (\(UpdateInfo acc1 acc2 acc3 acc4 acc5 acc6) (UpdateInfo x y z z1 z2 otherFuns) -> UpdateInfo ((acc1) ++ (changeModName moduleName' <$> x)) ((acc2) ++ (changeModName moduleName' <$> y)) ((acc3) ++ (changeModName moduleName' <$> z)) ((acc4) ++ (changeModName moduleName' <$> z1)) ((acc5) ++ (changeModName moduleName' <$> z2)) ((acc6) ++ (changeModName moduleName' <$> otherFuns))) (UpdateInfo [] [] [] [] [] []) $ catMaybes getAllUpdatesList
-          let combination = lookUpAndConcat getAllFuns
-              allRes = getAllRes conf moduleName' combination res
-          liftIO $ B.writeFile (modulePath <> ".json") (encodePretty $ (\(UpdateInfo createRec upRecords upFails cFails allFails otherFuns) -> UpdateInfoAsText (nub $ name <$> createRec) (nub $ name <$> upRecords) (nub $ name <$> upFails) (nub $ name <$> cFails) (nub $ name <$> allFails) (nub $ name <$> otherFuns)) allRes)
-          -- liftIO $ print allRes
-          !exprs <- mapM (loopOverLHsBindLRTot pathsTobeChecked conf path allRes moduleName' hmIORef) (bagToList $ tcg_binds tcEnv)
-          case conf of
-            FieldsCheck _ -> do
-              -- let exprsk = foldl (\acc (val) -> acc ++ getErrorrs val ) [] (allFailuresRecords allRes)
-              -- let allErrs = concat $ getErrorrs <$> (\(x,_,_) -> x) <$> getAllUpdatesLi
-              let exprsC = foldl (\acc (val) -> acc ++ getErrorrs val ) [] exprs
-              addErrs $ map (mkGhcCompileError) (exprsC)
-
-            FunctionCheck (FunctionCheckConfig{..}) -> do
-              if moduleName' == moduleNameToCheck then do
-                -- let allErrs = concat $ getErrorrs <$> (\(x,_) -> x) <$> getAllUpdatesLi
-                let exprsC = foldl (\acc (val) -> acc ++ getErrorrs val ) [] exprs
-                addErrs $ map (mkGhcCompileError) (exprsC)
-              else do
-                let exprsC = foldl (\acc (val) -> HM.union acc (getFuncs val) ) HM.empty exprs
-                liftIO $ B.writeFile (modulePath <> ".err.json") (encodePretty exprsC)
-          liftIO $ writeIORef hmIORef HM.empty
-          pure tcEnv
-        Left err -> do
-          liftIO $ print $ "Not using dc plugin since no config is found" ++ show err
-          pure tcEnv
+    else do
+      configFileExists <- liftIO $ doesFileExist domainConfigFile
+      if not configFileExists
+        then
+          if failOnFileNotFound
+            then do
+              let compileErr = CompileError "" moduleName' ("dc plugin: config file not found: " ++ domainConfigFile) noSrcSpan
+              addErrs [mkGhcCompileError compileErr]
+              pure tcEnv
+            else do
+              liftIO $ print $ "Not using dc plugin since no config is found at " ++ domainConfigFile
+              pure tcEnv
+        else do
+          parsedYaml :: Either ParseException CheckerConfig  <- liftIO $ parseYAMLFile domainConfigFile
+          case parsedYaml of
+            Right conf -> do
+              let path = (intercalate "/" . reverse . tail . reverse . splitOn "/") modulePath
+              liftIO $ createDirectoryIfMissing True path
+              -- liftIO $ print $ "Started plugin " ++ path
+              hmIORef <- liftIO $ newIORef HM.empty
+              getAllUpdatesLi <- mapM (loopOverLHsBindLR pathsTobeChecked conf moduleName' hmIORef) (bagToList $ tcg_binds tcEnv)
+              let getAllUpdatesList = (\(x,_) -> x) <$> getAllUpdatesLi
+                  getAllFuns = HM.unions $ (\(_,x) -> x) <$> getAllUpdatesLi
+              -- liftIO $ print $ "Started plugin 1 " ++ show getAllFuns
+              let res = foldl (\(UpdateInfo acc1 acc2 acc3 acc4 acc5 acc6) (UpdateInfo x y z z1 z2 otherFuns) -> UpdateInfo ((acc1) ++ (changeModName moduleName' <$> x)) ((acc2) ++ (changeModName moduleName' <$> y)) ((acc3) ++ (changeModName moduleName' <$> z)) ((acc4) ++ (changeModName moduleName' <$> z1)) ((acc5) ++ (changeModName moduleName' <$> z2)) ((acc6) ++ (changeModName moduleName' <$> otherFuns))) (UpdateInfo [] [] [] [] [] []) $ catMaybes getAllUpdatesList
+              let combination = lookUpAndConcat getAllFuns
+                  allRes = getAllRes conf moduleName' combination res
+              liftIO $ B.writeFile (modulePath <> ".json") (encodePretty $ (\(UpdateInfo createRec upRecords upFails cFails allFails otherFuns) -> UpdateInfoAsText (nub $ name <$> createRec) (nub $ name <$> upRecords) (nub $ name <$> upFails) (nub $ name <$> cFails) (nub $ name <$> allFails) (nub $ name <$> otherFuns)) allRes)
+              -- liftIO $ print allRes
+              !exprs <- mapM (loopOverLHsBindLRTot pathsTobeChecked conf path allRes moduleName' hmIORef) (bagToList $ tcg_binds tcEnv)
+              case conf of
+                FieldsCheck _ -> do
+                  -- let exprsk = foldl (\acc (val) -> acc ++ getErrorrs val ) [] (allFailuresRecords allRes)
+                  -- let allErrs = concat $ getErrorrs <$> (\(x,_,_) -> x) <$> getAllUpdatesLi
+                  let exprsC = foldl (\acc (val) -> acc ++ getErrorrs val ) [] exprs
+                  addErrs $ map (mkGhcCompileError) (exprsC)
+                FunctionCheck (FunctionCheckConfig{..}) -> do
+                  if moduleName' == moduleNameToCheck then do
+                    -- let allErrs = concat $ getErrorrs <$> (\(x,_) -> x) <$> getAllUpdatesLi
+                    let exprsC = foldl (\acc (val) -> acc ++ getErrorrs val ) [] exprs
+                    addErrs $ map (mkGhcCompileError) (exprsC)
+                  else do
+                    let exprsC = foldl (\acc (val) -> HM.union acc (getFuncs val) ) HM.empty exprs
+                    liftIO $ B.writeFile (modulePath <> ".err.json") (encodePretty exprsC)
+              liftIO $ writeIORef hmIORef HM.empty
+              pure tcEnv
+            Left err -> do
+              let compileErr = CompileError "" moduleName' ("dc plugin: invalid YAML in " ++ domainConfigFile ++ ": " ++ show err) noSrcSpan
+              addErrs [mkGhcCompileError compileErr]
+              pure tcEnv
 
 getErrorrs :: ErrorCase -> [CompileError]
 getErrorrs (Errors val) = val
