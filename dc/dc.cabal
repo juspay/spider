@@ -78,30 +78,61 @@ library
     -- Base language which the package is written in.
     default-language: Haskell2010
 
+-- dc-test: a valid, parseable domainConfig.yaml is present. checkIntegrity
+-- must take the Right branch and compile cleanly -- this stanza building and
+-- passing at all is the test.
 test-suite dc-test
-    -- Import common warning flags.
     import:           warnings
-
-    -- Base language which the package is written in.
     default-language: Haskell2010
-            
-    ghc-options: -fplugin=DC.DefaultCheck
-    -- Modules included in this executable, other than Main.
-    -- other-modules:
-
-    -- LANGUAGE extensions used by modules in this package.
-    -- other-extensions:
-
-    -- The interface type and version of the test suite.
     type:             exitcode-stdio-1.0
-
-    -- Directories containing source files.
     hs-source-dirs:   test
-
-    -- The entrypoint to the test suite.
-    main-is:          Main.hs
-
-    -- Test dependencies.
+    main-is:          ValidConfigMain.hs
+    ghc-options: -fplugin=DC.DefaultCheck -fplugin-opt=DC.DefaultCheck:{"domainConfigFile":".juspay/valid/domainConfig.yaml","failOnFileNotFound":true}
     build-depends:
-        base ,
+        base,
+        dc
+
+-- dc-test-missing-config-bypass: no config file at the given path, and
+-- failOnFileNotFound=false. checkIntegrity must bypass silently (the
+-- pre-existing, still-supported opt-out) -- this stanza building and passing
+-- at all is the test.
+test-suite dc-test-missing-config-bypass
+    import:           warnings
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          MissingConfigBypassMain.hs
+    ghc-options: -fplugin=DC.DefaultCheck -fplugin-opt=DC.DefaultCheck:{"domainConfigFile":".juspay/nonexistent/domainConfig.yaml","failOnFileNotFound":false}
+    build-depends:
+        base,
+        dc
+
+-- dc-test-invalid-yaml: the config file exists but is malformed YAML.
+-- checkIntegrity must now raise a compile error unconditionally instead of
+-- bypassing, so this stanza is EXPECTED TO FAIL TO BUILD -- that failure is
+-- the test passing. See flake.nix (dc.check = false).
+test-suite dc-test-invalid-yaml
+    import:           warnings
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          InvalidYamlMain.hs
+    ghc-options: -fplugin=DC.DefaultCheck -fplugin-opt=DC.DefaultCheck:{"domainConfigFile":".juspay/invalid/domainConfig.yaml"}
+    build-depends:
+        base,
+        dc
+
+-- dc-test-missing-config-strict: no config file at the given path, and
+-- failOnFileNotFound left at its default (true). checkIntegrity must raise a
+-- compile error instead of bypassing, so this stanza is EXPECTED TO FAIL TO
+-- BUILD -- that failure is the test passing. See flake.nix (dc.check = false).
+test-suite dc-test-missing-config-strict
+    import:           warnings
+    default-language: Haskell2010
+    type:             exitcode-stdio-1.0
+    hs-source-dirs:   test
+    main-is:          MissingConfigStrictMain.hs
+    ghc-options: -fplugin=DC.DefaultCheck -fplugin-opt=DC.DefaultCheck:{"domainConfigFile":".juspay/nonexistent/domainConfig.yaml"}
+    build-depends:
+        base,
         dc
