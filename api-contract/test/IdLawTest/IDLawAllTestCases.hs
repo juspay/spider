@@ -7,20 +7,23 @@
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TemplateHaskell #-}
+{-# LANGUAGE FlexibleContexts #-}
 
 -- | Positive control: a law-abiding type. Must compile cleanly under the plugin.
 module IdLawTest.IDLawAllTestCases where
 
 import Data.Aeson
+import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Aeson as A
+import qualified Data.Aeson.Encoding as AE
 import Data.Aeson.TH (deriveToJSON, deriveFromJSON)
-import Data.Aeson.Types (Parser)
+import Data.Aeson.Types (Parser, GToJSON', GFromJSON, Zero)
 import Control.Applicative ((<|>), liftA2, empty)
 import Control.Category ((<<<), (>>>))
 import Control.Monad (when)
 import Data.Text hiding (map, toLower, zip, foldr1, all, any, concatMap, length, null)
 import qualified Data.Text as T
-import GHC.Generics (Generic)
+import GHC.Generics (Generic, Rep)
 import Data.Aeson.Key (fromText)
 import qualified Data.Aeson.Key as AK
 import qualified Data.Aeson.KeyMap as KM
@@ -2946,7 +2949,16 @@ instance ToJSON SumEncodingMismatch where
 instance FromJSON SumEncodingMismatch where
   parseJSON = genericParseJSON defaultOptions
 
----------------- tagSingleConstructors makes sumEncoding live on one constructor [TRUE POSITIVE] ----------------
+---------------- sumEncoding on a single constructor [NO ERROR: not reported by choice] ----------------
+-- The plugin treats sumEncoding as inert for every single-constructor type,
+-- including one that sets tagSingleConstructors.
+--
+-- That is a deliberate under-report, not a statement about aeson.  With
+-- tagSingleConstructors = True aeson really does tag the lone constructor, so
+-- this pair encodes {"tscField1":"hello"} while the decoder demands
+-- {"tag":"TaggedSingleCtor","tscField1":"hello"}, and fromJSON (toJSON x)
+-- returns Left "expected Object with key \"tag\"".  The round-trip is broken
+-- and the check stays silent about it.
 
 data TaggedSingleCtor = TaggedSingleCtor
   { tscField1 :: Text
@@ -3180,3 +3192,543 @@ instance FromJSON VisibleTag where
       "A" -> VisibleA <$> o .: "payload"
       "B" -> VisibleB <$> o .: "payload"
       _   -> fail "invalid"
+
+---------------- Inline 'deriving anyclass' on a fieldless sum [NO ERROR: tag/contents envelope is not modelled] ----------------
+-- The decoder is aeson's Generic default, reached through an inline
+-- @deriving anyclass@ clause: GHC writes that binding as
+-- @parseJSON = $dmparseJSON \@AnyclassEnvelope@, a visible type application.
+-- The generic encoding of a fieldless sum is a tag/contents envelope, which
+-- the plugin does not model, so both sides must stay unknown rather than
+-- reading as "the decoder takes no keys at all".
+
+data AnyclassEnvelope
+  = AceKeyNotFound Text
+  | AceUpdateFailed Text
+  | AceUnexpected Text
+  deriving stock (Generic)
+  deriving anyclass (FromJSON)
+
+instance ToJSON AnyclassEnvelope where
+  toJSON = \case
+    AceKeyNotFound a  -> wrapEnvelope "AceKeyNotFound" a
+    AceUpdateFailed a -> wrapEnvelope "AceUpdateFailed" a
+    AceUnexpected a   -> wrapEnvelope "AceUnexpected" a
+    where
+      wrapEnvelope :: Text -> Text -> Value
+      wrapEnvelope t c = object [ "contents" .= c, "tag" .= t ]
+
+---------------- Inline 'deriving anyclass' encoder on a record [TRUE POSITIVE: decoder reads a key the generic encoder never writes] ----------------
+-- Companion to the case above: for a *record* the generic keys are known, so
+-- the derived encoder must still be compared against the hand-written decoder.
+
+data AnyclassRecord = AnyclassRecord
+  { acrField1 :: Text
+  , acrField2 :: Text
+  }
+  deriving stock (Generic)
+  deriving anyclass (ToJSON)
+
+instance FromJSON AnyclassRecord where
+  parseJSON = withObject "AnyclassRecord" $ \o -> AnyclassRecord
+    <$> o .: "acrField1"
+    <*> o .: "acr_field2"
+
+---------------- withObject decoder delegating to genericParseJSON [NO ERROR: options unrecognised, so decode keys are unknown] ----------------
+-- The generic call is buried inside withObject's continuation and an @if@, so
+-- it is invisible to a spine-only search.  Missing it makes the decoder look
+-- hand-written with no keys at all, and every key the derived encoder writes
+-- gets reported as unreadable.
+
+guardedGenericOpts :: Options
+guardedGenericOpts = defaultOptions { omitNothingFields = True }
+
+data GuardedGenericDec = GuardedGenericDec
+  { ggdFieldOne :: Maybe Bool
+  , ggdFieldTwo :: Maybe Bool
+  }
+  deriving stock (Generic)
+  deriving anyclass (ToJSON)
+
+instance FromJSON GuardedGenericDec where
+  parseJSON x =
+    withObject
+      "GuardedGenericDec"
+      (\o ->
+        if Prelude.any (flip KM.member o) ["ggdFieldOne", "ggdFieldTwo"]
+          then genericParseJSON guardedGenericOpts x
+          else fail "Invalid JSON for GuardedGenericDec")
+      x
+
+---------------- withObject decoder delegating to genericParseJSON defaultOptions [TRUE POSITIVE: encoder writes a different key] ----------------
+-- Control for the case above: when the options *are* recognisable the traced
+-- decode keys are the field labels, and a mismatched encoder must still error.
+
+data WithObjGenericMismatch = WithObjGenericMismatch
+  { wogmField1 :: Text
+  }
+  deriving stock (Generic)
+
+instance ToJSON WithObjGenericMismatch where
+  toJSON WithObjGenericMismatch{..} = object [ "wogm_field1" .= wogmField1 ]
+
+instance FromJSON WithObjGenericMismatch where
+  parseJSON x =
+    withObject "WithObjGenericMismatch" (\_ -> genericParseJSON defaultOptions x) x
+
+---------------- Presto defaultEncode/defaultDecode ----------------
+-- Stand-ins for @PS.Presto.Core.Utils.Encoding@: unlike genericToJSON these
+-- bake their Options in, so their *first argument is the value*.  Reading it as
+-- an options expression yields nonsense, which then reads as "options we do not
+-- recognise" and switches the whole side off.
+
+defaultEncode :: (Generic a, GToJSON' Value Zero (Rep a)) => a -> Value
+defaultEncode = genericToJSON defaultOptions
+
+defaultDecode :: (Generic a, GFromJSON Zero (Rep a)) => Value -> Parser a
+defaultDecode = genericParseJSON defaultOptions
+
+---------------- defaultDecode behind a guard lookup [NO ERROR: the guard key is not the key set] ----------------
+-- The decoder inspects one key to decide *how* to decode, then hands the whole
+-- value to defaultDecode.  "result" is a guard, not the key set: the keys
+-- actually read are the generic field labels.
+
+data PrestoGuardedDec = PrestoGuardedDec
+  { pgdMetaData :: Text
+  }
+  deriving stock (Generic)
+
+instance ToJSON PrestoGuardedDec where
+  toJSON = defaultEncode
+
+instance FromJSON PrestoGuardedDec where
+  parseJSON x@(Object m) =
+    case KM.lookup (AK.fromText "result") m of
+      Just _  -> defaultDecode (Object (KM.delete (AK.fromText "result") m))
+      Nothing -> defaultDecode x
+  parseJSON str = defaultDecode str
+
+---------------- defaultDecode against a mismatched hand-written encoder [TRUE POSITIVE] ----------------
+-- Control for the case above: once the options are read correctly the decode
+-- keys are known, so a mismatched encoder must still be caught.
+
+data PrestoDecMismatch = PrestoDecMismatch
+  { pdmField1 :: Text
+  }
+  deriving stock (Generic)
+
+instance ToJSON PrestoDecMismatch where
+  toJSON PrestoDecMismatch{..} = object [ "pdm_field1" .= pdmField1 ]
+
+instance FromJSON PrestoDecMismatch where
+  parseJSON x = defaultDecode x
+
+---------------- Untagged sum whose decoder delegates the whole object [NO ERROR: decode keys are a strict subset] ----------------
+-- Both sides hand the object to a branch type.  The decoder reads "status"
+-- itself and then delegates everything else, so its key set is incomplete and
+-- the difference against the encoder is not evidence of data loss.
+
+data WholeDelSuccess = WholeDelSuccess
+  { wdsStatus :: Bool
+  , wdsMsg    :: Maybe Text
+  }
+
+instance ToJSON WholeDelSuccess where
+  toJSON WholeDelSuccess{..} = object [ "status" .= wdsStatus, "msg" .= wdsMsg ]
+
+instance FromJSON WholeDelSuccess where
+  parseJSON = withObject "WholeDelSuccess" $ \o ->
+    WholeDelSuccess <$> o .: "status" <*> o .:? "msg"
+
+data WholeDelError = WholeDelError
+  { wdeStatus :: Bool
+  , wdeData   :: Maybe Text
+  }
+
+instance ToJSON WholeDelError where
+  toJSON WholeDelError{..} = object [ "status" .= wdeStatus, "data" .= wdeData ]
+
+instance FromJSON WholeDelError where
+  parseJSON = withObject "WholeDelError" $ \o ->
+    WholeDelError <$> o .: "status" <*> o .:? "data"
+
+data WholeDelResponse
+  = WholeDelOk WholeDelSuccess
+  | WholeDelFail WholeDelError
+
+instance ToJSON WholeDelResponse where
+  toJSON (WholeDelOk r)   = toJSON r
+  toJSON (WholeDelFail r) = toJSON r
+
+instance FromJSON WholeDelResponse where
+  parseJSON = withObject "WholeDelResponse" $ \o -> do
+    (ok :: Bool) <- o .: "status"
+    if ok
+      then WholeDelOk <$> parseJSON (Object o)
+      else WholeDelFail <$> parseJSON (Object o)
+
+---------------- JSON serialised into a string [NO ERROR: this type's JSON has no keys] ----------------
+-- @defaultEncodeJSON@ returns Text, so the encoder emits a JSON *String* whose
+-- text happens to contain an object.  The record's field labels are therefore
+-- not this type's encode keys, and the decoder reads the string back the same
+-- way -- both sides must stay unknown.
+
+defaultEncodeJSON :: ToJSON a => a -> Text
+defaultEncodeJSON = T.pack . show . encode
+
+defaultDecodeJSON :: FromJSON a => Text -> Parser a
+defaultDecodeJSON t = case eitherDecodeStrict (encodeUtf8 t) of
+  Right a -> pure a
+  Left e  -> fail e
+
+readJsonString :: Value -> Parser Text
+readJsonString = parseJSON
+
+data JsonInAString = JsonInAString
+  { jiasMerchantId  :: Text
+  , jiasChecksumKey :: Text
+  }
+  deriving stock (Generic)
+
+instance ToJSON JsonInAString where
+  toJSON s = toJSON $ defaultEncodeJSON s
+
+instance FromJSON JsonInAString where
+  parseJSON str = defaultDecodeJSON =<< readJsonString str
+
+---------------- Wide record with a long applicative chain [NO ERROR: keys match] ----------------
+-- Also a performance guard.  A deep expression chain is where an AST walk that
+-- revisits overlapping subtrees turns exponential; when that happened the
+-- plugin took minutes on a 28-field record and never finished on this one, so a
+-- regression here shows up as a build that hangs rather than a wrong verdict.
+
+data WideChain = WideChain
+  { wideField00 :: Maybe Text
+  , wideField01 :: Maybe Text
+  , wideField02 :: Maybe Text
+  , wideField03 :: Maybe Text
+  , wideField04 :: Maybe Text
+  , wideField05 :: Maybe Text
+  , wideField06 :: Maybe Text
+  , wideField07 :: Maybe Text
+  , wideField08 :: Maybe Text
+  , wideField09 :: Maybe Text
+  , wideField10 :: Maybe Text
+  , wideField11 :: Maybe Text
+  , wideField12 :: Maybe Text
+  , wideField13 :: Maybe Text
+  , wideField14 :: Maybe Text
+  , wideField15 :: Maybe Text
+  , wideField16 :: Maybe Text
+  , wideField17 :: Maybe Text
+  , wideField18 :: Maybe Text
+  , wideField19 :: Maybe Text
+  , wideField20 :: Maybe Text
+  , wideField21 :: Maybe Text
+  , wideField22 :: Maybe Text
+  , wideField23 :: Maybe Text
+  , wideField24 :: Maybe Text
+  , wideField25 :: Maybe Text
+  , wideField26 :: Maybe Text
+  , wideField27 :: Maybe Text
+  , wideField28 :: Maybe Text
+  , wideField29 :: Maybe Text
+  , wideField30 :: Maybe Text
+  , wideField31 :: Maybe Text
+  , wideField32 :: Maybe Text
+  , wideField33 :: Maybe Text
+  , wideField34 :: Maybe Text
+  , wideField35 :: Maybe Text
+  , wideField36 :: Maybe Text
+  , wideField37 :: Maybe Text
+  , wideField38 :: Maybe Text
+  , wideField39 :: Maybe Text
+  }
+
+instance ToJSON WideChain where
+  toJSON WideChain{..} = object
+    [ "wideField00" .= wideField00
+    , "wideField01" .= wideField01
+    , "wideField02" .= wideField02
+    , "wideField03" .= wideField03
+    , "wideField04" .= wideField04
+    , "wideField05" .= wideField05
+    , "wideField06" .= wideField06
+    , "wideField07" .= wideField07
+    , "wideField08" .= wideField08
+    , "wideField09" .= wideField09
+    , "wideField10" .= wideField10
+    , "wideField11" .= wideField11
+    , "wideField12" .= wideField12
+    , "wideField13" .= wideField13
+    , "wideField14" .= wideField14
+    , "wideField15" .= wideField15
+    , "wideField16" .= wideField16
+    , "wideField17" .= wideField17
+    , "wideField18" .= wideField18
+    , "wideField19" .= wideField19
+    , "wideField20" .= wideField20
+    , "wideField21" .= wideField21
+    , "wideField22" .= wideField22
+    , "wideField23" .= wideField23
+    , "wideField24" .= wideField24
+    , "wideField25" .= wideField25
+    , "wideField26" .= wideField26
+    , "wideField27" .= wideField27
+    , "wideField28" .= wideField28
+    , "wideField29" .= wideField29
+    , "wideField30" .= wideField30
+    , "wideField31" .= wideField31
+    , "wideField32" .= wideField32
+    , "wideField33" .= wideField33
+    , "wideField34" .= wideField34
+    , "wideField35" .= wideField35
+    , "wideField36" .= wideField36
+    , "wideField37" .= wideField37
+    , "wideField38" .= wideField38
+    , "wideField39" .= wideField39
+    ]
+
+instance FromJSON WideChain where
+  parseJSON = withObject "WideChain" $ \o -> WideChain
+    <$> o .:? "wideField00"
+    <*> o .:? "wideField01"
+    <*> o .:? "wideField02"
+    <*> o .:? "wideField03"
+    <*> o .:? "wideField04"
+    <*> o .:? "wideField05"
+    <*> o .:? "wideField06"
+    <*> o .:? "wideField07"
+    <*> o .:? "wideField08"
+    <*> o .:? "wideField09"
+    <*> o .:? "wideField10"
+    <*> o .:? "wideField11"
+    <*> o .:? "wideField12"
+    <*> o .:? "wideField13"
+    <*> o .:? "wideField14"
+    <*> o .:? "wideField15"
+    <*> o .:? "wideField16"
+    <*> o .:? "wideField17"
+    <*> o .:? "wideField18"
+    <*> o .:? "wideField19"
+    <*> o .:? "wideField20"
+    <*> o .:? "wideField21"
+    <*> o .:? "wideField22"
+    <*> o .:? "wideField23"
+    <*> o .:? "wideField24"
+    <*> o .:? "wideField25"
+    <*> o .:? "wideField26"
+    <*> o .:? "wideField27"
+    <*> o .:? "wideField28"
+    <*> o .:? "wideField29"
+    <*> o .:? "wideField30"
+    <*> o .:? "wideField31"
+    <*> o .:? "wideField32"
+    <*> o .:? "wideField33"
+    <*> o .:? "wideField34"
+    <*> o .:? "wideField35"
+    <*> o .:? "wideField36"
+    <*> o .:? "wideField37"
+    <*> o .:? "wideField38"
+    <*> o .:? "wideField39"
+
+---------------- Encoding-style 'pair' inside a maybe-lambda [NO ERROR: pair writes a key just like .=] ----------------
+-- An encoder that formats a value by hand reaches for Encoding's @pair@ rather
+-- than @.=@, and wraps it in @maybe mempty (\v -> ...)@ so the key is only
+-- emitted when the field is set.  Both the operator and the lambda have to be
+-- followed or the encoder reads as writing nothing.
+
+data PairEncoded = PairEncoded
+  { peTxnId       :: Text
+  , peOrderAmount :: Maybe Double
+  }
+  deriving stock (Generic)
+
+instance ToJSON PairEncoded where
+  toEncoding PairEncoded{..} = pairs $ mconcat
+    [ "peTxnId" .= peTxnId
+    , maybe mempty (\v -> AE.pair "peOrderAmount" (toEncoding v)) peOrderAmount
+    ]
+
+instance FromJSON PairEncoded where
+  parseJSON = withObject "PairEncoded" $ \o -> PairEncoded
+    <$> o .: "peTxnId"
+    <*> o .:? "peOrderAmount"
+
+---------------- 'pair' writes a key the decoder never reads [TRUE POSITIVE] ----------------
+-- Canary for the case above: the key really is being extracted, not ignored.
+
+data PairEncodedMismatch = PairEncodedMismatch
+  { pemAmount :: Maybe Double
+  }
+  deriving stock (Generic)
+
+instance ToJSON PairEncodedMismatch where
+  toEncoding PairEncodedMismatch{..} = pairs $ mconcat
+    [ maybe mempty (\v -> AE.pair "pem_amount" (toEncoding v)) pemAmount ]
+
+instance FromJSON PairEncodedMismatch where
+  parseJSON = withObject "PairEncodedMismatch" $ \o -> PairEncodedMismatch
+    <$> o .:? "pemAmount"
+
+---------------- Optional key prepended from inside a lambda [NO ERROR: the lambda adds a real key] ----------------
+
+data LambdaAddedKey = LambdaAddedKey
+  { lakAccountType   :: Maybe Text
+  , lakAccountNumber :: Text
+  }
+
+instance FromJSON LambdaAddedKey where
+  parseJSON = withObject "LambdaAddedKey" $ \o -> LambdaAddedKey
+    <$> o .:? "account_type"
+    <*> o .:  "account_number"
+
+instance ToJSON LambdaAddedKey where
+  toJSON LambdaAddedKey{..} =
+    object $
+      maybe id (\at -> (("account_type" .= at) :)) lakAccountType
+        [ "account_number" .= lakAccountNumber ]
+
+---------------- Nested object built inside a lambda [NO ERROR: inner keys belong to the inner object] ----------------
+-- Control for the case above: following applications into a lambda must stop
+-- where a *different* JSON object starts, or "innerKey" is charged to this type.
+
+data NestedObjectInLambda = NestedObjectInLambda
+  { noilItems :: [Text]
+  }
+
+instance ToJSON NestedObjectInLambda where
+  toJSON NestedObjectInLambda{..} = object
+    [ "noilItems" .= Prelude.map (\i -> object [ "innerKey" .= i ]) noilItems ]
+
+instance FromJSON NestedObjectInLambda where
+  parseJSON = withObject "NestedObjectInLambda" $ \o -> NestedObjectInLambda
+    <$> o .: "noilItems"
+
+---------------- Generic call under '<$>' [NO ERROR: both sides are generic] ----------------
+-- @Wrapper \<$\> genericParseJSON opts v@ puts the generic call in an argument
+-- position, so a spine-only search misses it and the decoder reads as keyless.
+
+newtype GenericUnderFmap = GenericUnderFmap
+  { gufInner :: Maybe Text
+  }
+  deriving stock (Generic)
+
+instance ToJSON GenericUnderFmap where
+  toJSON (GenericUnderFmap inner) =
+    A.genericToJSON A.defaultOptions { omitNothingFields = True } (GenericUnderFmap inner)
+
+instance FromJSON GenericUnderFmap where
+  parseJSON v = GenericUnderFmap <$> (A.genericParseJSON A.defaultOptions { omitNothingFields = True } v >>= pure . gufInner)
+
+---------------- Delegating equations with a generic fallback [NO ERROR: the fallback's options are not the whole story] ----------------
+-- The real decoding happens in the first two equations, which hand the value to
+-- another type's parser.  Comparing the encoder against the options of the
+-- error-path equation alone reports a mismatch that does not exist.
+
+data FallbackInner = FallbackInner { fiCode :: Maybe Text }
+  deriving stock (Generic)
+instance ToJSON FallbackInner
+instance FromJSON FallbackInner
+
+data DelegatingWithFallback
+  = DwfList  [FallbackInner]
+  | DwfError FallbackInner
+  deriving stock (Generic)
+
+instance ToJSON DelegatingWithFallback where
+  toJSON = A.genericToJSON A.defaultOptions {sumEncoding = UntaggedValue, omitNothingFields = True}
+
+instance FromJSON DelegatingWithFallback where
+  parseJSON v@(Array _)  = DwfList  <$> parseJSON v
+  parseJSON v@(Object _) = DwfError <$> parseJSON v
+  parseJSON err = A.genericParseJSON A.defaultOptions err
+
+---------------- Helper handed a list of key spellings [NO ERROR: the spellings are alternatives] ----------------
+-- @parseKeyAny v ["errorText", "errortext"]@ tries each key in turn.  The keys
+-- are inside a list, not direct arguments, and the extra spellings are
+-- alternatives -- the encoder only writes the first.
+
+parseKeyAny :: Object -> [AK.Key] -> Parser (Maybe Text)
+parseKeyAny _ [] = pure Nothing
+parseKeyAny v (k:ks) = do
+  mVal <- v .:? k
+  case mVal of
+    Just t | not (T.null (T.strip t)) -> pure (Just t)
+    _ -> parseKeyAny v ks
+
+data KeyListHelper = KeyListHelper
+  { klhResult    :: Maybe Text
+  , klhErrorText :: Maybe Text
+  }
+  deriving stock (Generic)
+
+instance FromJSON KeyListHelper where
+  parseJSON = withObject "KeyListHelper" $ \v -> KeyListHelper
+    <$> parseKeyAny v ["klhResult"]
+    <*> parseKeyAny v ["klhErrorText", "klherrortext"]
+
+instance ToJSON KeyListHelper where
+  toJSON = A.genericToJSON A.defaultOptions { omitNothingFields = True }
+
+---------------- Helper key list with no encoder counterpart [TRUE POSITIVE] ----------------
+-- Canary for the case above: list keys are really being read, not skipped.
+
+data KeyListHelperMismatch = KeyListHelperMismatch
+  { klhmValue :: Maybe Text
+  }
+  deriving stock (Generic)
+
+instance FromJSON KeyListHelperMismatch where
+  parseJSON = withObject "KeyListHelperMismatch" $ \v -> KeyListHelperMismatch
+    <$> parseKeyAny v ["klhm_value"]
+
+instance ToJSON KeyListHelperMismatch where
+  toJSON = A.genericToJSON A.defaultOptions { omitNothingFields = True }
+
+---------------- Whole-object delegation from a where-bound helper [NO ERROR: decode keys are a strict subset] ----------------
+-- Same reasoning as the untagged-sum case above, except the delegation lives in
+-- a @where@ binding rather than the match body.
+
+data WhereDelTxn = WhereDelTxn { wdtApplicationId :: Int, wdtSettlementDate :: Maybe Text }
+  deriving stock (Generic)
+
+instance FromJSON WhereDelTxn where
+  parseJSON = withObject "WhereDelTxn" $ \v -> WhereDelTxn
+    <$> v .: "wdtApplicationId" <*> v .:? "wdtSettlementDate"
+
+instance ToJSON WhereDelTxn where
+  toJSON d = object
+    [ "wdtApplicationId" .= wdtApplicationId d, "wdtSettlementDate" .= wdtSettlementDate d ]
+
+data WhereDelRefund = WhereDelRefund { wdrApplicationId :: Int, wdrRefundStatus :: Text }
+  deriving stock (Generic)
+
+instance FromJSON WhereDelRefund where
+  parseJSON = withObject "WhereDelRefund" $ \v -> WhereDelRefund
+    <$> v .: "wdrApplicationId" <*> v .: "wdrRefundStatus"
+
+instance ToJSON WhereDelRefund where
+  toJSON d = object
+    [ "wdrApplicationId" .= wdrApplicationId d, "wdrRefundStatus" .= wdrRefundStatus d ]
+
+data WhereDelPayload
+  = WhereDelTxnCase    WhereDelTxn
+  | WhereDelRefundCase WhereDelRefund
+  deriving stock (Generic)
+
+instance FromJSON WhereDelPayload where
+  parseJSON v = parseNestedWd v <|> parseFlatWd v
+    where
+      parseNestedWd = withObject "WhereDelPayload" $ \envelope -> do
+        dataVal <- envelope .: "data"
+        withObject "WhereDelPayload.data" parseFlatWd' dataVal
+      parseFlatWd = withObject "WhereDelPayload" parseFlatWd'
+      parseFlatWd' d = do
+        mStatus <- d .:? "wdrRefundStatus" :: Parser (Maybe Text)
+        case mStatus of
+          Just _  -> WhereDelRefundCase <$> parseJSON (Object d)
+          Nothing -> WhereDelTxnCase    <$> parseJSON (Object d)
+
+instance ToJSON WhereDelPayload where
+  toJSON (WhereDelTxnCase t)    = toJSON t
+  toJSON (WhereDelRefundCase r) = toJSON r

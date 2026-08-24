@@ -138,6 +138,15 @@ pattern PatFunBind fid mg <- FunBind _ fid mg
 
 pattern PatAbsBinds :: LHsBinds GhcTc -> HsBindLR GhcTc GhcTc
 pattern PatAbsBinds binds <- XHsBindsLR (AbsBinds{abs_binds = binds})
+
+pattern PatHsAppType :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsAppType f <- HsAppType _ f _ _
+
+pattern PatHsIf :: LHsExpr (GhcPass p) -> LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsIf t e <- HsIf _ _ t e
+
+pattern PatAsPat :: LIdP (GhcPass p) -> Pat (GhcPass p)
+pattern PatAsPat v <- AsPat _ v _ _
 #else
 pattern PatHsPar :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
 pattern PatHsPar e <- HsPar _ e
@@ -161,6 +170,20 @@ pattern PatFunBind fid mg <- FunBind _ fid mg _ _
 
 pattern PatAbsBinds :: LHsBinds GhcTc -> HsBindLR GhcTc GhcTc
 pattern PatAbsBinds binds <- AbsBinds{abs_binds = binds}
+
+pattern PatHsAppType :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsAppType f <- HsAppType _ f _
+
+#if __GLASGOW_HASKELL__ >= 900
+pattern PatHsIf :: LHsExpr (GhcPass p) -> LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsIf t e <- HsIf _ _ t e
+#else
+pattern PatHsIf :: LHsExpr (GhcPass p) -> LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
+pattern PatHsIf t e <- HsIf _ _ _ t e
+#endif
+
+pattern PatAsPat :: LIdP (GhcPass p) -> Pat (GhcPass p)
+pattern PatAsPat v <- AsPat _ v _
 #endif
 
 ----------------------------------------------------------------------
@@ -427,9 +450,17 @@ headTypeKeyOfInst inst = case is_tys inst of
 -- | Markers used in place of a pretty-printed @Options@ expression when a side
 -- builds its JSON in a way we cannot read statically.  They are not valid
 -- Haskell, so they can never collide with a real @Options@ text.
-nonStandardEncoding, nonStandardDecoding :: Text
+nonStandardEncoding, nonStandardDecoding, partialDecoding, jsonTextEncoding :: Text
 nonStandardEncoding = "<non-standard encoding>"
 nonStandardDecoding = "<non-standard decoding>"
+-- | Stronger than 'nonStandardDecoding': the decoder read some keys /and/
+-- handed the whole object to another parser, so the keys we have are a strict
+-- subset.  This marker overrides them in 'resolveKeys'; the other two only ever
+-- appear when no keys were read at all.
+partialDecoding = "<non-standard decoding: whole-object delegation>"
+-- | The value is serialised to\/from a JSON string, so this type's own JSON
+-- carries no keys.  See 'textJsonGenerics'.
+jsonTextEncoding = "<non-standard JSON-text encoding>"
 
 isUnknownOptsText :: Text -> Bool
 isUnknownOptsText t = "<non-standard" `T.isPrefixOf` t
@@ -639,7 +670,26 @@ collectLocalKeys tcg = do
                       hasCompGen = any hasCompositionGeneric allBodies
                       hasLocalCall = any (hasLocalFuncCall currentModName) (matchAlts ^? biplateRef :: [LHsExpr GhcTc])
                       nonStdDec = hasDecDel || hasCompGen || hasLocalCall
-                      finalDecGenOpts = mGenOpts <|> (guard (nonStdDec && null decKeys) >> Just nonStandardDecoding)
+                      -- Delegating the whole object makes the key set partial
+                      -- however many keys this body reads itself, so unlike the
+                      -- other two markers it is not conditional on reading none.
+                      -- The whole match is searched, not just its body: the
+                      -- delegation is often inside a @where@-bound helper.
+                      hasWholeDel = or [ hasWholeObjectDecDelegation
+                                           [ v | Just v <- matchPatVarNames m ] sub
+                                       | L _ m <- matchAlts
+                                       , L _ sub <- ([m] ^? biplateRef :: [LHsExpr GhcTc]) ]
+                      -- This one outranks 'mGenOpts': when a decoder both
+                      -- delegates and has a generic branch, the options on that
+                      -- branch describe only part of what it reads.  A sum whose
+                      -- real work is @Ctor \<$\> parseJSON v@ with a
+                      -- @genericParseJSON defaultOptions@ fallback would
+                      -- otherwise be compared against the encoder on the
+                      -- fallback's options alone.
+                      finalDecGenOpts = (guard hasWholeDel >> Just partialDecoding)
+                                    <|> mGenOpts
+                                    <|> (guard (nonStdDec && null decKeys)
+                                           >> Just nonStandardDecoding)
                   pure [(tyKey, (noSrcSpan, [], l, decKeys, Nothing, finalDecGenOpts, Nothing))]
               | otherwise -> pure []
 
@@ -782,6 +832,7 @@ collectAltGroups tcg = do
                  exprs = matchAlts ^? biplateRef :: [LHsExpr GhcTc]
                  groups = concatMap (findAltGroups . unLoc) exprs
                             ++ caseFallbackGroups currentModName exprs
+                            ++ helperKeyListGroups exprs
                  keyMap = buildAltMap groups
              in [(tyKey, keyMap)]
            _ -> []
@@ -982,6 +1033,9 @@ matchPatVarNames (Match _ pats _) = map (patBoundName . unLoc) pats
 patBoundName :: Pat GhcTc -> Maybe Name
 patBoundName p = case p of
   VarPat _ (L _ v) -> Just (getName v)
+  -- @parseJSON v\@(Array _) = ...@ binds @v@ to the whole value just as a plain
+  -- variable pattern would.
+  PatAsPat (L _ v) -> Just (getName v)
   PatParPat inner -> patBoundName (unXRecTc inner)
   _ -> Nothing
 
@@ -1104,7 +1158,13 @@ walkEncKeys mCurrentMod e0 = go False e0
            HsLam _ mg ->
              let alts = unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])
              in concat [ go True body | L _ m <- alts, Just body <- [matchBody m] ]
-           HsApp _ f a -> if inLambda then [] else go False (unXRecTc f) ++ go False (unXRecTc a)
+           -- Inside a lambda an application is followed only until it starts
+           -- building a *different* JSON object: @\\i -> object ["id" .= i]@ has
+           -- nothing to do with this type's keys, while
+           -- @maybe id (\\at -> (("account_type" .= at) :)) mAt@ adds one of them.
+           HsApp _ f a
+             | inLambda && buildsNestedObject e -> []
+             | otherwise -> go inLambda (unXRecTc f) ++ go inLambda (unXRecTc a)
            PatHsPar p -> go inLambda (unXRecTc p)
 #if __GLASGOW_HASKELL__ >= 900
            ExplicitList _ xs -> if inLambda
@@ -1126,6 +1186,13 @@ walkEncKeys mCurrentMod e0 = go False e0
 
     stmtKeys (BodyStmt _ e _ _) = go False (unXRecTc e)
     stmtKeys _ = []
+
+    buildsNestedObject e = case appSpineTc e of
+      (h : _ : _) | Just (occ, mmod) <- opName h
+                  , occ `elem` ["object", "toJSON", "toEncoding", "pairs"]
+                  , isAesonMod mmod -> True
+      (h : _ : _) | Just ("Object", mmod) <- conLikeOpName h, isAesonMod' mmod -> True
+      _ -> False
 
 -- | Walk a decoder body expression collecting JSON keys.
 -- Similar to 'walkEncKeys' but for 'DecodeSide': descends into
@@ -1249,6 +1316,59 @@ hasDecDelegation e = case appSpineTc e of
     HsApp _ f a -> hasDecDelegation (unXRecTc f) || hasDecDelegation (unXRecTc a)
     PatHsPar p -> hasDecDelegation (unXRecTc p)
     _ -> False
+
+-- | Every sub-expression of an expression, peeling typechecker wrappers on the
+-- way down.  'biplateRef' alone is not enough: it does not descend into
+-- @XExpr@, and GHC parks the expansion of every operator section behind one, so
+-- anything under a @\<$\>@ or @\<*\>@ is invisible to a plain biplate walk.
+deepSubExprs :: HsExpr GhcTc -> [HsExpr GhcTc]
+deepSubExprs e0 = concatMap withPeeled (e0 : kids)
+  where
+    -- 'biplateRef' is transitive and does reach inside expansions, so one pass
+    -- collects every *located* sub-expression.  What it cannot return is a node
+    -- that is not an 'LHsExpr' -- GHC's expansion of an operator section holds a
+    -- bare 'HsExpr', so the application at the top of it is invisible.  Peeling
+    -- each collected node recovers exactly those.  Recursing into the result
+    -- instead would re-walk overlapping subtrees and cost exponential time.
+    kids = [ unXRecTc k | k <- (e0 ^? biplateRef :: [LHsExpr GhcTc]) ]
+    withPeeled e = [e, peelWrap e]
+
+-- | Does the decoder hand the /whole/ JSON value to another type's 'parseJSON'?
+--
+-- @
+--   parseJSON = withObject "R" $ \\o -> do
+--     ok \<- o .: "status"
+--     if ok then Success \<$\> parseJSON (Object o) else Failure \<$\> parseJSON (Object o)
+-- @
+--
+-- reads every key those types read, and none of them appear in this body, so
+-- the keys collected here are a strict subset of what is actually read --
+-- unknown, not complete.  Only a whole-object delegation counts: @o .: "k" >>=
+-- parseJSON@ parses a sub-value and says nothing about this object's keys.
+-- Unlike 'hasDecDelegation' this searches the entire body, so it reaches
+-- through the lambda and @do@ block that 'withObject' style puts in the way.
+hasWholeObjectDecDelegation :: [Name] -> HsExpr GhcTc -> Bool
+hasWholeObjectDecDelegation argNames e0 = any isWholeObjectParse (deepSubExprs e0)
+  where
+    isWholeObjectParse e = case appSpineTc e of
+      (h : arg : _) | Just ("parseJSON", mmod) <- opName h
+                    , isAesonMod' mmod
+                    -> isWholeValue arg
+      _ -> False
+    -- @Object o@ (re-wrapping the object this parser is reading), or the
+    -- parser's own argument.  A bare variable that is /not/ the argument is a
+    -- sub-value pulled out with @.:@ or @KM.lookup@, and delegating on it says
+    -- nothing about this object's keys.
+    isWholeValue a = case appSpineTc a of
+      [v] -> maybe False (`elem` argNames) (varNameOf v)
+      (c : v : _) | Just ("Object", mmod) <- conLikeOpName c
+                  , isAesonMod' mmod
+                  -> isVarArg v
+      _ -> False
+
+    varNameOf e = case peelWrap e of
+      HsVar _ (L _ v) -> Just (getName v)
+      _ -> Nothing
 
 -- | Check whether an encoder body uses non-standard JSON construction
 -- (e.g. @toJSON someValue@, @Object (insert ...)@) that produces keys
@@ -1617,7 +1737,9 @@ extractKeysFromExpr mCurrentMod side e0 = case appSpineTc e0 of
   -- Known aeson operators: .= (encode), .:/.:?/.:!/.:| (decode)
   (h : args) | Just (occ, Just mmod) <- opName h, isAesonMod (Just mmod) ->
     let strArgs = case [k | Just k <- map keyString args] of (k:_) -> [k]; [] -> []
-    in if occ == ".=" && side == EncodeSide
+    -- @pair "k" enc@ is the 'Encoding' spelling of @"k" .= v@; encoders that
+    -- format a value by hand reach for it and would otherwise look keyless.
+    in if occ `elem` [".=", "pair"] && side == EncodeSide
          then [KeyInfo k Nothing False | k <- strArgs]
          else if occ `elem` [".:", ".:?", ".:!", ".:|"] && side == DecodeSide
            then [KeyInfo k Nothing (occ `elem` [".:?",".:!",".:|"]) | k <- strArgs]
@@ -1631,7 +1753,9 @@ extractKeysFromExpr mCurrentMod side e0 = case appSpineTc e0 of
              , isWhereBoundHelper mmod
                || (isSameModuleHelper mmod && takesObjectArg args)
                || (not (isAesonMod mmod) && not (isTextUtilMod mmod) && length args >= 2 && objectArg (args !! 1))
-             -> let strArgs = case [k | Just k <- map keyString args] of (k:_) -> [k]; [] -> []
+             -> let strArgs = case [k | Just k <- map keyString args] of
+                                   (k:_) -> [k]
+                                   []    -> listKeyStrings args
                 in [KeyInfo k Nothing False | k <- strArgs]
   -- Tuple syntax in encoder: ("key", value) inside object [...]
   [e] | side == EncodeSide, Just k <- tupleFirstKey e -> [KeyInfo k Nothing False]
@@ -1728,6 +1852,36 @@ isTextUtilMod (Just m) = any (`isInfixOf` m)
 
 -- | Like 'keyString' but also unwraps @fromText "key"@ applications.
 -- Used to recognise keys passed as @AK.fromText "key"@ to 'lookup'.
+-- | Key literals handed to a helper inside a /list/ rather than directly:
+-- @parseTextAny v ["errorText", "errortext"]@.  Only the first list argument
+-- counts, and a list of several keys means the helper tries each spelling in
+-- turn -- see 'helperKeyListGroups', which records them as alternatives.
+listKeyStrings :: [HsExpr GhcTc] -> [Text]
+listKeyStrings args =
+  concat (take 1 [ ks | a <- args, let ks = listStrings a, not (null ks) ])
+  where
+    listStrings e = case peelWrap e of
+#if __GLASGOW_HASKELL__ >= 900
+      ExplicitList _ xs -> [ k | Just k <- map (deepKeyString . unXRecTc) xs ]
+#else
+      ExplicitList _ _ xs -> [ k | Just k <- map (deepKeyString . unLoc) xs ]
+#endif
+      _ -> []
+
+-- | A helper handed several keys at once tries them in order, so they fill the
+-- same field and the encoder only has to write one of them -- the same shape
+-- 'findAltGroups' recognises for @\<|\>@.
+helperKeyListGroups :: [LHsExpr GhcTc] -> [[Text]]
+helperKeyListGroups exprs =
+  [ ks
+  | L _ e <- exprs
+  , (h : args) <- [appSpineTc e]
+  , isJust (opName h)
+  , length args >= 2
+  , let ks = listKeyStrings args
+  , length ks > 1
+  ]
+
 deepKeyString :: HsExpr GhcTc -> Maybe Text
 deepKeyString e = case keyString e of
   Just k -> Just k
@@ -1746,6 +1900,12 @@ appSpineTc :: HsExpr GhcTc -> [HsExpr GhcTc]
 appSpineTc e0 = go (peelWrap e0)
   where
     go (HsApp _ f a) = go (peelWrap (unXRecTc f)) ++ [unXRecTc a]
+    -- A visible type application (@f \@T x@) does not change the head of the
+    -- spine or add a value argument.  GHC writes the default-method binding of
+    -- a @deriving anyclass@ instance this way (@parseJSON = $dmparseJSON \@T@),
+    -- so without this the head is invisible and the instance reads as a
+    -- hand-written method that touches no keys.
+    go (PatHsAppType f) = go (peelWrap (unXRecTc f))
     go e = [e]
 
 -- | Peel typechecker wrappers (@HsWrap@) so we can pattern match the
@@ -1818,26 +1978,58 @@ detectGenericDeriving matches =
       _ -> Nothing
 #endif
 
+-- | Generic encode\/decode entry points whose /first argument/ is the aeson
+-- 'Options' record.
+optionsFirstGenerics :: [String]
+optionsFirstGenerics =
+  [ "genericToJSON", "genericToEncoding", "genericParseJSON"
+  , "genericEncode", "genericDecode"
+  , "genericEncodeJSON", "genericDecodeJSON"
+  ]
+
+-- | Generic encode\/decode entry points that bake their 'Options' in and take
+-- the /value/ as their first argument (Presto's @defaultEncode@ family and the
+-- Sequelize @*Model@ pair).  All of them use key-preserving options.
+valueFirstGenerics :: [String]
+valueFirstGenerics =
+  [ "defaultEncode", "defaultDecode"
+  , "defaultEncodeOmitNothingOpts"
+  , "genericEncodeModel", "genericDecodeModel"
+  ]
+
+-- | Generic entry points that serialise to\/from a JSON /string/ rather than a
+-- JSON object: @toJSON s = toJSON $ defaultEncodeJSON s@ emits a 'String' whose
+-- text happens to contain an object.  This type's own JSON has no keys at all,
+-- so the record's field labels are not its encode keys and the side must stay
+-- unknown.
+textJsonGenerics :: [String]
+textJsonGenerics =
+  [ "defaultEncodeJSON", "defaultDecodeJSON"
+  , "genericEncodeJSON", "genericDecodeJSON"
+  ]
+
 findGenericCall :: HsExpr GhcTc -> Maybe Text
 findGenericCall e0 = go (peelWrap e0)
   where
     go expr = case appSpineTc expr of
+      (h : _) | Just (occ, _) <- opName h
+              , occ `elem` textJsonGenerics
+              -> Just jsonTextEncoding
       (h : args) | Just (occ, mmod) <- opName h
-                 , occ `elem` ["genericToJSON","genericToEncoding","genericParseJSON",
-                               "defaultEncode","defaultEncodeJSON","defaultDecode","defaultDecodeJSON",
-                               "defaultEncodeOmitNothingOpts",
-                               "genericEncode","genericDecode",
-                               "genericEncodeModel","genericDecodeModel",
-                               "genericEncodeJSON","genericDecodeJSON"]
-                 , isAesonMod' mmod
-                       || occ `elem` ["defaultEncode","defaultEncodeJSON","defaultDecode","defaultDecodeJSON",
-                                     "defaultEncodeOmitNothingOpts",
-                                     "genericEncode","genericDecode",
-                                     "genericEncodeModel","genericDecodeModel",
-                                     "genericEncodeJSON","genericDecodeJSON"]
+                 , occ `elem` optionsFirstGenerics ++ valueFirstGenerics
+                 , isAesonMod' mmod || occ `elem` valueFirstGenerics
+                                    || occ `elem` ["genericEncode","genericDecode"]
                   -> case args of
-                       (optsExpr : _) -> Just (pprText optsExpr)
-                       [] -> Just "defaultOptions"
+                       -- @genericParseJSON opts v@: the first argument is the
+                       -- 'Options'.  The Presto @default*@ family and the
+                       -- @*Model@ pair take no 'Options' at all -- their first
+                       -- argument is the value -- so reading it as an options
+                       -- expression yields nonsense like @"x"@, which then
+                       -- reads as "options we do not recognise" and silently
+                       -- switches the whole side off.
+                       (optsExpr : _) | occ `notElem` valueFirstGenerics
+                                      -> Just (pprText optsExpr)
+                       _ -> Just "defaultOptions"
       -- Handle left composition: f <<< g  (i.e. f . g)
       -- The outer function (first arg) transforms the output of the inner;
       -- if it's a key-transforming function (e.g. camelCaseToSnakeCase),
@@ -1871,17 +2063,38 @@ findGenericCall e0 = go (peelWrap e0)
                              , occ == "$"
                              , isJust (go (peelWrap fn))
                              -> Just (pprText optsExpr)
+      -- @withObject "T" (\o -> ... genericParseJSON opts v ...) v@: the generic
+      -- call sits inside the continuation, not at the head of the spine.  Without
+      -- this the decoder reads as hand-written with no keys at all, and every
+      -- key the encoder writes is reported as unreadable.  Only these wrappers
+      -- are followed -- a general search would also walk into
+      -- @keyTransform \<\<\< defaultEncode@, whose keys are deliberately unknown.
+      (h : args) | Just (occ, _) <- opName h
+                 , occ `elem` ["withObject","withText","withArray","withScientific",
+                               "withBool","withEmbeddedJSON","$","=<<",">>=",
+                               -- @Wrapper \<$\> genericParseJSON opts v@: the
+                               -- generic call is an argument of the wrapping,
+                               -- not the head of the spine.
+                               "<$>","<*>","fmap"]
+                 -> listToMaybe (mapMaybe (go . peelWrap) args)
       _ -> case peelWrap expr of
-             HsCase _ _ mg ->
-               case mapMaybe (\m -> case matchBody (unLoc m) of Just body -> go (peelWrap body); Nothing -> Nothing)
-                             (unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])) of
-                 (opts : _) -> Just opts
-                 [] -> Nothing
+             HsCase _ _ mg -> firstInMatches mg
+             HsLam _ mg -> firstInMatches mg
+             PatHsLamCase mg -> firstInMatches mg
+             PatHsIf t e -> listToMaybe (mapMaybe (go . peelWrap . unXRecTc) [t, e])
              OpApp _ f _ a ->
                case go (peelWrap (unXRecTc f)) of
                  Just _ -> Just (pprText a)
                  Nothing -> go (peelWrap (unXRecTc a))
              _ -> Nothing
+
+    firstInMatches mg =
+      listToMaybe
+        [ opts
+        | L _ m <- unLoc (mg_alts mg :: XRec GhcTc [LMatch GhcTc (LHsExpr GhcTc)])
+        , Just body <- [matchBody m]
+        , Just opts <- [go (peelWrap body)]
+        ]
 
 isAesonMod' :: Maybe String -> Bool
 isAesonMod' Nothing = False
@@ -1960,6 +2173,10 @@ resolveKeys :: Int -> Bool -> Maybe Text -> [KeyInfo] -> Maybe Text -> Maybe Tex
 resolveKeys nCons hasLocalBind mGenOpts locKeys mOpts mVia plain inInsts fields
   | isJust mGenOpts, keyPreserving (fromJust mGenOpts), not (null fields), not (null locKeys), all kiOptional locKeys
     = Just (genericKeys fields)
+  -- Keys we did collect, but the side also delegated the whole object away, so
+  -- they are a strict subset of what is really read.  Reporting the difference
+  -- as data loss would be unsound, so the side stays unknown.
+  | mGenOpts == Just partialDecoding = Nothing
   | not (null locKeys) = Just locKeys
   -- Generic derivation only tells us the keys of a record.  A type with no
   -- record fields is encoded as a tag/contents envelope, which we do not model.
@@ -2012,12 +2229,18 @@ isDefaultOptionsText t =
 --
 -- The field names below are matched as substrings, so the singular spellings
 -- also match aeson's actual @tagSingleConstructors@ field.
+-- Note: the tag-related fields are treated as inert for /every/ single-constructor
+-- type, including one that sets @tagSingleConstructors = True@.  That is a
+-- deliberate under-report, made at the user's request: with that flag set aeson
+-- really does tag the lone constructor, so
+-- @defaultOptions{tagSingleConstructors=True, sumEncoding=UntaggedValue}@ on the
+-- encoder against @defaultOptions{tagSingleConstructors=True}@ on the decoder
+-- encodes @{"f":...}@ while the decoder demands @{"tag":"T","f":...}@, and
+-- @fromJSON (toJSON x)@ fails.  The check stays silent about it anyway.
 keyAffectingFieldsFor :: Int -> Text -> Text -> [Text]
-keyAffectingFieldsFor nCons encOpts decOpts
-  | nCons == 1, not (mentionsTagSingle encOpts || mentionsTagSingle decOpts) = alwaysKeyAffecting
+keyAffectingFieldsFor nCons _encOpts _decOpts
+  | nCons == 1 = alwaysKeyAffecting
   | otherwise = alwaysKeyAffecting ++ tagRelated
-  where
-    mentionsTagSingle = T.isInfixOf "tagSingleConstructor"
 
 alwaysKeyAffecting :: [Text]
 alwaysKeyAffecting = ["fieldLabelModifier", "unwrapUnaryRecords", "tagSingleConstructor"]
@@ -2035,7 +2258,9 @@ isKeyPreservingOptionsText nCons t
   | isUnknownOptsText t = False
   | otherwise =
       let inert = ["omitNothingFields"]
-                    ++ (if nCons == 1 && not (T.isInfixOf "tagSingleConstructor" t) then tagRelated else [])
+                    -- Inert for any single-constructor type; see the note on
+                    -- 'keyAffectingFieldsFor' about @tagSingleConstructors@.
+                    ++ (if nCons == 1 then tagRelated else [])
           -- Every field assignment left after dropping the inert ones.
           remaining = [ p
                       | p <- T.splitOn "," (T.unwords (T.words t))
@@ -2080,12 +2305,20 @@ optionsChecks ty psi sp =
 -- Also normalizes whitespace, commas, braces, and @defaultOptions@ prefix
 -- to handle GHC pretty-printer line-wrapping differences.
 stripOmitNothingFields :: Text -> Text
-stripOmitNothingFields t =
+stripOmitNothingFields = stripOptionFields ["omitNothingFields"]
+
+-- | Drop the named field assignments from a pretty-printed 'Options' record
+-- update and normalise what is left, so that two options texts differing only
+-- in fields that cannot change a key compare equal.  Works on the individual
+-- assignments rather than on whole lines, which matters when the pretty-printer
+-- puts several of them on one line.
+stripOptionFields :: [Text] -> Text -> Text
+stripOptionFields drops t =
   T.unwords (T.words (T.replace "," " " (removeDefaultOpts (fixBrace stripped))))
   where
     flat = T.unwords (T.words t)
     parts = T.splitOn ", " flat
-    kept = filter (not . T.isInfixOf "omitNothingFields") parts
+    kept = filter (\p -> not (any (`T.isInfixOf` p) drops)) parts
     stripped = T.intercalate ", " kept
     fixBrace s
       | "}" `T.isInfixOf` t && not ("}" `T.isSuffixOf` (T.strip s)) =
@@ -2099,7 +2332,11 @@ stripOmitNothingFields t =
 genericOptionsChecks :: Int -> Text -> Maybe Text -> Maybe Text -> SrcSpan -> [(SrcSpan, JsonIdLawError)]
 genericOptionsChecks nCons ty mEncOpts mDecOpts sp =
   case (mEncOpts, mDecOpts) of
-    (Just encOpts, Just decOpts) ->
+    -- A "<non-standard ...>" marker is not an 'Options' expression, it is this
+    -- check saying it could not read the side.  Comparing it against a real
+    -- options text as though it were one reports a mismatch that means nothing.
+    (Just encOpts, Just decOpts)
+      | not (isUnknownOptsText encOpts), not (isUnknownOptsText decOpts) ->
       let encFiltered = filterKeyAffecting encOpts
           decFiltered = filterKeyAffecting decOpts
       in if encFiltered /= decFiltered
@@ -2112,8 +2349,13 @@ genericOptionsChecks nCons ty mEncOpts mDecOpts sp =
     -- Keep only the lines mentioning a key-affecting field, and normalize
     -- GHC internal variable names (e.g. x_aPhB -> x_) so that the same
     -- lambda with different internal names doesn't cause a false mismatch.
+    -- Fields that cannot change a key for a type with this many constructors.
+    -- They are removed assignment-by-assignment before the line filter, because
+    -- an inert field sharing a line with a live one would otherwise drag the
+    -- whole line into the comparison.
+    inertFields = "omitNothingFields" : (if nCons == 1 then tagRelated else [])
     filterKeyAffecting opts =
-      normalizeVarNames (T.unlines (filter (\l -> any (`T.isInfixOf` l) keyAffectingFields) (T.lines (stripOmitNothingFields opts))))
+      normalizeVarNames (T.unlines (filter (\l -> any (`T.isInfixOf` l) keyAffectingFields) (T.lines (stripOptionFields inertFields opts))))
     -- Replace GHC internal variable name suffixes like _aPhB, _aPfZ with _
     normalizeVarNames = T.pack . go . T.unpack
       where
