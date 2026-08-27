@@ -97,6 +97,17 @@ rules:
       - "EulerHS.Framework.Language"
       - "EulerHS.KVDB.Interpreter"
       - "KVDB.KVDBSpec"
+
+  - constructor_rule_name: Test Blocked Constructors
+    constructor_name:
+      - JUSPAY_DECLINED
+      - JuspayDeclined
+    constructor_rule_fixes:
+      - Use DECLINED or Declined instead.
+    constructor_rule_ignore_modules: []
+    constructor_rule_ignore_functions: []
+    constructor_rule_check_modules:
+      - SubTests.FunctionUseTest
     
   - fn_rule_name: Test Qualified Function Name Rule
     fn_name: TestUtils.throwException

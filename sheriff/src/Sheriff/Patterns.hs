@@ -72,9 +72,13 @@ pattern PatHsAppType e t <- HsAppType _ e _ t
 
 -- Restores the `HsConLikeOut ext con` shape removed in GHC 9.4. The first field
 -- is bound to the (unused) coercion type variables so existing `HsConLikeOut _ cl`
--- matches continue to work unchanged.
+-- matches continue to work unchanged. The empty list of scaled types is sufficient
+-- for the constructed expression to round-trip through pattern matching; if the
+-- caller needs the precise argument types, they were already discarded by the
+-- non-bidirectional form as well.
 pattern HsConLikeOut :: [Var] -> ConLike -> HsExpr GhcTc
 pattern HsConLikeOut tvs con <- XExpr (ConLikeTc con tvs _)
+  where HsConLikeOut tvs con = XExpr (ConLikeTc con tvs [])
 #else
 pattern PatHsPar :: LHsExpr (GhcPass p) -> HsExpr (GhcPass p)
 pattern PatHsPar e <- HsPar _ e

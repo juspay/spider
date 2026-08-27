@@ -58,6 +58,24 @@ Any additional rules for a package can be provided as `yaml` file. The path to t
 >     - ModuleB
 >```
 
+> Structure of Constructor Rules:
+>```yaml
+> - constructor_rule_name: "<Name of the Rule>"
+>   constructor_name:
+>     - ConstructorA
+>     - ModuleB.ConstructorB
+>   constructor_rule_fixes:
+>     - Sample Suggested Fix
+>   constructor_rule_ignore_modules:
+>     - Module.AllowedToUseConstructors
+>   constructor_rule_ignore_functions:
+>     - Module.allowedFunction
+>   constructor_rule_check_modules:
+>     - "*"
+>```
+>
+> Constructor rules reject named data constructors both when values are created and when constructors are used in pattern matches. Use `constructor_rule_ignore_modules` to exempt specific Haskell modules/files.
+
 > Structure of DB Rules:
 >```yaml
 > - db_rule_name: "DBRuleTest"
