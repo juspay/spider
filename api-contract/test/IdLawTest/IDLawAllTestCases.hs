@@ -3732,3 +3732,34 @@ instance FromJSON WhereDelPayload where
 instance ToJSON WhereDelPayload where
   toJSON (WhereDelTxnCase t)    = toJSON t
   toJSON (WhereDelRefundCase r) = toJSON r
+
+---------------- Key list handed to a value transformer, not a reader [NO ERROR: the generic decoder reads every field] ----------------
+-- @defaultDecode (convertNumericIds ["ntKeptId"] v)@ passes a key to a function
+-- that rewrites that entry *in place* and hands the whole value on.  The keys
+-- actually read are the generic field labels; treating the transformer's
+-- argument as the decoder's key set leaves every other field looking unread.
+
+convertNumericIds :: [Text] -> Value -> Value
+convertNumericIds keys val =
+  case val of
+    Object obj -> Object (Prelude.foldl updateKey obj keys)
+    other      -> other
+  where
+    updateKey obj key =
+      let k = AK.fromText key
+      in case KM.lookup k obj of
+           Nothing -> obj
+           Just v  -> KM.insert k v obj
+
+data NumericIdTransform = NumericIdTransform
+  { ntKeptId   :: Text
+  , ntOther    :: Maybe Text
+  , ntAnother  :: Maybe Text
+  }
+  deriving stock (Generic)
+
+instance ToJSON NumericIdTransform where
+  toJSON = defaultEncode
+
+instance FromJSON NumericIdTransform where
+  parseJSON v = defaultDecode (convertNumericIds ["ntKeptId"] v)

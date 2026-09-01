@@ -1753,10 +1753,17 @@ extractKeysFromExpr mCurrentMod side e0 = case appSpineTc e0 of
              , isWhereBoundHelper mmod
                || (isSameModuleHelper mmod && takesObjectArg args)
                || (not (isAesonMod mmod) && not (isTextUtilMod mmod) && length args >= 2 && objectArg (args !! 1))
-             -> let strArgs = case [k | Just k <- map keyString args] of
-                                   (k:_) -> [k]
-                                   []    -> listKeyStrings args
-                in [KeyInfo k Nothing False | k <- strArgs]
+             -> case [k | Just k <- map keyString args] of
+                  (k:_) -> [KeyInfo k Nothing False]
+                  -- A key inside a *list* argument is a weaker signal than a
+                  -- direct one: the helper may be reading it
+                  -- (@parseTextAny v ["result"]@) or merely rewriting it in
+                  -- place (@convertNumericIds ["subReferenceId"] v@, whose
+                  -- result then goes to a generic decoder that reads every
+                  -- field).  Recording it as optional keeps it out of the way
+                  -- of 'resolveKeys' when the side also has generic options,
+                  -- while still reporting it when it is the only thing read.
+                  []    -> [KeyInfo k Nothing True | k <- listKeyStrings args]
   -- Tuple syntax in encoder: ("key", value) inside object [...]
   [e] | side == EncodeSide, Just k <- tupleFirstKey e -> [KeyInfo k Nothing False]
   _ -> []
