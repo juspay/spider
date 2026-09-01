@@ -3,6 +3,7 @@ packages:
   ./sheriff
   ./paymentFlow
   ./dc
+  ./ac
   ./endpoints
   ./warner
   ./keyLookupTracker
