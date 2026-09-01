@@ -38,6 +38,7 @@ getViolationSuggestions v = case v of
   FnSigBlocked _ _ r -> fn_rule_fixes r
   NonIndexedDBColumn _ _ r -> db_rule_fixes r
   InfiniteRecursionDetected r -> infinite_recursion_rule_fixes r
+  WhereClauseViolationDetected _ _ r -> where_clause_rule_fixes r
   NoViolation -> []
 
 getViolationType :: Violation -> String
@@ -48,6 +49,7 @@ getViolationType v = case v of
   FnSigBlocked _ _ _ -> "FnSigBlocked"
   NonIndexedDBColumn _ _ _ -> "NonIndexedDBColumn"
   InfiniteRecursionDetected _ -> "InfiniteRecursionDetected"
+  WhereClauseViolationDetected _ _ _-> "WhereClauseRule"
   NoViolation -> "NoViolation"
 
 getViolationRule :: Violation -> Rule
@@ -58,6 +60,7 @@ getViolationRule v = case v of
   FnSigBlocked _ _ r -> FunctionRuleT r
   NonIndexedDBColumn _ _ r -> DBRuleT r
   InfiniteRecursionDetected r -> InfiniteRecursionRuleT r
+  WhereClauseViolationDetected _ _ r -> WhereClauseRuleT r
   NoViolation -> defaultRule
 
 getViolationRuleName :: Violation -> String
@@ -68,6 +71,7 @@ getViolationRuleName v = case v of
   FnSigBlocked _ _ r -> fn_rule_name r
   NonIndexedDBColumn _ _ r -> db_rule_name r
   InfiniteRecursionDetected r -> infinite_recursion_rule_name r
+  WhereClauseViolationDetected _ _ r -> where_clause_rule_name r
   NoViolation -> "NA"
 
 getViolationRuleExceptions :: Violation -> Rules
