@@ -21,7 +21,9 @@ data CliOptions = CliOptions {
     host :: String,
     log :: Bool,
     tc_funcs :: Maybe Bool,
-    api_contract :: Maybe Bool
+    api_contract :: Maybe Bool,
+    id_law_check :: Maybe Bool,
+    id_law_exceptions_path :: Maybe String
 } deriving (Show, Eq, Ord,Generic,ToJSON,FromJSON)
 
 data TypeOfInstance =

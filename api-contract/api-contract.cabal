@@ -19,6 +19,11 @@ flag enable-isolation
   default:           False
   manual:            True
 
+Flag TestMode
+  Description: Use ghc options to dump ASTs in dev mode
+  Default:     False
+  Manual:      True
+
 common warnings
     if flag(enable-isolation)
         cpp-options:     -DENABLE_ISOLATION
@@ -29,6 +34,8 @@ library
     exposed-modules:
         ApiContract.Plugin
         , ApiContract.Types
+        , ApiContract.JsonIdLaw
+        , ApiContract.JsonIdLaw.Types
     -- other-modules:
     -- other-extensions:
     build-depends:
@@ -70,6 +77,47 @@ library
     hs-source-dirs:   src
     default-language: Haskell2010
 
+common common-options
+  build-depends:       base
+  ghc-options:         -Werror
+                       -Wincomplete-uni-patterns
+                       -Wincomplete-record-updates
+                       -Wincomplete-patterns
+                       -Wcompat
+                       -Widentities
+                       -Wredundant-constraints
+                       -fhide-source-paths
+  default-language:    Haskell2010
+  default-extensions:  DeriveGeneric
+                       GeneralizedNewtypeDeriving
+                       InstanceSigs
+                       LambdaCase
+                       OverloadedStrings
+                       RecordWildCards
+                       ScopedTypeVariables
+                       StandaloneDeriving
+                       TypeApplications
+                       CPP
+
+common test-common-options
+    import:           common-options
+    default-language: Haskell2010
+    hs-source-dirs:   test
+    build-depends:
+          aeson
+        , text
+    if flag(TestMode)
+        ghc-options:
+            -fkeep-going
+            -fplugin=ApiContract.Plugin
+            -fplugin-opt=ApiContract.Plugin:{"path":"./.juspay/api-contract/","port":4444,"host":"::1","log":false,"tc_funcs":false,"api_contract":false,"id_law_check":true,"id_law_exceptions_path":"./.juspay/jsonIdLawExceptions.yaml"}
+            -dumpdir=.juspay/tmp/jsonIdLaw/ -ddump-to-file -ddump-parsed-ast -ddump-tc-ast
+    else
+        ghc-options: 
+            -fkeep-going
+            -fplugin=ApiContract.Plugin
+            -fplugin-opt=ApiContract.Plugin:{"path":"./.juspay/api-contract/","port":4444,"host":"::1","log":false,"tc_funcs":false,"api_contract":false,"id_law_check":true,"id_law_exceptions_path":"./.juspay/jsonIdLawExceptions.yaml"}
+
 test-suite api-contract-test
     import:           warnings
     default-language: Haskell2010
@@ -86,3 +134,17 @@ test-suite api-contract-test
         , record-hasfield
         , text
         , newtype
+
+test-suite json-id-law-test
+    import:           test-common-options
+    default-language: Haskell2010
+    hs-source-dirs:   test
+    type:             exitcode-stdio-1.0
+    main-is:          Main.hs
+    other-modules:
+        IdLawTest.IDLawAllTestCases
+        -- , IdLawTest.BadMissingOnEncode
+    build-depends:
+        api-contract
+        , newtype
+        , vector
