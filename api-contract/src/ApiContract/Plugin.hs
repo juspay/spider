@@ -243,7 +243,7 @@ showSDocUnsafe' = showSDocUnsafe . ppr
 #endif
 
 defaultCliOptions :: CliOptions
-defaultCliOptions = CliOptions {path="./.juspay/api-contract/",port=4444,host="::1",log=False,tc_funcs=Just False,api_contract=Just True,id_law_check=Just True,id_law_exceptions_path=Just "./.juspay/jsonIdLawExceptions.yaml"}
+defaultCliOptions = CliOptions {path="./.juspay/api-contract/",port=4444,host="::1",log=False,tc_funcs=Just False,api_contract=Just True,id_law_check=Just False,id_law_exceptions_path=Just "./.juspay/jsonIdLawExceptions.yaml"}
 
 -- GHC 9.4 changed parsedResultAction to take/return `ParsedResult` (wrapping the
 -- HsParsedModule + parse messages); unwrap it for analysis and return it unchanged.

@@ -2612,12 +2612,19 @@ idLawDefaultCliOptions = CliOptions
   , log = False
   , tc_funcs = Just False
   , api_contract = Just True
-  , id_law_check = Just True
+    -- Opt-in: with no @-fplugin-opt@ at all there is nothing asking for the
+    -- check, so it stays off.  A service turns it on in its own .cabal file.
+  , id_law_check = Just False
   , id_law_exceptions_path = Just "./.juspay/jsonIdLawExceptions.yaml"
   }
 
+-- | The JSON identity-law check is /opt-in/: a service enables it by passing
+-- @"id_law_check":true@ in its @-fplugin-opt@ JSON.  Omitting the key -- or the
+-- whole plugin option -- leaves it off, so adding the plugin for its other
+-- features never switches this on by surprise.  @JSON_ID_LAW_CHECK=false@ in
+-- the environment still forces it off for a build that has enabled it.
 idLawEnabled :: CliOptions -> Bool
-idLawEnabled opts = fromMaybe True (id_law_check opts) && not envDisabled
+idLawEnabled opts = fromMaybe False (id_law_check opts) && not envDisabled
   where
     envDisabled = readBool (unsafePerformIO (lookupEnv "JSON_ID_LAW_CHECK"))
     readBool (Just "false") = True
