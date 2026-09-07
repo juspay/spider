@@ -127,6 +127,14 @@ data JsonIdLawError
       , idlawEncTag  :: !Text
       , idlawDecTag  :: !Text
       }
+  -- | Every constructor of a sum type is encoded by passing its payload
+  -- straight through (@toJSON (C x) = toJSON x@), so the output carries no
+  -- constructor tag -- but the decoder is a generic decode whose 'Options'
+  -- expect one.
+  | UNTAGGED_ENCODE_TAGGED_DECODE
+      { idlawType    :: !Text
+      , idlawDecOpts :: !Text
+      }
   deriving (Eq, Show, Ord, Generic, ToJSON, FromJSON)
 
 -- | Pretty-print an error for the GHC diagnostic. The leading
@@ -182,3 +190,12 @@ generateJsonIdLawError (TAG_VALUE_MISMATCH ty encTag decTag) =
   <> "' but the decoder expects '" <> T.unpack decTag <> "'.\n"
   <> "\t'fromJSON (toJSON x)' will fail to match this constructor.\n"
   <> "\tMake the encoder and decoder use the same tag value."
+
+generateJsonIdLawError (UNTAGGED_ENCODE_TAGGED_DECODE ty decOpts) =
+  "[JsonIdLaw] Data loss: every constructor of type '" <> T.unpack ty
+  <> "' is encoded by passing its payload straight through, so the JSON carries"
+  <> " no constructor tag, but 'parseJSON' decodes it generically with 'Options'"
+  <> " that expect one.\n"
+  <> "\tDecoder options: " <> T.unpack decOpts <> "\n"
+  <> "\t'fromJSON (toJSON x)' cannot tell the constructors apart.\n"
+  <> "\tEither encode the tag, or decode with 'sumEncoding = UntaggedValue'."

@@ -32,7 +32,7 @@ import GHC.Tc.Utils.Monad (TcM)
 import qualified GHC.Tc.Utils.Monad as TCError
 import GHC.Hs.Expr (HsWrap(..), XXExprGhcTc(..), HsExpansion(..))
 import GHC.Types.Name hiding (varName)
-import GHC.Types.Var (Var)
+import GHC.Types.Var (Var, varType)
 import GHC.Types.Name.Reader (RdrName(..), rdrNameOcc)
 import GHC.Types.SrcLoc
 import GHC.Unit.Module.ModSummary
@@ -80,7 +80,7 @@ import Control.Monad.IO.Class (liftIO)
 import qualified Data.Aeson as A
 import Data.Bool (bool)
 import Data.Data (Data)
-import Data.Char (toLower)
+import Data.Char (toLower, isUpper, isLower)
 import Data.List (foldl', nub, sort, isInfixOf, isPrefixOf)
 import Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
@@ -462,6 +462,15 @@ partialDecoding = "<non-standard decoding: whole-object delegation>"
 -- carries no keys.  See 'textJsonGenerics'.
 jsonTextEncoding = "<non-standard JSON-text encoding>"
 
+-- | More specific than 'nonStandardEncoding': every equation hands its
+-- constructor payload straight through (@toJSON (C x) = toJSON x@), so the
+-- encoded JSON carries no constructor tag.  The keys are still unknown -- the
+-- marker only records /why/, so 'untaggedEncodeChecks' can fire.  It keeps the
+-- @\<non-standard@ prefix so every existing "is this side unknown" test still
+-- treats it as unknown.
+untaggedPassthroughEncoding :: Text
+untaggedPassthroughEncoding = "<non-standard encoding: untagged payload passthrough>"
+
 isUnknownOptsText :: Text -> Bool
 isUnknownOptsText t = "<non-standard" `T.isPrefixOf` t
 
@@ -643,8 +652,22 @@ collectLocalKeys tcg = do
                       -- Without this, an encoder whose helper we could not read
                       -- looks like an encoder that writes no keys at all, and
                       -- every decoder key is reported as missing.
-                      nonStd = hasDel || hasObj || hasCompGen || (hasLocalCall && null encKeys)
-                      finalGenOpts = mGenOpts <|> (guard nonStd >> Just nonStandardEncoding)
+                      -- An encoder that provably produces a JSON *scalar* has a
+                      -- known-empty key set, not an unknown one: no key the
+                      -- decoder reads can ever appear in its output.  Reading
+                      -- it as unknown silently accepts
+                      -- @toJSON x = toJSON (render x)@ paired with a decoder
+                      -- that expects an object.
+                      encScalar = not (null allBodies) && all encodesScalarBody allBodies
+                      nonStd = not encScalar
+                                 && (hasDel || hasObj || hasCompGen || (hasLocalCall && null encKeys))
+                      -- Every equation is @toJSON (C x) = toJSON x@: the
+                      -- payload goes out bare, with no constructor tag.
+                      encPassthrough = not (null allBodies) && all encodesPayloadBare allBodies
+                      unknownMarker
+                        | encPassthrough = untaggedPassthroughEncoding
+                        | otherwise      = nonStandardEncoding
+                      finalGenOpts = mGenOpts <|> (guard nonStd >> Just unknownMarker)
                       mDelegatedKey = if hasDel && not hasObj && null encKeys
                                         then findDelegatedTypeKey matchAlts
                                         else Nothing
@@ -1413,6 +1436,60 @@ hasObjectConstruction = hasNonStd checkObject
 hasNonStdJSON :: HsExpr GhcTc -> Bool
 hasNonStdJSON e = hasDelegation e || hasObjectConstruction e
 
+-- | The scalar type constructor an expression evaluates to, if it evaluates to
+-- one of the types aeson renders as a JSON scalar.  Read off the head of the
+-- application spine: the head's type is split into arguments and result, and
+-- the result is only trusted when the spine supplies exactly as many arguments
+-- as the type takes (a partial application evaluates to a function, not a
+-- scalar).  Anything less obvious yields 'Nothing', so the caller falls back on
+-- treating the side as unknown.
+scalarExprTyCon :: HsExpr GhcTc -> Maybe String
+scalarExprTyCon e0 = case appSpineTc e0 of
+  (h : args)
+    | HsVar _ (L _ v) <- peelWrap h
+    , let (argTys, res) = splitFunTys (varType v)
+    , length args == length argTys
+    , Just tc <- tyConAppTyCon_maybe res
+    , let n = occNameString (nameOccName (tyConName tc))
+    , n `elem` scalarTyCons
+    -> Just n
+  _ -> Nothing
+  where
+    scalarTyCons =
+      ["Text", "String", "Int", "Integer", "Double", "Float", "Bool", "Scientific", "Char", "Word"]
+
+-- | Is this encoder body @toJSON x@ for a locally-bound @x@ -- i.e. the
+-- constructor's payload passed straight through, emitting no tag?  A
+-- module-level name (@toJSON someConstant@) or any larger expression
+-- (@toJSON $ MockedTimer uid@) does not count.
+encodesPayloadBare :: HsExpr GhcTc -> Bool
+encodesPayloadBare body = case appSpineTc (peelWrap body) of
+  (h : [arg])
+    | Just (occ, mmod) <- opName h
+    , occ `elem` ["toJSON", "toEncoding"]
+    , isAesonMod mmod
+    , Just (_, Nothing) <- opName (peelWrap arg)
+    -> True
+  _ -> False
+
+-- | Is this encoder body @toJSON e@ / @toEncoding e@ for a scalar-typed @e@?
+encodesScalarBody :: HsExpr GhcTc -> Bool
+encodesScalarBody body = case appSpineTc (peelWrap body) of
+  -- @toJSON $ render x@: after typechecking @$@ is a plain application, so the
+  -- encoding function is the first argument rather than the spine head.
+  (h : f : arg : _)
+    | Just ("$", _) <- opName h
+    , Just (occ, mmod) <- opName (peelWrap f)
+    , occ `elem` ["toJSON", "toEncoding"]
+    , isAesonMod mmod
+    -> isJust (scalarExprTyCon arg)
+  (h : [arg])
+    | Just (occ, mmod) <- opName h
+    , occ `elem` ["toJSON", "toEncoding"]
+    , isAesonMod mmod
+    -> isJust (scalarExprTyCon arg)
+  _ -> False
+
 -- | Detect composition with a recognized generic encoding/decoding function
 -- where the OTHER side is a key-transforming function, e.g.:
 --   camelCaseToSnakeCase <<< defaultEncode
@@ -2037,6 +2114,16 @@ findGenericCall e0 = go (peelWrap e0)
                        (optsExpr : _) | occ `notElem` valueFirstGenerics
                                       -> Just (pprText optsExpr)
                        _ -> Just "defaultOptions"
+      -- @fmap MyNewtype . genericParseJSON opts@: the outer function only
+      -- applies a data constructor to the already-parsed /result/, which
+      -- cannot change which JSON keys were read.  Without this the rule
+      -- below stops at @fmap MyNewtype@, finds no generic call and switches
+      -- the whole decoder off, hiding any options mismatch underneath.
+      (h : args) | Just (occ, _) <- opName h
+                 , occ `elem` ["<<<", "."]
+                 , (firstArg : inner : _) <- args
+                 , isResultWrapper (peelWrap firstArg)
+                 -> go (peelWrap inner)
       -- Handle left composition: f <<< g  (i.e. f . g)
       -- The outer function (first arg) transforms the output of the inner;
       -- if it's a key-transforming function (e.g. camelCaseToSnakeCase),
@@ -2103,6 +2190,16 @@ findGenericCall e0 = go (peelWrap e0)
         , Just opts <- [go (peelWrap body)]
         ]
 
+    -- @fmap C@ / @(C <$>)@ where @C@ is a data constructor.  Wrapping the
+    -- parsed result in a constructor is key-neutral, unlike the key-renaming
+    -- functions the composition rule is there to guard against.
+    isResultWrapper expr = case appSpineTc expr of
+      (h : args) | Just (occ, _) <- opName h
+                 , occ `elem` ["fmap", "<$>"]
+                 , (c : _) <- args
+                 -> isJust (conLikeOpName (peelWrap c))
+      _ -> False
+
 isAesonMod' :: Maybe String -> Bool
 isAesonMod' Nothing = False
 isAesonMod' (Just m) = "Aeson" `isInfixOf` m
@@ -2150,11 +2247,12 @@ checkType moduleSpan parsedMap localKeys tagValues altGroups definedHere instPre
               (Map.findWithDefault Map.empty tyKey altGroups)
             _ -> []
           optErrs = optionsChecks tyKey psi (effectiveSpan [psiSpan psi, moduleSpan])
-          genOptErrs = genericOptionsChecks nCons tyKey mEncGenOpts mDecGenOpts (effectiveSpan [psiSpan psi, encSpan, decSpan, moduleSpan])
+          genOptErrs = genericOptionsChecks nCons fields tyKey mEncGenOpts mDecGenOpts (effectiveSpan [psiSpan psi, encSpan, decSpan, moduleSpan])
           (encTags, decTags, encConToTag, mCatchAllCon, encCons, decCons) = fromMaybe (Set.empty, Set.empty, Map.empty, Nothing, Set.empty, Set.empty) (Map.lookup tyKey tagValues)
           tagErrs = tagChecks tyKey encTags decTags encConToTag mCatchAllCon (effectiveSpan [encSpan, decSpan, typeSpan, moduleSpan])
           collapseErrs = collapseChecks tyKey encTags encCons decCons (effectiveSpan [encSpan, decSpan, typeSpan, moduleSpan])
-      in keyErrs ++ optErrs ++ genOptErrs ++ tagErrs ++ collapseErrs
+          untaggedErrs = untaggedEncodeChecks nCons tyKey mEncGenOpts mDecGenOpts (effectiveSpan [encSpan, decSpan, typeSpan, moduleSpan])
+      in keyErrs ++ optErrs ++ genOptErrs ++ tagErrs ++ collapseErrs ++ untaggedErrs
   where
     definedHereNow = Map.member tyKey definedHere
     effectiveSpan = foldr1 (\s acc -> if s /= noSrcSpan then s else acc)
@@ -2333,11 +2431,51 @@ stripOptionFields drops t =
       | otherwise = s
     removeDefaultOpts s = T.replace "defaultOptions" "" s
 
+-- | The case-convention preset an 'Options' expression is built from, if any.
+--
+-- Comparing only the record-update text misses the most common way two sides
+-- disagree: a named preset such as @snakeCaseOption@ carries its
+-- @fieldLabelModifier@ inside the constant, where no textual comparison can
+-- see it, so @genericToJSON defaultOptions@ against
+-- @genericParseJSON snakeCaseOption@ reads as a match.  Only presets named
+-- after a case convention are recognised -- those rename keys by definition --
+-- and an explicit @fieldLabelModifier@ in the text overrides the preset, so
+-- the existing textual comparison keeps handling that case on its own.
+keyCasePreset :: Text -> Maybe Text
+keyCasePreset opts
+  | "fieldLabelModifier" `T.isInfixOf` opts = Nothing
+  | otherwise = listToMaybe [p | p <- presets, p `T.isInfixOf` baseName]
+  where
+    presets = ["snake", "pascal", "kebab", "camel"]
+    baseName =
+      T.toLower
+        . last
+        . ("" :)
+        . T.splitOn "."
+        . T.takeWhile (\c -> c /= '{' && c /= ' ' && c /= '(')
+        . T.dropWhile (\c -> c == '$' || c == ' ')
+        $ T.strip opts
+
+-- | Would this case-convention preset actually rename any of these field
+-- labels?  A type whose fields are already @snake_case@ is unchanged by
+-- @snakeCaseOption@, so pairing that preset against plain @defaultOptions@
+-- round-trips fine and must not be reported.  With no record fields to inspect
+-- (a nullary sum, say) the answer is "no", keeping the check silent.
+presetChangesSomeField :: Text -> [Text] -> Bool
+presetChangesSomeField preset = any changes
+  where
+    changes f = case preset of
+      "snake"  -> T.any isUpper f
+      "kebab"  -> T.any isUpper f
+      "pascal" -> maybe False (isLower . fst) (T.uncons f)
+      "camel"  -> "_" `T.isInfixOf` f
+      _        -> False
+
 -- | Compare key-affecting 'Options' fields between @genericToJSON@ and
 -- @genericParseJSON@ calls. Only fields that change JSON key or tag names
 -- are compared; safe-to-differ fields like @omitNothingFields@ are ignored.
-genericOptionsChecks :: Int -> Text -> Maybe Text -> Maybe Text -> SrcSpan -> [(SrcSpan, JsonIdLawError)]
-genericOptionsChecks nCons ty mEncOpts mDecOpts sp =
+genericOptionsChecks :: Int -> [Text] -> Text -> Maybe Text -> Maybe Text -> SrcSpan -> [(SrcSpan, JsonIdLawError)]
+genericOptionsChecks nCons fields ty mEncOpts mDecOpts sp =
   case (mEncOpts, mDecOpts) of
     -- A "<non-standard ...>" marker is not an 'Options' expression, it is this
     -- check saying it could not read the side.  Comparing it against a real
@@ -2346,7 +2484,12 @@ genericOptionsChecks nCons ty mEncOpts mDecOpts sp =
       | not (isUnknownOptsText encOpts), not (isUnknownOptsText decOpts) ->
       let encFiltered = filterKeyAffecting encOpts
           decFiltered = filterKeyAffecting decOpts
-      in if encFiltered /= decFiltered
+          encPreset = keyCasePreset encOpts
+          decPreset = keyCasePreset decOpts
+          presetsDiffer =
+            encPreset /= decPreset
+              && any (`presetChangesSomeField` fields) (catMaybes [encPreset, decPreset])
+      in if encFiltered /= decFiltered || presetsDiffer
           then [(sp, OPTIONS_MISMATCH ty encOpts decOpts)]
           else []
     _ -> []
@@ -2371,6 +2514,26 @@ genericOptionsChecks nCons ty mEncOpts mDecOpts sp =
           case dropWhile (\d -> d >= 'a' && d <= 'z' || d >= 'A' && d <= 'Z' || d >= '0' && d <= '9') rest of
             rest' -> '_' : go rest'
         go (c:rest) = c : go rest
+
+-- | A sum type whose every constructor is encoded by passing the payload
+-- straight through emits no tag, so a decoder that generically decodes it with
+-- tag-expecting 'Options' can never tell the constructors apart.
+--
+-- Deliberately narrow: it needs at least two constructors, an encoder that is
+-- /nothing but/ payload passthrough (a single equation building an object, or
+-- writing a literal tag, disqualifies it -- those are already covered by the
+-- key and tag checks), and a decoder whose options are readable and do not ask
+-- for 'UntaggedValue'.  Any of those unknown leaves the check silent.
+untaggedEncodeChecks :: Int -> Text -> Maybe Text -> Maybe Text -> SrcSpan -> [(SrcSpan, JsonIdLawError)]
+untaggedEncodeChecks nCons ty mEncOpts mDecOpts sp
+  | nCons < 2 = []
+  | mEncOpts /= Just untaggedPassthroughEncoding = []
+  | Just decOpts <- mDecOpts
+  , not (isUnknownOptsText decOpts)
+  , not ("UntaggedValue" `T.isInfixOf` decOpts)
+  , not ("untagged" `T.isInfixOf` T.toLower decOpts)
+  = [(sp, UNTAGGED_ENCODE_TAGGED_DECODE ty decOpts)]
+  | otherwise = []
 
 -- | Compare constructor tag values between encoder and decoder.
 -- Fires for any type that has tag values on the encoder side (per user's

@@ -3763,3 +3763,151 @@ instance ToJSON NumericIdTransform where
 
 instance FromJSON NumericIdTransform where
   parseJSON v = defaultDecode (convertNumericIds ["ntKeptId"] v)
+
+---------------- Named options preset vs plain defaultOptions [TRUE POSITIVE: the preset renames every key] ----------------
+-- A preset such as @snakeCaseOption@ carries its @fieldLabelModifier@ inside
+-- the constant, so comparing only the record-update text reads this as a match
+-- against the @defaultOptions@ of a @deriving anyclass@ encoder.
+
+idlawSnakeCaseOption :: Options
+idlawSnakeCaseOption = defaultOptions { fieldLabelModifier = camelTo2 '_' }
+
+idlawPascalCaseOption :: Options
+idlawPascalCaseOption = defaultOptions { fieldLabelModifier = \s -> "Pascal" <> s }
+
+data PresetOptsMismatch = PresetOptsMismatch
+  { presetFieldOne :: Maybe Text
+  , presetFieldTwo :: Maybe Text
+  }
+  deriving stock (Generic)
+  deriving anyclass (ToJSON)
+
+instance FromJSON PresetOptsMismatch where
+  parseJSON = genericParseJSON idlawSnakeCaseOption
+
+---------------- Two different named presets [TRUE POSITIVE: snake_case vs PascalCase keys] ----------------
+
+data PresetOptsCrossed = PresetOptsCrossed
+  { crossedFieldOne :: Maybe Text
+  , crossedFieldTwo :: Maybe Text
+  }
+  deriving stock (Generic)
+
+instance ToJSON PresetOptsCrossed where
+  toJSON = genericToJSON idlawPascalCaseOption
+
+instance FromJSON PresetOptsCrossed where
+  parseJSON = genericParseJSON idlawSnakeCaseOption
+
+---------------- The same named preset on both sides [NO ERROR: identical options] ----------------
+-- Negative control for the preset comparison: recognising the preset must not
+-- make two matching sides disagree.
+
+data PresetOptsMatch = PresetOptsMatch
+  { matchedFieldOne :: Maybe Text
+  , matchedFieldTwo :: Maybe Text
+  }
+  deriving stock (Generic)
+
+instance ToJSON PresetOptsMatch where
+  toJSON = genericToJSON idlawSnakeCaseOption
+
+instance FromJSON PresetOptsMatch where
+  parseJSON = genericParseJSON idlawSnakeCaseOption
+
+---------------- Constructor wrapper composed onto a generic decoder [TRUE POSITIVE: options differ underneath] ----------------
+-- @fmap C . genericParseJSON opts@ only applies a constructor to the parsed
+-- result, which cannot change which keys were read, so the search must see
+-- through it to the options underneath instead of giving up.
+
+newtype WrappedGenericDec = WrappedGenericDec { unWrappedGenericDec :: PresetOptsMatch }
+  deriving stock (Generic)
+  deriving anyclass (ToJSON)
+
+instance FromJSON WrappedGenericDec where
+  parseJSON = fmap WrappedGenericDec . genericParseJSON idlawSnakeCaseOption
+
+---------------- Constructor wrapper over matching options [NO ERROR: same options both sides] ----------------
+
+newtype WrappedGenericMatch = WrappedGenericMatch { unWrappedGenericMatch :: PresetOptsMatch }
+  deriving stock (Generic)
+  deriving anyclass (ToJSON)
+
+instance FromJSON WrappedGenericMatch where
+  parseJSON = fmap WrappedGenericMatch . genericParseJSON defaultOptions
+
+---------------- Encoder renders the value as a scalar [TRUE POSITIVE: decoder expects an object] ----------------
+-- @toJSON x = toJSON (render x)@ produces a JSON string.  That is a known-empty
+-- key set, not an unknown one: none of the keys the decoder reads can ever
+-- appear in the output.
+
+renderScalarPayload :: ScalarEncoded -> Text
+renderScalarPayload _ = "rendered"
+
+data ScalarEncoded = ScalarEncoded
+  { scalarCardNumber :: Text
+  , scalarExpiry     :: Text
+  }
+  deriving stock (Generic)
+
+instance ToJSON ScalarEncoded where
+  toJSON payload = toJSON $ renderScalarPayload payload
+
+instance FromJSON ScalarEncoded where
+  parseJSON = withObject "ScalarEncoded" $ \o -> do
+    n <- o .: "scalarCardNumber"
+    e <- o .: "scalarExpiry"
+    pure (ScalarEncoded n e)
+
+---------------- Scalar on both sides [NO ERROR: string in, string out] ----------------
+-- Negative control: a scalar encoder paired with a scalar decoder round-trips,
+-- and the decoder reads no keys for the empty encode set to disagree with.
+
+renderScalarBoth :: ScalarBoth -> Text
+renderScalarBoth _ = "ok"
+
+newtype ScalarBoth = ScalarBoth { unScalarBoth :: Text }
+  deriving stock (Generic)
+
+instance ToJSON ScalarBoth where
+  toJSON v = toJSON $ renderScalarBoth v
+
+instance FromJSON ScalarBoth where
+  parseJSON = withText "ScalarBoth" (pure . ScalarBoth)
+
+---------------- Untagged payload passthrough vs tagged generic decode [TRUE POSITIVE: no tag is ever written] ----------------
+-- Every equation hands the constructor payload straight through, so the JSON
+-- carries no discriminator, but the decoder decodes generically with options
+-- that expect one.
+
+data PassthroughLeft = PassthroughLeft { ptLeftField :: Text }
+  deriving stock (Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
+data PassthroughRight = PassthroughRight { ptRightField :: Text }
+  deriving stock (Generic)
+  deriving anyclass (ToJSON, FromJSON)
+
+data UntaggedPassthrough = UPLeft PassthroughLeft | UPRight PassthroughRight
+  deriving stock (Generic)
+
+instance ToJSON UntaggedPassthrough where
+  toJSON (UPLeft l)  = toJSON l
+  toJSON (UPRight r) = toJSON r
+
+instance FromJSON UntaggedPassthrough where
+  parseJSON = defaultDecode
+
+---------------- Untagged passthrough decoded untagged [NO ERROR: the sides agree] ----------------
+-- Negative control: the same encoder paired with a decoder that is told not to
+-- expect a tag.
+
+data UntaggedOk = UOLeft PassthroughLeft | UORight PassthroughRight
+  deriving stock (Generic)
+
+instance ToJSON UntaggedOk where
+  toJSON (UOLeft l)  = toJSON l
+  toJSON (UORight r) = toJSON r
+
+instance FromJSON UntaggedOk where
+  parseJSON = genericParseJSON defaultOptions { sumEncoding = UntaggedValue }
