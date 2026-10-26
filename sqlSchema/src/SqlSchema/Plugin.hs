@@ -1,9 +1,11 @@
+{-# LANGUAGE CPP                 #-}
 {-# LANGUAGE FlexibleContexts    #-}
 {-# LANGUAGE FlexibleInstances   #-}
 {-# LANGUAGE GADTs               #-}
 {-# LANGUAGE LambdaCase          #-}
 {-# LANGUAGE NamedFieldPuns      #-}
 {-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE PatternSynonyms     #-}
 {-# LANGUAGE RecordWildCards     #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeFamilies        #-}
@@ -31,6 +33,7 @@ import           Control.Monad.IO.Class     (liftIO)
 import qualified Data.Aeson                 as A
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Lazy       as BL
+import           Data.Foldable              (toList)
 import           Data.List                  (foldl', isPrefixOf, nub)
 import           Data.List.NonEmpty         (NonEmpty (..))
 import qualified Data.Map.Strict            as Map
@@ -50,6 +53,14 @@ import           GHC.Data.Bag               (bagToList, listToBag)
 import           GHC.Data.FastString        (mkFastString, unpackFS)
 import           GHC.Driver.Plugins         (CommandLineOption, Plugin (..),
                                              PluginRecompile (..), defaultPlugin)
+#if __GLASGOW_HASKELL__ >= 904
+import           GHC.Driver.Errors.Types    (ghcUnknownMessage)
+import           GHC.Driver.Plugins         (ParsedResult (..))
+import           GHC.Utils.Error            (mkErrorMsgEnvelope)
+#endif
+#if __GLASGOW_HASKELL__ >= 906
+import           Language.Haskell.Syntax.Basic (field_label)
+#endif
 import           GHC.Hs
 import qualified GHC.Types.Error            as ParseError
 import           GHC.Types.Name.Reader      (RdrName (..), rdrNameOcc)
@@ -77,8 +88,17 @@ import           SqlSchema.Types
 plugin :: Plugin
 plugin = defaultPlugin
   { pluginRecompile    = const (pure NoForceRecompile)
-  , parsedResultAction = writeFragment
+  , parsedResultAction = onParsed
   }
+
+-- | GHC 9.4 wrapped the parsed module in 'ParsedResult'; it is returned unchanged.
+#if __GLASGOW_HASKELL__ >= 904
+onParsed :: [CommandLineOption] -> ModSummary -> ParsedResult -> Hsc ParsedResult
+onParsed opts modSummary pr = pr <$ writeFragment opts modSummary (parsedResultModule pr)
+#else
+onParsed :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
+onParsed opts modSummary hpm = hpm <$ writeFragment opts modSummary hpm
+#endif
 
 
 parseCliOptions :: [CommandLineOption] -> CliOptions
@@ -91,7 +111,7 @@ parseCliOptions = \case
 
 
 writeFragment
-  :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
+  :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc ()
 writeFragment opts modSummary hpm = do
   let cli      = parseCliOptions opts
       fragDir  = fragmentsDir cli
@@ -100,7 +120,7 @@ writeFragment opts modSummary hpm = do
       srcPath  = modulePath modSummary
 
   if any (`isPrefixOf` modStr) (blacklistModules cli)
-    then pure hpm
+    then pure ()
     else do
       let decls        = hsmodDecls (unLoc (hpm_module hpm))
           rm           = foldl' visitDecl emptyRawModule decls
@@ -121,7 +141,6 @@ writeFragment opts modSummary hpm = do
               }
             fragPath = fragDir </> modStr <> ".yaml"
         atomicYamlWrite fragPath fragment
-      pure hpm
 
 
 -- ---------------------------------------------------------------------------
@@ -283,7 +302,8 @@ extractRawTable
   :: LHsQTyVars GhcPs -> HsDataDefn GhcPs -> Maybe RawTable
 extractRawTable tyVars defn = do
   fVarName <- lastTypeVarName tyVars
-  case dd_cons defn of
+  -- toList: dd_cons is a list before GHC 9.6 and a Foldable DataDefnCons after.
+  case toList (dd_cons defn) of
     [L _ (ConDeclH98{ con_args = RecCon (L _ recs) })] -> do
       let raw = concatMap (extractField fVarName . unLoc) recs
           oks = [r | RFOk r <- raw]
@@ -387,7 +407,7 @@ derivesAny names defn = any clauseHas (dd_derivs defn)
 -- (they aren't tables — they might be auxiliary).
 extractDbRecord :: LHsQTyVars GhcPs -> HsDataDefn GhcPs -> Maybe (Map.Map String String)
 extractDbRecord _ defn =
-  case dd_cons defn of
+  case toList (dd_cons defn) of
     [L _ (ConDeclH98{ con_args = RecCon (L _ recs) })] -> Just $
       Map.fromList
         [ (occNameFromFieldOcc (unLoc ln), tt)
@@ -453,30 +473,27 @@ collectDbModUpdates = go
       HsApp _ (L _ f) (L _ x)   -> go f <> go x
       HsLam _ MG{ mg_alts = L _ matches }
                                 -> concatMap (matchBody . unLoc) matches
-      HsLet _ _ (L _ e)         -> go e
+      Let (L _ e)               -> go e
       ExprWithTySig _ (L _ e) _ -> go e
-      HsPar _ (L _ e)           -> go e
+      Par (L _ e)               -> go e
       _                         -> []
 
     matchBody Match{ m_grhss = grhss } = case grhssExpr grhss of
       Just (L _ e) -> go e
       Nothing      -> []
 
-    extractUpdates = \case
-      Left rfs -> [ (occToString (rdrNameAmbiguousFieldOcc lbl), lit)
-                  | L _ HsRecField{ hsRecFieldLbl = L _ lbl
-                                  , hsRecFieldArg = L _ rhs
-                                  , hsRecPun = False } <- rfs
-                  , Just lit <- [setEntityNameLit rhs]
-                  ]
-      Right _  -> []  -- punned/rebindable updates; not used in this codebase
+    extractUpdates flds =
+      [ (ambiguousFieldName lbl, lit)
+      | L _ (RecField (L _ lbl) (L _ rhs) False) <- regularRecUpdFields flds
+      , Just lit <- [setEntityNameLit rhs]
+      ]
 
 setEntityNameLit :: HsExpr GhcPs -> Maybe String
 setEntityNameLit = \case
   HsApp _ (L _ f) (L _ arg)
     | varName f == Just "setEntityName"
     , Just s <- stringLiteral arg -> Just s
-  HsPar _ (L _ e) -> setEntityNameLit e
+  Par (L _ e) -> setEntityNameLit e
   _ -> Nothing
 
 
@@ -606,9 +623,7 @@ extractColumnOverrides cli typeName bindingName expr = case stripPar expr of
     | occToString n == "tableModification" -> Right Map.empty
   RecordUpd _ (L _ base) flds
     | varName base == Just "tableModification" ->
-        let upds = case flds of
-              Left rs -> rs
-              Right _ -> []
+        let upds = regularRecUpdFields flds
             (errs, ok) = foldl' classify ([], Map.empty) upds
         in if null errs then Right ok else Left errs
   _ ->
@@ -616,10 +631,8 @@ extractColumnOverrides cli typeName bindingName expr = case stripPar expr of
       then Right Map.empty
       else Left [UNRECOGNIZED_MODIFIER_SHAPE typeName bindingName]
   where
-    classify (es, acc) (L _ HsRecField{ hsRecFieldLbl = L _ lbl
-                                      , hsRecFieldArg = L _ rhs
-                                      , hsRecPun = False }) =
-      let fieldName = occToString (rdrNameAmbiguousFieldOcc lbl)
+    classify (es, acc) (L _ (RecField (L _ lbl) (L _ rhs) False)) =
+      let fieldName = ambiguousFieldName lbl
       in case fieldNamedLiteral rhs of
            Just c  -> (es, Map.insert fieldName c acc)
            Nothing -> (es <> [UNRESOLVABLE_COLUMN_NAME typeName fieldName], acc)
@@ -631,7 +644,7 @@ fieldNamedLiteral = \case
   HsApp _ (L _ f) (L _ arg)
     | varName f == Just "fieldNamed"
     , Just lit <- stringLiteral arg -> Just lit
-  HsPar _ (L _ inner) -> fieldNamedLiteral inner
+  Par (L _ inner) -> fieldNamedLiteral inner
   _ -> Nothing
 
 
@@ -710,10 +723,10 @@ extractPrimaryKey typeName pats body =
       _ -> Nothing
 
     getFieldTyApp = \case
-      HsAppType _ (L _ f) HsWC{ hswc_body = L _ ty }
+      AppType (L _ f) HsWC{ hswc_body = L _ ty }
         | varName f == Just "getField"
         , HsTyLit _ (HsStrTy _ fs) <- ty -> Just (unpackFS fs)
-      HsPar _ (L _ e) -> getFieldTyApp e
+      Par (L _ e) -> getFieldTyApp e
       _ -> Nothing
 
     patVarName p = case stripParPat p of
@@ -742,8 +755,16 @@ extractPrimaryKey typeName pats body =
       HsVar _ (L _ n) -> occToString n == "."
       _               -> False
 
+#if __GLASGOW_HASKELL__ >= 906
+fieldLabelString :: DotFieldOcc GhcPs -> String
+fieldLabelString DotFieldOcc{ dfoLabel = L _ fl } = unpackFS (field_label fl)
+#elif __GLASGOW_HASKELL__ >= 904
+fieldLabelString :: DotFieldOcc GhcPs -> String
+fieldLabelString DotFieldOcc{ dfoLabel = L _ fs } = unpackFS fs
+#else
 fieldLabelString :: HsFieldLabel GhcPs -> String
 fieldLabelString HsFieldLabel{ hflLabel = L _ fs } = unpackFS fs
+#endif
 
 -- | When the source uses @primaryKey x = Con x.f1 x.f2 … x.fN@ but the
 -- module does NOT enable @OverloadedRecordDot@, GHC's parser interprets
@@ -859,11 +880,71 @@ unwindApp = go []
 
 throwSqlSchemaErrors :: FilePath -> SrcSpan -> [SqlSchemaError] -> Hsc ()
 throwSqlSchemaErrors fragDir modSpan errs =
+#if __GLASGOW_HASKELL__ >= 904
+  ParseError.throwErrors $ ParseError.mkMessages $ listToBag
+    [ mkErrorMsgEnvelope modSpan reallyAlwaysQualify
+        (ghcUnknownMessage (ParseError.mkPlainError ParseError.noHints
+           (docToSDoc (Pretty.text (generateErrorMessage fragDir e)))))
+    | e <- nub errs ]
+#else
   ParseError.throwErrors $ listToBag
     [ ParseError.mkErr modSpan reallyAlwaysQualify
         (ParseError.mkDecorated
            [docToSDoc (Pretty.text (generateErrorMessage fragDir e))])
     | e <- nub errs ]
+#endif
+
+
+-- ---------------------------------------------------------------------------
+-- GHC version compatibility
+-- ---------------------------------------------------------------------------
+
+-- GHC 9.4 added token fields to HsPar/ParPat/HsLet/HsAppType and renamed
+-- HsRecField to HsFieldBind; GHC 9.8 replaced the Either of record-update
+-- fields with LHsRecUpdFields.
+#if __GLASGOW_HASKELL__ >= 904
+pattern Par :: LHsExpr GhcPs -> HsExpr GhcPs
+pattern Par e <- HsPar _ _ e _
+
+pattern ParP :: LPat GhcPs -> Pat GhcPs
+pattern ParP p <- ParPat _ _ p _
+
+pattern Let :: LHsExpr GhcPs -> HsExpr GhcPs
+pattern Let e <- HsLet _ _ _ _ e
+
+pattern AppType :: LHsExpr GhcPs -> LHsWcType GhcPs -> HsExpr GhcPs
+pattern AppType f ty <- HsAppType _ f _ ty
+
+pattern RecField :: lhs -> rhs -> Bool -> HsFieldBind lhs rhs
+pattern RecField lbl rhs pun <- HsFieldBind{ hfbLHS = lbl, hfbRHS = rhs, hfbPun = pun }
+#else
+pattern Par :: LHsExpr GhcPs -> HsExpr GhcPs
+pattern Par e <- HsPar _ e
+
+pattern ParP :: LPat GhcPs -> Pat GhcPs
+pattern ParP p <- ParPat _ p
+
+pattern Let :: LHsExpr GhcPs -> HsExpr GhcPs
+pattern Let e <- HsLet _ _ e
+
+pattern AppType :: LHsExpr GhcPs -> LHsWcType GhcPs -> HsExpr GhcPs
+pattern AppType f ty <- HsAppType _ f ty
+
+pattern RecField :: GHC.Located id -> arg -> Bool -> HsRecField' id arg
+pattern RecField lbl rhs pun <- HsRecField{ hsRecFieldLbl = lbl, hsRecFieldArg = rhs, hsRecPun = pun }
+#endif
+
+-- OverloadedRecordUpdate forms (r { a.b = x }) carry no plain field label and are skipped.
+#if __GLASGOW_HASKELL__ >= 908
+regularRecUpdFields :: LHsRecUpdFields GhcPs -> [LHsRecUpdField GhcPs GhcPs]
+regularRecUpdFields = \case
+  RegularRecUpdFields _ fs   -> fs
+  OverloadedRecUpdFields _ _ -> []
+#else
+regularRecUpdFields
+  :: Either [LHsRecUpdField GhcPs] [LHsRecUpdProj GhcPs] -> [LHsRecUpdField GhcPs]
+regularRecUpdFields = either id (const [])
+#endif
 
 
 -- ---------------------------------------------------------------------------
@@ -875,6 +956,12 @@ sdocText = showSDocUnsafe . ppr
 
 occToString :: RdrName -> String
 occToString = sdocText . rdrNameOcc
+
+-- | Matches the constructors directly: the RdrName accessor was renamed in GHC 9.8.
+ambiguousFieldName :: AmbiguousFieldOcc GhcPs -> String
+ambiguousFieldName = \case
+  Unambiguous _ (L _ n) -> occToString n
+  Ambiguous   _ (L _ n) -> occToString n
 
 moduleNameToString :: ModSummary -> String
 moduleNameToString = GHC.moduleNameString . GHC.moduleName . ms_mod
@@ -905,18 +992,18 @@ grhssExpr GRHSs{ grhssGRHSs = [L _ (GRHS _ [] body)] } = Just body
 grhssExpr _ = Nothing
 
 stripPar :: HsExpr GhcPs -> HsExpr GhcPs
-stripPar (HsPar _ (L _ e)) = stripPar e
+stripPar (Par (L _ e)) = stripPar e
 stripPar e = e
 
 stripParPat :: Pat GhcPs -> Pat GhcPs
-stripParPat (ParPat _ (L _ p)) = stripParPat p
+stripParPat (ParP (L _ p)) = stripParPat p
 stripParPat p = p
 
 stringLiteral :: HsExpr GhcPs -> Maybe String
 stringLiteral = \case
   HsLit _ (HsString _ fs)     -> Just (unpackFS fs)
   HsLit _ (HsStringPrim _ bs) -> Just (T.unpack (T.pack (show bs)))
-  HsPar _ (L _ e)             -> stringLiteral e
+  Par (L _ e)                 -> stringLiteral e
   ExprWithTySig _ (L _ e) _   -> stringLiteral e
   _                           -> Nothing
 
@@ -928,7 +1015,7 @@ stringLiteral = \case
 varName :: HsExpr GhcPs -> Maybe String
 varName = \case
   HsVar _ (L _ n)           -> Just (occToString n)
-  HsPar _ (L _ e)           -> varName e
+  Par (L _ e)               -> varName e
   ExprWithTySig _ (L _ e) _ -> varName e
   _                         -> Nothing
 
@@ -939,7 +1026,7 @@ justConstructorOf :: HsExpr GhcPs -> Maybe String
 justConstructorOf = \case
   HsApp _ (L _ j) (L _ x)
     | varName j == Just "Just" -> conName x
-  HsPar _ (L _ e) -> justConstructorOf e
+  Par (L _ e) -> justConstructorOf e
   _ -> Nothing
 
 -- | Classify the RHS of a @modelSchemaName = Just _@ binding.
@@ -961,14 +1048,14 @@ extractModelSchemaName :: HsExpr GhcPs -> Maybe ModelSchemaName
 extractModelSchemaName = peel
   where
     peel = \case
-      HsPar _ (L _ e)           -> peel e
+      Par (L _ e)               -> peel e
       ExprWithTySig _ (L _ e) _ -> peel e
       HsApp _ (L _ j) (L _ x)
         | varName j == Just "Just" -> inner x
       _ -> Nothing
 
     inner expr = case expr of
-      HsPar _ (L _ e)             -> inner e
+      Par (L _ e)                 -> inner e
       ExprWithTySig _ (L _ e) _   -> inner e
       HsLit _ (HsString _ fs)     -> Just (SchemaLiteral (unpackFS fs))
       HsVar _ (L _ rn)            -> Just (SchemaConfig (sdocText rn))

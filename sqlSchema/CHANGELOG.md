@@ -1,5 +1,11 @@
 # sql-schema
 
+## 0.4.1
+
+* Builds on GHC 9.8 as well as 9.2: CPP shims cover the GHC 9.4+ parser AST
+  (token fields, `HsFieldBind`, `DotFieldOcc`, `DataDefnCons`, `LHsRecUpdFields`)
+  and the 9.4+ diagnostics API. Extraction output is unchanged.
+
 ## 0.4.0
 
 * **Breaking (contract shape).** Each `TableSchema` now carries `codeName` (the
