@@ -25,6 +25,8 @@ main = do
   testNoSourceDirsNoPrune
   testOverrideMatchEmitted
   testOverrideMismatchFatal
+  testOverrideAmbiguousAgreeing
+  testOverrideAmbiguousConflictFatal
   testDedupIdenticalSilent
   testDuplicateMismatchFatal
   testTableNameWarning
@@ -257,6 +259,53 @@ testTableNameWarning = withTmpProject $ \tmp -> do
     , moSourceDirs     = [src]
     }
   assertEq "tablesEmitted" 2 (mrTablesEmitted report)
+
+-- | An upstream contract renames JobT and a downstream package models
+-- its own JobT: both candidates already carry the overridden name.
+testOverrideAmbiguousAgreeing :: IO ()
+testOverrideAmbiguousAgreeing = withTmpProject $ \tmp -> do
+  result <- runAmbiguousOverride tmp "Job"
+  report <- expectOk result
+  assertEq "tablesEmitted" 2 (mrTablesEmitted report)
+  assertEq "overridesEmitted" 1 (mrOverridesEmitted report)
+
+testOverrideAmbiguousConflictFatal :: IO ()
+testOverrideAmbiguousConflictFatal = withTmpProject $ \tmp -> do
+  result <- runAmbiguousOverride tmp "queue_job"
+  case result of
+    Right _   -> failWith "expected a disagreeing ambiguous override to abort merge"
+    Left errs ->
+      unless (any ("Ambiguous dbEntityOverride" `isInfixOf`) errs) $
+        failWith ("expected ambiguity error, got: " <> show errs)
+
+-- | Merge a downstream fragment table (named @downstreamName@) with an included
+-- contract whose override targets a same-named table type.
+runAmbiguousOverride :: FilePath -> String -> IO (Either [String] MergeReport)
+runAmbiguousOverride tmp downstreamName = do
+  let fragDir = tmp </> "fragments"
+      included = MergedSchema
+        { mergedTables = [ sampleTable "App.Jobs.JobT" "App.Jobs" "Job" ]
+        , mergedDbEntityOverrides =
+            [ DbEntityOverride
+                { dbField              = "job"
+                , dbTableType          = "JobT"
+                , sqlName              = "Job"
+                , overrideSourceModule = "App.AppDb"
+                , overrideSourceFile   = "src/App/AppDb.hs"
+                }
+            ]
+        }
+      includedPath = tmp </> "app-db.yaml"
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "Queue.Jobs.yaml")
+    (sampleFragment "Queue.Jobs" "Queue.Jobs.JobT" downstreamName)
+  BS.writeFile includedPath (YAML.encode included)
+  runMerge MergeOptions
+    { moFragmentsDir   = fragDir
+    , moOutFile        = tmp </> "merged.yaml"
+    , moIncludeMerged  = [includedPath]
+    , moSourceDirs     = []
+    }
 
 testIncludeMerged :: IO ()
 testIncludeMerged = withTmpProject $ \tmp -> do

@@ -265,7 +265,10 @@ validate tables overrides =
              []  -> Right (Just (warnUnmatched dbTableType overrideSourceModule))
              [t] | modelTableName t == sqlName -> Right Nothing
                  | otherwise              -> Left (mismatchMsg t)
-             _   -> Left (ambiguousMsg matches)
+             -- A downstream package may model a same-named type; only a
+             -- disagreeing candidate could be misreported.
+             _   | all ((== sqlName) . modelTableName) matches -> Right Nothing
+                 | otherwise -> Left (ambiguousMsg matches)
         where
           warnUnmatched tt mn =
             "sql-schema-merge: warning: dbEntityOverride for "

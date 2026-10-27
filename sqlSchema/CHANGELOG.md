@@ -5,6 +5,10 @@
 * Builds on GHC 9.8 as well as 9.2: CPP shims cover the GHC 9.4+ parser AST
   (token fields, `HsFieldBind`, `DotFieldOcc`, `DataDefnCons`, `LHsRecUpdFields`)
   and the 9.4+ diagnostics API. Extraction output is unchanged.
+* **Fix:** `sql-schema-merge` no longer aborts when a `setEntityName` override's
+  table type matches several tables that all already use the overridden name
+  (an upstream package's `JobT` re-modelled in a downstream package, which
+  broke that package's merge). It still aborts when the candidates disagree.
 
 ## 0.4.0
 
