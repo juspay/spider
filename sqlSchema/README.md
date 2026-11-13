@@ -15,10 +15,10 @@ For every Beam table (`data XxxT (f :: Type -> Type) = Xxx { … } deriving
 
 - Fully-qualified Haskell type name and source file.
 - `modelTableName`, `modelTableType` from the `ModelMeta` instance.
-- `primaryKey` from the `Table` instance — constructor + column list.
+- `primaryKey` from the `Table` instance — the key constructor and the Haskell field names it applies (not a column list).
 - For each `Columnar f T` field: Haskell field name, the column name
-  applied via `fieldNamed` (defaults to the Haskell field name if no
-  override), pretty-printed Haskell type, nullability (any `Maybe _`).
+  applied via `fieldNamed` (defaults to Beam's `defaultDbSettings` name if
+  no override), pretty-printed Haskell type, nullability (any `Maybe _`).
 - Any `setEntityName` overrides found in a `defaultDbSettings
   ``withDbModification`` …` binding — cross-checked at merge time
   against the referenced table's `modelTableName`.
@@ -36,7 +36,7 @@ build-depends:
 
 ghc-options:
   -fplugin=SqlSchema.Plugin
-  -fplugin-opt=SqlSchema.Plugin:{"fragmentsDir":"./.juspay/tmp/sql-schema","blacklistModules":["Test.","Spec."]}
+  -fplugin-opt=SqlSchema.Plugin:{"fragmentsDir":"dist/build/sql-schema-fragments","blacklistModules":["Test.","Spec."]}
 ```
 
 In the package's `flake.nix` haskell-flake settings, run the merger as
@@ -47,7 +47,7 @@ contract:
 settings.<pkg>.postInstall = ''
   mkdir -p $out/share/sql-schema
   sql-schema-merge \
-    --fragments .juspay/tmp/sql-schema \
+    --fragments dist/build/sql-schema-fragments \
     --source-dirs src \
     --out $out/share/sql-schema/sql-schema.yaml
 '';
@@ -61,7 +61,7 @@ yaml):
 settings.<service>.postInstall = ''
   mkdir -p $out/share/sql-schema
   sql-schema-merge \
-    --fragments .juspay/tmp/sql-schema \
+    --fragments dist/build/sql-schema-fragments \
     --source-dirs src \
     --include-merged ${inputs.app-db.packages.${system}.app-db}/share/sql-schema/sql-schema.yaml \
     --out $out/share/sql-schema/sql-schema.yaml
@@ -78,10 +78,10 @@ error.
 
 | Key                         | Type         | Default                              | Notes |
 |-----------------------------|--------------|--------------------------------------|-------|
-| `fragmentsDir`              | string       | `./.juspay/sql-schema-fragments`     | Where per-module fragments are written. |
+| `fragmentsDir`              | string       | `./.juspay/sql-schema-fragments`     | Where per-module fragments are written. For incremental builds that restore the build directory, keep it inside that directory (e.g. `dist/build/sql-schema-fragments`), or the fragments of modules that were not recompiled are lost. |
 | `blacklistModules`          | [string]     | `[]`                                 | Module-name prefixes to skip entirely. |
-| `allowUnknownColumnWrapper` | bool         | `false`                              | If `true`, fields whose type isn't `Columnar f T` / `C f T` are skipped silently. Use only for migrations — the default refusal is the safe stance. |
-| `allowNonStandardModifier`  | bool         | `false`                              | If `true`, `xxxTMod` bindings that aren't `tableModification { … }` are treated as "no overrides". Same caveat as above. |
+| `allowUnknownColumnWrapper` | bool         | `false`                              | If `true`, fields whose type isn't `Columnar f T` / `C f T` are silently left out of the table (no warning). Use only for migrations — the default refusal is the safe stance. |
+| `allowNonStandardModifier`  | bool         | `false`                              | If `true`, a modifier the plugin can't read is silently treated as "no overrides" (Beam default names): one that isn't `tableModification { … }` (guarded definitions included), or a binding that isn't a plain top-level `x = …` of this module with one unguarded right-hand side (imported, qualified, or bound in `where` or by a pattern). Same caveat as above. |
 | `tableNameOverrides`        | {str: str}   | `{}`                                 | Per-type-name SQL-name override; applied only when `modelTableName` is not a static literal (e.g. `modelTableName = SomeConst.fooName`). Lets you assert the resolved value in plugin config instead of editing storage source. |
 
 ## Safety policy
@@ -95,8 +95,10 @@ shape it can't read precisely:
 | `UNRESOLVABLE_TABLE_NAME`      | `modelTableName` isn't a literal. Inline the literal, or use `tableNameOverrides`. |
 | `UNRESOLVABLE_COLUMN_NAME`     | The RHS inside `xxxTMod` isn't `fieldNamed "lit"`. Either rewrite or drop the override. |
 | `UNRESOLVABLE_PRIMARY_KEY`     | `primaryKey` isn't in a recognised shape. Rewrite into one of the supported forms. |
-| `UNRECOGNIZED_FIELD_WRAPPER`   | A field's type isn't `Columnar f T` / `C f T`. Override via `allowUnknownColumnWrapper` only if you accept the table being omitted. |
-| `UNRECOGNIZED_MODIFIER_SHAPE`  | `xxxTMod` isn't `tableModification { … }`. Override via `allowNonStandardModifier`. |
+| `UNRECOGNIZED_FIELD_WRAPPER`   | A field's type isn't `Columnar f T` / `C f T`. Override via `allowUnknownColumnWrapper` only if you accept that field being omitted (the table is still emitted). |
+| `UNRECOGNIZED_MODIFIER_SHAPE`  | `modelFieldModification`, or the `xxxTMod` binding it names, isn't a single unguarded `tableModification { … }`. Override via `allowNonStandardModifier`. |
+| `UNRESOLVABLE_MODIFIER_BINDING`| `modelFieldModification` names a binding the plugin can't read: it reads only a plain top-level `x = …` binding of this module, referenced unqualified, with one unguarded right-hand side. Define it that way, or use `allowNonStandardModifier`. |
+| `INVALID_PLUGIN_OPTIONS`       | The `-fplugin-opt` JSON is malformed, has an unknown key or a wrong-typed value, or is given more than once. |
 
 ## Supported `primaryKey` shapes
 

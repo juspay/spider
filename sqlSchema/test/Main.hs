@@ -1,7 +1,10 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
--- | Smoke tests for the merge CLI's library logic in 'SqlSchema.Merge'.
+-- | Smoke tests for the merge CLI's library logic in 'SqlSchema.Merge', plus
+-- the pure helpers exported by 'SqlSchema.Plugin': the column-name helper,
+-- 'parseCliOptions' and 'optionsFingerprint'.
 -- Plugin-side extraction is exercised by downstream builds (a synthetic
 -- Beam fixture would need beam-core + sequelize; not worth the dep weight
 -- for what would still be a coarse-grained test).
@@ -16,7 +19,8 @@ import           System.FilePath     ((</>))
 import           System.IO.Temp      (withSystemTempDirectory)
 
 import           SqlSchema.Merge
-import           SqlSchema.Types
+import           SqlSchema.Plugin    (beamDefaultColumnName, optionsFingerprint, parseCliOptions)
+import           SqlSchema.Types     hiding (beamDefaultColumnName)
 
 main :: IO ()
 main = do
@@ -33,6 +37,9 @@ main = do
   testIncludeMerged
   testIncludeMergedMissingFile
   testIncludeMergedMalformedFile
+  testBeamDefaultColumnName
+  testParseCliOptions
+  testOptionsFingerprint
   putStrLn "sql-schema-test: all cases passed"
 
 -- ---------------------------------------------------------------------------
@@ -368,6 +375,46 @@ testIncludeMergedMalformedFile = withTmpProject $ \tmp -> do
   when (mrIncludedFiles report /= 0) $
     failWith ("expected includedFiles=0 for malformed, got "
               <> show (mrIncludedFiles report))
+
+-- | Expected values: beam-core's @defaultFieldName (sel :| [])@, juspay/beam 25f1bcd960.
+testBeamDefaultColumnName :: IO ()
+testBeamDefaultColumnName = mapM_ check
+  [ ("id", "id"), ("_id", "id"), ("enabled", "enabled"), ("widgetEnabled", "enabled")
+  , ("ownerTag", "tag"), ("shopAccountId", "account_id"), ("_userFirstName", "first_name")
+  , ("item_kind", "item_kind"), ("_x_y", "x_y"), ("_", "_"), ("__", "__"), ("URLPath", "ath")
+  , ("userURL", "u_r_l"), ("allow3DmodeHelpText", "dmode_help_text"), ("level2XY", "x_y")
+  , ("bigWordwithoutcaps", "wordwithoutcaps"), ("a", "a"), ("A", "a"), ("aB", "b")
+  , ("createdAt", "at")
+  -- U+0130 expands to "i" + U+0307 in a component (Text) but not as a head char (Char)
+  , ("\304B", "i\775b"), ("a\304", "i")
+  ]
+  where
+    check (sel, expected) = assertEq sel expected (beamDefaultColumnName sel)
+
+testParseCliOptions :: IO ()
+testParseCliOptions = do
+  assertEq "no options" (Right defaultCliOptions) (parseCliOptions [])
+  assertEq "fragmentsDir round-trips"
+    (Right defaultCliOptions { fragmentsDir = "x" })
+    (parseCliOptions ["{\"fragmentsDir\":\"x\"}"])
+  case parseCliOptions ["{\"fragmentDir\":\"x\"}"] of
+    Left msg | "fragmentDir" `isInfixOf` msg -> pure ()
+    other -> failWith ("typo'd key: expected Left naming fragmentDir, got " <> show other)
+  assertLeft "not json" (parseCliOptions ["not json"])
+  assertLeft "two option strings"
+    (parseCliOptions ["{\"fragmentsDir\":\"a\"}", "{\"blacklistModules\":[]}"])
+  where
+    assertLeft label = \case
+      Left _  -> pure ()
+      Right v -> failWith (label <> ": expected Left, got Right " <> show v)
+
+testOptionsFingerprint :: IO ()
+testOptionsFingerprint = do
+  let a = ["{\"fragmentsDir\":\"a\"}"]
+      b = ["{\"fragmentsDir\":\"b\"}"]
+  assertEq "same options" (optionsFingerprint a) (optionsFingerprint a)
+  when (optionsFingerprint a == optionsFingerprint b) $
+    failWith "different options gave equal fingerprints"
 
 -- ---------------------------------------------------------------------------
 -- Helpers

@@ -12,7 +12,7 @@
 #     sqlSchemaPostInstall = ''
 #       mkdir -p $out/share/sql-schema
 #       sql-schema-merge \
-#         --fragments .juspay/tmp/sql-schema \
+#         --fragments dist/build/sql-schema-fragments \
 #         --source-dirs src \
 #         --out $out/share/sql-schema/sql-schema.yaml
 #     '';

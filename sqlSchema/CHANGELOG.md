@@ -1,5 +1,31 @@
 # sql-schema
 
+## 0.4.2
+
+* **Fix:** a field with no `fieldNamed` entry in its `tableModification`
+  now gets the column name Beam's `defaultDbSettings` gives it
+  (`widgetEnabled` → `enabled`) instead of its Haskell field name.
+* Changing the plugin options now recompiles every module (the options are
+  fingerprinted into `pluginRecompile`), so each fragment is rewritten under
+  the new options. Not yet handled: a module newly added to `blacklistModules`
+  keeps its old fragment until stale fragments are pruned.
+* **Breaking:** plugin options are strict: malformed JSON, a wrong-typed value
+  (e.g. `"blacklistModules":"Test."`), an unknown key, or more than one
+  `-fplugin-opt` string is a compile error (`INVALID_PLUGIN_OPTIONS`). Before,
+  malformed JSON or a wrong-typed value silently reset every option to its
+  default, an unknown key was ignored, and only the first string was used.
+* **Breaking:** a `modelFieldModification` the plugin can't read is an error
+  instead of silently meaning "no overrides". `UNRECOGNIZED_MODIFIER_SHAPE`
+  covers a guarded `modelFieldModification` and any expression other than a
+  bare binding or `tableModification { … }` (e.g. `a <> b`, `f $ x`,
+  `let … in`). `UNRESOLVABLE_MODIFIER_BINDING` covers a named binding that is
+  imported, qualified (which used to read a same-named local binding), bound
+  in `where`, guarded, or bound by a pattern such as `(x) = …`. An inline
+  `tableModification { … }` is now read like an `xxxTMod` binding, so a field
+  whose RHS isn't `fieldNamed "lit"` is `UNRESOLVABLE_COLUMN_NAME` (it used to
+  be ignored). `allowNonStandardModifier` still opts out of the two modifier
+  errors.
+
 ## 0.4.1
 
 * Builds on GHC 9.8 as well as 9.2: CPP shims cover the GHC 9.4+ parser AST

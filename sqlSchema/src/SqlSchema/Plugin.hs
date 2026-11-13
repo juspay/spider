@@ -26,7 +26,12 @@
 -- downtime — so the only safe response to an unknown shape is to refuse
 -- to compile.  Two opt-out flags exist for migrations:
 -- @allowUnknownColumnWrapper@ and @allowNonStandardModifier@.
-module SqlSchema.Plugin (plugin) where
+module SqlSchema.Plugin
+  ( plugin
+  , beamDefaultColumnName
+  , optionsFingerprint
+  , parseCliOptions
+  ) where
 
 import           Control.Monad              (when)
 import           Control.Monad.IO.Class     (liftIO)
@@ -42,6 +47,7 @@ import qualified Data.Set                   as Set
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (encodeUtf8)
 import qualified Data.Yaml                  as YAML
+import           GHC.Fingerprint            (Fingerprint, fingerprintString)
 import           System.Directory           (createDirectoryIfMissing,
                                              renameFile)
 import           System.FilePath            ((</>))
@@ -80,14 +86,14 @@ import           SqlSchema.Types
 -- Plugin entry point
 -- ---------------------------------------------------------------------------
 
--- | 'NoForceRecompile' is deliberate: when a module's source hasn't
--- changed, its existing fragment on disk is still correct, and the
--- merge CLI prunes stale fragments by checking that the source file
--- exists.  Switching to 'ForceRecompile' would re-run every module's
--- plugin pass on every build for no extra safety.
+-- | GHC already recompiles every module when the plugin package itself
+-- changes (it records the plugin unit); fingerprinting the options makes an
+-- option change do the same, so each fragment is rewritten under the new options.
+-- NOTE(deferred): a module newly added to blacklistModules keeps its old
+-- fragment until stale fragments are pruned.
 plugin :: Plugin
 plugin = defaultPlugin
-  { pluginRecompile    = const (pure NoForceRecompile)
+  { pluginRecompile    = \opts -> pure (MaybeRecompile (optionsFingerprint opts))
   , parsedResultAction = onParsed
   }
 
@@ -101,20 +107,33 @@ onParsed opts modSummary hpm = hpm <$ writeFragment opts modSummary hpm
 #endif
 
 
-parseCliOptions :: [CommandLineOption] -> CliOptions
+optionsFingerprint :: [CommandLineOption] -> Fingerprint
+optionsFingerprint = fingerprintString . show
+
+-- | At most one JSON option string is supported; anything else is an error
+-- rather than a silent fall back to defaults.
+parseCliOptions :: [CommandLineOption] -> Either String CliOptions
 parseCliOptions = \case
-  []        -> defaultCliOptions
-  (raw : _) ->
-    case A.decode (BL.fromStrict (encodeUtf8 (T.pack raw))) of
-      Just v  -> v
-      Nothing -> defaultCliOptions
+  []    -> Right defaultCliOptions
+  [raw] -> case A.eitherDecode (BL.fromStrict (encodeUtf8 (T.pack raw))) of
+    Right v  -> Right v
+    Left err -> Left ("cannot parse the plugin option as JSON CliOptions: " <> err)
+  raws  -> Left ("expected at most one -fplugin-opt JSON string, got "
+                   <> show (length raws))
 
 
 writeFragment
   :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc ()
 writeFragment opts modSummary hpm = do
-  let cli      = parseCliOptions opts
-      fragDir  = fragmentsDir cli
+  let modSpan  = mkFileSrcSpan (ms_location modSummary)
+  case parseCliOptions opts of
+    Left err  -> throwSqlSchemaErrors (fragmentsDir defaultCliOptions) modSpan
+                   [INVALID_PLUGIN_OPTIONS err]
+    Right cli -> writeFragmentWith cli modSummary hpm
+
+writeFragmentWith :: CliOptions -> ModSummary -> HsParsedModule -> Hsc ()
+writeFragmentWith cli modSummary hpm = do
+  let fragDir  = fragmentsDir cli
       modSpan  = mkFileSrcSpan (ms_location modSummary)
       modStr   = moduleNameToString modSummary
       srcPath  = modulePath modSummary
@@ -204,10 +223,18 @@ data RawFieldOrError
 
 data RawModelMeta = RawModelMeta
   { rmmTableNameLit  :: Maybe String
-  , rmmModifierName  :: Maybe String
+  , rmmModifier      :: ModifierDef
+    -- ^ Whether the instance defines @modelFieldModification@, and how.
   , rmmTableType     :: Maybe String
   , rmmSchemaName    :: Maybe ModelSchemaName
   }
+
+data ModifierDef
+  = ModifierAbsent
+  | ModifierRhs (LHsExpr GhcPs)
+    -- ^ A single unguarded right-hand side.
+  | ModifierUnreadable
+    -- ^ Defined, but not by a single unguarded right-hand side (e.g. guarded).
 
 data RawTableInst = RawTableInst
   { rtiPkPats :: [Pat GhcPs]
@@ -504,19 +531,21 @@ setEntityNameLit = \case
 extractModelMeta :: LHsBinds GhcPs -> RawModelMeta
 extractModelMeta binds = foldl' step empty (bagToList binds)
   where
-    empty = RawModelMeta Nothing Nothing Nothing Nothing
+    empty = RawModelMeta Nothing ModifierAbsent Nothing Nothing
     step acc (L _ (FunBind{ fun_id = L _ nm, fun_matches = mg }))
       | Just rhs <- singleRhs mg =
           case occToString nm of
             "modelTableName"         ->
               acc { rmmTableNameLit = stringLiteral (unLoc rhs) }
             "modelFieldModification" ->
-              acc { rmmModifierName = varName (unLoc rhs) }
+              acc { rmmModifier = ModifierRhs rhs }
             "modelTableType"         ->
               acc { rmmTableType = justConstructorOf (unLoc rhs) }
             "modelSchemaName"        ->
               acc { rmmSchemaName = extractModelSchemaName (unLoc rhs) }
             _                        -> acc
+      | occToString nm == "modelFieldModification" =
+          acc { rmmModifier = ModifierUnreadable }
     step acc _ = acc
 
 extractTableInst :: LHsBinds GhcPs -> RawTableInst
@@ -567,7 +596,7 @@ assemble cli modName rm typeName rt =
           _ -> Left [UNRESOLVABLE_PRIMARY_KEY typeName]
         let cols = [ ColumnInfo
                        { hsField      = rfName f
-                       , column       = Map.findWithDefault (rfName f)
+                       , column       = Map.findWithDefault (beamDefaultColumnName (rfName f))
                                           (rfName f) overrides
                        , hsType       = rfInner f
                        , nullable     = rfNullable f
@@ -600,17 +629,27 @@ extractOverrides
   -> Map.Map String (LHsExpr GhcPs)
   -> Either [SqlSchemaError] (Map.Map String String)
 extractOverrides cli typeName metaM bindings =
-  case metaM >>= rmmModifierName of
-    Nothing  -> Right Map.empty
-    Just nm  -> case Map.lookup nm bindings of
-      Nothing -> Right Map.empty
-      Just e  -> extractColumnOverrides cli typeName nm (unLoc e)
+  case maybe ModifierAbsent rmmModifier metaM of
+    ModifierAbsent -> Right Map.empty
+    ModifierUnreadable ->
+      orNoOverrides (UNRECOGNIZED_MODIFIER_SHAPE typeName "modelFieldModification")
+    ModifierRhs rhs -> case varRdrName (unLoc rhs) of
+      Just rdr | occToString rdr /= "tableModification" -> case rdr of
+        -- Qualified means non-local, even when it names this module's own binding.
+        Unqual _ | Just e <- Map.lookup (occToString rdr) bindings ->
+          extractColumnOverrides cli typeName (occToString rdr) (unLoc e)
+        _ -> orNoOverrides (UNRESOLVABLE_MODIFIER_BINDING typeName (sdocText rdr))
+      _ -> extractColumnOverrides cli typeName "modelFieldModification" (unLoc rhs)
+  where
+    orNoOverrides err
+      | allowNonStandardModifier cli = Right Map.empty
+      | otherwise                    = Left [err]
 
 
 -- | Parse @tableModification { f1 = fieldNamed "c1", … }@.  Any other
 -- shape is rejected unless 'allowNonStandardModifier' is set, because
 -- silently treating "I don't recognise this binding" as "no overrides"
--- would emit Haskell field names as DB column names — a wrong YAML with
+-- would emit Beam's default names for overridden columns — a wrong YAML with
 -- no signal.
 extractColumnOverrides
   :: CliOptions
@@ -1013,10 +1052,13 @@ stringLiteral = \case
 -- @(B.tableModification :: T) { f = … }@ — without it the RecordUpd
 -- base reads as Nothing and the modifier is rejected.
 varName :: HsExpr GhcPs -> Maybe String
-varName = \case
-  HsVar _ (L _ n)           -> Just (occToString n)
-  Par (L _ e)               -> varName e
-  ExprWithTySig _ (L _ e) _ -> varName e
+varName = fmap occToString . varRdrName
+
+varRdrName :: HsExpr GhcPs -> Maybe RdrName
+varRdrName = \case
+  HsVar _ (L _ n)           -> Just n
+  Par (L _ e)               -> varRdrName e
+  ExprWithTySig _ (L _ e) _ -> varRdrName e
   _                         -> Nothing
 
 conName :: HsExpr GhcPs -> Maybe String
