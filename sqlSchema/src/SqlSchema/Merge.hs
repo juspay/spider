@@ -39,6 +39,7 @@ module SqlSchema.Merge
   ( MergeOptions(..)
   , MergeReport(..)
   , runMerge
+  , currentGenerator
   , loadFragments
   , loadIncludedMerged
   , liveModulesFromDirs
@@ -54,12 +55,14 @@ import           Data.Maybe          (catMaybes)
 import           Data.Set            (Set)
 import qualified Data.Set            as Set
 import qualified Data.Yaml           as YAML
+import           Data.Version        (showVersion)
 import           System.Directory    (doesDirectoryExist, doesFileExist,
                                       listDirectory, renameFile)
 import           System.FilePath     (dropExtension, takeExtension, (</>))
 import           System.IO           (hPutStrLn, stderr)
 
 import           SqlSchema.Types
+import qualified Paths_sql_schema
 
 data MergeOptions = MergeOptions
   { moFragmentsDir   :: FilePath
@@ -72,6 +75,8 @@ data MergeOptions = MergeOptions
     -- ^ Directories to scan for live @.hs@ files.  Any fragment whose
     --   @fragmentModule@ does not map to a file under one of these dirs
     --   is pruned.  Empty list = no pruning (every fragment kept).
+  , moGeneratorRev   :: Maybe String
+    -- ^ Plugin source revision for the @generator@ stamp.
   } deriving (Show, Eq)
 
 data MergeReport = MergeReport
@@ -84,6 +89,14 @@ data MergeReport = MergeReport
   , mrOverridesEmitted      :: Int
   } deriving (Show, Eq)
 
+
+-- | The stamp 'runMerge' writes; the stamps of included contracts are ignored.
+currentGenerator :: Maybe String -> Generator
+currentGenerator rev = Generator
+  { generatorName    = "sql-schema"
+  , generatorVersion = showVersion Paths_sql_schema.version
+  , generatorRev     = rev
+  }
 
 runMerge :: MergeOptions -> IO (Either [String] MergeReport)
 runMerge MergeOptions{..} = do
@@ -98,7 +111,8 @@ runMerge MergeOptions{..} = do
       allOverrides     = fragOverrides ++ incOvs
   case validate allTables allOverrides of
     Left errs -> pure (Left errs)
-    Right (merged, deduped, warnings) -> do
+    Right (unstamped, deduped, warnings) -> do
+      let merged = unstamped { generator = Just (currentGenerator moGeneratorRev) }
       mapM_ (hPutStrLn stderr) warnings
       writeMerged moOutFile merged
       pure $ Right MergeReport
@@ -307,6 +321,7 @@ validate tables overrides =
                 ( MergedSchema
                     { mergedTables = sortOn qualifiedType uniqTables
                     , mergedDbEntityOverrides = sortOn sortKey dedupedOverrides
+                    , generator = Nothing
                     }
                 , dedupCount
                 , tnWarns ++ overrideWarns

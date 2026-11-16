@@ -37,6 +37,8 @@ main = do
   testIncludeMerged
   testIncludeMergedMissingFile
   testIncludeMergedMalformedFile
+  testGeneratorStamped
+  testIncludeWithoutGenerator
   testBeamDefaultColumnName
   testParseCliOptions
   testOptionsFingerprint
@@ -64,6 +66,7 @@ testHappyPath = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = []
     , moSourceDirs     = [src]
+    , moGeneratorRev   = Nothing
     }
   assertEq "fragmentsRead" 2 (mrFragmentsRead report)
   assertEq "stalePruned" 0 (mrStalePruned report)
@@ -92,6 +95,7 @@ testStalePruneByModule = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = []
     , moSourceDirs     = [src]
+    , moGeneratorRev   = Nothing
     }
   assertEq "fragmentsRead" 2 (mrFragmentsRead report)
   assertEq "stalePruned" 1 (mrStalePruned report)
@@ -114,6 +118,7 @@ testNoSourceDirsNoPrune = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = []
     , moSourceDirs     = []         -- opt out of pruning
+    , moGeneratorRev   = Nothing
     }
   assertEq "stalePruned" 0 (mrStalePruned report)
   assertEq "tablesEmitted" 1 (mrTablesEmitted report)
@@ -147,6 +152,7 @@ testOverrideMatchEmitted = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = []
     , moSourceDirs     = [src]
+    , moGeneratorRev   = Nothing
     }
   assertEq "overridesEmitted" 1 (mrOverridesEmitted report)
 
@@ -180,6 +186,7 @@ testOverrideMismatchFatal = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = []
     , moSourceDirs     = [src]
+    , moGeneratorRev   = Nothing
     }
   case result of
     Right _   -> failWith "expected mismatch to abort merge, but it succeeded"
@@ -204,6 +211,7 @@ testDedupIdenticalSilent = withTmpProject $ \tmp -> do
   let included = MergedSchema
         { mergedTables = fragmentTables frag
         , mergedDbEntityOverrides = []
+        , generator = Nothing
         }
       includedPath = tmp </> "dep.yaml"
   BS.writeFile includedPath (YAML.encode included)
@@ -212,6 +220,7 @@ testDedupIdenticalSilent = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = [includedPath]
     , moSourceDirs     = [src]
+    , moGeneratorRev   = Nothing
     }
   assertEq "tablesEmitted" 1 (mrTablesEmitted report)
   assertEq "deduped" 1 (mrDeduped report)
@@ -231,6 +240,7 @@ testDuplicateMismatchFatal = withTmpProject $ \tmp -> do
   let included = MergedSchema
         { mergedTables = fragmentTables (sampleFragment "Foo" "Foo.FooT" "foo_v2")
         , mergedDbEntityOverrides = []
+        , generator = Nothing
         }
   BS.writeFile (tmp </> "dep.yaml") (YAML.encode included)
   result <- runMerge MergeOptions
@@ -238,6 +248,7 @@ testDuplicateMismatchFatal = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = [tmp </> "dep.yaml"]
     , moSourceDirs     = [src]
+    , moGeneratorRev   = Nothing
     }
   case result of
     Right _   -> failWith "expected mismatch to abort merge"
@@ -264,6 +275,7 @@ testTableNameWarning = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = []
     , moSourceDirs     = [src]
+    , moGeneratorRev   = Nothing
     }
   assertEq "tablesEmitted" 2 (mrTablesEmitted report)
 
@@ -301,6 +313,7 @@ runAmbiguousOverride tmp downstreamName = do
                 , overrideSourceFile   = "src/App/AppDb.hs"
                 }
             ]
+        , generator = Nothing
         }
       includedPath = tmp </> "app-db.yaml"
   createDirectoryIfMissing True fragDir
@@ -312,6 +325,7 @@ runAmbiguousOverride tmp downstreamName = do
     , moOutFile        = tmp </> "merged.yaml"
     , moIncludeMerged  = [includedPath]
     , moSourceDirs     = []
+    , moGeneratorRev   = Nothing
     }
 
 testIncludeMerged :: IO ()
@@ -326,6 +340,7 @@ testIncludeMerged = withTmpProject $ \tmp -> do
             , sampleTable "B.BT" "B" "b_tab"
             ]
         , mergedDbEntityOverrides = []
+        , generator = Nothing
         }
       includedPath = tmp </> "dep.yaml"
   BS.writeFile includedPath (YAML.encode included)
@@ -334,10 +349,59 @@ testIncludeMerged = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = [includedPath]
     , moSourceDirs     = []
+    , moGeneratorRev   = Nothing
     }
   assertEq "includedFiles" 1 (mrIncludedFiles report)
   assertEq "includedTables" 2 (mrIncludedTables report)
   assertEq "tablesEmitted" 2 (mrTablesEmitted report)
+
+testGeneratorStamped :: IO ()
+testGeneratorStamped = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      outFile = tmp </> "merged.yaml"
+      opts rev = MergeOptions
+        { moFragmentsDir   = fragDir
+        , moOutFile        = outFile
+        , moIncludeMerged  = []
+        , moSourceDirs     = []
+        , moGeneratorRev   = rev
+        }
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "Foo.yaml") (sampleFragment "Foo" "Foo.FooT" "foo")
+  _ <- expectOk =<< runMerge (opts (Just "abc123"))
+  merged <- decodeFile outFile
+  assertEq "generator" (Just (currentGenerator (Just "abc123"))) (generator merged)
+  let g = currentGenerator (Just "abc123")
+  assertEq "generatorName" "sql-schema" (generatorName g)
+  assertEq "generatorRev" (Just "abc123") (generatorRev g)
+  let v = generatorVersion g
+  unless (not (null v) && all (`elem` ("0123456789." :: String)) v) $
+    failWith ("generatorVersion not digits and dots: " <> show v)
+  _ <- expectOk =<< runMerge (opts Nothing)
+  merged' <- decodeFile outFile
+  assertEq "rev Nothing" Nothing (generator merged' >>= generatorRev)
+
+-- | Contracts written before 0.4.3 have no @generator@ key.
+testIncludeWithoutGenerator :: IO ()
+testIncludeWithoutGenerator = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      outFile = tmp </> "merged.yaml"
+      includedPath = tmp </> "old.yaml"
+  createDirectoryIfMissing True fragDir
+  BS.writeFile includedPath (YAML.encode (YAML.object
+    [ "mergedTables" YAML..= [sampleTable "A.AT" "A" "a_tab"]
+    , "mergedDbEntityOverrides" YAML..= ([] :: [DbEntityOverride])
+    ]))
+  report <- expectOk =<< runMerge MergeOptions
+    { moFragmentsDir   = fragDir
+    , moOutFile        = outFile
+    , moIncludeMerged  = [includedPath]
+    , moSourceDirs     = []
+    , moGeneratorRev   = Nothing
+    }
+  assertEq "includedTables" 1 (mrIncludedTables report)
+  merged <- decodeFile outFile
+  assertEq "tables" ["A.AT"] (map qualifiedType (mergedTables merged))
 
 -- | Missing --include-merged file → warning to stderr, merge still
 -- succeeds with zero contribution from that file.
@@ -351,6 +415,7 @@ testIncludeMergedMissingFile = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = [tmp </> "does-not-exist.yaml"]
     , moSourceDirs     = []
+    , moGeneratorRev   = Nothing
     }
   assertEq "tablesEmitted" 0 (mrTablesEmitted report)
   assertEq "includedFiles" 0 (mrIncludedFiles report)
@@ -368,6 +433,7 @@ testIncludeMergedMalformedFile = withTmpProject $ \tmp -> do
     , moOutFile        = outFile
     , moIncludeMerged  = [bad]
     , moSourceDirs     = []
+    , moGeneratorRev   = Nothing
     }
   assertEq "tablesEmitted" 0 (mrTablesEmitted report)
   -- Malformed file is reported as a warning and not counted as

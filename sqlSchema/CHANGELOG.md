@@ -1,5 +1,14 @@
 # sql-schema
 
+## 0.4.3
+
+* `sql-schema-merge` writes a top-level `generator: {name, version, rev}`
+  stamp into the contract so consumers can tell which plugin version produced
+  it. `rev` comes from the new `--generator-rev REV` flag and is `null` when
+  the flag is omitted. Contracts without the key (written by 0.4.2 and
+  earlier) still decode, including as `--include-merged` inputs; the stamps of
+  included contracts are ignored.
+
 ## 0.4.2
 
 * **Fix:** a field with no `fieldNamed` entry in its `tableModification`

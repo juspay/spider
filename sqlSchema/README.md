@@ -68,6 +68,12 @@ settings.<service>.postInstall = ''
 '';
 ```
 
+Pass `--generator-rev ${inputs.sql-schema-src.rev}` (only if the plugin source
+is pinned by a rev) to record the plugin revision in the contract's
+`generator` stamp; without it `rev` is `null`. The flag needs sql-schema
+0.4.3 or later: an older `sql-schema-merge` rejects it as an unrecognised
+argument and exits 2.
+
 The merge CLI exits non-zero on duplicate-type **mismatch** (identical
 duplicates are silently deduped), on `setEntityName`/`modelTableName`
 disagreement, or on argument errors.  Two different Haskell types

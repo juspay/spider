@@ -10,6 +10,7 @@
 --   sql-schema-merge --fragments DIR --out FILE
 --                    [--source-dirs DIR] ...
 --                    [--include-merged FILE] ...
+--                    [--generator-rev REV]
 --
 -- Exit codes:
 --   0  success (even if some fragments were pruned as stale)
@@ -75,6 +76,7 @@ usage = unlines
   , "                       [--source-dirs DIR ...]"
   , "                       [--include-merged FILE ...]"
   , "                       [--allow-empty]"
+  , "                       [--generator-rev REV]"
   , ""
   , "  --fragments DIR        directory holding per-module *.yaml fragments"
   , "  --out FILE             path to write the merged YAML"
@@ -89,10 +91,12 @@ usage = unlines
   , "  --allow-empty          permit a contract with zero tables.  Without this,"
   , "                         emitting 0 tables is a fatal error (exit 1), since"
   , "                         it usually means the SqlSchema plugin did not run."
+  , "  --generator-rev REV    VCS revision of the plugin source, recorded in the"
+  , "                         contract's generator stamp (omitted -> rev: null)."
   ]
 
 parseArgs :: [String] -> Either String (MergeOptions, Bool)
-parseArgs = go (MergeOptions "" "" [] []) False False False
+parseArgs = go (MergeOptions "" "" [] [] Nothing) False False False
   where
     go opts allowEmpty haveFrag haveOut [] =
       if not haveFrag then Left "missing --fragments"
@@ -106,6 +110,8 @@ parseArgs = go (MergeOptions "" "" [] []) False False False
       go opts { moIncludeMerged = moIncludeMerged opts ++ [v] } ae hf ho rest
     go opts ae hf ho ("--source-dirs" : v : rest) =
       go opts { moSourceDirs = moSourceDirs opts ++ [v] } ae hf ho rest
+    go opts ae hf ho ("--generator-rev" : v : rest) =
+      go opts { moGeneratorRev = Just v } ae hf ho rest
     go opts _ hf ho ("--allow-empty" : rest) =
       go opts True hf ho rest
     go _ _ _ _ (other : _) =

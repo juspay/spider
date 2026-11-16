@@ -18,6 +18,7 @@ module SqlSchema.Types
   , DbEntityOverride(..)
   , Fragment(..)
   , MergedSchema(..)
+  , Generator(..)
     -- * Column naming
   , beamDefaultColumnName
     -- * Plugin CLI options
@@ -29,7 +30,9 @@ module SqlSchema.Types
   ) where
 
 import           Control.Monad (unless)
-import           Data.Aeson   (FromJSON (..), ToJSON, Value, (.!=), (.:?), withObject)
+import           Data.Aeson   (FromJSON (..), ToJSON (..), Value, (.!=), (.:?), withObject,
+                               Options, defaultOptions, fieldLabelModifier, genericParseJSON,
+                               genericToJSON)
 import           Data.Aeson.Types (Parser)
 import           Data.Char    (isUpper, toLower)
 import           Data.List    (intercalate)
@@ -177,7 +180,29 @@ data MergedSchema = MergedSchema
     -- ^ All overrides found; the merge CLI has already cross-checked them
     --   against each table's 'tableName' before emitting.  Kept here for
     --   downstream auditability.
+  , generator                :: Maybe Generator
+    -- ^ Absent in contracts written before 0.4.3.
   } deriving (Show, Eq, Generic, ToJSON, FromJSON)
+
+-- | Which plugin build wrote a contract.  Fields are prefixed because
+-- @version@ would clash with @Paths_sql_schema.version@.
+data Generator = Generator
+  { generatorName    :: String
+  , generatorVersion :: String
+  , generatorRev     :: Maybe String
+  } deriving (Show, Eq, Generic)
+
+generatorOptions :: Options
+generatorOptions = defaultOptions { fieldLabelModifier = lowerFirst . drop (length ("generator" :: String)) }
+  where
+    lowerFirst (c:cs) = toLower c : cs
+    lowerFirst []     = []
+
+instance ToJSON Generator where
+  toJSON = genericToJSON generatorOptions
+
+instance FromJSON Generator where
+  parseJSON = genericParseJSON generatorOptions
 
 -- | Parsed from the JSON plugin option string.  All fields are optional
 -- in the on-disk JSON; missing ones use the defaults from
