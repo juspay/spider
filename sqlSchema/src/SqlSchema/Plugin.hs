@@ -16,9 +16,9 @@
 -- contract.
 --
 -- Per-module fragments solve the incremental-build problem: each module's
--- fragment is rewritten only when GHC recompiles the module, and stale
--- fragments are pruned at merge time by checking that the source file
--- still exists.
+-- fragment is rewritten (or deleted, once the module has nothing to record)
+-- only when GHC recompiles the module, and stale fragments are pruned at
+-- merge time by checking that the source file still exists.
 --
 -- Safety policy: anything the extractor cannot recognise becomes a hard
 -- compile error.  Silent omission of a table or wrong column name would
@@ -31,9 +31,11 @@ module SqlSchema.Plugin
   , beamDefaultColumnName
   , optionsFingerprint
   , parseCliOptions
+  , syncFragment
   ) where
 
-import           Control.Monad              (when)
+import           Control.Exception          (catch, throwIO)
+import           Control.Monad              (unless, when)
 import           Control.Monad.IO.Class     (liftIO)
 import qualified Data.Aeson                 as A
 import qualified Data.ByteString            as BS
@@ -49,8 +51,9 @@ import           Data.Text.Encoding         (encodeUtf8)
 import qualified Data.Yaml                  as YAML
 import           GHC.Fingerprint            (Fingerprint, fingerprintString)
 import           System.Directory           (createDirectoryIfMissing,
-                                             renameFile)
-import           System.FilePath            ((</>))
+                                             removeFile, renameFile)
+import           System.FilePath            (takeDirectory, (</>))
+import           System.IO.Error            (isDoesNotExistError)
 
 -- GHC API (>= 9.0)
 import qualified GHC
@@ -73,6 +76,7 @@ import           GHC.Types.Name.Reader      (RdrName (..), rdrNameOcc)
 import           GHC.Types.SrcLoc           (GenLocated (..), SrcSpan,
                                              mkGeneralSrcSpan, unLoc)
 import qualified GHC.Types.SourceError      as ParseError
+import           GHC.Types.SourceFile       (isHsBootOrSig)
 import           GHC.Unit.Module.Location   (ModLocation (..))
 import           GHC.Unit.Module.ModSummary (ModSummary (..))
 import           GHC.Utils.Outputable       (Outputable, docToSDoc, ppr,
@@ -89,8 +93,6 @@ import           SqlSchema.Types
 -- | GHC already recompiles every module when the plugin package itself
 -- changes (it records the plugin unit); fingerprinting the options makes an
 -- option change do the same, so each fragment is rewritten under the new options.
--- NOTE(deferred): a module newly added to blacklistModules keeps its old
--- fragment until stale fragments are pruned.
 plugin :: Plugin
 plugin = defaultPlugin
   { pluginRecompile    = \opts -> pure (MaybeRecompile (optionsFingerprint opts))
@@ -137,9 +139,13 @@ writeFragmentWith cli modSummary hpm = do
       modSpan  = mkFileSrcSpan (ms_location modSummary)
       modStr   = moduleNameToString modSummary
       srcPath  = modulePath modSummary
+      fragPath = fragDir </> modStr <> ".yaml"
 
-  if any (`isPrefixOf` modStr) (blacklistModules cli)
-    then pure ()
+  -- A boot or signature file shares its module's name and fragment path but
+  -- defines no tables; it must not touch the real module's fragment.
+  if isHsBootOrSig (ms_hsc_src modSummary) then pure ()
+  else if any (`isPrefixOf` modStr) (blacklistModules cli)
+    then liftIO (syncFragment fragPath Nothing)
     else do
       let decls        = hsmodDecls (unLoc (hpm_module hpm))
           rm           = foldl' visitDecl emptyRawModule decls
@@ -151,15 +157,24 @@ writeFragmentWith cli modSummary hpm = do
       when (not (null errs))
         (throwSqlSchemaErrors fragDir modSpan errs)
 
-      when (not (null okTables) || not (null dbOverrides)) $ liftIO $ do
-        createDirectoryIfMissing True fragDir
-        let fragment = Fragment
-              { fragmentModule           = modStr
-              , fragmentTables           = okTables
-              , fragmentDbEntityOverrides = dbOverrides
-              }
-            fragPath = fragDir </> modStr <> ".yaml"
-        atomicYamlWrite fragPath fragment
+      liftIO $ syncFragment fragPath $
+        if null okTables && null dbOverrides
+          then Nothing
+          else Just Fragment
+            { fragmentModule            = modStr
+            , fragmentTables            = okTables
+            , fragmentDbEntityOverrides = dbOverrides
+            }
+
+-- | Writes the module's fragment, or with 'Nothing' removes the one an earlier
+-- compile left: a restored build directory would otherwise keep a dropped
+-- table in the contract.
+syncFragment :: FilePath -> Maybe Fragment -> IO ()
+syncFragment path = \case
+  Just fragment -> do
+    createDirectoryIfMissing True (takeDirectory path)
+    atomicYamlWrite path fragment
+  Nothing -> removeFile path `catch` \e -> unless (isDoesNotExistError e) (throwIO e)
 
 
 -- ---------------------------------------------------------------------------

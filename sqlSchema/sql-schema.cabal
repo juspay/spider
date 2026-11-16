@@ -33,11 +33,6 @@ library
       , text
       , aeson
       , yaml
-      , ordered-containers
-      , unordered-containers
-      , extra
-      , uniplate
-      , references
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -48,8 +43,6 @@ executable sql-schema-merge
     build-depends:
         base
       , sql-schema
-      , directory
-      , filepath
     default-language: Haskell2010
 
 test-suite sql-schema-test

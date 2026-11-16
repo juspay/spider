@@ -8,6 +8,15 @@
   the flag is omitted. Contracts without the key (written by 0.4.2 and
   earlier) still decode, including as `--include-merged` inputs; the stamps of
   included contracts are ignored.
+* **Fix:** when a recompiled module no longer defines a table or a
+  `setEntityName` override, or is newly listed in `blacklistModules`, its old
+  fragment is deleted. Before, a restored build directory kept that fragment,
+  so the contract still listed a table the module no longer defines or the
+  options now exclude. A module's `.hs-boot` or `.hsig` file is skipped
+  entirely: it is not checked and never touches the module's fragment.
+* Drops unused dependencies: `references`, `uniplate`, `extra`,
+  `ordered-containers` and `unordered-containers` from the library, and
+  `directory` and `filepath` from `sql-schema-merge`.
 
 ## 0.4.2
 
@@ -17,7 +26,7 @@
 * Changing the plugin options now recompiles every module (the options are
   fingerprinted into `pluginRecompile`), so each fragment is rewritten under
   the new options. Not yet handled: a module newly added to `blacklistModules`
-  keeps its old fragment until stale fragments are pruned.
+  keeps its old fragment until stale fragments are pruned (fixed in 0.4.3).
 * **Breaking:** plugin options are strict: malformed JSON, a wrong-typed value
   (e.g. `"blacklistModules":"Test."`), an unknown key, or more than one
   `-fplugin-opt` string is a compile error (`INVALID_PLUGIN_OPTIONS`). Before,

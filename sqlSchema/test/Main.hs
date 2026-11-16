@@ -3,23 +3,23 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Smoke tests for the merge CLI's library logic in 'SqlSchema.Merge', plus
--- the pure helpers exported by 'SqlSchema.Plugin': the column-name helper,
--- 'parseCliOptions' and 'optionsFingerprint'.
--- Plugin-side extraction is exercised by downstream builds (a synthetic
--- Beam fixture would need beam-core + sequelize; not worth the dep weight
--- for what would still be a coarse-grained test).
+-- the helpers exported by 'SqlSchema.Plugin': the column-name helper,
+-- 'parseCliOptions', 'optionsFingerprint' and 'syncFragment'.
+-- Plugin-side extraction runs inside a GHC compile, so it is exercised by
+-- compiling model modules with the plugin, not by this suite.
 module Main (main) where
 
-import           Control.Exception   (throwIO, ErrorCall(..))
+import           Control.Exception   (IOException, throwIO, try, ErrorCall(..))
 import           Control.Monad       (unless, when)
 import qualified Data.ByteString     as BS
 import qualified Data.Yaml           as YAML
-import           System.Directory    (createDirectoryIfMissing)
+import           System.Directory    (createDirectoryIfMissing, doesFileExist)
 import           System.FilePath     ((</>))
 import           System.IO.Temp      (withSystemTempDirectory)
 
 import           SqlSchema.Merge
-import           SqlSchema.Plugin    (beamDefaultColumnName, optionsFingerprint, parseCliOptions)
+import           SqlSchema.Plugin    (beamDefaultColumnName, optionsFingerprint, parseCliOptions,
+                                      syncFragment)
 import           SqlSchema.Types     hiding (beamDefaultColumnName)
 
 main :: IO ()
@@ -39,9 +39,11 @@ main = do
   testIncludeMergedMalformedFile
   testGeneratorStamped
   testIncludeWithoutGenerator
+  testIncludedStampIgnored
   testBeamDefaultColumnName
   testParseCliOptions
   testOptionsFingerprint
+  testSyncFragment
   putStrLn "sql-schema-test: all cases passed"
 
 -- ---------------------------------------------------------------------------
@@ -379,7 +381,7 @@ testGeneratorStamped = withTmpProject $ \tmp -> do
     failWith ("generatorVersion not digits and dots: " <> show v)
   _ <- expectOk =<< runMerge (opts Nothing)
   merged' <- decodeFile outFile
-  assertEq "rev Nothing" Nothing (generator merged' >>= generatorRev)
+  assertEq "rev Nothing" (Just (currentGenerator Nothing)) (generator merged')
 
 -- | Contracts written before 0.4.3 have no @generator@ key.
 testIncludeWithoutGenerator :: IO ()
@@ -402,6 +404,28 @@ testIncludeWithoutGenerator = withTmpProject $ \tmp -> do
   assertEq "includedTables" 1 (mrIncludedTables report)
   merged <- decodeFile outFile
   assertEq "tables" ["A.AT"] (map qualifiedType (mergedTables merged))
+
+-- | The output carries this merge's stamp, never an included contract's.
+testIncludedStampIgnored :: IO ()
+testIncludedStampIgnored = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      outFile = tmp </> "merged.yaml"
+      includedPath = tmp </> "upstream.yaml"
+  createDirectoryIfMissing True fragDir
+  BS.writeFile includedPath (YAML.encode MergedSchema
+    { mergedTables            = [sampleTable "A.AT" "A" "a_tab"]
+    , mergedDbEntityOverrides = []
+    , generator               = Just (Generator "sql-schema" "0.0.1" (Just "old"))
+    })
+  _ <- expectOk =<< runMerge MergeOptions
+    { moFragmentsDir   = fragDir
+    , moOutFile        = outFile
+    , moIncludeMerged  = [includedPath]
+    , moSourceDirs     = []
+    , moGeneratorRev   = Just "new"
+    }
+  merged <- decodeFile outFile
+  assertEq "generator" (Just (currentGenerator (Just "new"))) (generator merged)
 
 -- | Missing --include-merged file → warning to stderr, merge still
 -- succeeds with zero contribution from that file.
@@ -481,6 +505,27 @@ testOptionsFingerprint = do
   assertEq "same options" (optionsFingerprint a) (optionsFingerprint a)
   when (optionsFingerprint a == optionsFingerprint b) $
     failWith "different options gave equal fingerprints"
+
+-- | A recompiled module with nothing to record (or a blacklisted one) must
+-- not leave its earlier fragment behind for the merge to pick up.
+testSyncFragment :: IO ()
+testSyncFragment = withTmpProject $ \tmp -> do
+  let path = tmp </> "fragments" </> "Foo.yaml"
+      frag = sampleFragment "Foo" "Foo.FooT" "foo"
+  syncFragment path (Just frag)
+  bs <- BS.readFile path
+  assertEq "written" (Right frag) (either (Left . show) Right (YAML.decodeEither' bs))
+  syncFragment path Nothing
+  stale <- doesFileExist path
+  when stale (failWith "stale fragment not removed")
+  syncFragment path Nothing
+  -- Only a missing file is ignored; any other failure must fail the compile.
+  let dirPath = tmp </> "fragments" </> "Dir.yaml"
+  createDirectoryIfMissing True dirPath
+  r <- try (syncFragment dirPath Nothing)
+  case r of
+    Left (_ :: IOException) -> pure ()
+    Right ()                -> failWith "deleting a directory fragment path did not fail"
 
 -- ---------------------------------------------------------------------------
 -- Helpers

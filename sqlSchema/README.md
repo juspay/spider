@@ -13,7 +13,7 @@ against the production schema and refuse to deploy on mismatch.
 For every Beam table (`data XxxT (f :: Type -> Type) = Xxx { … } deriving
 (…, Beamable)`) the plugin captures:
 
-- Fully-qualified Haskell type name and source file.
+- The table type's name and its source module.
 - `modelTableName`, `modelTableType` from the `ModelMeta` instance.
 - `primaryKey` from the `Table` instance — the key constructor and the Haskell field names it applies (not a column list).
 - For each `Columnar f T` field: Haskell field name, the column name
@@ -84,7 +84,7 @@ error.
 
 | Key                         | Type         | Default                              | Notes |
 |-----------------------------|--------------|--------------------------------------|-------|
-| `fragmentsDir`              | string       | `./.juspay/sql-schema-fragments`     | Where per-module fragments are written. For incremental builds that restore the build directory, keep it inside that directory (e.g. `dist/build/sql-schema-fragments`), or the fragments of modules that were not recompiled are lost. |
+| `fragmentsDir`              | string       | `./.juspay/sql-schema-fragments`     | Where per-module fragments are written. For incremental builds that restore the build directory, keep it inside that directory (e.g. `dist/build/sql-schema-fragments`), or the fragments of modules that were not recompiled are lost. Components that share one directory must not define modules with the same name: their fragments share a file. |
 | `blacklistModules`          | [string]     | `[]`                                 | Module-name prefixes to skip entirely. |
 | `allowUnknownColumnWrapper` | bool         | `false`                              | If `true`, fields whose type isn't `Columnar f T` / `C f T` are silently left out of the table (no warning). Use only for migrations — the default refusal is the safe stance. |
 | `allowNonStandardModifier`  | bool         | `false`                              | If `true`, a modifier the plugin can't read is silently treated as "no overrides" (Beam default names): one that isn't `tableModification { … }` (guarded definitions included), or a binding that isn't a plain top-level `x = …` of this module with one unguarded right-hand side (imported, qualified, or bound in `where` or by a pattern). Same caveat as above. |
@@ -126,7 +126,8 @@ primaryKey _ = ConNullary                -- no-column PK
 - Per-module fragments mean incremental builds stay correct: an
   unchanged module's fragment on disk is still authoritative. Stale
   fragments (whose source file has been deleted) are pruned at merge
-  time.
+  time, and a recompiled module that no longer defines a table or
+  override, or is blacklisted, has its fragment deleted.
 - File writes (both fragment and final YAML) are atomic — tmp file +
   `renameFile`.
 - The plugin runs at `parsedResultAction` time and inspects only what
