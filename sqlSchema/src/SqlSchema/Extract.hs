@@ -16,6 +16,7 @@
 module SqlSchema.Extract
   ( FragmentAction (..)
   , planFragment
+  , extensionErrors
   ) where
 
 import           Control.Monad              (when)
@@ -26,7 +27,7 @@ import           Data.List                  (foldl', nub)
 import           Data.List                  (intercalate, (\\))
 import           Data.List.NonEmpty         (NonEmpty (..))
 import qualified Data.Map.Strict            as Map
-import           Data.Maybe                 (fromMaybe, isJust, mapMaybe)
+import           Data.Maybe                 (fromMaybe, isJust, isNothing, mapMaybe)
 import           Data.Set                   (Set)
 import qualified Data.Set                   as Set
 import qualified Data.Text                  as T
@@ -39,7 +40,7 @@ import           GHC.Data.FastString        (unpackFS)
 import           Language.Haskell.Syntax.Basic (field_label)
 #endif
 import           GHC.Hs
-import           GHC.Types.Name.Occurrence  (occNameString)
+import           GHC.Types.Name.Occurrence  (isTcOcc, isVarOcc, occNameString)
 import           GHC.Types.Name.Reader      (RdrName (..), rdrNameOcc)
 import           GHC.Types.SrcLoc           (GenLocated (..), SrcSpan, srcSpanStartCol, srcSpanStartLine,
                                              srcSpanToRealSrcSpan, unLoc)
@@ -74,13 +75,14 @@ planFragment cli src modStr srcPath decls =
   else if isBlacklistedModule cli modStr
     then Right (Stage Nothing)
     else do
-      let rm           = foldl' visitDecl emptyRawModule decls
+      let rm           = foldl' visitDecl emptyRawModule{ rmTopBinders = topBinders decls, rmNonStockGeneric = nonStockGeneric decls } decls
           rows         = extractFromModule cli modStr rm
-          errs         = concat [es | (_, Left es) <- rows] <> entityNameErrs <> tableModErrs
+          errs         = concat [es | (_, Left es) <- rows] <> moduleErrs <> entityNameErrs <> tableModErrs
           okTables     = [ts | (_, Right ts) <- rows]
           uses         = watchedUses decls
           (dbOverrides, entityNameErrs) = extractDbOverrides modStr srcPath decls uses rm
           tableModErrs = checkTableModifications decls uses rm
+          moduleErrs   = if null rows && null dbOverrides then [] else moduleErrors decls
 
       when (not (null errs))
         (Left (nub errs))
@@ -94,6 +96,24 @@ planFragment cli src modStr srcPath decls =
             , fragmentDbEntityOverrides = dbOverrides
             }
 
+-- | The refusals for the module's extensions, which 'planFragment' does not see: whether
+-- RebindableSyntax is on, and whether the module stages a fragment.
+extensionErrors :: Bool -> Bool -> [SqlSchemaError]
+extensionErrors rebindable staged = [UNSUPPORTED_EXTENSION "RebindableSyntax" | rebindable, staged]
+
+-- | A rewrite rule, or a record wildcard in a top-level pattern: the parse does not show their
+-- effect on the names the plugin reads.
+moduleErrors :: [LHsDecl GhcPs] -> [SqlSchemaError]
+moduleErrors decls =
+  [UNSUPPORTED_RULES (lineCol (GHC.locA l)) | L l RuleD{} <- decls]
+  <> [ UNSUPPORTED_RECORD_WILDCARD (lineCol (GHC.locA l))
+     | L l (ValD _ PatBind{ pat_lhs = lhs }) <- decls, hasRecordWildcard lhs ]
+
+hasRecordWildcard :: Data a => a -> Bool
+hasRecordWildcard d = case cast d :: Maybe (HsRecFields GhcPs (LPat GhcPs)) of
+  Just HsRecFields{ rec_dotdot = Just _ } -> True
+  _                                       -> or (gmapQ hasRecordWildcard d)
+
 
 -- ---------------------------------------------------------------------------
 -- Module-level extraction
@@ -105,9 +125,8 @@ data RawModule = RawModule
     --   with at least one type variable).  Filtered to actual Beam
     --   tables at extraction time via 'rmBeamableTypes'.
   , rmBeamableTypes   :: Set String
-    -- ^ Type names that are known to be Beam tables — populated by either
-    --   inline @deriving Beamable@ on the data decl, OR by a standalone
-    --   @instance Beamable XxxT@ declaration elsewhere in the module.
+    -- ^ Types marked Beamable: by a deriving clause on their data declaration
+    --   (any shape), by standalone deriving, or by an instance.
   , rmModelMetas      :: Map.Map String RawModelMeta
   , rmTableInsts      :: Map.Map String RawTableInst
   , rmBindings        :: Map.Map String (LHsExpr GhcPs)
@@ -118,10 +137,65 @@ data RawModule = RawModule
     --   by the record type name (e.g. @\"AppDb\"@), with an inner map
     --   from record-field name (e.g. @\"gadgets\"@) to the unqualified
     --   table-type constructors inside @TableEntity@ (e.g. @\"GadgetT\"@).
+  , rmDataDecls       :: Set String
+    -- ^ The type name of every data declaration, whatever its shape.
+  , rmUnreadableHeads :: [(String, String)]
+    -- ^ @(class, rendered head type)@ of each Table, ModelMeta or Beamable
+    --   instance whose type the plugin cannot attribute to a type of this
+    --   module ('instanceType').
+  , rmInstanceKeys    :: [(String, String)]
+    -- ^ @(class, type name)@ of every Table, ModelMeta and Beamable instance
+    --   recorded, written or derived; a key seen twice is 'DUPLICATE_INSTANCE'.
+  , rmTopBinders      :: Map.Map String [TopBinder]
+  , rmTypeDecls       :: Set String
+    -- ^ The name of every type synonym and type or data family declared in this
+    --   module, associated ones included; data types are in 'rmDataDecls'.
+  , rmNonStockGeneric :: [Maybe String]
+    -- ^ The head type constructor of each Generic instance not derived with the stock
+    --   strategy: written, or derived anyclass, newtype or via; 'Nothing' when the head is
+    --   not one unqualified name.
   }
 
 emptyRawModule :: RawModule
-emptyRawModule = RawModule [] Set.empty Map.empty Map.empty Map.empty Map.empty
+emptyRawModule = RawModule [] Set.empty Map.empty Map.empty Map.empty Map.empty Set.empty [] [] Map.empty Set.empty []
+
+data TopBinder
+  = TopValue (HsBind GhcPs)
+    -- ^ A value or pattern binding, or a pattern synonym.
+  | TopField
+    -- ^ A record field of a data declaration or a data instance.
+  | TopOther
+    -- ^ A class method, a foreign import or a record pattern synonym's field.
+
+-- | Not seen: a name bound by a Template Haskell splice or by a record wildcard.
+topBinders :: [LHsDecl GhcPs] -> Map.Map String [TopBinder]
+topBinders decls = Map.fromListWith (flip (<>)) [(n, [b]) | L _ decl <- decls, (n, b) <- binders decl]
+  where
+    binders = \case
+      ValD _ bind -> [(n, TopValue bind) | n <- boundNames bind]
+                     <> [ (occNameFromFieldOcc (recordPatSynField f), TopOther)
+                        | PatSynBind _ PSB{ psb_args = RecCon fs } <- [bind], f <- fs ]
+      TyClD _ ClassDecl{ tcdSigs = sigs } -> [(occToString n, TopOther) | L _ (ClassOpSig _ False ns _) <- sigs, L _ n <- ns]
+      TyClD _ DataDecl{ tcdDataDefn = defn } -> fields defn
+      InstD _ (ClsInstD _ ClsInstDecl{ cid_datafam_insts = dfis }) -> fields dfis
+      InstD _ (DataFamInstD _ dfi) -> fields dfi
+      ForD _ ForeignImport{ fd_name = L _ n } -> [(occToString n, TopOther)]
+      _ -> []
+    fields :: Data a => a -> [(String, TopBinder)]
+    fields = map (\n -> (n, TopField)) . recordFieldNames
+
+recordFieldNames :: Data a => a -> [String]
+recordFieldNames d = case cast d :: Maybe (ConDeclField GhcPs) of
+  Just ConDeclField{ cd_fld_names = ns } -> [occNameFromFieldOcc (unLoc n) | n <- ns]
+  Nothing                                -> concat (gmapQ recordFieldNames d)
+
+-- | A punned record field binds its label, which 'collectHsBindBinders' misses:
+-- the parser leaves a placeholder for the variable.
+punnedPatternFields :: Data a => a -> [String]
+punnedPatternFields d = case cast d :: Maybe PatRecField of
+  Just (RecField (L _ lbl) _ True) -> occNameFromFieldOcc lbl : below
+  _                                -> below
+  where below = concat (gmapQ punnedPatternFields d)
 
 data RawTable = RawTable
   { rtFields      :: [RawField]
@@ -143,12 +217,13 @@ data RawFieldOrError
   = RFOk RawField
   | RFErr SqlSchemaError
 
+-- | A 'Left' field is unreadable ('metaField'); 'assemble' reports it.
 data RawModelMeta = RawModelMeta
   { rmmTableNameLit  :: Maybe String
   , rmmModifier      :: ModifierDef
     -- ^ Whether the instance defines @modelFieldModification@, and how.
-  , rmmTableType     :: Maybe String
-  , rmmSchemaName    :: Maybe ModelSchemaName
+  , rmmTableType     :: Either String (Maybe String)
+  , rmmSchemaName    :: Either String (Maybe ModelSchemaName)
   }
 
 data ModifierDef
@@ -173,6 +248,31 @@ extractFromModule cli modName rm =
   | (_, tyName, rt) <- rmTables rm
   , Set.member tyName (rmBeamableTypes rm)
   ]
+  <> [ (t, Left [UNEXTRACTED_TABLE t reason]) | (t, reason) <- unextractedTables rm ]
+  <> [ (cls, Left [UNREADABLE_INSTANCE_HEAD cls ty]) | (cls, ty) <- rmUnreadableHeads rm ]
+  <> [ (t, Left [DUPLICATE_INSTANCE cls t]) | (cls, t) <- duplicateInstances (rmInstanceKeys rm) ]
+
+duplicateInstances :: [(String, String)] -> [(String, String)]
+duplicateInstances keys =
+  Map.keys (Map.filter (> (1 :: Int)) (Map.fromListWith (+) [(k, 1) | k <- keys]))
+
+-- | Each type marked as a table (Beamable, Table or ModelMeta) that the
+-- comprehension above does not assemble, with the reason.
+unextractedTables :: RawModule -> [(String, String)]
+unextractedTables rm =
+  [ (t, reason t)
+  | t <- Set.toAscList marked
+  , not (Set.member t tableShaped && Set.member t (rmBeamableTypes rm))
+  ]
+  where
+    marked = Set.unions
+      [rmBeamableTypes rm, Map.keysSet (rmTableInsts rm), Map.keysSet (rmModelMetas rm)]
+    tableShaped = Set.fromList [t | (_, t, _) <- rmTables rm]
+    reason t
+      | Map.member t (rmDbRecords rm)       = reasonDatabaseRecord
+      | not (Set.member t (rmDataDecls rm)) = reasonNoDeclaration
+      | not (Set.member t tableShaped)      = reasonNotARecord
+      | otherwise                           = reasonNoBeamable
 
 
 visitDecl :: RawModule -> LHsDecl GhcPs -> RawModule
@@ -189,28 +289,31 @@ visitDecl rm (L l decl) = case decl of
                     , tcdDataDefn = defn })
     | hasDatabaseDeriving defn
     , Just dbMap <- extractDbRecord tyVars defn ->
-        rm { rmDbRecords = Map.insert (occToString lname) dbMap (rmDbRecords rm) }
+        declared { rmDbRecords = Map.insert tyName dbMap (rmDbRecords rm) }
     | Just tbl <- extractRawTable tyVars defn ->
-        let tyName = occToString lname
-            rm'   = rm { rmTables = rmTables rm <> [(GHC.locA l, tyName, tbl)] }
-        in  if hasBeamableDeriving defn
-              then rm' { rmBeamableTypes = Set.insert tyName (rmBeamableTypes rm') }
-              else rm'
+        declared { rmTables = rmTables rm <> [(GHC.locA l, tyName, tbl)] }
+    | otherwise -> declared
+    where
+      tyName = occToString lname
+      -- Any shape: a Beamable type the extractor cannot read is reported, not skipped.
+      declared = foldl' derive rm { rmDataDecls = Set.insert tyName (rmDataDecls rm) } (derivedTypes defn)
+      -- A deriving clause's @Cls a …@ is an instance @Cls a … T@.
+      derive acc (clause, clsTy) = case typeHead clsTy of
+        Just (cls, args) ->
+          recordInstance (occToString cls)
+            (if null args then Right (Just tyName) else Left (unwords (map sdocText args <> [tyName])))
+            (Left clause) acc
+        Nothing -> acc
+  TyClD _ SynDecl{ tcdLName = L _ n } ->
+    rm { rmTypeDecls = Set.insert (occToString n) (rmTypeDecls rm) }
+  TyClD _ FamDecl{ tcdFam = fam } ->
+    rm { rmTypeDecls = Set.insert (familyName fam) (rmTypeDecls rm) }
+  TyClD _ ClassDecl{ tcdATs = ats } ->
+    rm { rmTypeDecls = foldr (Set.insert . familyName . unLoc) (rmTypeDecls rm) ats }
   InstD _ (ClsInstD _ ClsInstDecl{ cid_poly_ty, cid_binds }) ->
-    case headTypeOfInstance cid_poly_ty of
-      -- Standalone 'instance Beamable XxxT' — marks XxxT as a Beam
-      -- table even if its data decl lacks an inline 'deriving Beamable'.
-      Just ("Beamable", typeName) ->
-        rm { rmBeamableTypes = Set.insert typeName (rmBeamableTypes rm) }
-      Just ("ModelMeta", typeName) ->
-        rm { rmModelMetas = Map.insert typeName
-                              (extractModelMeta cid_binds)
-                              (rmModelMetas rm) }
-      Just ("Table", typeName) ->
-        rm { rmTableInsts = Map.insert typeName
-                              (extractTableInst cid_binds)
-                              (rmTableInsts rm) }
-      _ -> rm
+    visitInstance cid_poly_ty (Right cid_binds) rm
+  DerivD _ d@DerivDecl{ deriv_type = HsWC{ hswc_body = lsig } } ->
+    visitInstance lsig (Left (sdocText d)) rm
   ValD _ (FunBind { fun_id = L _ nm, fun_matches = mg })
     | Just rhs <- singleRhs mg ->
         rm { rmBindings = Map.insert (occToString nm) rhs (rmBindings rm) }
@@ -220,26 +323,108 @@ visitDecl rm (L l decl) = case decl of
   _ -> rm
 
 
--- | Convert an HsType into the @(className, headTypeName)@ pair for instance
--- heads of the form @Cls Foo@.
-headTypeOfInstance :: LHsSigType GhcPs -> Maybe (String, String)
-headTypeOfInstance lsig =
-  case unLoc (sig_body (unLoc lsig)) of
-    HsAppTy _ (L _ cls) (L _ ty) -> do
-      clsN <- tyConHead cls
-      tyN  <- tyConHead ty
-      Just (clsN, tyN)
-    _ -> Nothing
+familyName :: FamilyDecl GhcPs -> String
+familyName FamilyDecl{ fdLName = L _ n } = occToString n
+
+-- | Records a written ('Right' its bindings) or standalone-derived instance.
+visitInstance :: LHsSigType GhcPs -> Either String (LHsBinds GhcPs) -> RawModule -> RawModule
+visitInstance lsig methods rm = case headTypeOfInstance lsig of
+  Just (cls, args) -> recordInstance cls (instanceType cls args) methods rm
+  Nothing          -> rm
+
+-- | The head of each Generic instance in the module that is not a stock derivation
+-- ('rmNonStockGeneric'): Beam names a table's columns from its Generic representation, which
+-- such an instance can set to anything.  With no strategy written, GHC derives Generic stock
+-- or refuses the clause.
+nonStockGeneric :: [LHsDecl GhcPs] -> [Maybe String]
+nonStockGeneric = concatMap (instances . unLoc)
+  where
+    instances = \case
+      TyClD _ DataDecl{ tcdLName = L _ n, tcdDataDefn = defn } ->
+        [Just (occToString n) | (False, ty) <- derivingStrategies defn, tyConHead ty == Just "Generic"]
+      DerivD _ DerivDecl{ deriv_type = HsWC{ hswc_body = lsig }, deriv_strategy = strategy }
+        | Just ("Generic", args) <- headTypeOfInstance lsig, not (stockStrategy strategy) -> [headTyCon args]
+      InstD _ (ClsInstD _ ClsInstDecl{ cid_poly_ty = lsig })
+        | Just ("Generic", args) <- headTypeOfInstance lsig -> [headTyCon args]
+      _ -> []
+
+stockStrategy :: Maybe (LDerivStrategy GhcPs) -> Bool
+stockStrategy = \case
+  Nothing                    -> True
+  Just (L _ StockStrategy{}) -> True
+  Just _                     -> False
+
+headTyCon :: [HsType GhcPs] -> Maybe String
+headTyCon = \case
+  [ty] | Just (n@(Unqual occ), _) <- typeHead ty, isTcOcc occ -> Just (occToString n)
+  _ -> Nothing
+
+-- | Records an instance of a Table, ModelMeta or Beamable class (other classes
+-- are ignored) for @target@, read as 'instanceType' reads one.  A derived
+-- instance has no methods to read: 'Left' holds its rendered derivation.
+recordInstance
+  :: String -> Either String (Maybe String) -> Either String (LHsBinds GhcPs) -> RawModule
+  -> RawModule
+recordInstance cls target methods rm = case (lookup cls recorders, target) of
+  (Nothing, _)                  -> rm
+  (Just _, Left ty)             -> rm { rmUnreadableHeads = rmUnreadableHeads rm <> [(cls, ty)] }
+  (Just _, Right Nothing)       -> rm
+  (Just record, Right (Just t)) -> (record t) { rmInstanceKeys = rmInstanceKeys rm <> [(cls, t)] }
+  where
+    recorders =
+      [ ("Beamable",  \t -> rm { rmBeamableTypes = Set.insert t (rmBeamableTypes rm) })
+      , ("ModelMeta", \t -> rm { rmModelMetas = Map.insert t (either derivedMeta extractModelMeta methods) (rmModelMetas rm) })
+      , ("Table",     \t -> rm { rmTableInsts = Map.insert t (either (const (RawTableInst [] Nothing)) extractTableInst methods) (rmTableInsts rm) })
+      ]
+    -- Deriving via can take the methods from another type, so none is read as absent.
+    derivedMeta derivation = RawModelMeta Nothing ModifierUnreadable (Left derivation) (Left derivation)
+
+-- | The table type an instance of @cls@ applied to @args@ is for: 'Right'
+-- 'Nothing' for a key's Beamable instance, which is for no table, and 'Left'
+-- the rendered head unless it is one unqualified type constructor (maybe applied).
+instanceType :: String -> [HsType GhcPs] -> Either String (Maybe String)
+instanceType cls = \case
+  [ty] -> case typeHead ty of
+    Just (n, _ : _) | occToString n == "PrimaryKey" ->
+      if cls == "Beamable" then Right Nothing else Left (sdocText ty)
+    -- A qualified name may be another module's type, which, keyed by its
+    -- unqualified name, would take the instance of a same-named type here.
+    -- isTcOcc also refuses a type variable and a promoted constructor ('FooT).
+    Just (n@(Unqual occ), _) | isTcOcc occ -> Right (Just (occToString n))
+    _ -> Left (sdocText ty)
+  args -> Left (unwords (map sdocText args))
+
+-- | The class of an instance head and the types it is applied to, under any
+-- context, parentheses or kind signature (@instance C => (Cls ty :: Constraint)@).
+-- GHC rejects a context or forall nested in the head (GHC-71492), but only
+-- after this plugin has run, so a nested one is read through too.
+headTypeOfInstance :: LHsSigType GhcPs -> Maybe (String, [HsType GhcPs])
+headTypeOfInstance lsig = go (unLoc (sig_body (unLoc lsig)))
+  where
+    go = \case
+      HsQualTy _ _ (L _ t)   -> go t
+      HsForAllTy _ _ (L _ t) -> go t
+      HsParTy _ (L _ t)      -> go t
+      HsKindSig _ (L _ t) _  -> go t
+      HsDocTy _ (L _ t) _    -> go t
+      t                      -> (\(cls, args) -> (occToString cls, args)) <$> typeHead t
 
 tyConHead :: HsType GhcPs -> Maybe String
-tyConHead = \case
-  HsTyVar _ _ (L _ n)   -> Just (occToString n)
-  HsAppTy _ (L _ a) _   -> tyConHead a
-  HsParTy _ (L _ a)     -> tyConHead a
-  HsKindSig _ (L _ a) _ -> tyConHead a
-  -- -haddock wraps a documented deriving type, e.g. @Database -- ^ doc@.
-  HsDocTy _ (L _ a) _   -> tyConHead a
-  _                     -> Nothing
+tyConHead = fmap (occToString . fst) . typeHead
+
+-- | The name heading a type application, which may be a type variable, and the
+-- types it is applied to, through parentheses, kind signatures and Haddock
+-- comments: -haddock (nixpkgs passes it) wraps a documented type in 'HsDocTy'.
+typeHead :: HsType GhcPs -> Maybe (RdrName, [HsType GhcPs])
+typeHead = go []
+  where
+    go args = \case
+      HsTyVar _ _ (L _ n)       -> Just (n, args)
+      HsAppTy _ (L _ f) (L _ x) -> go (x : args) f
+      HsParTy _ (L _ t)         -> go args t
+      HsKindSig _ (L _ t) _     -> go args t
+      HsDocTy _ (L _ t) _       -> go args t
+      _                         -> Nothing
 
 
 -- ---------------------------------------------------------------------------
@@ -325,26 +510,28 @@ unwrapColumnar fVarName outer = case outer of
       HsParTy _ (L _ t)    -> isTyVarName name t
       _                    -> False
 
-hasBeamableDeriving :: HsDataDefn GhcPs -> Bool
-hasBeamableDeriving = derivesAny ["Beamable"]
-
 hasDatabaseDeriving :: HsDataDefn GhcPs -> Bool
-hasDatabaseDeriving = derivesAny ["Database"]
+hasDatabaseDeriving defn = any ((== Just "Database") . tyConHead . snd) (derivedTypes defn)
 
-derivesAny :: [String] -> HsDataDefn GhcPs -> Bool
-derivesAny names defn = any clauseHas (dd_derivs defn)
-  where
-    clauseHas (L _ HsDerivingClause{ deriv_clause_tys = L _ tys }) =
-      any (mentioned . sig_body . unLoc) (derivingTypes tys)
+-- | The rendered clause keeps the deriving strategy for the error message.
+derivedTypes :: HsDataDefn GhcPs -> [(String, HsType GhcPs)]
+derivedTypes defn =
+  [ (sdocText clause, unLoc (sig_body (unLoc ty)))
+  | L _ clause@HsDerivingClause{ deriv_clause_tys = L _ tys } <- dd_derivs defn
+  , ty <- case tys of
+      DctSingle _ t -> [t]
+      DctMulti _ ts -> ts
+  ]
 
-    derivingTypes = \case
-      DctSingle _ ty -> [ty]
-      DctMulti _ tys -> tys
-      XDerivClauseTys _ -> []
-
-    mentioned (L _ ty) = case tyConHead ty of
-      Just n -> n `elem` names
-      _      -> False
+-- | Each class a deriving clause names, with whether the clause derives it stock.
+derivingStrategies :: HsDataDefn GhcPs -> [(Bool, HsType GhcPs)]
+derivingStrategies defn =
+  [ (stockStrategy strategy, unLoc (sig_body (unLoc ty)))
+  | L _ HsDerivingClause{ deriv_clause_strategy = strategy, deriv_clause_tys = L _ tys } <- dd_derivs defn
+  , ty <- case tys of
+      DctSingle _ t -> [t]
+      DctMulti _ ts -> ts
+  ]
 
 
 -- ---------------------------------------------------------------------------
@@ -395,7 +582,7 @@ tableEntityOf = \case
 extractDbOverrides
   :: String -> FilePath -> [LHsDecl GhcPs] -> Uses -> RawModule
   -> ([DbEntityOverride], [SqlSchemaError])
-extractDbOverrides modName srcPath decls uses RawModule{ rmBindings } =
+extractDbOverrides modName srcPath decls uses RawModule{ rmBindings, rmDataDecls, rmTypeDecls } =
   ( [o | (_, Right o) <- reached]
   , [ UNCAPTURED_SET_ENTITY_NAME (lineCol sp) (reason sp)
     | sp <- usesOf "setEntityName" uses \\ captured ] )
@@ -418,6 +605,8 @@ extractDbOverrides modName srcPath decls uses RawModule{ rmBindings } =
           Left ("this module binds " <> intercalate ", " ["'" <> n <> "'" | n <- shadowing] <> " itself, so a use may not be Beam's")
       | covered sp =
           Left "a record wildcard '{..}' in its declaration, a top-level pattern binding or a top-level splice may rebind setEntityName or a name the rename relies on"
+      | any (Set.member "TableEntity") [rmDataDecls, rmTypeDecls] =
+          Left "this module declares a type named 'TableEntity', so a field's 'f (TableEntity T)' may not be Beam's table entity"
       | otherwise = case Set.toList (Map.findWithDefault Set.empty f fieldTypes) of
           [TableType tt] -> Right DbEntityOverride
                               { dbField              = f
@@ -469,7 +658,7 @@ appliedRenames modName labelSets = settings Nothing
       _ -> []
 
     fields why flds =
-      let regular = regularRecUpdFields flds
+      let regular = fromMaybe [] (regularRecUpdFields flds)
           why'    = maybe (updatedRecord [lbl | L _ (RecField (L _ lbl) _ _) <- regular]) Just why
           plain   = concat [ field why' lbl rhs | L _ (RecField (L _ lbl) (L _ rhs) False) <- regular ]
       in  plain <> [ ("", sp, Left "its dbModification field is not a plain 'field = value' update (record-dot syntax or a pun), which the plugin does not read")
@@ -665,7 +854,7 @@ underRecordWildcard decls uses
 -- each @modifyTableFields@ not applied to the modifier binding the contract's
 -- column names come from, and each use of an 'entityRenamers' name.
 checkTableModifications :: [LHsDecl GhcPs] -> Uses -> RawModule -> [SqlSchemaError]
-checkTableModifications decls uses rm@RawModule{ rmBindings } =
+checkTableModifications decls uses rm@RawModule{ rmTopBinders } =
   [ UNCAPTURED_MODIFY_TABLE_FIELDS (lineCol sp) (fromMaybe (unapplied sp) (lookup sp refused))
   | sp <- usesOf "modifyTableFields" uses \\ captured ]
   <> [ UNSUPPORTED_ENTITY_RENAME (lineCol sp) fn | fn <- entityRenamers, sp <- usesOf fn uses ]
@@ -691,12 +880,14 @@ checkTableModifications decls uses rm@RawModule{ rmBindings } =
             Left ("this module binds " <> intercalate ", " (map quoted trusted) <> " itself, so the use may not be Beam's")
         | covered sp ->
             Left ("a record wildcard '{..}' in its declaration, a top-level pattern binding or a top-level splice may rebind " <> quoted b <> " or modifyTableFields")
+        | isNothing (modifierBinding rmTopBinders b) ->
+            Left ("the modifier binding " <> quoted b <> " is not one top-level equation with no arguments, guards or where bindings, so the plugin does not read it")
         | not (setsAField b) ->
             Left ("the modifier binding " <> quoted b <> " is not a 'tableModification { … }' record update with at least one field")
         | otherwise -> Right ()
         where b = occToString rdr
       _ -> Left "its argument is not an unqualified variable"
-    setsAField b = maybe False (> 0) (tableModificationFields . unLoc =<< Map.lookup b rmBindings)
+    setsAField b = maybe False (> 0) (tableModificationFields . unLoc =<< modifierBinding rmTopBinders b)
     quoted b = "'" <> b <> "'"
 
 -- | Beam names that can rename a table or its columns in a way the plugin
@@ -708,10 +899,9 @@ entityRenamers =
   [ "modifyTable", "modifyEntityName", "withTableModification", "renamingFields"
   , "EntityModification", "DatabaseEntity", "dbEntityName", "dbTableCurrentName" ]
 
--- | The binding each extracted table's @modelFieldModification@ names, resolved
--- as 'extractOverrides' resolves it.
+-- | The binding each extracted table's @modelFieldModification@ names.
 modifierBindings :: RawModule -> Set String
-modifierBindings RawModule{ rmTables, rmBeamableTypes, rmModelMetas, rmBindings } = Set.fromList
+modifierBindings RawModule{ rmTables, rmBeamableTypes, rmModelMetas } = Set.fromList
   [ b
   | (_, tyName, _) <- rmTables
   , Set.member tyName rmBeamableTypes
@@ -719,7 +909,6 @@ modifierBindings RawModule{ rmTables, rmBeamableTypes, rmModelMetas, rmBindings 
   , Just rdr@(Unqual _) <- [varRdrName (unLoc rhs)]
   , let b = occToString rdr
   , b /= "tableModification"
-  , Map.member b rmBindings
   ]
 
 -- | How many fields a modifier's @tableModification { … }@ sets, as
@@ -728,7 +917,7 @@ tableModificationFields :: HsExpr GhcPs -> Maybe Int
 tableModificationFields expr = case stripPar expr of
   HsVar _ (L _ n) | occToString n == "tableModification" -> Just 0
   RecordUpd _ (L _ base) flds
-    | varName base == Just "tableModification" -> Just (length (regularRecUpdFields flds))
+    | varName base == Just "tableModification" -> Just (maybe 0 length (regularRecUpdFields flds))
   _ -> Nothing
 
 -- | How many times each name is bound in the declarations: by a binding, a
@@ -736,15 +925,22 @@ tableModificationFields expr = case stripPar expr of
 -- class method, a foreign import or a record pattern synonym's field, which
 -- binds a selector even when its pattern binds the variable through a record
 -- wildcard.  An instance method's own name is not counted: it defines its
--- class's method and cannot rebind the name.  Names that a record wildcard or a
--- splice's output binds are not seen.
+-- class's method and cannot rebind the name; it can still change what the
+-- method does at the instance's type, so it counts in an instance whose type
+-- names EntityModification or DatabaseEntity, or that has an overlap pragma.
+-- Names that a record wildcard or a splice's output binds are not seen.
 binderCounts :: Data a => a -> Map.Map String Int
 binderCounts = Map.fromListWith (+) . map (\n -> (n, 1)) . go
   where
     go :: forall d. Data d => d -> [String]
     go d
-      | Just (_ :: ClsInstDecl GhcPs) <- cast d = concat (gmapQ instancePart d)
-      | otherwise                              = bound d <> concat (gmapQ go d)
+      | Just inst <- (cast d :: Maybe (ClsInstDecl GhcPs))
+      , not (redefinesBeamMethods inst) = concat (gmapQ instancePart d)
+      | otherwise                       = bound d <> concat (gmapQ go d)
+
+    redefinesBeamMethods :: ClsInstDecl GhcPs -> Bool
+    redefinesBeamMethods ClsInstDecl{ cid_poly_ty = ty, cid_overlap_mode = overlap } =
+      isJust overlap || any (`elem` ["EntityModification", "DatabaseEntity"]) (typeNames ty)
 
     -- The methods' bodies and the instance's other parts can still bind names.
     instancePart :: forall e. Data e => e -> [String]
@@ -772,46 +968,62 @@ binderCounts = Map.fromListWith (+) . map (\n -> (n, 1)) . go
     namesBelow d = [occToString n | Just (L _ n) <- gmapQ (\c -> cast c :: Maybe (LIdP GhcPs)) d]
 
 
+typeNames :: Data a => a -> [String]
+typeNames d = case cast d :: Maybe (HsType GhcPs) of
+  Just (HsTyVar _ _ (L _ n)) -> [occToString n]
+  _                          -> concat (gmapQ typeNames d)
+
+
 -- ---------------------------------------------------------------------------
 -- ModelMeta / Table instance bodies
 -- ---------------------------------------------------------------------------
 
 extractModelMeta :: LHsBinds GhcPs -> RawModelMeta
-extractModelMeta binds = foldl' step empty (bagToList binds)
+extractModelMeta binds = RawModelMeta tableName modifier tableType schemaName
   where
-    empty = RawModelMeta Nothing ModifierAbsent Nothing Nothing
-    step acc (L _ (FunBind{ fun_id = L _ nm, fun_matches = mg }))
-      | Just rhs <- singleRhs mg =
-          case occToString nm of
-            "modelTableName"         ->
-              acc { rmmTableNameLit = stringLiteral (unLoc rhs) }
-            "modelFieldModification" ->
-              acc { rmmModifier = ModifierRhs rhs }
-            "modelTableType"         ->
-              acc { rmmTableType = justConstructorOf (unLoc rhs) }
-            "modelSchemaName"        ->
-              acc { rmmSchemaName = extractModelSchemaName (unLoc rhs) }
-            _                        -> acc
-      | occToString nm == "modelFieldModification" =
-          acc { rmmModifier = ModifierUnreadable }
-    step acc _ = acc
+    tableType  = metaField tableTypeOf (bindingsOf "modelTableType")
+    schemaName = metaField schemaNameOf (bindingsOf "modelSchemaName")
+    tableName  = stringLiteral . unLoc =<< plainBinding (bindingsOf "modelTableName")
+    modifier   = case bindingsOf "modelFieldModification" of
+      [] -> ModifierAbsent
+      bs -> maybe ModifierUnreadable ModifierRhs (plainBinding bs)
+    bindingsOf name = bindingsNamed name binds
 
 extractTableInst :: LHsBinds GhcPs -> RawTableInst
-extractTableInst binds = foldl' step (RawTableInst [] Nothing) (bagToList binds)
-  where
-    step acc (L _ (FunBind{ fun_id = L _ nm, fun_matches = mg }))
-      | occToString nm == "primaryKey"
-      , Just (pats, body) <- singleEquation mg =
-          acc { rtiPkPats = pats, rtiPkBody = Just body }
-    step acc _ = acc
+extractTableInst binds = case oneEquation (bindingsNamed "primaryKey" binds) of
+  Just (pats, L _ body) -> RawTableInst (map unLoc pats) (Just body)
+  Nothing               -> RawTableInst [] Nothing
 
-singleEquation
-  :: MatchGroup GhcPs (LHsExpr GhcPs)
-  -> Maybe ([Pat GhcPs], HsExpr GhcPs)
-singleEquation MG{ mg_alts = L _ [L _ (Match _ _ pats grhss)] } = do
-  body <- grhssExpr grhss
-  Just (map unLoc pats, unLoc body)
-singleEquation _ = Nothing
+bindingsNamed :: String -> LHsBinds GhcPs -> [HsBind GhcPs]
+bindingsNamed name binds =
+  [ bind
+  | L _ bind <- bagToList binds
+  , name `elem` boundNames bind
+  ]
+
+boundNames :: HsBind GhcPs -> [String]
+boundNames bind =
+  map occToString (collectHsBindBinders CollNoDictBinders bind)
+  <> [n | PatBind{ pat_lhs = lhs } <- [bind], n <- punnedPatternFields lhs]
+
+-- | A binding with guards is not read, nor one with where bindings, which could
+-- shadow a name the plugin reads in its equation.
+oneEquation :: [HsBind GhcPs] -> Maybe ([LPat GhcPs], LHsExpr GhcPs)
+oneEquation = \case
+  [FunBind{ fun_matches = MG{ mg_alts = L _ [L _ (Match _ _ pats GRHSs{ grhssGRHSs = [L _ (GRHS _ [] rhs)], grhssLocalBinds = local })] } }]
+    | bindsNothing local -> Just (pats, rhs)
+  _ -> Nothing
+
+plainBinding :: [HsBind GhcPs] -> Maybe (LHsExpr GhcPs)
+plainBinding binds = case oneEquation binds of
+  Just ([], rhs) -> Just rhs
+  _              -> Nothing
+
+bindsNothing :: HsLocalBinds GhcPs -> Bool
+bindsNothing = \case
+  EmptyLocalBinds _  -> True
+  HsValBinds _ binds -> isEmptyValBinds binds
+  HsIPBinds _ _      -> False
 
 
 -- ---------------------------------------------------------------------------
@@ -829,19 +1041,28 @@ assemble cli modName rm typeName rt =
   let metaM      = Map.lookup typeName (rmModelMetas rm)
       tabM       = Map.lookup typeName (rmTableInsts rm)
       fieldErrs  = [ patchTypeName typeName e | e <- rtFieldErrors rt ]
+      own        = ownDefinitions rm typeName
       result = do
+        when (not (null own)) (Left own)
         when (not (null fieldErrs) && not (allowUnknownColumnWrapper cli))
              (Left fieldErrs)
+        when (isNothing metaM) (Left [MISSING_MODEL_META typeName])
         nameLit <- case metaM >>= rmmTableNameLit of
           Just s  -> Right s
           Nothing -> case Map.lookup typeName (tableNameOverrides cli) of
             Just s  -> Right s
             Nothing -> Left [UNRESOLVABLE_TABLE_NAME typeName]
-        overrides <- extractOverrides cli typeName metaM (rmBindings rm)
-        pkInfo <- case tabM of
+        overrides <- extractOverrides cli typeName metaM (rmTopBinders rm)
+        (tableType, schemaName) <- metaFields typeName metaM
+        (pkInfo, pkNames) <- case tabM of
           Just RawTableInst{ rtiPkPats = pats, rtiPkBody = Just body } ->
-            extractPrimaryKey typeName pats body
+            (\info -> (info, namesReadIn pats body)) <$> extractPrimaryKey typeName pats body
           _ -> Left [UNRESOLVABLE_PRIMARY_KEY typeName]
+        let unknown = [c | c <- pkColumns pkInfo, c `notElem` map rfName (rtFields rt)]
+            keyErrs = [UNKNOWN_PRIMARY_KEY_FIELD typeName c | c <- unknown]
+              <> [ REDEFINED_NAME typeName n
+                 | n <- pkNames, n `notElem` unknown, any notField (Map.findWithDefault [] n (rmTopBinders rm)) ]
+        when (not (null keyErrs)) (Left keyErrs)
         let cols = [ ColumnInfo
                        { hsField      = rfName f
                        , column       = Map.findWithDefault (beamDefaultColumnName (rfName f))
@@ -855,12 +1076,61 @@ assemble cli modName rm typeName rt =
           { codeName        = typeName
           , sourceModule    = modName
           , modelTableName  = nameLit
-          , modelTableType  = metaM >>= rmmTableType
-          , modelSchemaName = metaM >>= rmmSchemaName
+          , modelTableType  = tableType
+          , modelSchemaName = schemaName
           , primaryKey      = pkInfo
           , columns         = cols
           }
   in (typeName, result)
+
+-- | Definitions in this module that change how the plugin must read the table: names it matches
+-- as written, and Generic instances, from which Beam names the columns.
+ownDefinitions :: RawModule -> String -> [SqlSchemaError]
+ownDefinitions rm typeName =
+  [ REDEFINED_NAME typeName n
+  | n <- ["C", "Columnar", "Maybe", "TableEntity"], Set.member n (rmDataDecls rm) || Set.member n (rmTypeDecls rm) ]
+  <> [ REDEFINED_NAME typeName n
+     | n <- "Just" : "Nothing" : tableTypeConstructors, Map.member n (rmTopBinders rm) ]
+  <> [ UNEXTRACTED_TABLE typeName reasonGenericNotStock | any (maybe True mayBeTable) (rmNonStockGeneric rm) ]
+  where
+    -- A type synonym of the module may stand for the table.
+    mayBeTable n = n == typeName || Set.member n (rmTypeDecls rm)
+
+-- | Both optional ModelMeta fields, or an error for each unreadable one.
+metaFields
+  :: String -> Maybe RawModelMeta
+  -> Either [SqlSchemaError] (Maybe String, Maybe ModelSchemaName)
+metaFields typeName metaM = case (tableTypeE, schemaNameE) of
+  (Right tt, Right sn) -> Right (tt, sn)
+  _ -> Left ( [UNRESOLVABLE_MODEL_META_FIELD typeName "modelTableType" r | Left r <- [tableTypeE]]
+           <> [UNRESOLVABLE_MODEL_META_FIELD typeName "modelSchemaName" r | Left r <- [schemaNameE]] )
+  where
+    -- No instance is MISSING_MODEL_META, reported before this.
+    tableTypeE  = maybe (Right Nothing) rmmTableType metaM
+    schemaNameE = maybe (Right Nothing) rmmSchemaName metaM
+
+-- | The names a key's definition uses, its parameters left out: the plugin read
+-- each as a field selector, an operator or the key's constructor, which a
+-- definition of the name in this module would replace.
+namesReadIn :: [Pat GhcPs] -> HsExpr GhcPs -> [String]
+namesReadIn pats body = nub [n | n <- variables body, n `notElem` params]
+  where
+    params = patternVariables pats <> patternVariables body
+
+notField :: TopBinder -> Bool
+notField = \case
+  TopField -> False
+  _        -> True
+
+variables :: Data a => a -> [String]
+variables d = case cast d :: Maybe (HsExpr GhcPs) of
+  Just (HsVar _ (L _ n)) -> [occToString n]
+  _                      -> concat (gmapQ variables d)
+
+patternVariables :: Data a => a -> [String]
+patternVariables d = case cast d :: Maybe (Pat GhcPs) of
+  Just (VarPat _ (L _ n)) -> [occToString n]
+  _                       -> concat (gmapQ patternVariables d)
 
 -- | Patch error variants that didn't have the type name at
 -- field-extraction time.
@@ -874,9 +1144,9 @@ extractOverrides
   :: CliOptions
   -> String
   -> Maybe RawModelMeta
-  -> Map.Map String (LHsExpr GhcPs)
+  -> Map.Map String [TopBinder]
   -> Either [SqlSchemaError] (Map.Map String String)
-extractOverrides cli typeName metaM bindings =
+extractOverrides cli typeName metaM binders =
   case maybe ModifierAbsent rmmModifier metaM of
     ModifierAbsent -> Right Map.empty
     ModifierUnreadable ->
@@ -884,14 +1154,22 @@ extractOverrides cli typeName metaM bindings =
     ModifierRhs rhs -> case varRdrName (unLoc rhs) of
       Just rdr | occToString rdr /= "tableModification" -> case rdr of
         -- Qualified means non-local, even when it names this module's own binding.
-        Unqual _ | Just e <- Map.lookup (occToString rdr) bindings ->
-          extractColumnOverrides cli typeName (occToString rdr) (unLoc e)
+        Unqual _ | Just e <- modifierBinding binders (occToString rdr) ->
+          extractColumnOverrides cli typeName (Map.keysSet binders) (occToString rdr) (unLoc e)
         _ -> orNoOverrides (UNRESOLVABLE_MODIFIER_BINDING typeName (sdocText rdr))
-      _ -> extractColumnOverrides cli typeName "modelFieldModification" (unLoc rhs)
+      _ -> extractColumnOverrides cli typeName (Map.keysSet binders) "modelFieldModification" (unLoc rhs)
   where
     orNoOverrides err
       | allowNonStandardModifier cli = Right Map.empty
       | otherwise                    = Left [err]
+
+-- | The binding a modifier name refers to: its only top-level binder, one plain
+-- equation.  'checkTableModifications' reads it the same way, so a column rename
+-- the DB settings apply through it is one the contract records.
+modifierBinding :: Map.Map String [TopBinder] -> String -> Maybe (LHsExpr GhcPs)
+modifierBinding binders b = case Map.findWithDefault [] b binders of
+  [TopValue bind] -> plainBinding [bind]
+  _               -> Nothing
 
 
 -- | Parse @tableModification { f1 = fieldNamed "c1", … }@.  Any other
@@ -902,28 +1180,36 @@ extractOverrides cli typeName metaM bindings =
 extractColumnOverrides
   :: CliOptions
   -> String
+  -> Set String                      -- names the module binds at top level
   -> String                          -- name of the *TMod binding
   -> HsExpr GhcPs
   -> Either [SqlSchemaError] (Map.Map String String)
-extractColumnOverrides cli typeName bindingName expr = case stripPar expr of
+extractColumnOverrides cli typeName defined bindingName expr = case stripPar expr of
   HsVar _ (L _ n)
-    | occToString n == "tableModification" -> Right Map.empty
+    | occToString n == "tableModification" -> readThrough ["tableModification"] (Right Map.empty)
   RecordUpd _ (L _ base) flds
-    | varName base == Just "tableModification" ->
-        let upds = regularRecUpdFields flds
-            (errs, ok) = foldl' classify ([], Map.empty) upds
-        in if null errs then Right ok else Left errs
+    | varName base == Just "tableModification"
+    , Just upds <- regularRecUpdFields flds ->
+        let (errs, ok) = foldl' classify ([], Map.empty) upds
+        in readThrough ("tableModification" : ["fieldNamed" | not (Map.null ok)])
+             (if null errs then Right ok else Left errs)
   _ ->
     if allowNonStandardModifier cli
       then Right Map.empty
       else Left [UNRECOGNIZED_MODIFIER_SHAPE typeName bindingName]
   where
-    classify (es, acc) (L _ (RecField (L _ lbl) (L _ rhs) False)) =
+    -- The names this reading matched: a definition of one in this module could
+    -- be what the modifier means.
+    readThrough names result = case filter (`Set.member` defined) names of
+      []        -> result
+      redefined -> Left [REDEFINED_NAME typeName n | n <- redefined]
+    -- A punned field's value is a variable, so it is no literal either.
+    classify (es, acc) (L _ (RecField (L _ lbl) (L _ rhs) _)) =
       let fieldName = ambiguousFieldName lbl
       in case fieldNamedLiteral rhs of
            Just c  -> (es, Map.insert fieldName c acc)
            Nothing -> (es <> [UNRESOLVABLE_COLUMN_NAME typeName fieldName], acc)
-    classify acc _ = acc
+    classify (es, acc) _ = (es <> [UNRECOGNIZED_MODIFIER_SHAPE typeName bindingName], acc)
 
 
 fieldNamedLiteral :: HsExpr GhcPs -> Maybe String
@@ -971,7 +1257,7 @@ extractPrimaryKey typeName pats body =
       | isDot op ->
           Right PrimaryKeyInfo
             { pkConstructor = occToString conN
-            , pkColumns     = [occToString fldN]
+            , pkColumns     = [sdocText fldN]
             }
     -- "Con . (.field)" — composition with a record-dot section.
     ([], OpApp _ (L _ (HsVar _ (L _ conN))) (L _ op) (L _ rhs))
@@ -998,7 +1284,7 @@ extractPrimaryKey typeName pats body =
     extractAccessor xName arg = case stripPar arg of
       -- Plain "fieldName x".
       HsApp _ (L _ f) (L _ x)
-        | Just fname <- varName f
+        | Just fname <- accessorName f
         , varName x == Just xName -> Just fname
       -- RDP-style "getField @\"fieldName\" x".
       HsApp _ (L _ inner) (L _ x)
@@ -1035,7 +1321,7 @@ extractPrimaryKey typeName pats body =
     projectionFieldName e = case stripPar e of
       HsProjection _ (L _ lbl :| []) -> Just (fieldLabelString lbl)
       SectionR _ (L _ op) (L _ (HsVar _ (L _ n)))
-        | isDotOp op -> Just (occToString n)
+        | isDotOp op -> Just (sdocText n)
       _ -> Nothing
 
     isDotOp e = case e of
@@ -1111,12 +1397,12 @@ extractDotChainNoRdpPk xName body = case opAppDotChain body of
     traverseSplit :: [HsExpr GhcPs] -> Maybe [String]
     traverseSplit [] = Just []
     traverseSplit [final] = do
-      f <- varName (stripPar final)
+      f <- accessorName final
       Just [f]
     traverseSplit (mid : rest) = do
       f <- case stripPar mid of
         HsApp _ (L _ fE) (L _ x) -> do
-          n <- varName fE
+          n <- accessorName fE
           v <- varName x
           if v == xName then Just n else Nothing
         _ -> Nothing
@@ -1133,7 +1419,7 @@ extractApplicative expr = case stripPar expr of
   OpApp _ _ _ _ -> do
     (conE, accessors) <- peel expr
     conN  <- varName conE
-    cols  <- mapM varName accessors
+    cols  <- mapM accessorName accessors
     Just PrimaryKeyInfo { pkConstructor = conN, pkColumns = cols }
   _ -> Nothing
   where
@@ -1152,6 +1438,12 @@ extractApplicative expr = case stripPar expr of
     isFmap = \case
       HsVar _ (L _ n) -> occToString n == "<$>"
       _               -> False
+
+
+-- | A key field as written: a qualified name stays qualified, so it is none
+-- of the table's own fields.
+accessorName :: HsExpr GhcPs -> Maybe String
+accessorName = fmap sdocText . varRdrName
 
 
 unwindApp :: HsExpr GhcPs -> (HsExpr GhcPs, [HsExpr GhcPs])
@@ -1200,16 +1492,17 @@ pattern RecField :: GHC.Located id -> arg -> Bool -> HsRecField' id arg
 pattern RecField lbl rhs pun <- HsRecField{ hsRecFieldLbl = lbl, hsRecFieldArg = rhs, hsRecPun = pun }
 #endif
 
--- OverloadedRecordUpdate forms (r { a.b = x }) carry no plain field label and are skipped.
+-- | The fields of a plain record update; 'Nothing' for OverloadedRecordUpdate,
+-- under which an update calls the setField in scope.
 #if __GLASGOW_HASKELL__ >= 908
-regularRecUpdFields :: LHsRecUpdFields GhcPs -> [LHsRecUpdField GhcPs GhcPs]
+regularRecUpdFields :: LHsRecUpdFields GhcPs -> Maybe [LHsRecUpdField GhcPs GhcPs]
 regularRecUpdFields = \case
-  RegularRecUpdFields _ fs   -> fs
-  OverloadedRecUpdFields _ _ -> []
+  RegularRecUpdFields _ fs   -> Just fs
+  OverloadedRecUpdFields _ _ -> Nothing
 #else
 regularRecUpdFields
-  :: Either [LHsRecUpdField GhcPs] [LHsRecUpdProj GhcPs] -> [LHsRecUpdField GhcPs]
-regularRecUpdFields = either id (const [])
+  :: Either [LHsRecUpdField GhcPs] [LHsRecUpdProj GhcPs] -> Maybe [LHsRecUpdField GhcPs]
+regularRecUpdFields = either Just (const Nothing)
 #endif
 
 -- GHC 9.4 moved the untyped quotes, name quotes included, from HsBracket to HsQuote.
@@ -1243,6 +1536,11 @@ sdocText = showSDocUnsafe . ppr
 
 occToString :: RdrName -> String
 occToString = sdocText . rdrNameOcc
+
+lineCol :: SrcSpan -> String
+lineCol sp = case srcSpanToRealSrcSpan sp of
+  Just r  -> show (srcSpanStartLine r) <> ":" <> show (srcSpanStartCol r)
+  Nothing -> sdocText sp
 
 -- | Matches the constructors directly: the RdrName accessor was renamed in GHC 9.8.
 ambiguousFieldName :: AmbiguousFieldOcc GhcPs -> String
@@ -1319,49 +1617,44 @@ isVar name e = case stripPar e of
   HsVar _ (L _ n) -> hasOcc name n
   _               -> False
 
-lineCol :: SrcSpan -> String
-lineCol sp = case srcSpanToRealSrcSpan sp of
-  Just r  -> show (srcSpanStartLine r) <> ":" <> show (srcSpanStartCol r)
-  Nothing -> sdocText sp
+-- | A field from the instance's bindings of it.  None is the class default,
+-- 'Nothing'; anything but one equation with no arguments, guards or @where@
+-- bindings is 'Left' (rendered), since 'Nothing' would misroute the table.
+metaField :: (HsExpr GhcPs -> Maybe (Maybe a)) -> [HsBind GhcPs] -> Either String (Maybe a)
+metaField readRhs = \case
+  [] -> Right Nothing
+  binds | Just (L _ rhs) <- plainBinding binds -> maybe (Left (rendered rhs)) Right (readRhs rhs)
+  binds -> Left (intercalate "\n" (map rendered binds))
+  where
+    -- GHC indents an expression with a type signature.
+    rendered :: Outputable o => o -> String
+    rendered = T.unpack . T.strip . T.pack . sdocText
 
-conName :: HsExpr GhcPs -> Maybe String
-conName = varName
+-- | @Nothing@ or @Just CON@ for a @TableType@ constructor, recorded
+-- unqualified.  Any other name, e.g. a pattern synonym for one, is not the
+-- constructor the validator routes on.
+tableTypeOf :: HsExpr GhcPs -> Maybe (Maybe String)
+tableTypeOf = maybeShape $ \case
+  HsVar _ (L _ rn) | occToString rn `elem` tableTypeConstructors -> Just (occToString rn)
+  _                                                               -> Nothing
 
-justConstructorOf :: HsExpr GhcPs -> Maybe String
-justConstructorOf = \case
+-- | @Nothing@, @Just "lit"@ or @Just name@ (a value name).  The validator reads
+-- the name's qualifier, so it is rendered from the 'RdrName', not its 'OccName'.
+schemaNameOf :: HsExpr GhcPs -> Maybe (Maybe ModelSchemaName)
+schemaNameOf = maybeShape $ \case
+  HsLit _ (HsString _ fs)                     -> Just (SchemaLiteral (unpackFS fs))
+  HsVar _ (L _ rn) | isVarOcc (rdrNameOcc rn) -> Just (SchemaConfig (sdocText rn))
+  _                                           -> Nothing
+
+-- | Names are matched as written: nothing is resolved at parse time, so a pattern synonym called @Just@ reads as @Just@.
+maybeShape :: (HsExpr GhcPs -> Maybe a) -> HsExpr GhcPs -> Maybe (Maybe a)
+maybeShape inner expr = case peel expr of
+  HsVar _ (L _ n) | occToString n == "Nothing" -> Just Nothing
   HsApp _ (L _ j) (L _ x)
-    | varName j == Just "Just" -> conName x
-  Par (L _ e) -> justConstructorOf e
-  _ -> Nothing
-
--- | Classify the RHS of a @modelSchemaName = Just _@ binding.
---
--- Recognised inner forms:
---
---   * a string literal @"public"@           → 'SchemaLiteral'
---   * a (possibly qualified) value name
---     @Config.getAppDbSchema@               → 'SchemaConfig'
---
--- The qualifier on a value reference is preserved by pretty-printing the
--- 'RdrName' directly rather than going through 'rdrNameOcc' (which would
--- strip the module qualifier and lose the PG marker the validator looks
--- for).  Anything else (literals other than strings, function
--- applications, etc.) yields 'Nothing' — silently dropping unknown shapes
--- is fine here because the validator's fallback is "treat as MySQL",
--- which is the same behaviour as a missing @modelSchemaName@.
-extractModelSchemaName :: HsExpr GhcPs -> Maybe ModelSchemaName
-extractModelSchemaName = peel
+    | varName j == Just "Just"                 -> Just <$> inner (peel x)
+  _                                            -> Nothing
   where
     peel = \case
       Par (L _ e)               -> peel e
       ExprWithTySig _ (L _ e) _ -> peel e
-      HsApp _ (L _ j) (L _ x)
-        | varName j == Just "Just" -> inner x
-      _ -> Nothing
-
-    inner expr = case expr of
-      Par (L _ e)                 -> inner e
-      ExprWithTySig _ (L _ e) _   -> inner e
-      HsLit _ (HsString _ fs)     -> Just (SchemaLiteral (unpackFS fs))
-      HsVar _ (L _ rn)            -> Just (SchemaConfig (sdocText rn))
-      _                           -> Nothing
+      e                         -> e

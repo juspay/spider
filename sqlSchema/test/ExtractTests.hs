@@ -10,7 +10,7 @@ module ExtractTests (run) where
 import           Control.Exception    (ErrorCall (..), try)
 import           Control.Monad        (forM_, unless, when)
 import           Data.Char            (GeneralCategory (Control, Format, LineSeparator,
-                                                        ParagraphSeparator), generalCategory)
+                                                        ParagraphSeparator), generalCategory, isAlphaNum)
 import           Data.Data            (Data, cast, gmapQ, gmapT)
 import           Data.List            (isPrefixOf, isSuffixOf)
 import           Data.Maybe           (fromMaybe)
@@ -27,7 +27,7 @@ import           GHC.Types.SrcLoc     (GenLocated (..), noSrcSpan)
 import           GHC.Types.SourceFile (HscSource (..))
 
 import           ParseFixture         (parseFixture, parseFixtureHaddock)
-import           SqlSchema.Extract    (FragmentAction (..), planFragment)
+import           SqlSchema.Extract    (FragmentAction (..), extensionErrors, planFragment)
 import           SqlSchema.Plugin     (parseCliOptions)
 import           SqlSchema.Types
 import           TestUtil
@@ -59,7 +59,6 @@ run = do
   testEntityNameBlacklistedModuleSkipped
   testUncapturedEntityNameMessage
   testEntityNameDocumentedDatabaseDeriving
-  testDocumentedBeamableDeriving
   testEntityNameQualifiedLabelFails
   testEntityNameAnnotatedModificationFails
   testEntityNameFieldOfAnyRecord
@@ -107,6 +106,62 @@ run = do
   testErrorFieldsEscaped
   testErrorMessagesSanitized
   testMessageBackstop
+  testStandaloneDerivingBeamable
+  testPositionalTableFails
+  testGadtTableFails
+  testPositionalMixinFails
+  testOrphanInstanceFails
+  testNoBeamableMarkingFails
+  testDatabaseRecordMarkedFails
+  testPrimaryKeyBeamableNotATable
+  testContextHeadsVisible
+  testKindSignatureHeadVisible
+  testQualifiedClassHeads
+  testMissingModelMeta
+  testDerivedMetaUnreadable
+  testUnreadableInstanceHead
+  testSchemaNameAccepted
+  testSchemaNameRejected
+  testTableTypeAccepted
+  testTableTypeRejected
+  testAbsentMetaFieldsAreNothing
+  testDerivedMetaFieldsUnreadable
+  testMetaFieldMessageListsOwnShapes
+  testMetaFieldFixFitsInstance
+  testDocumentedDerivingsRead
+  testTableNamedPrimaryKey
+  testKeyTypeInstancesFail
+  testDuplicateInstancesFail
+  testPromotedHeadUnreadable
+  testUnextractedFixFitsReason
+  testPunnedModifierFieldFails
+  testOverloadedRecordUpdateModifierFails
+  testPrimaryKeyFieldMustExist
+  testPrimaryKeyFieldDroppedByOptOut
+  testPrimaryKeyMessageListsShapes
+  testWhereBindingsUnreadable
+  testPatternAndRepeatedBindingsUnreadable
+  testBindingRuleInMessages
+  testRedefinedNamesFail
+  testRedefinedNamesNotRead
+  testNestedContextHeadsRead
+  testDocumentedInstanceHeadRead
+  testRebindableSyntaxRefused
+  testRulesRefused
+  testPatternSynonymNamesRefused
+  testTypeNamesRefused
+  testNonStockGenericRefused
+  testTopLevelRecordWildcardRefused
+  testUnsupportedMessagesNameTheirCause
+  testPunnedInstanceBindingsUnreadable
+  testImplicitParamBindingsUnreadable
+  testColumnNameMessageCoversPun
+  testTableNameMessageFix
+  testNewRefusalsUnderHaddock
+  testNewRefusalsHaveNoOptOut
+  testLocalTableEntityRefused
+  testModifyTableFieldsWhereModifierFails
+  testInstanceAtBeamTypeBindsMethods
 
 -- ---------------------------------------------------------------------------
 -- Test cases
@@ -357,11 +412,12 @@ testEntityNameInInstanceMethodFails =
         [ "instance HasDb Db where"
         , "  dbSettings = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }" ])
 
--- | A class default, a pattern synonym's builder and a rewrite rule.
+-- | A class default, a pattern synonym's builder and a rewrite rule, which also refuses the module.
 testEntityNameInOtherDeclarationsFail :: IO ()
 testEntityNameInOtherDeclarationsFail =
-  expectUncaptured "EntityNameInOtherDecls"
-    [("13:79", notAppliedModification), ("16:13", notInModification), ("17:39", notInModification)]
+  assertEq "EntityNameInOtherDecls"
+    (Left [ UNSUPPORTED_RULES "17:1", UNCAPTURED_SET_ENTITY_NAME "13:79" notAppliedModification
+          , UNCAPTURED_SET_ENTITY_NAME "16:13" notInModification, UNCAPTURED_SET_ENTITY_NAME "17:39" notInModification ])
     =<< planFix defaultCliOptions "EntityNameInOtherDecls" ["PatternSynonyms"]
       (entityNameModule
         [ "class HasDb db where"
@@ -478,24 +534,6 @@ testEntityNameDocumentedDatabaseDeriving = mapM_ captured
       fragment <- fragmentOf name (planFragment defaultCliOptions HsSrcFile modName "f.hs" decls)
       assertEq name [("foos", "FooT", "foo_v2")]
         [(dbField o, dbTableType o, sqlName o) | o <- fragmentDbEntityOverrides fragment]
-
--- | Under @-haddock@ a documented Beamable deriving is still read: the table is extracted.
-testDocumentedBeamableDeriving :: IO ()
-testDocumentedBeamableDeriving = do
-  let modName = "Fix.DocumentedBeamable"
-  decls <- parseFixtureHaddock modName [] $ unlines
-    [ "module " <> modName <> " where"
-    , "data FooT f = Foo { fooId :: C f Int }"
-    , "  deriving (Generic, Beamable -- ^ the table"
-    , "    )"
-    , "instance Table FooT where"
-    , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
-    , "  primaryKey = FooId . fooId"
-    , "instance ModelMeta FooT where"
-    , "  modelTableName = \"foo\"" ]
-  unless (documentedTypes decls > 0) $ failWith "DocumentedBeamable: the fixture parsed without an HsDocTy"
-  tables <- tablesOf "DocumentedBeamable" (planFragment defaultCliOptions HsSrcFile modName "f.hs" decls)
-  assertEq "DocumentedBeamable" ["FooT"] (map codeName tables)
 
 documentedTypes :: Data a => a -> Int
 documentedTypes d = case cast d :: Maybe (HsType GhcPs) of
@@ -622,10 +660,12 @@ testEntityNameUnreadValueFails = mapM_ refused
           (entityNameModule ["db = defaultDbSettings `withDbModification` dbModification { foos = " <> value <> " }"])
 
 -- | With OverloadedRecordUpdate the dbModification's fields are record-dot
--- updates, which carry no plain label.
+-- updates, which carry no plain label; the table's modifier is written so too.
 testEntityNameRecordDotUpdateFails :: IO ()
 testEntityNameRecordDotUpdateFails =
-  expectUncaptured "RecordDotUpdate" [("11:69", "is not a plain 'field = value' update")]
+  assertEq "RecordDotUpdate"
+    (Left [ UNRECOGNIZED_MODIFIER_SHAPE "FooT" "fooTMod"
+          , UNCAPTURED_SET_ENTITY_NAME "11:69" "its dbModification field is not a plain 'field = value' update (record-dot syntax or a pun), which the plugin does not read" ])
     =<< planFix defaultCliOptions "EntityNameRecordDotUpdate" ["OverloadedRecordUpdate", "RebindableSyntax"]
       (entityNameModule ["db = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }"])
 
@@ -694,8 +734,12 @@ testEntityNameUnderRecordWildcardFails :: IO ()
 testEntityNameUnderRecordWildcardFails = do
   mapM_ refused
     [ ("WildcardParam", ["db Renames{..} = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }"], "11:81")
-    , ("WildcardQualified", ["dbW2 M.Renames{..} = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }"], "11:85")
-    , ("WildcardTopPattern", ["Renames{..} = renames", dbLine], "12:69") ]
+    , ("WildcardQualified", ["dbW2 M.Renames{..} = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }"], "11:85") ]
+  -- A top-level pattern binding with a wildcard also refuses the module.
+  assertEq "WildcardTopPattern"
+    (Left [ UNSUPPORTED_RECORD_WILDCARD "11:1"
+          , UNCAPTURED_SET_ENTITY_NAME "12:69" "a record wildcard '{..}' in its declaration, a top-level pattern binding or a top-level splice may rebind setEntityName or a name the rename relies on" ])
+    =<< planFix defaultCliOptions "EntityNameWildcardTopPattern" ["RecordWildCards"] (entityNameModule ["Renames{..} = renames", dbLine])
   expectUncaptured "SpliceQuoteWildcard" [("12:69", wildcard)]
     =<< planFix defaultCliOptions "EntityNameSpliceQuoteWildcard" ["RecordWildCards", "TemplateHaskell"]
       (entityNameModule ["$( [d| R.Renames{..} = renames |] )", dbLine])
@@ -761,9 +805,13 @@ testModifyTableFieldsTrustedNamesBoundFails :: IO ()
 testModifyTableFieldsTrustedNamesBoundFails = do
   mapM_ refused
     [ ("LocalModifyTableFields", ["modifyTableFields _ = mempty", "fooEMod = modifyTableFields fooTMod"], "12:11", "'modifyTableFields'")
-    , ("LocalFieldNamed", ["fieldNamed _ = B.fieldNamed \"y\"", "fooEMod = modifyTableFields fooTMod"], "12:11", "'fieldNamed'")
     , ("LocalTableModification", ["fooEMod = modifyTableFields fooTMod", "  where tableModification = B.tableModification"], "11:11", "'tableModification'")
     , ("LocalMappend", ["_ <> b = b", "fooEMod schema = modifyTableFields fooTMod <> setEntitySchema (Just schema)"], "12:18", "'<>'") ]
+  -- The table's modifier reads fieldNamed too, so the table is refused as well.
+  assertEq "LocalFieldNamed"
+    (Left [REDEFINED_NAME "FooT" "fieldNamed", UNCAPTURED_MODIFY_TABLE_FIELDS "12:11" "this module binds 'fieldNamed' itself, so the use may not be Beam's"])
+    =<< planFix defaultCliOptions "ModifyTableFieldsLocalFieldNamed" []
+          (entityNameModule ["fieldNamed _ = B.fieldNamed \"y\"", "fooEMod = modifyTableFields fooTMod"])
   sameAsWithoutEMod "ModifyTableFieldsSemigroupInstance" []
     ["instance Semigroup X where", "  _ <> b = b", "fooEMod schema = modifyTableFields fooTMod <> setEntitySchema (Just schema)"]
   where
@@ -778,23 +826,27 @@ testModifyTableFieldsTypeAppliedFails =
       (entityNameModule ["fooEMod = modifyTableFields @FooT fooTMod"])
 
 -- | Under OverloadedRecordUpdate a pun's value has no location: each use is
--- reported at its field, so none is merged with another.
+-- reported at its field, so none is merged with another.  The table's modifier,
+-- a record update too, is not read.
 testOverloadedRecordUpdatePunsLocated :: IO ()
 testOverloadedRecordUpdatePunsLocated = do
   expectErrors "ProjectionPuns"
-    [ ("UNCAPTURED_SET_ENTITY_NAME", "11:17", notInModification), ("UNCAPTURED_SET_ENTITY_NAME", "12:22", notInModification)
+    [ ("UNRECOGNIZED_MODIFIER_SHAPE", "", "fooTMod")
+    , ("UNCAPTURED_SET_ENTITY_NAME", "11:17", notInModification), ("UNCAPTURED_SET_ENTITY_NAME", "12:22", notInModification)
     , ("UNCAPTURED_MODIFY_TABLE_FIELDS", "13:14", notApplied), ("UNSUPPORTED_ENTITY_RENAME", "14:12", "modifyEntityName") ]
     =<< planFix defaultCliOptions "EntityNameProjectionPuns" exts
       (entityNameModule
         [ "renamed r = r { setEntityName }", "renamedTwice r = r { setEntityName }"
         , "mods r = r { modifyTableFields }", "rn r = r { modifyEntityName }" ])
-  expectUncaptured "ProjectionPunInModification" [("11:62", "is not a plain 'field = value' update")]
+  expectErrors "ProjectionPunInModification"
+    [("UNRECOGNIZED_MODIFIER_SHAPE", "", "fooTMod"), ("UNCAPTURED_SET_ENTITY_NAME", "11:62", "is not a plain 'field = value' update")]
     =<< planFix defaultCliOptions "EntityNameProjectionPunInModification" exts
       (entityNameModule ["db = defaultDbSettings `withDbModification` dbModification { setEntityName }"])
   where exts = ["OverloadedRecordUpdate", "RebindableSyntax", "NamedFieldPuns"]
 
 -- | Fails unless the result is exactly these errors, in order: code, location,
--- and a part of the reason (the function's name for UNSUPPORTED_ENTITY_RENAME).
+-- and a part of the reason (the function's name for UNSUPPORTED_ENTITY_RENAME;
+-- for UNRECOGNIZED_MODIFIER_SHAPE, which has no location, the binding's).
 expectErrors :: String -> [(String, String, String)] -> Either [SqlSchemaError] FragmentAction -> IO ()
 expectErrors label expected r = case r of
   Left errs | length errs == length expected, and (zipWith matches errs expected) -> pure ()
@@ -807,6 +859,7 @@ expectErrors label expected r = case r of
       UNCAPTURED_SET_ENTITY_NAME at why     -> Just (at, why)
       UNCAPTURED_MODIFY_TABLE_FIELDS at why -> Just (at, why)
       UNSUPPORTED_ENTITY_RENAME at fn       -> Just (at, fn)
+      UNRECOGNIZED_MODIFIER_SHAPE _ binding -> Just ("", binding)
       _                                     -> Nothing
 
 capturedFooV2 :: String -> [String] -> IO ()
@@ -931,17 +984,21 @@ testModifyTableFieldsOtherModuleTableFails =
 
 -- | A use may name a local binder of the modifier's name instead of the modifier.
 testModifyTableFieldsShadowedBindingFails :: IO ()
-testModifyTableFieldsShadowedBindingFails = mapM_ shadowed
-  [ ("ShadowedByParameter", [], ["fooEMod fooTMod = modifyTableFields fooTMod"], "11:19")
-  , ("ShadowedByWhere", [],
-      [ "fooEMod = modifyTableFields fooTMod"
-      , "  where fooTMod = tableModification { fooName = fieldNamed \"x\" }" ], "11:11")
-  , ("ShadowedByLet", [],
-      ["fooEMod = let fooTMod = tableModification { fooName = fieldNamed \"x\" } in modifyTableFields fooTMod"], "11:75")
-  , ("ShadowedByAsPattern", [], ["fooEMod fooTMod@_ = modifyTableFields fooTMod"], "11:21")
-  , ("ShadowedByPun", ["NamedFieldPuns"], ["fooEMod Mods{fooTMod} = modifyTableFields fooTMod"], "11:25")
-  , ("ShadowedByRule", [],
-      ["{-# RULES \"keep\" forall fooTMod. keep fooTMod = modifyTableFields fooTMod #-}"], "11:49") ]
+testModifyTableFieldsShadowedBindingFails = do
+  mapM_ shadowed
+    [ ("ShadowedByParameter", [], ["fooEMod fooTMod = modifyTableFields fooTMod"], "11:19")
+    , ("ShadowedByWhere", [],
+        [ "fooEMod = modifyTableFields fooTMod"
+        , "  where fooTMod = tableModification { fooName = fieldNamed \"x\" }" ], "11:11")
+    , ("ShadowedByLet", [],
+        ["fooEMod = let fooTMod = tableModification { fooName = fieldNamed \"x\" } in modifyTableFields fooTMod"], "11:75")
+    , ("ShadowedByAsPattern", [], ["fooEMod fooTMod@_ = modifyTableFields fooTMod"], "11:21")
+    , ("ShadowedByPun", ["NamedFieldPuns"], ["fooEMod Mods{fooTMod} = modifyTableFields fooTMod"], "11:25") ]
+  -- A rule also refuses the module.
+  assertEq "ShadowedByRule"
+    (Left [UNSUPPORTED_RULES "11:1", UNCAPTURED_MODIFY_TABLE_FIELDS "11:49" "'fooTMod' is also bound elsewhere in this module, so this use may not name the modifier binding"])
+    =<< planFix defaultCliOptions "ModifyTableFieldsShadowedByRule" []
+          (entityNameModule ["{-# RULES \"keep\" forall fooTMod. keep fooTMod = modifyTableFields fooTMod #-}"])
   where
     shadowed (name, exts, rest, at) =
       expectTableModErrors name [Uncaptured at ("'fooTMod' " <> boundAgain)]
@@ -1241,6 +1298,16 @@ errorSamples =
   , (UNSUPPORTED_ENTITY_RENAME "12:10" "modifyTable", "UNSUPPORTED_ENTITY_RENAME")
   , (INVALID_PLUGIN_OPTIONS "not json", "INVALID_PLUGIN_OPTIONS")
   , (STAGED_FRAGMENT_MISSING "d/Fix.Foo.yaml.pending", "STAGED_FRAGMENT_MISSING")
+  , (UNEXTRACTED_TABLE "FooT" noDeclaration, "UNEXTRACTED_TABLE")
+  , (MISSING_MODEL_META "FooT", "MISSING_MODEL_META")
+  , (UNREADABLE_INSTANCE_HEAD "ModelMeta" "t", "UNREADABLE_INSTANCE_HEAD")
+  , (UNRESOLVABLE_MODEL_META_FIELD "FooT" "modelSchemaName" "pure \"x\"", "UNRESOLVABLE_MODEL_META_FIELD")
+  , (DUPLICATE_INSTANCE "ModelMeta" "FooT", "DUPLICATE_INSTANCE")
+  , (UNKNOWN_PRIMARY_KEY_FIELD "FooT" "someHelper", "UNKNOWN_PRIMARY_KEY_FIELD")
+  , (REDEFINED_NAME "FooT" "fieldNamed", "REDEFINED_NAME")
+  , (UNSUPPORTED_EXTENSION "RebindableSyntax", "UNSUPPORTED_EXTENSION")
+  , (UNSUPPORTED_RULES "14:1", "UNSUPPORTED_RULES")
+  , (UNSUPPORTED_RECORD_WILDCARD "14:1", "UNSUPPORTED_RECORD_WILDCARD")
   ]
 
 -- | For every constructor: values holding a newline, terminal escapes and
@@ -1269,13 +1336,16 @@ testErrorFieldsEscaped = forM_ errorSamples $ \(e, code) -> do
 testErrorMessagesSanitized :: IO ()
 testErrorMessagesSanitized = do
   assertEq "UNRESOLVABLE_PRIMARY_KEY message"
-    (  "sql-schema: UNRESOLVABLE_PRIMARY_KEY: primaryKey for 'FooT' is not in a recognised shape.\n"
-    <> "  Accepted forms:\n"
+    (  "sql-schema: UNRESOLVABLE_PRIMARY_KEY: primaryKey for 'FooT' is missing or not in a shape the plugin reads.\n"
+    <> "  It reads the primaryKey of the Table instance of 'FooT' in this module, written once as one equation, with no guards or where bindings, in one of these forms:\n"
     <> "    primaryKey x = Con (f1 x) (f2 x) …      (function equation, any arity)\n"
     <> "    primaryKey   = \\x -> Con (f1 x) …       (explicit lambda)\n"
     <> "    primaryKey   = Con . field               (single-column composition)\n"
+    <> "    primaryKey   = Con . (.field)            (composition with a record-dot section)\n"
+    <> "    primaryKey x = Con x.f1 x.f2             (record-dot fields, with or without OverloadedRecordDot)\n"
     <> "    primaryKey   = Con <$> f1 <*> f2 <*> …   (applicative composite)\n"
-    <> "    primaryKey _ = ConNullary                (no-column PK)" )
+    <> "    primaryKey _ = ConNullary                (no-column key)\n"
+    <> "  A guessed key could mark the wrong columns as the key; refusing to extract instead." )
     (generateErrorMessage "d" (UNRESOLVABLE_PRIMARY_KEY "FooT"))
   let atCap = generateErrorMessage "d" (UNRESOLVABLE_PRIMARY_KEY (replicate 500 'b'))
   unless (replicate 500 'b' `isInfixOf` atCap && not ("[truncated]" `isInfixOf` atCap)) $
@@ -1342,6 +1412,1135 @@ instance Constructor c => Constructors (C1 c f) where
   constructors _ = [conName (M1 Proxy :: M1 C c Proxy ())]
   constructorOf = conName
 
+-- | Standalone deriving marks a table as an inline deriving clause does (P01).
+testStandaloneDerivingBeamable :: IO ()
+testStandaloneDerivingBeamable = mapM_ check
+  [ ("StandaloneAnyclass", "deriving anyclass instance Beamable FooT")
+  , ("StandaloneDefault", "deriving instance Beamable FooT") ]
+  where
+    check (name, derivation) = do
+      cols <- columnNames name =<< planFix defaultCliOptions name derivingExts
+        [ "data FooT f = Foo { fooId :: Columnar f Int, fooName :: Columnar f (Maybe Text) }"
+        , "  deriving (Generic)"
+        , derivation
+        , "instance Table FooT where"
+        , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+        , "  primaryKey = FooId . fooId"
+        , "instance ModelMeta FooT where"
+        , "  modelTableName = \"foo\""
+        , "  modelFieldModification = fooTMod"
+        , "fooTMod = tableModification { fooName = fieldNamed \"the_name\" }"
+        ]
+      assertEq name [("fooId", "id"), ("fooName", "the_name")] cols
+
+-- | P02.
+testPositionalTableFails :: IO ()
+testPositionalTableFails = do
+  r <- planFix defaultCliOptions "Positional" []
+    [ "data FooT f = Foo (Columnar f Int) (Columnar f (Maybe Text))"
+    , "  deriving (Generic, Beamable)"
+    , "instance Table FooT where"
+    , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+    , "  primaryKey (Foo i _) = FooId i"
+    , "instance ModelMeta FooT where"
+    , "  modelTableName = \"foo\""
+    ]
+  assertEq "positional" (Left [UNEXTRACTED_TABLE "FooT" notARecord]) r
+
+-- | P03: the extractor reads only Haskell 98 record syntax.
+testGadtTableFails :: IO ()
+testGadtTableFails = do
+  r <- planFix defaultCliOptions "Gadt" ["GADTs"]
+    [ "data FooT f where"
+    , "  Foo :: { fooId :: Columnar f Int, fooName :: Columnar f (Maybe Text) } -> FooT f"
+    , "  deriving (Generic, Beamable)"
+    , "instance Table FooT where"
+    , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+    , "  primaryKey = FooId . fooId"
+    , "instance ModelMeta FooT where"
+    , "  modelTableName = \"foo\""
+    ]
+  assertEq "GADT syntax" (Left [UNEXTRACTED_TABLE "FooT" notARecord]) r
+
+-- | A Beamable type with no instances in the module still counts: the plugin
+-- cannot tell a mixin from a table whose instances are elsewhere.
+testPositionalMixinFails :: IO ()
+testPositionalMixinFails = do
+  r <- planFix defaultCliOptions "PositionalMixin" [] ["data MixT f = Mix (C f Int) deriving Beamable"]
+  assertEq "positional mixin" (Left [UNEXTRACTED_TABLE "MixT" notARecord]) r
+
+-- | An instance, written or derived, for a type declared elsewhere: each class
+-- on its own marks the type.
+testOrphanInstanceFails :: IO ()
+testOrphanInstanceFails = mapM_ check
+  [ ("OrphanTable",
+      [ "instance Table OtherT where"
+      , "  data PrimaryKey OtherT f = OtherId (C f Int) deriving (Generic, Beamable)"
+      , "  primaryKey = OtherId . otherId" ])
+  , ("OrphanDerivedTable", ["deriving anyclass instance Table OtherT"])
+  , ("OrphanMeta", ["instance ModelMeta OtherT where", "  modelTableName = \"other\""])
+  , ("OrphanBeamableInstance", ["instance Beamable OtherT"]) ]
+  where
+    check (name, body) =
+      assertEq name (Left [UNEXTRACTED_TABLE "OtherT" noDeclaration])
+        =<< planFix defaultCliOptions name derivingExts body
+
+-- | P16 (Beamable in another module) and P17 (Beamable from a splice the
+-- parser cannot see).
+testNoBeamableMarkingFails :: IO ()
+testNoBeamableMarkingFails = mapM_ check
+  [ ("OrphanBeamable", [], [])
+  , ("SpliceBeamable", ["TemplateHaskell"], ["$(deriveBeamable ''FooT)"]) ]
+  where
+    check (name, exts, extra) =
+      assertEq name (Left [UNEXTRACTED_TABLE "FooT" noBeamable]) =<< planFix defaultCliOptions name exts
+        ([ "data FooT f = Foo { fooId :: Columnar f Int } deriving (Generic)" ]
+         <> extra <>
+         [ "instance Table FooT where"
+         , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+         , "  primaryKey = FooId . fooId"
+         , "instance ModelMeta FooT where"
+         , "  modelTableName = \"foo\"" ])
+
+-- | A Database record is not read as a table, so a Beamable marking on it is refused.
+testDatabaseRecordMarkedFails :: IO ()
+testDatabaseRecordMarkedFails = do
+  r <- planFix defaultCliOptions "DatabaseBeamable" []
+    ["data AppDb f = AppDb { foos :: f (TableEntity FooT) } deriving (Generic, Database be, Beamable)"]
+  assertEq "Database record" (Left [UNEXTRACTED_TABLE "AppDb" databaseRecord]) r
+
+-- | A key's Beamable instance, derived or written, does not make it a table.
+testPrimaryKeyBeamableNotATable :: IO ()
+testPrimaryKeyBeamableNotATable = mapM_ check
+  [ ("KeyDerived", "deriving anyclass instance Beamable (PrimaryKey FooT)")
+  , ("KeyInstance", "instance Beamable (PrimaryKey FooT)")
+  , ("KeyQualified", "instance B.Beamable (B.PrimaryKey FooT)") ]
+  where
+    check (name, keyBeamable) = do
+      tables <- tablesOf name =<< planFix defaultCliOptions name derivingExts
+        [ "data FooT f = Foo { fooId :: C f Int } deriving (Generic, Beamable)"
+        , "instance Table FooT where"
+        , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic)"
+        , "  primaryKey = FooId . fooId"
+        , keyBeamable
+        , "instance ModelMeta FooT where"
+        , "  modelTableName = \"foo\""
+        ]
+      assertEq name ["FooT"] (map codeName tables)
+
+-- | P12: a ModelMeta instance with a context is read; its modifier is not skipped.
+testContextHeadsVisible :: IO ()
+testContextHeadsVisible = do
+  overrides <- expectOk (parseCliOptions ["{\"tableNameOverrides\":{\"FooT\":\"foo\"}}"])
+  let fixture name cli = planFix cli name []
+        [ "data FooT f = Foo { fooId :: Columnar f Int, fooName :: Columnar f Text } deriving (Generic, Beamable)"
+        , "instance Table FooT where"
+        , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+        , "  primaryKey = FooId . fooId"
+        , "instance Show Int => ModelMeta FooT where"
+        , "  modelTableName = SomeConst.fooName"
+        , "  modelSchemaName = Just Config.getAppDbSchema"
+        , "  modelFieldModification = fooTMod"
+        , "fooTMod = tableModification { fooName = fieldNamed \"the_name\" }"
+        ]
+  assertEq "context head" (Left [UNRESOLVABLE_TABLE_NAME "FooT"]) =<< fixture "ContextHead" defaultCliOptions
+  tables <- tablesOf "context head, override" =<< fixture "ContextHeadOverride" overrides
+  assertEq "context head, override"
+    [ TableSchema "FooT" "Fix.ContextHeadOverride" "foo" Nothing
+        (Just (SchemaConfig "Config.getAppDbSchema")) (PrimaryKeyInfo "FooId" ["fooId"])
+        [ ColumnInfo "fooId" "id" "Int" False True
+        , ColumnInfo "fooName" "the_name" "Text" False False ] ]
+    tables
+
+-- | GHC accepts a kind signature around the whole head, and around its argument.
+testKindSignatureHeadVisible :: IO ()
+testKindSignatureHeadVisible = mapM_ check
+  [ ("KindSignatureHead", "instance Table FooT where", "instance (ModelMeta FooT :: Constraint) where")
+  , ("KindSignatureArgument", "instance Table (FooT :: (Type -> Type) -> Type) where", "instance ModelMeta (FooT :: (Type -> Type) -> Type) where") ]
+  where
+    check (name, tableHead, metaHead) = do
+      cols <- columnNames name =<< planFix defaultCliOptions name ["KindSignatures"]
+        [ "data FooT f = Foo { fooId :: C f Int, fooName :: C f Text } deriving (Generic, Beamable)"
+        , tableHead
+        , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+        , "  primaryKey = FooId . fooId"
+        , metaHead
+        , "  modelTableName = \"foo\""
+        , "  modelFieldModification = fooTMod"
+        , "fooTMod = tableModification { fooName = fieldNamed \"the_name\" }"
+        ]
+      assertEq name [("fooId", "id"), ("fooName", "the_name")] cols
+
+testQualifiedClassHeads :: IO ()
+testQualifiedClassHeads = do
+  tables <- tablesOf "qualified classes" =<< planFix defaultCliOptions "QualifiedClasses" []
+    [ "data FooT f = Foo { fooId :: C f Int } deriving (Generic)"
+    , "instance B.Beamable FooT"
+    , "instance B.Table FooT where"
+    , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, B.Beamable)"
+    , "  primaryKey = FooId . fooId"
+    , "instance Se.ModelMeta FooT where"
+    , "  modelTableName = \"foo\""
+    ]
+  assertEq "qualified classes" ["FooT"] (map codeName tables)
+
+-- | P13: tableNameOverrides does not stand in for a missing ModelMeta.
+testMissingModelMeta :: IO ()
+testMissingModelMeta = do
+  overrides <- expectOk (parseCliOptions ["{\"tableNameOverrides\":{\"FooT\":\"foo\"}}"])
+  let fixture name cli = planFix cli name []
+        [ "data FooT f = Foo { fooId :: Columnar f Int, fooName :: Columnar f Text } deriving (Generic, Beamable)"
+        , "instance Table FooT where"
+        , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+        , "  primaryKey = FooId . fooId"
+        ]
+  assertEq "no ModelMeta" (Left [MISSING_MODEL_META "FooT"]) =<< fixture "NoMeta" defaultCliOptions
+  assertEq "no ModelMeta, override" (Left [MISSING_MODEL_META "FooT"]) =<< fixture "NoMetaOverride" overrides
+
+-- | A derived ModelMeta instance, standalone or inline, is not missing, but
+-- nothing in it can be read: deriving via could take its modifier from another type.
+testDerivedMetaUnreadable :: IO ()
+testDerivedMetaUnreadable = do
+  overrides <- expectOk (parseCliOptions ["{\"tableNameOverrides\":{\"FooT\":\"foo\"}}"])
+  let fixture name derivings standalone cli = planFix cli name derivingExts
+        ([ "data FooT f = Foo { fooId :: Columnar f Int, fooName :: Columnar f Text } " <> derivings
+         , "instance Table FooT where"
+         , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+         , "  primaryKey = FooId . fooId"
+         ] <> standalone)
+      standaloneMeta name = fixture name "deriving (Generic, Beamable)" ["deriving anyclass instance ModelMeta FooT"]
+      inlineMeta name = fixture name "deriving (Generic, Beamable) deriving anyclass (ModelMeta)" []
+  assertEq "derived ModelMeta" (Left [UNRESOLVABLE_TABLE_NAME "FooT"]) =<< standaloneMeta "DerivedMeta" defaultCliOptions
+  assertEq "derived ModelMeta, override"
+    (Left [UNRECOGNIZED_MODIFIER_SHAPE "FooT" "modelFieldModification"])
+    =<< standaloneMeta "DerivedMetaOverride" overrides
+  assertEq "inline-derived ModelMeta" (Left [UNRESOLVABLE_TABLE_NAME "FooT"])
+    =<< inlineMeta "InlineDerivedMeta" defaultCliOptions
+  assertEq "inline-derived ModelMeta, override"
+    (Left [UNRECOGNIZED_MODIFIER_SHAPE "FooT" "modelFieldModification"])
+    =<< inlineMeta "InlineDerivedMetaOverride" overrides
+
+-- | Heads naming no type of this module: a type variable, and a qualified type
+-- whose instance a same-named local type would otherwise take.
+testUnreadableInstanceHead :: IO ()
+testUnreadableInstanceHead = do
+  assertEq "type variable" (Left [UNREADABLE_INSTANCE_HEAD "ModelMeta" "t"])
+    =<< planFix defaultCliOptions "TyVarHead" [] ["instance Table t => ModelMeta t"]
+  assertEq "qualified type" (Left [UNREADABLE_INSTANCE_HEAD "ModelMeta" "M.FooT"])
+    =<< planFix defaultCliOptions "QualifiedHead" []
+          (controlTable <> ["instance ModelMeta M.FooT where", "  modelTableName = \"other\""])
+
+testSchemaNameAccepted :: IO ()
+testSchemaNameAccepted = mapM_ check
+  [ ("SchemaNothing", "Nothing", Nothing)
+  , ("SchemaNothingSig", "(P.Nothing :: Maybe Text)", Nothing)
+  , ("SchemaLiteral", "Just \"public\"", public)
+  , ("SchemaLiteralParens", "Just (\"public\")", public)
+  , ("SchemaParens", "(Just \"public\")", public)
+  , ("SchemaSig", "Just \"public\" :: Maybe Text", public)
+  , ("SchemaInnerSig", "Just (\"public\" :: Text)", public)
+  , ("SchemaQualifiedName", "Just Config.getAppDbSchema", Just (SchemaConfig "Config.getAppDbSchema"))
+  , ("SchemaQualifiedJust", "P.Just x", Just (SchemaConfig "x")) ]
+  where
+    public = Just (SchemaLiteral "public")
+    check (name, rhs, expected) = do
+      tables <- tablesOf name =<< modifierFix defaultCliOptions name ["modelSchemaName = " <> rhs] []
+      assertEq name [expected] (map modelSchemaName tables)
+
+-- | P08, P09 and the other modelSchemaName bindings the plugin cannot read.
+testSchemaNameRejected :: IO ()
+testSchemaNameRejected = do
+  mapM_ check
+    [ ("SchemaDollar", ["modelSchemaName = Just $ \"x\""], "Just $ \"x\"")
+    , ("SchemaPure", ["modelSchemaName = pure \"x\""], "pure \"x\"")
+    , ("SchemaApplied", ["modelSchemaName = Just (f x)"], "Just (f x)")
+    , ("SchemaConstructor", ["modelSchemaName = Just Public"], "Just Public")
+    , ("SchemaBareName", ["modelSchemaName = mySchema"], "mySchema")
+    , ("SchemaGuarded", ["modelSchemaName", "  | True = Just \"x\""], "modelSchemaName | True = Just \"x\"")
+    , ("SchemaWhere", ["modelSchemaName = Just s where s = \"x\""],
+        "modelSchemaName\n  = Just s\n  where\n      s = \"x\"")
+    , ("SchemaArgument", ["modelSchemaName _ = Just \"public\""], "modelSchemaName _ = Just \"public\"")
+    , ("SchemaPatternBinding", ["(modelSchemaName) = Just \"public\""], "(modelSchemaName) = Just \"public\"")
+    , ("SchemaTuplePattern", ["(modelSchemaName, other) = (Nothing, ())"], "(modelSchemaName, other) = (Nothing, ())")
+    , ("SchemaDuplicate", ["modelSchemaName = Nothing", "modelSchemaName = Just \"public\""],
+        "modelSchemaName = Nothing\nmodelSchemaName = Just \"public\"")
+    , ("SchemaDuplicateBadFirst", ["modelSchemaName = pure \"x\"", "modelSchemaName = Nothing"],
+        "modelSchemaName = pure \"x\"\nmodelSchemaName = Nothing")
+    , ("SchemaPatternAndEquation", ["(modelSchemaName) = Nothing", "modelSchemaName = Nothing"],
+        "(modelSchemaName) = Nothing\nmodelSchemaName = Nothing") ]
+  assertEq "P08" (Left [field "modelTableType" "Just $ TRACKER", field "modelSchemaName" "Just $ Config.getAppDbSchema"])
+    =<< modifierFix defaultCliOptions "SchemaP08"
+          ["modelTableType = Just $ TRACKER", "modelSchemaName = Just $ Config.getAppDbSchema"] []
+  assertEq "P09" (Left [field "modelTableType" "pure TRACKER", field "modelSchemaName" "pure \"public\""])
+    =<< modifierFix defaultCliOptions "SchemaP09" ["modelTableType = pure TRACKER", "modelSchemaName = pure \"public\""] []
+  let both = "(modelTableType, modelSchemaName) = (Nothing, Nothing)"
+  assertEq "one pattern binds both" (Left [field "modelTableType" both, field "modelSchemaName" both])
+    =<< modifierFix defaultCliOptions "SchemaBothPattern" [both] []
+  where
+    field = UNRESOLVABLE_MODEL_META_FIELD "FooT"
+    check (name, meta, rhs) =
+      assertEq name (Left [field "modelSchemaName" rhs]) =<< modifierFix defaultCliOptions name meta []
+
+testTableTypeAccepted :: IO ()
+testTableTypeAccepted = mapM_ check
+  [ ("TypeNothing", "Nothing", Nothing)
+  , ("TypeNothingSig", "Nothing :: Maybe TableType", Nothing)
+  , ("TypeTracker", "Just TRACKER", tracker)
+  , ("TypeQualified", "Just Se.CONFIG", Just "CONFIG")
+  , ("TypeQualifiedJust", "P.Just DOMAIN", Just "DOMAIN")
+  , ("TypeCommonConfig", "Just COMMON_CONFIG", Just "COMMON_CONFIG")
+  , ("TypeCommonTracker", "Just COMMON_TRACKER", Just "COMMON_TRACKER")
+  , ("TypeParens", "(Just (TRACKER))", tracker)
+  , ("TypeSig", "Just TRACKER :: Maybe TableType", tracker)
+  , ("TypeInnerSig", "Just (Se.TRACKER :: Se.TableType)", tracker) ]
+  where
+    tracker = Just "TRACKER"
+    check (name, rhs, expected) = do
+      tables <- tablesOf name =<< modifierFix defaultCliOptions name ["modelTableType = " <> rhs] []
+      assertEq name [expected] (map modelTableType tables)
+
+testTableTypeRejected :: IO ()
+testTableTypeRejected = mapM_ check
+  [ ("TypeDollar", ["modelTableType = Just $ TRACKER"], "Just $ TRACKER")
+  , ("TypePure", ["modelTableType = pure TRACKER"], "pure TRACKER")
+  , ("TypeVariable", ["modelTableType = Just tableTypeVar"], "Just tableTypeVar")
+  , ("TypeString", ["modelTableType = Just \"TRACKER\""], "Just \"TRACKER\"")
+  , ("TypeBareName", ["modelTableType = myType"], "myType")
+  , ("TypePatternSynonym", ["modelTableType = Just Tracker"], "Just Tracker")
+  , ("TypeDollarSig", ["modelTableType = Just $ TRACKER :: Maybe TableType"], "Just $ TRACKER :: Maybe TableType")
+  , ("TypeGuarded", ["modelTableType", "  | True = Just TRACKER", "  | otherwise = Nothing"],
+      "modelTableType\n  | True = Just TRACKER\n  | otherwise = Nothing")
+  , ("TypeEquations", ["modelTableType True = Just TRACKER", "modelTableType False = Nothing"],
+      "modelTableType True = Just TRACKER\nmodelTableType False = Nothing")
+  , ("TypePatternBinding", ["(modelTableType) = Just $ TRACKER"], "(modelTableType) = Just $ TRACKER")
+  , ("TypeTuplePattern", ["(modelTableType, other) = (Nothing, ())"], "(modelTableType, other) = (Nothing, ())")
+  , ("TypeDuplicate", ["modelTableType = Nothing", "modelTableType = Just TRACKER"],
+      "modelTableType = Nothing\nmodelTableType = Just TRACKER")
+  , ("TypeDuplicateBadFirst", ["modelTableType = pure TRACKER", "modelTableType = Nothing"],
+      "modelTableType = pure TRACKER\nmodelTableType = Nothing")
+  , ("TypePatternAndEquation", ["(modelTableType) = Nothing", "modelTableType = Nothing"],
+      "(modelTableType) = Nothing\nmodelTableType = Nothing") ]
+  where
+    check (name, meta, rhs) =
+      assertEq name (Left [UNRESOLVABLE_MODEL_META_FIELD "FooT" "modelTableType" rhs])
+        =<< modifierFix defaultCliOptions name meta []
+
+-- | Left out, a field takes the class default, Nothing.
+testAbsentMetaFieldsAreNothing :: IO ()
+testAbsentMetaFieldsAreNothing = do
+  tables <- tablesOf "absent fields" =<< modifierFix defaultCliOptions "AbsentMetaFields" [] []
+  assertEq "absent fields" [(Nothing, Nothing)] [(modelTableType t, modelSchemaName t) | t <- tables]
+
+-- | Deriving via can take a derived instance's fields from another type, so
+-- they are refused even when both opt-outs let the instance through; the error
+-- shows the derivation with its strategy.
+testDerivedMetaFieldsUnreadable :: IO ()
+testDerivedMetaFieldsUnreadable = do
+  cli <- expectOk (parseCliOptions
+    ["{\"tableNameOverrides\":{\"FooT\":\"foo\"},\"allowNonStandardModifier\":true}"])
+  mapM_ (standalone cli)
+    [ ("DerivedFieldsPlain", "deriving instance ModelMeta FooT")
+    , ("DerivedFieldsAnyclass", "deriving anyclass instance ModelMeta FooT")
+    , ("DerivedFieldsVia", "deriving via BarT instance ModelMeta FooT") ]
+  mapM_ (inline cli)
+    [ ("DerivedFieldsInlineAnyclass", "deriving anyclass (ModelMeta)")
+    , ("DerivedFieldsInlineVia", "deriving (ModelMeta) via BarT") ]
+  where
+    standalone cli (name, derivation) = derived cli name "" [derivation] derivation
+    inline cli (name, clause) = derived cli name (" " <> clause) [] clause
+    derived cli name clause standaloneLines shown =
+      assertEq name (Left [field "modelTableType", field "modelSchemaName"])
+        =<< planFix cli name (derivingExts <> ["DerivingVia"])
+              ([ "data FooT f = Foo { fooId :: Columnar f Int } deriving (Generic, Beamable)" <> clause
+               , "instance Table FooT where"
+               , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+               , "  primaryKey = FooId . fooId" ] <> standaloneLines)
+      where field f = UNRESOLVABLE_MODEL_META_FIELD "FooT" f shown
+
+-- | Each field's message lists its own shapes, the table type's all five constructors.
+testMetaFieldMessageListsOwnShapes :: IO ()
+testMetaFieldMessageListsOwnShapes = do
+  let tableType  = message "modelTableType"
+      schemaName = message "modelSchemaName"
+  mapM_ (\n -> unless (n `elem` identifiers tableType) $
+          failWith ("modelTableType message omits " <> n <> ": " <> show tableType))
+    tableTypeNames
+  mapM_ (\n -> unless (n `notElem` identifiers schemaName) $
+          failWith ("modelSchemaName message lists " <> n <> ": " <> show schemaName))
+    tableTypeNames
+  unless ("Just \"literal\"" `isInfixOf` schemaName && not ("Just \"literal\"" `isInfixOf` tableType)) $
+    failWith ("the schema name's own shape is misplaced: " <> show (tableType, schemaName))
+  mapM_ (\m -> unless ("written once as a plain equation" `isInfixOf` m) $
+          failWith ("message does not say the binding is written once: " <> show m))
+    [tableType, schemaName]
+  where
+    message field = generateErrorMessage "d" (UNRESOLVABLE_MODEL_META_FIELD "FooT" field "pure x")
+    -- Whole words: CONFIG is a substring of COMMON_CONFIG.
+    identifiers = words . map (\c -> if isAlphaNum c || c == '_' then c else ' ')
+    tableTypeNames = ["DOMAIN", "CONFIG", "COMMON_CONFIG", "TRACKER", "COMMON_TRACKER"]
+
+-- | A derived instance is fixed by writing it, a written binding by changing its shape.
+testMetaFieldFixFitsInstance :: IO ()
+testMetaFieldFixFitsInstance = do
+  cli <- expectOk (parseCliOptions
+    ["{\"tableNameOverrides\":{\"FooT\":\"foo\"},\"allowNonStandardModifier\":true}"])
+  derived <- messages =<< planFix cli "FixDerived" derivingExts
+    [ "data FooT f = Foo { fooId :: Columnar f Int } deriving (Generic, Beamable)"
+    , "instance Table FooT where"
+    , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+    , "  primaryKey = FooId . fooId"
+    , "deriving anyclass instance ModelMeta FooT" ]
+  written <- messages =<< modifierFix defaultCliOptions "FixWritten"
+    ["modelTableType = pure TRACKER", "modelSchemaName = pure \"x\""] []
+  assertEq "derived messages" 2 (length derived)
+  assertEq "written messages" 2 (length written)
+  mapM_ (mentions "Write the ModelMeta instance of 'FooT' instead of deriving it.") derived
+  mapM_ (avoids "Define") derived
+  mapM_ (avoids "instead of deriving") written
+  mapM_ (uncurry mentions) (zip ["Define modelTableType in one of those shapes", "Define modelSchemaName in one of those shapes"] written)
+  where
+    messages = \case
+      Left errs -> pure (map (generateErrorMessage "d") errs)
+      Right action -> failWith ("expected errors, got " <> show action)
+    mentions needle msg = unless (needle `isInfixOf` msg) $ failWith ("message lacks " <> show needle <> ": " <> show msg)
+    avoids needle msg = when (needle `isInfixOf` msg) $ failWith ("message has " <> show needle <> ": " <> show msg)
+
+-- | nixpkgs builds libraries with -haddock, which wraps a documented deriving
+-- type in 'HsDocTy': each is read as without the comment.
+testDocumentedDerivingsRead :: IO ()
+testDocumentedDerivingsRead = do
+  mapM_ documentedTable
+    [ ("DocBeamable", ["  deriving ( Generic", "           , Beamable -- ^ the Beam class", "           )"])
+    , ("DocBeforeBeamable", ["  deriving -- | the Beam class", "    Beamable"]) ]
+  assertEq "documented positional mixin" (Left [UNEXTRACTED_TABLE "MixT" notARecord])
+    =<< planFixHaddock "DocMixin"
+          ["data MixT f = Mix (C f Int)", "  deriving (Generic, Beamable -- ^ the Beam class", "    )"]
+  r <- planFixHaddock "DocDatabase" (controlTable <>
+    [ "data AppDb f = AppDb { foos :: f (TableEntity FooT) }"
+    , "  deriving (Generic, Database be -- ^ the settings record"
+    , "    )"
+    , "appDb = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }" ])
+  case r of
+    Right (Stage (Just fragment)) ->
+      assertEq "documented Database" [("foos", "FooT", "foo_v2")]
+        [(dbField o, dbTableType o, sqlName o) | o <- fragmentDbEntityOverrides fragment]
+    other -> failWith ("documented Database: expected a fragment, got " <> show other)
+  where
+    documentedTable (name, derivingLines) = do
+      cols <- columnNames name =<< planFixHaddock name
+        ([ "data FooT f = Foo { fooId :: Columnar f Int, fooName :: Columnar f Text }" ]
+         <> derivingLines <>
+         [ "instance Table FooT where"
+         , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+         , "  primaryKey = FooId . fooId"
+         , "instance ModelMeta FooT where"
+         , "  modelTableName = \"foo\"" ])
+      assertEq name [("fooId", "id"), ("fooName", "name")] cols
+
+-- | A type named PrimaryKey is a table like any other; only a key,
+-- @PrimaryKey t@, is not.
+testTableNamedPrimaryKey :: IO ()
+testTableNamedPrimaryKey = mapM_ check
+  [ ("PkNameStandalone", "deriving (Generic)", ["instance B.Beamable PrimaryKey"])
+  , ("PkNameInline", "deriving (Generic, B.Beamable)", []) ]
+  where
+    check (name, derivings, beamable) = do
+      tables <- tablesOf name =<< planFix defaultCliOptions name []
+        ([ "data PrimaryKey f = PK { pkId :: B.C f Int, pkName :: B.C f Int } " <> derivings ]
+         <> beamable <>
+         [ "instance B.Table PrimaryKey where"
+         , "  data PrimaryKey PrimaryKey f = PKId (B.C f Int) deriving (Generic, B.Beamable)"
+         , "  primaryKey = PKId . pkId"
+         , "instance Se.ModelMeta PrimaryKey where"
+         , "  modelTableName = \"pk\""
+         , "  modelFieldModification = B.tableModification" ])
+      assertEq name [("PrimaryKey", "pk")] [(codeName t, modelTableName t) | t <- tables]
+
+-- | A table's key is not a table: its Table or ModelMeta instance is refused.
+testKeyTypeInstancesFail :: IO ()
+testKeyTypeInstancesFail =
+  assertEq "key type as a table"
+    (Left [ UNREADABLE_INSTANCE_HEAD "Table" "(PrimaryKey FooT)"
+          , UNREADABLE_INSTANCE_HEAD "ModelMeta" "(PrimaryKey FooT)" ])
+    =<< planFix defaultCliOptions "KeyAsTable" [] (controlTable <>
+          [ "instance Table (PrimaryKey FooT) where"
+          , "  data PrimaryKey (PrimaryKey FooT) f = KeyKey (C f Int) deriving (Generic, Beamable)"
+          , "  primaryKey (FooId i) = KeyKey i"
+          , "instance ModelMeta (PrimaryKey FooT) where"
+          , "  modelTableName = \"foo_keys\"" ])
+
+-- | Instances keyed alike, by class and type name: same-named classes of two
+-- modules, and one parameterised type at two arguments.  A class applied to
+-- two types is not taken for the one-parameter class.
+testDuplicateInstancesFail :: IO ()
+testDuplicateInstancesFail = do
+  assertEq "Collide"
+    (Left [UNREADABLE_INSTANCE_HEAD "Table" "Int FooT", DUPLICATE_INSTANCE "ModelMeta" "FooT"])
+    =<< planFix defaultCliOptions "Collide" [] (controlTable <>
+          [ "instance Other.ModelMeta FooT where"
+          , "  modelTableName = \"evil\""
+          , "instance Other.Table Int FooT where"
+          , "  primaryKey = FooId . fooAlt" ])
+  assertEq "Wrap2"
+    (Left [DUPLICATE_INSTANCE "ModelMeta" "Wrap", DUPLICATE_INSTANCE "Table" "Wrap"])
+    =<< planFix defaultCliOptions "Wrap2" ["KindSignatures"]
+          [ "data FooTag (f :: Type -> Type)"
+          , "data BarTag (f :: Type -> Type)"
+          , "data Wrap (t :: (Type -> Type) -> Type) f = Wrap { wId :: C f Int, wNote :: C f Text }"
+          , "  deriving (Generic, Beamable)"
+          , "instance Table (Wrap FooTag) where"
+          , "  data PrimaryKey (Wrap FooTag) f = WFooId (C f Int) deriving (Generic, Beamable)"
+          , "  primaryKey = WFooId . wId"
+          , "instance Table (Wrap BarTag) where"
+          , "  data PrimaryKey (Wrap BarTag) f = WBarId (C f Int) deriving (Generic, Beamable)"
+          , "  primaryKey = WBarId . wId"
+          , "instance Se.ModelMeta (Wrap FooTag) where"
+          , "  modelTableName = \"wrap_foo\""
+          , "instance Se.ModelMeta (Wrap BarTag) where"
+          , "  modelTableName = \"wrap_bar\"" ]
+
+-- | DataKinds' promoted constructor 'FooT is not the type FooT.
+testPromotedHeadUnreadable :: IO ()
+testPromotedHeadUnreadable =
+  assertEq "promoted head" (Left [UNREADABLE_INSTANCE_HEAD "ModelMeta" "'FooT"])
+    =<< planFix defaultCliOptions "PromotedHead" ["DataKinds"]
+          (controlTable <> ["instance ModelMeta 'FooT where", "  modelTableName = \"evil\""])
+
+-- | Each UNEXTRACTED_TABLE reason comes with its own fix, and any other
+-- reason with a general one.
+testUnextractedFixFitsReason :: IO ()
+testUnextractedFixFitsReason = mapM_ check
+  [ (noDeclaration, "the module that declares")
+  , (notARecord, "Columnar f T")
+  , (noBeamable, "Derive Beamable")
+  , (databaseRecord, "A database record is not a table")
+  , (genericNotStock, "with the stock strategy")
+  , ("some other reason", "all written out") ]
+  where
+    fixes = ["the module that declares", "Columnar f T", "Derive Beamable", "A database record is not a table", "with the stock strategy", "all written out"]
+    check (reason, fix) = do
+      let msg = generateErrorMessage "d" (UNEXTRACTED_TABLE "FooT" reason)
+      unless (fix `isInfixOf` msg && not (any (`isInfixOf` msg) (filter (/= fix) fixes))) $
+        failWith ("UNEXTRACTED_TABLE " <> show reason <> ": message does not give its own fix: " <> show msg)
+
+-- | P10: a punned field's value is a variable, not a literal.
+testPunnedModifierFieldFails :: IO ()
+testPunnedModifierFieldFails = do
+  assertEq "punned field" (Left [UNRESOLVABLE_COLUMN_NAME "FooT" "fooName"])
+    =<< planFix defaultCliOptions "PunnedField" ["NamedFieldPuns"]
+          (modifierTable ["modelFieldModification = fooTMod"] ["fooTMod = tableModification { fooName }"])
+  assertEq "punned field beside a literal" (Left [UNRESOLVABLE_COLUMN_NAME "FooT" "fooName"])
+    =<< planFix defaultCliOptions "PunnedFieldInline" ["NamedFieldPuns"]
+          (modifierTable ["modelFieldModification = tableModification { fooId = fieldNamed \"id\", fooName }"] [])
+
+-- | P11: under OverloadedRecordUpdate a record update calls the setField in
+-- scope, so neither a modifier nor a dbModification written so is read.
+testOverloadedRecordUpdateModifierFails :: IO ()
+testOverloadedRecordUpdateModifierFails = do
+  let exts     = ["OverloadedRecordUpdate", "RebindableSyntax"]
+      modifier = ["fooTMod = tableModification { fooName = fieldNamed \"the_name\" }"]
+      settings =
+        [ "data Db f = Db { foos :: f (TableEntity FooT) } deriving (Generic, Database)"
+        , "db = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }" ]
+  assertEq "P11" (Left [UNRECOGNIZED_MODIFIER_SHAPE "FooT" "fooTMod", UNCAPTURED_SET_ENTITY_NAME "11:69" notPlainUpdate])
+    =<< planFix defaultCliOptions "OverloadedUpdate" exts
+          (modifierTable ["modelFieldModification = fooTMod"] (modifier <> settings))
+  assertEq "inline" (Left [UNRECOGNIZED_MODIFIER_SHAPE "FooT" "modelFieldModification"])
+    =<< planFix defaultCliOptions "OverloadedUpdateInline" exts
+          (modifierTable ["modelFieldModification = tableModification { fooName = fieldNamed \"the_name\" }"] [])
+  cols <- columnNames "allowNonStandardModifier"
+    =<< planFix defaultCliOptions { allowNonStandardModifier = True } "OverloadedUpdateLenient" exts
+          (modifierTable ["modelFieldModification = fooTMod"] modifier)
+  assertEq "allowNonStandardModifier" [("fooId", "id"), ("fooName", "name")] cols
+  assertEq "settings: no rename captured" (Left [UNCAPTURED_SET_ENTITY_NAME "3:69" notPlainUpdate])
+    =<< planFix defaultCliOptions "OverloadedUpdateSettings" exts settings
+  where
+    notPlainUpdate = "its dbModification field is not a plain 'field = value' update (record-dot syntax or a pun), which the plugin does not read"
+
+-- | P14: every field the key applies is a column the plugin extracts; a
+-- qualified name is another module's, not the table's field.
+testPrimaryKeyFieldMustExist :: IO ()
+testPrimaryKeyFieldMustExist = do
+  let key0 = "data PrimaryKey FooT f = FooNullary deriving (Generic, Beamable)"
+      key1 = "data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+      key2 = "data PrimaryKey FooT f = FooKey (C f Int) (C f Text) deriving (Generic, Beamable)"
+      unknown fields = Left [UNKNOWN_PRIMARY_KEY_FIELD "FooT" f | f <- fields]
+      shape name exts pkLines expected = assertEq name expected =<< primaryKeyOf name exts pkLines
+  shape "UnknownCompose" [] [key1, "primaryKey = FooId . someHelper"] (unknown ["someHelper"])
+  shape "UnknownLambda" [] [key1, "primaryKey = \\x -> FooId (someHelper x)"] (unknown ["someHelper"])
+  shape "UnknownApplicative" [] [key2, "primaryKey = FooKey <$> fooId <*> someHelper"] (unknown ["someHelper"])
+  shape "UnknownEquation" [] [key2, "primaryKey x = FooKey (someHelper x) (otherHelper x)"]
+    (unknown ["someHelper", "otherHelper"])
+  shape "UnknownSection" [] [key1, "primaryKey = FooId . (.someHelper)"] (unknown ["someHelper"])
+  shape "UnknownProjection" ["OverloadedRecordDot"] [key1, "primaryKey = FooId . (.someHelper)"] (unknown ["someHelper"])
+  shape "UnknownRecordDot" ["OverloadedRecordDot"] [key1, "primaryKey x = FooId x.someHelper"] (unknown ["someHelper"])
+  shape "UnknownDotChain" [] [key2, "primaryKey x = FooKey x.fooId x.someHelper"] (unknown ["someHelper"])
+  shape "UnknownGetField" ["TypeApplications", "DataKinds"] [key1, "primaryKey x = FooId (getField @\"someHelper\" x)"]
+    (unknown ["someHelper"])
+  shape "QualifiedCompose" [] [key1, "primaryKey = FooId . M.fooId"] (unknown ["M.fooId"])
+  shape "QualifiedApplied" [] [key1, "primaryKey x = FooId (M.fooId x)"] (unknown ["M.fooId"])
+  shape "QualifiedApplicative" [] [key2, "primaryKey = FooKey <$> fooId <*> M.fooName"] (unknown ["M.fooName"])
+  shape "QualifiedDotChainLast" [] [key2, "primaryKey x = FooKey x . fooId x . M.fooName"] (unknown ["M.fooName"])
+  shape "QualifiedDotChainMiddle" [] [key2, "primaryKey x = FooKey x . M.fooId x . fooName"] (unknown ["M.fooId"])
+  shape "QualifiedSection" [] [key1, "primaryKey = FooId . (. M.fooId)"] (unknown ["M.fooId"])
+  shape "NullaryKey" [] [key0, "primaryKey _ = FooNullary"] (Right ("FooNullary", []))
+  assertEq "HelperDefinedHere" (unknown ["someHelper"])
+    =<< primaryKeyWith "HelperDefinedHere" [] [key1, "primaryKey = FooId . someHelper"] ["someHelper = fooId"]
+
+-- | A field allowUnknownColumnWrapper leaves out is no column, so it cannot be the key.
+testPrimaryKeyFieldDroppedByOptOut :: IO ()
+testPrimaryKeyFieldDroppedByOptOut =
+  assertEq "dropped key field" (Left [UNKNOWN_PRIMARY_KEY_FIELD "FooT" "fooId"])
+    =<< planFix defaultCliOptions { allowUnknownColumnWrapper = True } "KeyFieldDropped" []
+          [ "data FooT f = Foo { fooId :: Int, fooName :: C f Text } deriving (Generic, Beamable)"
+          , "instance Table FooT where"
+          , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+          , "  primaryKey = FooId . fooId"
+          , "instance ModelMeta FooT where"
+          , "  modelTableName = \"foo\"" ]
+
+-- | L6: the message lists every shape the README lists.
+testPrimaryKeyMessageListsShapes :: IO ()
+testPrimaryKeyMessageListsShapes = mapM_ listed
+  [ "primaryKey x = Con (f1 x) (f2 x)", "primaryKey   = \\x -> Con (f1 x)", "primaryKey   = Con . field"
+  , "primaryKey   = Con . (.field)", "primaryKey x = Con x.f1 x.f2", "primaryKey   = Con <$> f1 <*> f2"
+  , "primaryKey _ = ConNullary" ]
+  where
+    msg = generateErrorMessage "d" (UNRESOLVABLE_PRIMARY_KEY "FooT")
+    listed s = unless (s `isInfixOf` msg) $ failWith ("UNRESOLVABLE_PRIMARY_KEY message omits " <> show s <> ": " <> show msg)
+
+-- | A where binding on a definition the plugin reads could shadow a name read
+-- there: the definition is unreadable, and allowNonStandardModifier gives
+-- Beam's default names, not the shadowed binding's.
+testWhereBindingsUnreadable :: IO ()
+testWhereBindingsUnreadable = do
+  overrides <- expectOk (parseCliOptions ["{\"tableNameOverrides\":{\"FooT\":\"foo_override\"}}"])
+  let lenient = defaultCliOptions { allowNonStandardModifier = True }
+      refused name meta rest err = do
+        assertEq name (Left [err]) =<< modifierFix defaultCliOptions name meta rest
+        cols <- columnNames name =<< modifierFix lenient name meta rest
+        assertEq (name <> " with allowNonStandardModifier") [("fooId", "id"), ("fooName", "name")] cols
+  refused "ModifierWhere"
+    ["modelFieldModification = fooTMod", "  where fooTMod = tableModification { fooName = fieldNamed \"real_name\" }"]
+    ["fooTMod = tableModification { fooName = fieldNamed \"decoy_name\" }"]
+    (UNRECOGNIZED_MODIFIER_SHAPE "FooT" "modelFieldModification")
+  refused "ModifierWhereTableModification"
+    [ "modelFieldModification = tableModification { fooName = fieldNamed \"the_name\" }"
+    , "  where tableModification = B.tableModification { fooId = B.fieldNamed \"real_id\" }" ]
+    []
+    (UNRECOGNIZED_MODIFIER_SHAPE "FooT" "modelFieldModification")
+  refused "BindingWhereFieldNamed"
+    ["modelFieldModification = fooTMod"]
+    ["fooTMod = tableModification { fooName = fieldNamed \"decoy_name\" }", "  where fieldNamed _ = B.fieldNamed \"real_name\""]
+    (UNRESOLVABLE_MODIFIER_BINDING "FooT" "fooTMod")
+  refused "BindingWhereTableModification"
+    ["modelFieldModification = fooTMod"]
+    [ "fooTMod = tableModification { fooName = fieldNamed \"the_name\" }"
+    , "  where tableModification = B.tableModification { fooId = B.fieldNamed \"real_id\" }" ]
+    (UNRESOLVABLE_MODIFIER_BINDING "FooT" "fooTMod")
+  assertEq "KeyWhere" (Left [UNRESOLVABLE_PRIMARY_KEY "FooT"])
+    =<< primaryKeyOf "KeyWhere" []
+          ["data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)", "primaryKey = FooId . fooId", "  where fooId = fooName"]
+  let nameWhere = ["modelTableName = \"foo\"", "  where fromString _ = \"bar\""]
+  assertEq "TableNameWhere" (Left [UNRESOLVABLE_TABLE_NAME "FooT"])
+    =<< tableNameFix defaultCliOptions "TableNameWhere" nameWhere
+  supplied <- tablesOf "TableNameWhere, override" =<< tableNameFix overrides "TableNameWhereOverride" nameWhere
+  assertEq "TableNameWhere, override" ["foo_override"] (map modelTableName supplied)
+  -- Kept: an empty where binds nothing, and a where elsewhere is not read.
+  cols <- columnNames "BindingEmptyWhere" =<< modifierFix defaultCliOptions "BindingEmptyWhere"
+    ["modelFieldModification = fooTMod"] ["fooTMod = tableModification { fooName = fieldNamed \"the_name\" }", "  where"]
+  assertEq "BindingEmptyWhere" [("fooId", "id"), ("fooName", "the_name")] cols
+  meta <- tablesOf "MetaEmptyWhere" =<< modifierFix defaultCliOptions "MetaEmptyWhere"
+    ["modelSchemaName = Just \"public\"", "  where"] []
+  assertEq "MetaEmptyWhere" [Just (SchemaLiteral "public")] (map modelSchemaName meta)
+  emod <- columnNames "EModWhere" =<< planFix defaultCliOptions "EModWhere" []
+    (controlTable <> ["fooEMod schema = modifyTableFields fooTMod <> setEntitySchema (Just schema)", "  where go = id"])
+  assertEq "EModWhere" [("fooId", "id"), ("fooName", "the_name")] emod
+  r <- planFix defaultCliOptions "SettingsWhere" []
+    [ "data AppDb f = AppDb { foos :: f (TableEntity FooT) } deriving (Generic, Database be)"
+    , "appDb = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }"
+    , "  where go = id" ]
+  case r of
+    Right (Stage (Just fragment)) ->
+      assertEq "SettingsWhere" [("foos", "FooT", "foo_v2")]
+        [(dbField o, dbTableType o, sqlName o) | o <- fragmentDbEntityOverrides fragment]
+    other -> failWith ("SettingsWhere: expected a fragment, got " <> show other)
+
+-- | modelFieldModification, modelTableName, primaryKey and the modifier binding,
+-- bound by a pattern or more than once, are unreadable: GHC rejects both, but
+-- only after this plugin has run.
+testPatternAndRepeatedBindingsUnreadable :: IO ()
+testPatternAndRepeatedBindingsUnreadable = do
+  let modifier  = Left [UNRECOGNIZED_MODIFIER_SHAPE "FooT" "modelFieldModification"]
+      binding   = Left [UNRESOLVABLE_MODIFIER_BINDING "FooT" "fooTMod"]
+      tableName = Left [UNRESOLVABLE_TABLE_NAME "FooT"]
+      key       = Left [UNRESOLVABLE_PRIMARY_KEY "FooT"]
+      tmod      = ["fooTMod = tableModification { fooName = fieldNamed \"the_name\" }"]
+      key1      = "data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+  assertEq "ModifierPattern" modifier
+    =<< modifierFix defaultCliOptions "ModifierPattern" ["(modelFieldModification) = fooTMod"] tmod
+  assertEq "ModifierTwice" modifier
+    =<< modifierFix defaultCliOptions "ModifierTwice" ["modelFieldModification = fooTMod", "modelFieldModification = tableModification"] tmod
+  assertEq "BindingTwice" binding
+    =<< modifierFix defaultCliOptions "BindingTwice" ["modelFieldModification = fooTMod"] (tmod <> ["fooTMod = tableModification"])
+  assertEq "BindingAlsoPattern" binding
+    =<< modifierFix defaultCliOptions "BindingAlsoPattern" ["modelFieldModification = fooTMod"]
+          (tmod <> ["(fooTMod, other) = (tableModification, ())"])
+  assertEq "BindingAlsoMethod" binding
+    =<< modifierFix defaultCliOptions "BindingAlsoMethod" ["modelFieldModification = fooTMod"]
+          (tmod <> ["class Mods a where", "  fooTMod :: a"])
+  assertEq "BindingByPattern" binding
+    =<< modifierFix defaultCliOptions "BindingByPattern" ["modelFieldModification = fooTMod"]
+          ["(fooTMod) = tableModification { fooName = fieldNamed \"the_name\" }"]
+  assertEq "TableNamePattern" tableName =<< tableNameFix defaultCliOptions "TableNamePattern" ["(modelTableName) = \"foo\""]
+  assertEq "TableNameTwice" tableName
+    =<< tableNameFix defaultCliOptions "TableNameTwice" ["modelTableName = \"foo\"", "modelTableName = \"bar\""]
+  assertEq "KeyPattern" key =<< primaryKeyOf "KeyPattern" [] [key1, "(primaryKey) = FooId . fooId"]
+  assertEq "KeyTwice" key =<< primaryKeyOf "KeyTwice" [] [key1, "primaryKey = FooId . fooId", "primaryKey = FooId . fooName"]
+
+-- | Each message for a definition the plugin reads states the whole rule, so
+-- it is accurate when the definition broke only the where or once rule.
+testBindingRuleInMessages :: IO ()
+testBindingRuleInMessages = mapM_ check
+  [ UNRESOLVABLE_TABLE_NAME "FooT"
+  , UNRECOGNIZED_MODIFIER_SHAPE "FooT" "modelFieldModification"
+  , UNRESOLVABLE_MODIFIER_BINDING "FooT" "fooTMod"
+  , UNRESOLVABLE_PRIMARY_KEY "FooT" ]
+  where
+    check e = do
+      let msg = generateErrorMessage "d" e
+      mapM_ (\rule -> unless (rule `isInfixOf` msg) $
+              failWith (errorCode e <> ": message does not say " <> show rule <> ": " <> show msg))
+        ["once", "no guards or where bindings"]
+
+-- | A name the plugin reads a modifier or a key through, defined in the module
+-- itself: it may then not be Beam's, base's or the table field's.
+testRedefinedNamesFail :: IO ()
+testRedefinedNamesFail = do
+  mapM_ redefined
+    [ ("RedefFieldNamed", [], ["fieldNamed _ = B.fieldNamed \"real_name\""], ["fieldNamed"])
+    , ("RedefTableModification", [], ["tableModification = B.tableModification"], ["tableModification"])
+    , ("RedefBoth", [], ["fieldNamed = B.fieldNamed", "tableModification = B.tableModification"], ["tableModification", "fieldNamed"])
+    , ("RedefByPattern", [], ["(fieldNamed, other) = (B.fieldNamed, ())"], ["fieldNamed"])
+    , ("RedefByPun", ["NamedFieldPuns"], ["Names{fieldNamed} = names"], ["fieldNamed"])
+    , ("RedefPatternSynonymField", ["PatternSynonyms"], ["pattern P{fieldNamed} <- (fieldNamed, _)"], ["fieldNamed"])
+    , ("RedefClassMethod", [], ["class Named a where", "  fieldNamed :: Text -> a"], ["fieldNamed"])
+    , ("RedefRecordField", [], ["data Names = Names { fieldNamed :: Text }"], ["fieldNamed"])
+    , ("RedefDataInstanceField", ["TypeFamilies"], ["data family Fam a", "data instance Fam Int = FamInt { fieldNamed :: Int }"], ["fieldNamed"])
+    , ("RedefAssociatedField", [], ["instance Keyed FooT where", "  data Key FooT = FooKeyRec { fieldNamed :: Int }"], ["fieldNamed"])
+    , ("RedefForeignImport", [], ["foreign import ccall \"f\" fieldNamed :: Int -> Int"], ["fieldNamed"])
+    , ("RedefGadtField", ["GADTs"], ["data Names where", "  Names :: { fieldNamed :: Text } -> Names"], ["fieldNamed"])
+    , ("RedefComposition", [], ["(.) f g x = f (g x)"], ["."])
+    , ("RedefKeyField", [], ["fooId = fooName"], ["fooId"]) ]
+  assertEq "RedefTableModificationBare" (Left [REDEFINED_NAME "FooT" "tableModification"])
+    =<< modifierFix defaultCliOptions "RedefTableModificationBare"
+          ["modelFieldModification = tableModification"] ["tableModification = B.tableModification"]
+  assertEq "RedefFieldNamedUnread" (Left [UNRESOLVABLE_COLUMN_NAME "FooT" "fooName"])
+    =<< modifierFix defaultCliOptions "RedefFieldNamedUnread"
+          ["modelFieldModification = tableModification { fooName = fieldNamed someName }"] ["fieldNamed = B.fieldNamed"]
+  assertEq "RedefFieldNamedInline" (Left [REDEFINED_NAME "FooT" "fieldNamed"])
+    =<< modifierFix defaultCliOptions "RedefFieldNamedInline"
+          ["modelFieldModification = tableModification { fooName = fieldNamed \"the_name\" }"] ["fieldNamed = B.fieldNamed"]
+  assertEq "RedefApplicative" (Left [REDEFINED_NAME "FooT" "<$>", REDEFINED_NAME "FooT" "<*>"])
+    =<< primaryKeyWith "RedefApplicative" []
+          ["data PrimaryKey FooT f = FooKey (C f Int) (C f Text) deriving (Generic, Beamable)", "primaryKey = FooKey <$> fooId <*> fooName"]
+          ["(<$>) = fmap", "(<*>) = ap"]
+  assertEq "RedefGetField" (Left [REDEFINED_NAME "FooT" "getField"])
+    =<< primaryKeyWith "RedefGetField" ["TypeApplications", "DataKinds"]
+          ["data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)", "primaryKey x = FooId (getField @\"fooId\" x)"]
+          ["getField = undefined"]
+  where
+    redefined (name, exts, extra, names) =
+      assertEq name (Left [REDEFINED_NAME "FooT" n | n <- names]) =<< planFix defaultCliOptions name exts (controlTable <> extra)
+
+-- | No error where nothing is read through the module's own definition.
+testRedefinedNamesNotRead :: IO ()
+testRedefinedNamesNotRead = do
+  noModifier <- tablesOf "NoModifier" =<< planFix defaultCliOptions "NoModifier" []
+    [ "data FooT f = Foo { fooId :: C f Int } deriving (Generic, Beamable)"
+    , "instance Table FooT where"
+    , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+    , "  primaryKey = FooId . fooId"
+    , "instance ModelMeta FooT where"
+    , "  modelTableName = \"foo\""
+    , "fieldNamed = B.fieldNamed"
+    , "tableModification = B.tableModification" ]
+  assertEq "NoModifier" ["FooT"] (map codeName noModifier)
+  bare <- columnNames "BareModifier" =<< modifierFix defaultCliOptions "BareModifier"
+    ["modelFieldModification = tableModification"] ["fieldNamed = B.fieldNamed"]
+  assertEq "BareModifier" [("fooId", "id"), ("fooName", "name")] bare
+  assertEq "NoTable" (Right (Stage Nothing))
+    =<< planFix defaultCliOptions "NoTable" [] ["fieldNamed = B.fieldNamed . T.toLower", "tableModification = B.tableModification"]
+  assertEq "KeyParameter" (Right ("FooKey", ["fooId", "fooName"]))
+    =<< primaryKeyWith "KeyParameter" []
+          ["data PrimaryKey FooT f = FooKey (C f Int) (C f Text) deriving (Generic, Beamable)", "primaryKey x = FooKey (fooId x) (fooName x)"]
+          ["x = ()"]
+  shared <- tablesOf "PreludeNamedField" =<< planFix defaultCliOptions "PreludeNamedField" []
+    [ "data FooT f = Foo { id :: C f Int } deriving (Generic, Beamable)"
+    , "instance Table FooT where"
+    , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+    , "  primaryKey = FooId . id"
+    , "instance ModelMeta FooT where"
+    , "  modelTableName = \"foo\"" ]
+  assertEq "PreludeNamedField" [["id"]] (map (pkColumns . primaryKey) shared)
+
+-- | GHC rejects a context or forall nested in an instance head (GHC-71492), but
+-- only after this plugin has run: such an instance is read, not skipped.
+testNestedContextHeadsRead :: IO ()
+testNestedContextHeadsRead = do
+  let exts = ["StandaloneDeriving", "RankNTypes", "KindSignatures"]
+  plain <- planFix defaultCliOptions "NestedHeads" exts
+    [ "data FooT f = Foo { fooId :: C f Int, fooName :: C f Text } deriving (Generic)"
+    , "deriving instance Beamable FooT"
+    , "instance Table FooT where"
+    , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+    , "  primaryKey = FooId . fooId"
+    , "instance ModelMeta FooT where"
+    , "  modelTableName = \"foo\""
+    , "  modelFieldModification = fooTMod"
+    , "fooTMod = tableModification { fooName = fieldNamed \"the_name\" }" ]
+  _ <- columnNames "plain heads" plain
+  nested <- planFixHaddockSame "NestedHeads" exts
+    [ "data FooT f = Foo { fooId :: C f Int, fooName :: C f Text } deriving (Generic)"
+    , "deriving instance Show Int => (Show Bool => Beamable FooT)"
+    , "instance Show Int => (forall a. Table FooT) where"
+    , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+    , "  primaryKey = FooId . fooId"
+    , "instance (Show Int => ModelMeta -- ^ the class"
+    , "  FooT :: Constraint) where"
+    , "  modelTableName = \"foo\""
+    , "  modelFieldModification = fooTMod"
+    , "fooTMod = tableModification { fooName = fieldNamed \"the_name\" }" ]
+  assertEq "nested heads read as plain ones" plain nested
+  assertEq "only a nested Beamable marks the table" (Left [MISSING_MODEL_META "FooT"])
+    =<< planFix defaultCliOptions "NestedBeamableOnly" exts
+          [ "data FooT f = Foo { fooId :: C f Int } deriving (Generic)"
+          , "deriving instance Show Int => (Show Bool => Beamable FooT)" ]
+  assertEq "nested orphan Table" (Left [UNEXTRACTED_TABLE "OtherT" noDeclaration])
+    =<< planFix defaultCliOptions "NestedOrphanTable" exts
+          ["instance (Show Int => Table OtherT) where", "  primaryKey = OtherId . otherId"]
+
+-- | F04: a Haddock comment on an instance head's argument changes nothing.
+testDocumentedInstanceHeadRead :: IO ()
+testDocumentedInstanceHeadRead = do
+  r <- planFixHaddockSame "DocumentedHeads" derivingExts
+    [ "data FooT f = Foo { fooId :: Columnar f Int, fooName :: Columnar f Text }"
+    , "  deriving (Generic)"
+    , "-- | Beamable for FooT."
+    , "deriving anyclass instance Beamable"
+    , "  FooT -- ^ the table"
+    , "instance Table"
+    , "  FooT -- ^ the table"
+    , "  where"
+    , "  data PrimaryKey FooT f = FooId (Columnar f Int) deriving (Generic, Beamable)"
+    , "  primaryKey = FooId . fooId"
+    , "instance ModelMeta"
+    , "  FooT -- ^ the table"
+    , "  where"
+    , "  modelTableName = \"foo\"" ]
+  assertEq "documented heads" [("fooId", "id"), ("fooName", "name")] =<< columnNames "documented heads" r
+
+-- | G1, G2 and F1: under RebindableSyntax the module's own getField and fromString
+-- decide what the code reads, so a module that stages tables or settings may not enable it.
+testRebindableSyntaxRefused :: IO ()
+testRebindableSyntaxRefused = do
+  assertEq "staged" [UNSUPPORTED_EXTENSION "RebindableSyntax"] (extensionErrors True True)
+  assertEq "nothing staged" [] (extensionErrors True False)
+  assertEq "not enabled" [] (extensionErrors False True)
+  assertEq "not enabled, nothing staged" [] (extensionErrors False False)
+
+-- | R1: a rewrite rule can replace a name the plugin reads, and GHC applies it when it optimises.
+testRulesRefused :: IO ()
+testRulesRefused = do
+  let rule i = "{-# RULES \"r" <> i <> "\" forall s. fieldNamed s = fieldNamed \"real_name\" #-}"
+      at k   = show (length controlTable + 2 + k) <> ":1"
+      settings =
+        [ "data AppDb f = AppDb { foos :: f (TableEntity FooT) } deriving (Generic, Database be)"
+        , "appDb = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }" ]
+      unnamed =
+        [ "data FooT f = Foo { fooId :: C f Int } deriving (Generic, Beamable)"
+        , "instance Table FooT where"
+        , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+        , "  primaryKey = FooId . fooId"
+        , "instance ModelMeta FooT where"
+        , "  modelTableName = SomeConst.fooName" ]
+  assertEq "RulesTable" (Left [UNSUPPORTED_RULES (at 0)])
+    =<< planFix defaultCliOptions "RulesTable" [] (controlTable <> [rule "1"])
+  assertEq "RulesTwice" (Left [UNSUPPORTED_RULES (at 0), UNSUPPORTED_RULES (at 2)])
+    =<< planFix defaultCliOptions "RulesTwice" [] (controlTable <> [rule "1", "x = 1", rule "2"])
+  assertEq "RulesOnePragma" (Left [UNSUPPORTED_RULES (at 0)])
+    =<< planFix defaultCliOptions "RulesOnePragma" []
+          (controlTable <> ["{-# RULES \"a\" forall s. f s = g s ; \"b\" forall s. h s = k s #-}"])
+  -- The rule's own setEntityName uses are not captured either.
+  assertEq "RulesSettings"
+    (Left [UNSUPPORTED_RULES "4:1", UNCAPTURED_SET_ENTITY_NAME "4:25" notInModification, UNCAPTURED_SET_ENTITY_NAME "4:43" notInModification])
+    =<< planFix defaultCliOptions "RulesSettings" []
+          (settings <> ["{-# RULES \"r\" forall s. setEntityName s = setEntityName \"other\" #-}"])
+  assertEq "RulesBesideError" (Left [UNRESOLVABLE_TABLE_NAME "FooT", UNSUPPORTED_RULES (show (length unnamed + 2) <> ":1")])
+    =<< planFix defaultCliOptions "RulesBesideError" [] (unnamed <> ["{-# RULES \"r\" forall s. f s = g s #-}"])
+  -- Kept: a module that stages nothing, and a blacklisted one.
+  assertEq "RulesNoTable" (Right (Stage Nothing)) =<< planFix defaultCliOptions "RulesNoTable" [] [rule "1"]
+  assertEq "RulesSettingsNoOverride" (Right (Stage Nothing))
+    =<< planFix defaultCliOptions "RulesSettingsNoOverride" []
+          [ "data AppDb f = AppDb { foos :: f (TableEntity FooT) } deriving (Generic, Database be)"
+          , "appDb = defaultDbSettings", rule "1" ]
+  assertEq "RulesBlacklisted" (Right (Stage Nothing))
+    =<< planFix defaultCliOptions { blacklistModules = ["Fix.RulesBlacklisted"] } "RulesBlacklisted" []
+          (controlTable <> [rule "1"])
+
+-- | A pattern synonym of this module that reuses a name the plugin reads the meta fields through.
+testPatternSynonymNamesRefused :: IO ()
+testPatternSynonymNamesRefused = do
+  mapM_ refused ("Just" : "Nothing" : tableTypeConstructors)
+  assertEq "PatSynBoth" (Left [REDEFINED_NAME "FooT" "Just", REDEFINED_NAME "FooT" "Nothing"])
+    =<< planFix defaultCliOptions "PatSynBoth" ["PatternSynonyms"]
+          (controlTable <> ["pattern Just = ()", "pattern Nothing = ()"])
+  -- Kept: another name, and a module with no table.
+  _ <- columnNames "PatSynOther" =<< planFix defaultCliOptions "PatSynOther" ["PatternSynonyms"]
+    (controlTable <> ["pattern Tracker = ()"])
+  assertEq "PatSynNoTable" (Right (Stage Nothing))
+    =<< planFix defaultCliOptions "PatSynNoTable" ["PatternSynonyms"] ["pattern Just = ()"]
+  where
+    refused n = assertEq ("PatSyn" <> n) (Left [REDEFINED_NAME "FooT" n])
+      =<< planFix defaultCliOptions ("PatSyn" <> n) ["PatternSynonyms"] (controlTable <> ["pattern " <> n <> " = ()"])
+
+-- | TF1: a type of this module named like a Beam type the plugin reads a field's wrapper and
+-- nullability through.
+testTypeNamesRefused :: IO ()
+testTypeNamesRefused = do
+  mapM_ refused
+    [ ("TypeSynonymC", [], ["type C f a = Columnar f (Maybe a)"], "C")
+    , ("DataC", [], ["data C f a = C (f a)"], "C")
+    , ("NewtypeColumnar", [], ["newtype Columnar f a = Columnar (f a)"], "Columnar")
+    , ("ClosedFamilyC", ["TypeFamilies"], ["type family C f a where", "  C f a = Columnar f (Maybe a)"], "C")
+    , ("OpenFamilyC", ["TypeFamilies"], ["type family C f a"], "C")
+    , ("DataFamilyMaybe", ["TypeFamilies"], ["data family Maybe a"], "Maybe")
+    , ("AssociatedTypeC", ["TypeFamilies"], ["class Wrap a where", "  type C a"], "C")
+    , ("SynonymMaybe", [], ["type Maybe a = a"], "Maybe") ]
+  assertEq "TypeNamesTwo" (Left [REDEFINED_NAME "FooT" "C", REDEFINED_NAME "FooT" "Maybe"])
+    =<< planFix defaultCliOptions "TypeNamesTwo" [] (controlTable <> ["type C f a = f a", "type Maybe a = a"])
+  -- Kept: other names, and a module with no table.
+  _ <- columnNames "TypeOther" =<< planFix defaultCliOptions "TypeOther" []
+    (controlTable <> ["type Cx f a = Columnar f a", "data Columnars = Columnars"])
+  assertEq "TypeNoTable" (Right (Stage Nothing)) =<< planFix defaultCliOptions "TypeNoTable" [] ["type C f a = f a"]
+  where
+    refused (name, exts, extra, n) =
+      assertEq name (Left [REDEFINED_NAME "FooT" n]) =<< planFix defaultCliOptions name exts (controlTable <> extra)
+
+-- | H1, H2: Beam names a table's columns from its Generic representation, which a written or
+-- non-stock derived instance can set to anything, also through a type synonym.  One the source
+-- does not show, as the large-records plugin generates, is not seen.
+testNonStockGenericRefused :: IO ()
+testNonStockGenericRefused = do
+  mapM_ refused
+    [ ("HandGeneric", ["TypeFamilies"], tableWithoutGeneric <> writtenGeneric "Generic (FooT f)")
+    , ("HandGenericArgument", ["TypeFamilies"], tableWithoutGeneric <> writtenGeneric "Generic (FooT Identity)")
+    , ("HandGenericContext", ["TypeFamilies"], tableWithoutGeneric <> writtenGeneric "Show f => Generic (FooT f)")
+    , ("HandGenericQualified", ["TypeFamilies"], tableWithoutGeneric <> writtenGeneric "G.Generic (FooT f)")
+    , ("AliasGeneric", ["TypeFamilies"], tableWithoutGeneric <> ["type AliasT = FooT"] <> writtenGeneric "Generic (AliasT f)")
+    , ("AliasGenericBesideStock", ["TypeFamilies"], tableWith "deriving (Generic, Beamable)" <> ["type AliasT = FooT"] <> writtenGeneric "Generic (AliasT f)")
+    , ("HandGenericUnreadableHead", ["TypeFamilies"], tableWith "deriving (Generic, Beamable)" <> writtenGeneric "Generic (M.FooT f)")
+    , ("ViaGeneric", ["DerivingVia"], tableWith "deriving (Beamable) deriving (Generic) via (Other f)")
+    , ("NewtypeGeneric", ["DerivingStrategies"], tableWith "deriving (Beamable) deriving newtype (Generic)")
+    , ("AnyclassGeneric", ["DerivingStrategies"], tableWith "deriving (Beamable) deriving anyclass (Generic)")
+    , ("StandaloneViaGeneric", "DerivingVia" : derivingExts, tableWithoutGeneric <> ["deriving via (Other f) instance Generic (FooT f)"])
+    , ("StandaloneAnyclassGeneric", derivingExts, tableWithoutGeneric <> ["deriving anyclass instance Generic (FooT f)"])
+    , ("StandaloneAnyclassBesideStock", derivingExts, tableWith "deriving (Generic, Beamable)" <> ["deriving anyclass instance Generic (FooT f)"])
+    , ("StandaloneViaAlias", "DerivingVia" : derivingExts, tableWithoutGeneric <> ["type AliasT = FooT", "deriving via (Other f) instance Generic (AliasT f)"]) ]
+  mapM_ kept
+    [ ("NoGeneric", [], tableWithoutGeneric)
+    , ("LargeRecordGeneric", [], "{-# ANN type FooT largeRecord #-}" : tableWithoutGeneric)
+    , ("DerivedGeneric", derivingExts, tableWithoutGeneric <> ["deriving instance Generic (FooT f)"])
+    , ("StockStandaloneGeneric", derivingExts, tableWithoutGeneric <> ["deriving stock instance Generic (FooT f)"])
+    , ("NarrowStandaloneGeneric", derivingExts, tableWithoutGeneric <> ["deriving instance Generic (FooT Identity)"])
+    , ("AliasStandaloneGeneric", derivingExts, tableWithoutGeneric <> ["type AliasT = FooT", "deriving instance Generic (AliasT f)"])
+    , ("StockInlineGeneric", ["DerivingStrategies"], tableWith "deriving stock (Generic) deriving anyclass (Beamable)")
+    , ("QualifiedGeneric", [], tableWith "deriving (G.Generic, Beamable)")
+    , ("OtherGeneric", ["TypeFamilies"], tableWith "deriving (Generic, Beamable)" <> writtenGeneric "Generic (OtherT f)")
+    , ("OtherTypeViaGeneric", ["DerivingVia"], tableWith "deriving (Generic, Beamable)" <> ["data OtherT = OtherT deriving (Generic) via Other"]) ]
+  assertEq "HandGenericNoTable" (Right (Stage Nothing))
+    =<< planFix defaultCliOptions "HandGenericNoTable" ["TypeFamilies"] (writtenGeneric "Generic (FooT f)")
+  where
+    refused (name, exts, body) =
+      assertEq name (Left [UNEXTRACTED_TABLE "FooT" genericNotStock]) =<< planFix defaultCliOptions name exts body
+    kept (name, exts, body) = tablesOf name =<< planFix defaultCliOptions name exts body
+    tableWith clause = ("data FooT f = Foo { fooId :: C f Int, fooName :: C f Text } " <> clause) : drop 1 tableWithoutGeneric
+
+-- | A record wildcard in a top-level pattern binding binds every field in scope, and the parser
+-- does not show which names those are.
+testTopLevelRecordWildcardRefused :: IO ()
+testTopLevelRecordWildcardRefused = do
+  let at k = show (length controlTable + 2 + k) <> ":1"
+      exts = ["RecordWildCards", "NamedFieldPuns"]
+  assertEq "TopWildcard" (Left [UNSUPPORTED_RECORD_WILDCARD (at 0)])
+    =<< planFix defaultCliOptions "TopWildcard" exts (controlTable <> ["Names{..} = names"])
+  assertEq "TopWildcardNested" (Left [UNSUPPORTED_RECORD_WILDCARD (at 0)])
+    =<< planFix defaultCliOptions "TopWildcardNested" exts (controlTable <> ["(count, Names{..}) = pair"])
+  assertEq "TopWildcardTwice" (Left [UNSUPPORTED_RECORD_WILDCARD (at 0), UNSUPPORTED_RECORD_WILDCARD (at 1)])
+    =<< planFix defaultCliOptions "TopWildcardTwice" exts (controlTable <> ["Names{..} = names", "Other{..} = other"])
+  assertEq "TopWildcardNoTable" (Right (Stage Nothing))
+    =<< planFix defaultCliOptions "TopWildcardNoTable" exts ["Names{..} = names"]
+  -- Kept: a wildcard in a function's arguments, one in an expression, and a pun.
+  cols <- columnNames "WildcardKept" =<< planFix defaultCliOptions "WildcardKept" exts
+    (controlTable <> ["describe Names{..} = Names{..}", "Other{label} = other"])
+  assertEq "WildcardKept" [("fooId", "id"), ("fooName", "the_name")] cols
+
+-- | Each message names what it refuses: the extension, or the position.
+testUnsupportedMessagesNameTheirCause :: IO ()
+testUnsupportedMessagesNameTheirCause = mapM_ (uncurry mentions)
+  [ ("enables ExampleExtension", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "ExampleExtension"))
+  , ("{-# LANGUAGE NoExampleExtension #-}", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "ExampleExtension"))
+  , ("with 'import Prelude'", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "RebindableSyntax"))
+  , ("a module this module does not import, directly or not", generateErrorMessage "d" (UNSUPPORTED_RULES "12:3"))
+  , ("12:3", generateErrorMessage "d" (UNSUPPORTED_RULES "12:3"))
+  , ("12:3", generateErrorMessage "d" (UNSUPPORTED_RECORD_WILDCARD "12:3")) ]
+  where
+    mentions needle msg = unless (needle `isInfixOf` msg) $ failWith ("message lacks " <> show needle <> ": " <> show msg)
+
+-- | P1: a punned field of a pattern binding in the instance binds its label, so the method
+-- is bound by a pattern, or twice; GHC rejects both, but only after this plugin has run.
+testPunnedInstanceBindingsUnreadable :: IO ()
+testPunnedInstanceBindingsUnreadable = do
+  let exts     = ["NamedFieldPuns"]
+      modifier = Left [UNRECOGNIZED_MODIFIER_SHAPE "FooT" "modelFieldModification"]
+      tmod     = ["fooTMod = tableModification { fooName = fieldNamed \"the_name\" }"]
+      meta name meta' rest = planFix defaultCliOptions name exts (modifierTable meta' rest)
+      fieldOf = \case
+        Left [UNRESOLVABLE_MODEL_META_FIELD "FooT" f _] -> Just f
+        _                                               -> Nothing
+  assertEq "PunnedModifier" modifier =<< meta "PunnedModifier" ["Mods{modelFieldModification} = mods"] tmod
+  assertEq "PunnedModifierBesideEquation" modifier
+    =<< meta "PunnedModifierBesideEquation" ["modelFieldModification = fooTMod", "Mods{modelFieldModification} = mods"] tmod
+  assertEq "PunnedTableName" (Left [UNRESOLVABLE_TABLE_NAME "FooT"])
+    =<< meta "PunnedTableName" ["Names{modelTableName} = names"] []
+  assertEq "PunnedTableType" (Just "modelTableType") . fieldOf
+    =<< meta "PunnedTableType" ["modelTableType = Just TRACKER", "Mods{modelTableType} = mods"] []
+  assertEq "PunnedSchemaName" (Just "modelSchemaName") . fieldOf
+    =<< meta "PunnedSchemaName" ["modelSchemaName = Nothing", "Mods{modelSchemaName} = mods"] []
+  assertEq "PunnedKey" (Left [UNRESOLVABLE_PRIMARY_KEY "FooT"])
+    =<< primaryKeyOf "PunnedKey" exts
+          ["data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)", "primaryKey = FooId . fooId", "Keys{primaryKey} = keys"]
+
+-- | A where binding of implicit parameters binds names too (@where ?x = …@), so it is unreadable
+-- like any other where binding.
+testImplicitParamBindingsUnreadable :: IO ()
+testImplicitParamBindingsUnreadable = do
+  assertEq "KeyImplicitParam" (Left [UNRESOLVABLE_PRIMARY_KEY "FooT"])
+    =<< primaryKeyOf "KeyImplicitParam" ["ImplicitParams"]
+          ["data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)", "primaryKey = FooId . fooId", "  where ?x = ()"]
+  assertEq "ModifierImplicitParam" (Left [UNRESOLVABLE_MODIFIER_BINDING "FooT" "fooTMod"])
+    =<< planFix defaultCliOptions "ModifierImplicitParam" ["ImplicitParams"]
+          (modifierTable ["modelFieldModification = fooTMod"]
+            ["fooTMod = tableModification { fooName = fieldNamed \"the_name\" }", "  where ?x = ()"])
+
+-- | A punned field has no right-hand side, so the message names the pun apart from a computed value.
+testColumnNameMessageCoversPun :: IO ()
+testColumnNameMessageCoversPun = do
+  let msg = generateErrorMessage "d" (UNRESOLVABLE_COLUMN_NAME "FooT" "fooName")
+  mapM_ (\needle -> unless (needle `isInfixOf` msg) $ failWith ("message lacks " <> show needle <> ": " <> show msg))
+    ["punned", "{ fooName }", "fooName = fieldNamed"]
+  when ("RHS" `isInfixOf` msg) $ failWith ("message speaks of a right-hand side a pun lacks: " <> show msg)
+
+-- | The fix for a table name that is no literal also fits a literal that is where-bound or written
+-- twice, and names the plugin option that supplies one.
+testTableNameMessageFix :: IO ()
+testTableNameMessageFix = do
+  let msg = generateErrorMessage "d" (UNRESOLVABLE_TABLE_NAME "FooT")
+  mapM_ (\needle -> unless (needle `isInfixOf` msg) $ failWith ("message lacks " <> show needle <> ": " <> show msg))
+    ["tableNameOverrides", "modelTableName = \"sql_name\""]
+  when ("Replace the computed value" `isInfixOf` msg) $ failWith ("the fix still assumes a computed value: " <> show msg)
+
+-- | The refusals hold with Haddock comments kept, as nixpkgs builds libraries.
+testNewRefusalsUnderHaddock :: IO ()
+testNewRefusalsUnderHaddock = mapM_ same
+  [ ("DocSynonymC", [], controlTable <> ["-- | A synonym.", "type C f a = Columnar f (Maybe a)"], Left [REDEFINED_NAME "FooT" "C"])
+  , ("DocClosedFamilyC", ["TypeFamilies"], controlTable <> ["-- | A family.", "type family C f a where", "  C f a = Columnar f (Maybe a)"], Left [REDEFINED_NAME "FooT" "C"])
+  , ("DocAssociatedC", ["TypeFamilies"], controlTable <> ["-- | A class.", "class Wrap a where", "  -- | The type.", "  type C a"], Left [REDEFINED_NAME "FooT" "C"])
+  , ("DocPatSyn", ["PatternSynonyms"], controlTable <> ["-- | A synonym.", "pattern TRACKER = ()"], Left [REDEFINED_NAME "FooT" "TRACKER"])
+  , ("DocRules", [], controlTable <> ["-- | The rules.", "{-# RULES \"r\" forall s. f s = g s #-}"], Left [UNSUPPORTED_RULES (at 1)])
+  , ("DocWildcard", ["RecordWildCards"], controlTable <> ["-- | Names.", "Names{..} = names"], Left [UNSUPPORTED_RECORD_WILDCARD (at 1)])
+  , ("DocHandGeneric", ["TypeFamilies"], tableWithoutGeneric <> ["-- | By hand."] <> writtenGeneric "Generic (FooT f)", Left [UNEXTRACTED_TABLE "FooT" genericNotStock])
+  , ("DocAnyclassGeneric", ["DerivingStrategies"]
+    , ["data FooT f = Foo { fooId :: C f Int, fooName :: C f Text }", "  deriving (Beamable)", "  deriving anyclass (Generic -- ^ the representation", "    )"] <> drop 1 tableWithoutGeneric
+    , Left [UNEXTRACTED_TABLE "FooT" genericNotStock]) ]
+  where
+    at k = show (length controlTable + 2 + k) <> ":1"
+    same (name, exts, body, expected) = assertEq name expected =<< planFixHaddockSame name exts body
+
+testNewRefusalsHaveNoOptOut :: IO ()
+testNewRefusalsHaveNoOptOut = mapM_ refused
+  [ ("NoOptOutPatSyn", ["PatternSynonyms"], controlTable <> ["pattern Just = ()"], Left [REDEFINED_NAME "FooT" "Just"])
+  , ("NoOptOutType", [], controlTable <> ["type C f a = f a"], Left [REDEFINED_NAME "FooT" "C"])
+  , ("NoOptOutGeneric", ["TypeFamilies"], tableWithoutGeneric <> writtenGeneric "Generic (FooT f)", Left [UNEXTRACTED_TABLE "FooT" genericNotStock])
+  , ("NoOptOutRules", [], controlTable <> ["{-# RULES \"r\" forall s. f s = g s #-}"], Left [UNSUPPORTED_RULES at])
+  , ("NoOptOutWildcard", ["RecordWildCards"], controlTable <> ["Names{..} = names"], Left [UNSUPPORTED_RECORD_WILDCARD at]) ]
+  where
+    at = show (length controlTable + 2) <> ":1"
+    lenient = defaultCliOptions { allowNonStandardModifier = True, allowUnknownColumnWrapper = True }
+    refused (name, exts, body, expected) = assertEq name expected =<< planFix lenient name exts body
+
+-- | Both readers of TableEntity match it as written: a type of that name in the module refuses
+-- its tables and its renames.
+testLocalTableEntityRefused :: IO ()
+testLocalTableEntityRefused = do
+  assertEq "TableEntitySynonym" (Left [REDEFINED_NAME "FooT" "TableEntity"])
+    =<< planFix defaultCliOptions "TableEntitySynonym" [] (controlTable <> ["type TableEntity = ViewEntity"])
+  assertEq "TableEntityData" (Left [REDEFINED_NAME "FooT" "TableEntity"])
+    =<< planFix defaultCliOptions "TableEntityData" [] (controlTable <> ["data TableEntity t = TableEntity"])
+  expectUncaptured "TableEntitySettings" [("3:69", localTableEntity)]
+    =<< planFix defaultCliOptions "TableEntitySettings" [] (settings <> ["type TableEntity = ViewEntity"])
+  expectUncaptured "TableEntitySettingsData" [("3:69", localTableEntity)]
+    =<< planFix defaultCliOptions "TableEntitySettingsData" [] (settings <> ["data TableEntity t = TableEntity"])
+  expectUncaptured "TableEntityFamily" [("3:69", localTableEntity)]
+    =<< planFix defaultCliOptions "TableEntityFamily" ["TypeFamilies"] (settings <> ["type family TableEntity t"])
+  assertEq "TableEntityBoth"
+    (Left [REDEFINED_NAME "FooT" "TableEntity", UNCAPTURED_SET_ENTITY_NAME "11:69" (localTableEntity <> ", so a field's 'f (TableEntity T)' may not be Beam's table entity")])
+    =<< planFix defaultCliOptions "TableEntityBoth" []
+          (entityNameModule ["db = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }", "type TableEntity = ViewEntity"])
+  where
+    localTableEntity = "this module declares a type named 'TableEntity'"
+    settings =
+      [ "data Db f = Db { foos :: f (TableEntity FooT) } deriving (Generic, Database)"
+      , "db = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" }" ]
+
+-- | modifyTableFields reads the modifier binding as the columns do: under allowNonStandardModifier
+-- a where-bound modifier, which the columns ignore, is not one the settings may apply.
+testModifyTableFieldsWhereModifierFails :: IO ()
+testModifyTableFieldsWhereModifierFails = do
+  let lenient = defaultCliOptions { allowNonStandardModifier = True }
+      body modifier = modifierTable ["modelFieldModification = fooTMod"] (modifier <> ["fooEMod = modifyTableFields fooTMod"])
+      unread = "the modifier binding 'fooTMod' is not one top-level equation with no arguments, guards or where bindings, so the plugin does not read it"
+  assertEq "OptOutWhereModifier" (Left [UNCAPTURED_MODIFY_TABLE_FIELDS "11:11" unread])
+    =<< planFix lenient "OptOutWhereModifier" []
+          (body ["fooTMod = tableModification { fooName = fieldNamed \"the_name\" }", "  where go = id"])
+  assertEq "OptOutGuardedModifier" (Left [UNCAPTURED_MODIFY_TABLE_FIELDS "11:11" unread])
+    =<< planFix lenient "OptOutGuardedModifier" []
+          (body ["fooTMod", "  | True = tableModification { fooName = fieldNamed \"the_name\" }"])
+  assertEq "WhereModifier"
+    (Left [UNRESOLVABLE_MODIFIER_BINDING "FooT" "fooTMod", UNCAPTURED_MODIFY_TABLE_FIELDS "11:11" unread])
+    =<< planFix defaultCliOptions "WhereModifier" []
+          (body ["fooTMod = tableModification { fooName = fieldNamed \"the_name\" }", "  where go = id"])
+
+-- | An instance whose type names EntityModification or DatabaseEntity, or one with an overlap
+-- pragma, can change what '<>' does to the settings' modifications, so its method names count
+-- as names the module binds.
+testInstanceAtBeamTypeBindsMethods :: IO ()
+testInstanceAtBeamTypeBindsMethods = mapM_ refused
+  [ ("EntityModificationInstance", "instance Semigroup (EntityModification (DatabaseEntity be db) be (TableEntity FooT)) where")
+  , ("DatabaseEntityInstance", "instance Semigroup (DatabaseEntity be db (TableEntity FooT)) where")
+  , ("EntityModificationContext", "instance (m ~ EntityModification e be t) => Semigroup (Mod m) where")
+  , ("OverlappingInstance", "instance {-# OVERLAPPING #-} Semigroup X where")
+  , ("IncoherentInstance", "instance {-# INCOHERENT #-} Semigroup X where") ]
+  where
+    refused (name, instanceHead) =
+      expectErrors name
+        [ ("UNCAPTURED_SET_ENTITY_NAME", "13:69", "this module binds '<>' itself")
+        , ("UNCAPTURED_MODIFY_TABLE_FIELDS", "13:95", "this module binds '<>' itself") ]
+        =<< planFix defaultCliOptions ("EntityName" <> name) ["TypeFamilies"]
+              (entityNameModule
+                 [ instanceHead, "  _ <> b = b"
+                 , "db = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" <> modifyTableFields fooTMod }" ])
+
 -- ---------------------------------------------------------------------------
 -- Fixtures
 -- ---------------------------------------------------------------------------
@@ -1359,6 +2558,27 @@ planFixWith src cli name exts body = do
   let modName = "Fix." <> name
   decls <- parseFixture modName exts (unlines (("module " <> modName <> " where") : body))
   pure (planFragment cli src modName ("src/Fix/" <> name <> ".hs") decls)
+
+-- | 'planFix' with Haddock comments kept, as -haddock does; fails unless the
+-- fixture really holds a documented type.
+planFixHaddock :: String -> [String] -> IO (Either [SqlSchemaError] FragmentAction)
+planFixHaddock name body = do
+  let modName = "Fix." <> name
+  decls <- parseFixtureHaddock modName [] (unlines (("module " <> modName <> " where") : body))
+  unless (documentedTypes decls > 0) $ failWith (name <> ": the fixture parsed without an HsDocTy")
+  pure (planFragment defaultCliOptions HsSrcFile modName ("src/Fix/" <> name <> ".hs") decls)
+
+-- | 'planFix' with and without Haddock comments kept, which must agree, for
+-- comments GHC keeps out of the parse tree.
+planFixHaddockSame :: String -> [String] -> [String] -> IO (Either [SqlSchemaError] FragmentAction)
+planFixHaddockSame name exts body = do
+  let modName = "Fix." <> name
+      src     = unlines (("module " <> modName <> " where") : body)
+      plan    = planFragment defaultCliOptions HsSrcFile modName ("src/Fix/" <> name <> ".hs")
+  plain      <- plan <$> parseFixture modName exts src
+  documented <- plan <$> parseFixtureHaddock modName exts src
+  assertEq (name <> ": with Haddock comments kept") plain documented
+  pure plain
 
 tablesOf :: String -> Either [SqlSchemaError] FragmentAction -> IO [TableSchema]
 tablesOf label = \case
@@ -1385,6 +2605,31 @@ primaryKeyOf name exts pkLines = do
       pure (Right (pkConstructor (primaryKey t), pkColumns (primaryKey t)))
     other -> failWith (name <> ": expected one table, got " <> show other)
 
+primaryKeyWith :: String -> [String] -> [String] -> [String] -> IO (Either [SqlSchemaError] (String, [String]))
+primaryKeyWith name exts pkLines extra = do
+  r <- planFix defaultCliOptions name exts
+    ([ "data FooT f = Foo { fooId :: C f Int, fooName :: C f Text } deriving (Generic, Beamable)"
+     , "instance Table FooT where" ]
+     <> map ("  " <>) pkLines
+     <> [ "instance ModelMeta FooT where"
+        , "  modelTableName = \"foo\"" ]
+     <> extra)
+  case r of
+    Left errs -> pure (Left errs)
+    Right (Stage (Just Fragment { fragmentTables = [t] })) ->
+      pure (Right (pkConstructor (primaryKey t), pkColumns (primaryKey t)))
+    other -> failWith (name <> ": expected one table, got " <> show other)
+
+-- | Table FooT whose ModelMeta instance holds only @nameLines@.
+tableNameFix :: CliOptions -> String -> [String] -> IO (Either [SqlSchemaError] FragmentAction)
+tableNameFix cli name nameLines = planFix cli name []
+  ([ "data FooT f = Foo { fooId :: C f Int } deriving (Generic, Beamable)"
+   , "instance Table FooT where"
+   , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+   , "  primaryKey = FooId . fooId"
+   , "instance ModelMeta FooT where" ]
+   <> map ("  " <>) nameLines)
+
 modifierFix :: CliOptions -> String -> [String] -> [String] -> IO (Either [SqlSchemaError] FragmentAction)
 modifierFix cli name meta rest = planFix cli name [] (modifierTable meta rest)
 
@@ -1400,6 +2645,31 @@ modifierTable meta rest =
   , "  modelTableName = \"foo\"" ]
   <> map ("  " <>) meta
   <> rest
+
+-- | The reasons UNEXTRACTED_TABLE gives, verbatim.
+noDeclaration, notARecord, noBeamable, databaseRecord, genericNotStock :: String
+noDeclaration  = "no data declaration for it in this module"
+notARecord     = "its data declaration is not a single-constructor record with the column functor as last type parameter"
+noBeamable     = "nothing in this module derives or declares Beamable for it"
+databaseRecord = "it derives Database, so its data declaration is read as a database record, not as a table"
+genericNotStock = "a Generic instance in this module that could be its is written, or derived via, newtype or anyclass, so the column names Beam takes from it need not be its field names"
+
+-- | Lets a fixture parse @deriving [anyclass] instance …@.
+derivingExts :: [String]
+derivingExts = ["StandaloneDeriving", "DeriveAnyClass", "DerivingStrategies"]
+
+tableWithoutGeneric :: [String]
+tableWithoutGeneric =
+  [ "data FooT f = Foo { fooId :: C f Int, fooName :: C f Text } deriving (Beamable)"
+  , "instance Table FooT where"
+  , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+  , "  primaryKey = FooId . fooId"
+  , "instance ModelMeta FooT where"
+  , "  modelTableName = \"foo\"" ]
+
+writtenGeneric :: String -> [String]
+writtenGeneric instanceHead =
+  [ "instance " <> instanceHead <> " where", "  type Rep (FooT f) = Rep ()", "  from = undefined", "  to = undefined" ]
 
 -- | A table that sets every ModelMeta field the extractor reads.
 controlTable :: [String]

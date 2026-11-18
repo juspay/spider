@@ -42,7 +42,9 @@
     binding or a top-level splice;
   - a module that binds `setEntityName`, `dbModification`,
     `withDbModification`, `(<>)`, `modifyTableFields` or `setEntitySchema`
-    itself.
+    itself; an instance method counts only in an instance whose type names
+    `EntityModification` or `DatabaseEntity`, or that has an overlap pragma;
+  - a module that declares a type named `TableEntity`.
 
   A punned record field named like a checked function
   (`R { setEntityName }`) counts as a use, and under `OverloadedRecordUpdate`
@@ -69,7 +71,8 @@
   which come from `modelFieldModification`. The accepted shape is
   `modifyTableFields xxxTMod` with `xxxTMod` the unqualified, top-level binding
   named in `modelFieldModification` of a table of the module, setting at least
-  one field and bound nowhere else in the module, with no record wildcard
+  one field, written as one equation with no arguments, guards or `where`
+  bindings and bound nowhere else in the module, with no record wildcard
   `{..}` covering the use, in a module that binds none of `modifyTableFields`,
   `tableModification`, `fieldNamed` and `(<>)` itself; if no column is
   renamed, drop `modifyTableFields`.
@@ -133,6 +136,113 @@
   (source text such as a quasi-quote, an option value, a path), cut each such
   value at 500 characters, and are capped at 4000 characters, so source text
   can no longer add lines or terminal escapes to a build log.
+* **Breaking:** a type with a `Beamable` deriving or instance, or a `Table` or
+  `ModelMeta` instance, that the plugin can't extract as a table is a compile
+  error (`UNEXTRACTED_TABLE`); before, it was silently left out of the
+  contract. This covers a positional or GADT-syntax record, an instance for a
+  type declared in another module, a table whose `Beamable` comes from another
+  module or from Template Haskell, and a `Database` record. Standalone
+  `deriving instance Beamable XxxT` is now read like an inline deriving clause.
+  A derived `Table` or `ModelMeta` instance, inline or standalone, counts too,
+  but has no methods to read: a derived `ModelMeta`'s modifier is
+  `UNRECOGNIZED_MODIFIER_SHAPE` unless `allowNonStandardModifier` is set.
+* **Breaking:** a table with no `ModelMeta` instance in its module is a compile
+  error (`MISSING_MODEL_META`). `tableNameOverrides` no longer stands in for
+  the instance, because the table's column names would be guessed.
+* **Breaking:** a `Table`, `ModelMeta` or `Beamable` instance that isn't for one
+  unqualified type constructor is a compile error (`UNREADABLE_INSTANCE_HEAD`):
+  a type variable, as in `instance Table t => ModelMeta t`, a qualified or
+  promoted name, a `Table` or `ModelMeta` instance for a key (`PrimaryKey t`),
+  or a class applied to two types (`X.Table Int XxxT`). A qualified or promoted
+  name used to be taken for the module's own type of the same name, and a
+  two-type class for the one-parameter one.
+* **Breaking:** two `Table`, `ModelMeta` or `Beamable` instances for one type
+  name in a module are a compile error (`DUPLICATE_INSTANCE`): same-named
+  classes of different modules, or one parameterised type at two arguments.
+  The later one used to win, so a table could take another class's name and
+  key, or one of two instantiations was silently missing.
+* **Fix:** an instance with a context (`instance C => ModelMeta XxxT`) or with a
+  kind signature around its head is read. A `ModelMeta` instance with a context
+  used to be skipped, so with `tableNameOverrides` the table was emitted with
+  Beam's default column names.
+* **Breaking:** `modelTableType` must be `Nothing` or `Just` of a `TableType`
+  constructor, and `modelSchemaName` must be `Nothing`, `Just "literal"` or
+  `Just <value name>`, each also in parentheses or with a type signature, as
+  one equation with no arguments, guards or `where` bindings. Any other shape
+  is a compile error (`UNRESOLVABLE_MODEL_META_FIELD`), with no opt-out.
+  Before, `Just $ x`, `pure x`, `Just (f x)`, a guarded binding or several
+  equations were recorded as `null`, which routes the table to the wrong
+  database downstream; `modelTableType = Just someVar` (or a pattern synonym)
+  was recorded under that name, and `modelSchemaName = Just s where s = …` as
+  the name `s`. A derived `ModelMeta` instance is refused too, even under
+  `allowNonStandardModifier` and `tableNameOverrides`: deriving via can take
+  both fields from another type, and they used to be recorded as `null`. The
+  names themselves are matched as written, not resolved: an imported pattern
+  synonym that reuses `Just`, `Nothing` or a `TableType` constructor name is
+  read as the name written, and the recorded value then differs from the one
+  at runtime.
+* **Fix:** `modelTableType = Just CON :: Maybe TableType`, with the signature
+  around the whole value, is read; it used to be recorded as `null`.
+* **Breaking:** a punned field in a modifier's `tableModification { … }`
+  (`{ fooName }`) is `UNRESOLVABLE_COLUMN_NAME`, and a modifier in
+  `OverloadedRecordUpdate` syntax is `UNRECOGNIZED_MODIFIER_SHAPE`
+  (`allowNonStandardModifier` still opts out of the second). Both used to be
+  skipped silently, so the column kept Beam's default name. A
+  `dbModification { … }` in `OverloadedRecordUpdate` syntax is not read as a
+  rename either.
+* **Breaking:** each field `primaryKey` applies must be a column the plugin
+  extracts for the table (`UNKNOWN_PRIMARY_KEY_FIELD`): a helper function,
+  another module's name (`M.fooId`) or a field that `allowUnknownColumnWrapper`
+  leaves out is refused. Before, the contract named such a key column
+  (`pkColumns: [someHelper]`) and marked none of the table's columns as the key.
+* **Breaking:** `modelTableName`, `modelFieldModification`, the top-level
+  binding it names and `primaryKey` must each be written once, as one equation
+  with no guards or `where` bindings. A `where` binding used to be ignored, so
+  one that shadowed the modifier binding, `tableModification`, `fieldNamed` or a
+  key field was read as the outer name; a pattern-bound
+  `modelFieldModification` was read as no overrides; and of two bindings, the
+  last was read. Such a definition is now unreadable: `UNRESOLVABLE_TABLE_NAME`
+  (`tableNameOverrides` still applies), `UNRECOGNIZED_MODIFIER_SHAPE`,
+  `UNRESOLVABLE_MODIFIER_BINDING` or `UNRESOLVABLE_PRIMARY_KEY`. An empty
+  `where`, which binds nothing, is accepted, for `modelTableType` and
+  `modelSchemaName` too.
+* **Breaking:** a module that defines, itself, a name the plugin reads a
+  table through is a compile error (`REDEFINED_NAME`): `tableModification` or
+  `fieldNamed`, a name `primaryKey` applies (`.`, `<$>`, `<*>`, `getField`, or a
+  field name the module also binds another way), a pattern synonym named `Just`,
+  `Nothing` or a `TableType` constructor, or a type, type synonym or family
+  named `C`, `Columnar`, `Maybe` or `TableEntity`. They used to be read as
+  Beam's or base's names: a `type C f a = Columnar f (Maybe a)` made a nullable
+  column read as not nullable. An imported redefinition is not seen.
+* **Breaking:** a table is a compile error (`UNEXTRACTED_TABLE`) when a
+  `Generic` instance in its module could be its and is not a stock
+  derivation: one written by hand, or derived `via`, `newtype` or `anyclass`,
+  also for a type synonym of the module or a head the plugin can't read. Beam
+  names the columns from the Generic representation, which only a stock
+  derivation takes from the record's fields; the contract used to name the
+  fields whatever the instance. A `Generic` instance that Template Haskell or
+  another plugin (large-records) generates is not seen.
+* **Breaking:** a module that defines a table or a `setEntityName` override is a
+  compile error if it enables `RebindableSyntax` (`UNSUPPORTED_EXTENSION`), has a
+  `RULES` pragma (`UNSUPPORTED_RULES`) or binds a record wildcard pattern at top
+  level (`UNSUPPORTED_RECORD_WILDCARD`), with no opt-out; other modules are
+  unaffected. These used to be read as written: under `RebindableSyntax`,
+  `x.f` and string literals call the module's own `getField` and `fromString`; a
+  rule can rewrite `fieldNamed` and GHC applies it when it optimises; and a
+  record wildcard stands for names the parser does not show.
+* **Fix:** a punned field of a pattern binding in an instance
+  (`Mods{modelFieldModification} = mods`) binds its label, as the parser leaves
+  that out of the binders it lists. Such a method is unreadable like any other
+  pattern-bound one; before, it was read as absent, or the other binding of it
+  was read. GHC rejects the module, but only after the plugin has run.
+* **Fix:** a `Table`, `ModelMeta` or `Beamable` instance whose head nests a
+  context or a `forall` (`instance C => (D => Table T)`) is read like any
+  other; it used to be skipped silently. GHC rejects such a head, but only
+  after the plugin has run.
+* The `UNRESOLVABLE_PRIMARY_KEY` message lists all seven accepted shapes. The
+  `UNRESOLVABLE_COLUMN_NAME` message no longer speaks of a right-hand side for a
+  punned field, and the `UNRESOLVABLE_TABLE_NAME` fix names `tableNameOverrides`
+  and fits a literal that is where-bound or written twice.
 
 ## 0.4.2
 

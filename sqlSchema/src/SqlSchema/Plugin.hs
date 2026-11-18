@@ -48,6 +48,7 @@ import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Lazy       as BL
 import           Data.Foldable              (toList)
 import           Data.List.NonEmpty         (NonEmpty (..), nonEmpty)
+import           Data.Maybe                 (isJust)
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (encodeUtf8)
 import qualified Data.Yaml                  as YAML
@@ -61,6 +62,7 @@ import           System.IO.Error            (isDoesNotExistError)
 -- GHC API (>= 9.0)
 import qualified GHC
 import           GHC.Driver.Env             (Hsc)
+import           GHC.Driver.Session         (FlagSpec (..), xFlags, xopt)
 import           GHC.Data.Bag               (listToBag)
 import           GHC.Data.FastString        (mkFastString)
 import           GHC.Driver.Plugins         (CommandLineOption, Plugin (..),
@@ -82,7 +84,7 @@ import           GHC.Unit.Module.ModSummary (ModSummary (..))
 import           GHC.Utils.Outputable       (docToSDoc, reallyAlwaysQualify)
 import qualified GHC.Utils.Ppr              as Pretty
 
-import           SqlSchema.Extract          (FragmentAction (..), planFragment)
+import           SqlSchema.Extract          (FragmentAction (..), extensionErrors, planFragment)
 import           SqlSchema.Types
 
 
@@ -159,11 +161,21 @@ stageFragmentWith cli modSummary hpm = do
       Just es -> throwSqlSchemaErrors (fragmentsDir cli) modSpan es
       Nothing -> throwPluginMessages modSpan (internalError :| [])
     Right LeaveUntouched   -> pure ()
-    Right (Stage fragment) -> liftIO (stagePending (fragmentPath cli modStr) fragment)
+    Right (Stage fragment) ->
+      case nonEmpty (extensionErrors (rebindableSyntaxOn modSummary) (isJust fragment)) of
+        Just es -> throwSqlSchemaErrors (fragmentsDir cli) modSpan es
+        Nothing -> liftIO (stagePending (fragmentPath cli modStr) fragment)
   where
     internalError =
       "sql-schema: INTERNAL_ERROR: the extractor rejected this module without saying why.\n"
       <> "  This is a bug in the sql-schema plugin, not in the module; report it with the module's source."
+
+-- | Looked up by name, since the extension's type is in a package this one does not depend on;
+-- an unknown name counts as on.
+rebindableSyntaxOn :: ModSummary -> Bool
+rebindableSyntaxOn ms = case [flagSpecFlag f | f <- xFlags, flagSpecName f == "RebindableSyntax"] of
+  [ext] -> xopt ext (ms_hspp_opts ms)
+  _     -> True
 
 -- | Appended to the end of the Core pipeline, which GHC starts only after
 -- type checking, desugaring and the -Werror check pass: for a module it

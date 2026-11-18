@@ -14,11 +14,36 @@ For every Beam table (`data XxxT (f :: Type -> Type) = Xxx { … } deriving
 (…, Beamable)`) the plugin captures:
 
 - The table type's name and its source module.
-- `modelTableName`, `modelTableType` from the `ModelMeta` instance.
+- `modelTableName` from the `ModelMeta` instance.
+- `modelTableType` and `modelSchemaName` from the `ModelMeta` instance, in
+  these shapes only (a field the instance leaves out is `Nothing`):
+  - `modelTableType`: `Nothing` or `Just` of a `TableType` constructor
+    (`DOMAIN`, `CONFIG`, `COMMON_CONFIG`, `TRACKER`, `COMMON_TRACKER`),
+    recorded unqualified (`Just Se.TRACKER` gives `TRACKER`);
+  - `modelSchemaName`: `Nothing`, `Just "literal"` (recorded as
+    `SchemaLiteral`) or `Just <value name>`, qualified or not (recorded as
+    `SchemaConfig`, qualifier kept).
+
+  Parentheses and type signatures around the `Just …` or its argument are
+  read. The binding must be written once, as a plain equation with no
+  arguments, guards or `where` bindings. Any other shape, or a derived
+  `ModelMeta` instance, is a compile error (`UNRESOLVABLE_MODEL_META_FIELD`):
+  recorded as `Nothing`, it would route the table to the wrong database.
+
+  The names are matched as written, not resolved, so a pattern synonym of
+  this module that reuses `Just`, `Nothing` or the name of a `TableType`
+  constructor is refused (`REDEFINED_NAME`); an imported one is the **Limit**
+  below.
 - `primaryKey` from the `Table` instance — the key constructor and the Haskell field names it applies (not a column list).
+  Each must be a column field the plugin extracts for the table
+  (`UNKNOWN_PRIMARY_KEY_FIELD`).
 - For each `Columnar f T` field: Haskell field name, the column name
   applied via `fieldNamed` (defaults to Beam's `defaultDbSettings` name if
   no override), pretty-printed Haskell type, nullability (any `Maybe _`).
+  The modifier is read only as `tableModification { field = fieldNamed "…", … }`
+  in plain record update syntax: a punned field (`{ fooName }`) is
+  `UNRESOLVABLE_COLUMN_NAME`, and `OverloadedRecordUpdate` syntax
+  `UNRECOGNIZED_MODIFIER_SHAPE`.
 - Each `setEntityName` override, cross-checked at merge time against the
   referenced table's `modelTableName`. The plugin reads
   `field = setEntityName "sql_name"` in a `dbModification { … }` that is the
@@ -36,11 +61,52 @@ For every Beam table (`data XxxT (f :: Type -> Type) = Xxx { … } deriving
   may be in the binding's declaration, a top-level pattern binding or a
   top-level splice, and the module must not bind `setEntityName`,
   `dbModification`, `withDbModification`, `(<>)`, `modifyTableFields` or
-  `setEntitySchema` itself. Any other `setEntityName` in the module is a
+  `setEntitySchema` itself, nor declare a type named `TableEntity`. Any other
+  `setEntityName` in the module is a
   compile error (`UNCAPTURED_SET_ENTITY_NAME`), Template Haskell quotes,
   name quotes (`'setEntityName`) and punned record fields
   (`R { setEntityName }`) included: a rename the plugin doesn't read would
   never be cross-checked.
+
+
+Each definition the plugin reads (`modelTableName`, `modelTableType`,
+`modelSchemaName`, `modelFieldModification`, the top-level binding it names,
+and `primaryKey`) must be written once, as one equation with no guards and no
+`where` bindings: a `where` binding could shadow a name the plugin reads
+there. Only `primaryKey` may take an argument. The module must not define,
+itself, a name the plugin reads a table through (`REDEFINED_NAME`):
+`tableModification` or `fieldNamed` in any form, a name `primaryKey`
+applies (`.`, `<$>`, `<*>`, `getField`, a field name) in any form but a
+record field, a pattern synonym named `Just`, `Nothing` or a `TableType`
+constructor, or a type, type synonym or family named `C`, `Columnar`, `Maybe`
+or `TableEntity`. A table is refused (`UNEXTRACTED_TABLE`) when a `Generic`
+instance in its module could be its and is not a stock derivation: one written
+by hand, or derived `via`, `newtype` or `anyclass`, also for a type synonym of
+the module or a head the plugin can't read. Beam names the columns from the
+Generic representation, which only a stock derivation takes from the record's
+fields. A `Generic` instance the source doesn't show, from Template Haskell or
+another plugin (large-records generates one), is not seen.
+
+A module that defines a table or a `setEntityName` override must not enable
+`RebindableSyntax` (`UNSUPPORTED_EXTENSION`: record-dot syntax and string
+literals then call the module's own `getField` and `fromString`), have a
+`RULES` pragma (`UNSUPPORTED_RULES`: GHC applies a rule when it optimises),
+or bind a record wildcard pattern at top level (`UNSUPPORTED_RECORD_WILDCARD`:
+`R{..} = …` binds names the parser does not show). Other modules are
+unaffected.
+
+**Limit:** the plugin reads the parsed module, so it cannot see a
+redefinition it would have to resolve: an imported one (a project module
+that exports its own `fieldNamed`, a pattern synonym named `Just`, a type
+named `C`, or a Prelude replacement with its own `.`), a qualified operator
+(`P.<$>`), or a name a Template Haskell splice binds at top level. Each is read
+as Beam's or base's name. Nor does it
+see a `RULES` pragma in another module, which GHC applies in any module that
+imports it, directly or not. Model code must not import such redefinitions or
+rules. Type synonyms are read as written as well: a column typed through one
+that hides `Maybe` (`type Opt = Maybe`, then `C f (Opt Text)`) is recorded as
+not nullable. A typecheck-time pass will check nullability against the
+expanded types.
 
 ### DB-settings renames
 
@@ -50,7 +116,8 @@ applied in the DB settings must be the contract's. The plugin accepts
 `modifyTableFields xxxTMod` applied directly, where `xxxTMod` is unqualified
 and is the binding named in `modelFieldModification` of a table of the same
 module: a top-level `xxxTMod = tableModification { … }` with at least one
-field, bound nowhere else in the module, with no record wildcard `{..}` in
+field, written as one equation with no guards or `where` bindings and bound
+nowhere else in the module, with no record wildcard `{..}` in
 the use's declaration, a top-level pattern binding or a top-level splice, in
 a module that binds none of `modifyTableFields`, `tableModification`,
 `fieldNamed` and `(<>)` itself. Passing that binding is enough,
@@ -88,10 +155,15 @@ The plugin reads the parsed source, before names and types are resolved:
   in a pattern, is not refused. The changed value renames a table only once
   it is wrapped back into the refused `DatabaseEntity`.
 - An instance can change what a class method does at one type without
-  binding its name: an `OVERLAPPING` `Semigroup` instance at
+  binding its name, as an `OVERLAPPING` `Semigroup` instance at
   `EntityModification … (TableEntity T)` changes how a `<>` chain combines.
-  An instance method defines its class's method, so it is not refused as a
-  binding of `(<>)`.
+  So the methods of an instance whose type names `EntityModification` or
+  `DatabaseEntity`, or that has an overlap pragma, count as names the module
+  binds, and such a `(<>)` refuses the module's renames; other instances'
+  methods don't. Not seen: such an instance in another module, and one whose
+  type names those types only through a type synonym and that overlaps by the
+  `OverlappingInstances` or `IncoherentInstances` extension instead of a
+  pragma.
 - `coerce` can build an `EntityModification` without naming it, for example
   by substituting another `Database` record's entity for a table's. That
   rename is not seen.
@@ -179,7 +251,7 @@ stderr warning, not an error.
 | `fragmentsDir`              | string       | `./.juspay/sql-schema-fragments`     | Where per-module fragments are written; it must hold only this plugin's files. For incremental builds that restore the build directory, keep it inside that directory (e.g. `dist/build/sql-schema-fragments`), or the fragments of modules that were not recompiled are lost. Components that share one directory must not define same-named modules with tables: their fragments share a file, and the last compile wins. Same-named modules without tables (several test suites' `Main`) must not be compiled at the same time: they race on that file, and the losing compile fails with `STAGED_FRAGMENT_MISSING`, never with a wrong fragment. Give such components their own `fragmentsDir`, or no plugin. An empty value or the working directory (`.`, `./`) is an invalid option. |
 | `blacklistModules`          | [string]     | `[]`                                 | Modules to skip entirely. An entry ending in `.` (e.g. `Test.`) skips every module it prefixes; any other entry skips only the module of exactly that name (`App.Db` skips only `App.Db`; `App.Db.` skips `App.Db.Pool`, but not `App.Db`). An empty entry, or one starting with `.`, is an invalid option. |
 | `allowUnknownColumnWrapper` | bool         | `false`                              | If `true`, fields whose type isn't `Columnar f T` / `C f T` are silently left out of the table (no warning). Use only for migrations — the default refusal is the safe stance. |
-| `allowNonStandardModifier`  | bool         | `false`                              | If `true`, a modifier the plugin can't read is silently treated as "no overrides" (Beam default names): one that isn't `tableModification { … }` (guarded definitions included), or a binding that isn't a plain top-level `x = …` of this module with one unguarded right-hand side (imported, qualified, or bound in `where` or by a pattern). Same caveat as above. |
+| `allowNonStandardModifier`  | bool         | `false`                              | If `true`, a modifier the plugin can't read is silently treated as "no overrides" (Beam default names): one that isn't `tableModification { … }` (guarded, repeated or `where`-bound definitions and `OverloadedRecordUpdate` syntax included), or a binding that isn't a plain top-level `x = …` of this module, bound once, with one unguarded right-hand side and no `where` bindings (imported, qualified, or bound by a pattern). It does not cover `REDEFINED_NAME` or the `UNSUPPORTED_` errors. Same caveat as above. |
 | `tableNameOverrides`        | {str: str}   | `{}`                                 | Per-type-name SQL-name override; applied only when `modelTableName` is not a static literal (e.g. `modelTableName = SomeConst.fooName`). Lets you assert the resolved value in plugin config instead of editing storage source. |
 
 ## Safety policy
@@ -190,15 +262,25 @@ shape it can't read precisely:
 
 | Hard compile error             | What it means |
 |--------------------------------|---------------|
-| `UNRESOLVABLE_TABLE_NAME`      | `modelTableName` isn't a literal. Inline the literal, or use `tableNameOverrides`. |
-| `UNRESOLVABLE_COLUMN_NAME`     | The RHS inside `xxxTMod` isn't `fieldNamed "lit"`. Either rewrite or drop the override. |
-| `UNRESOLVABLE_PRIMARY_KEY`     | `primaryKey` isn't in a recognised shape. Rewrite into one of the supported forms. |
+| `UNEXTRACTED_TABLE`            | A type with a `Beamable`, `Table` or `ModelMeta` instance in the module (written, derived inline or derived standalone) isn't a table the plugin can read: it has no data declaration in the module; its declaration isn't a single-constructor record (Haskell 98 syntax) with the column functor as last type parameter; nothing in the module derives or declares `Beamable` for it (Template Haskell output isn't seen); it derives `Database`; or a `Generic` instance in the module that could be its is written by hand, or derived `via`, `newtype` or `anyclass` (also for a type synonym of the module). The message gives the fix for its reason. |
+| `MISSING_MODEL_META`           | A table has no `ModelMeta` instance in its module. `tableNameOverrides` doesn't stand in for one. |
+| `UNREADABLE_INSTANCE_HEAD`     | A `Table`, `ModelMeta` or `Beamable` instance isn't for one unqualified type constructor, so the plugin can't tell which table it belongs to: e.g. `instance Table t => ModelMeta t`, `instance ModelMeta M.FooT`, a promoted `'FooT`, `instance Table (PrimaryKey FooT)` (a key's `Beamable` instance is fine), or a class applied to two types (`instance X.Table Int FooT`). |
+| `DUPLICATE_INSTANCE`           | The module has two `Table`, `ModelMeta` or `Beamable` instances, written or derived, for one type name: same-named classes of different modules, or one parameterised type at two arguments (`ModelMeta (Wrap A)` and `ModelMeta (Wrap B)`). Keep one per table type. |
+| `UNRESOLVABLE_TABLE_NAME`      | `modelTableName` isn't a literal written once, as one equation with no arguments, guards or `where` bindings. Inline the literal, or use `tableNameOverrides`. |
+| `UNRESOLVABLE_MODEL_META_FIELD` | `modelTableType` or `modelSchemaName` isn't in a shape listed under "What it extracts" (e.g. `Just $ x`, `pure x`, `Just (f x)`, `Just someVar` for `modelTableType`, a guarded binding), or comes from a derived `ModelMeta` instance. There is no opt-out. |
+| `UNRESOLVABLE_COLUMN_NAME`     | The RHS inside `xxxTMod` isn't `fieldNamed "lit"`, a punned field (`{ fooName }`) included. Either rewrite or drop the override. |
+| `UNRESOLVABLE_PRIMARY_KEY`     | `primaryKey` is missing, or isn't written once, as one equation with no guards or `where` bindings, in a recognised shape. Rewrite into one of the supported forms. |
+| `UNKNOWN_PRIMARY_KEY_FIELD`    | A field `primaryKey` applies isn't a column the plugin extracts for the table: a helper function, another module's name (`M.fooId`), or a field `allowUnknownColumnWrapper` left out. There is no opt-out. |
 | `UNRECOGNIZED_FIELD_WRAPPER`   | A field's type isn't `Columnar f T` / `C f T`. Override via `allowUnknownColumnWrapper` only if you accept that field being omitted (the table is still emitted). |
-| `UNRECOGNIZED_MODIFIER_SHAPE`  | `modelFieldModification`, or the `xxxTMod` binding it names, isn't a single unguarded `tableModification { … }`. Override via `allowNonStandardModifier`. |
-| `UNRESOLVABLE_MODIFIER_BINDING`| `modelFieldModification` names a binding the plugin can't read: it reads only a plain top-level `x = …` binding of this module, referenced unqualified, with one unguarded right-hand side. Define it that way, or use `allowNonStandardModifier`. |
-| `UNCAPTURED_SET_ENTITY_NAME`   | A `setEntityName` the plugin doesn't capture as an override: one outside the shape under "What it extracts" (in an EMod or other separate binding, a `where` or `let` binding, an instance method, a splice, or a `dbModification` that `withDbModification` does not apply to a top-level binding's result), with a non-literal name, in a `<>` chain with two of them or with another kind of operand, under a type annotation, a label qualified with another module or a record wildcard `{..}`, in an update whose labels no single record of the module declares, before a later `withDbModification` operand that isn't a `dbModification { … }` update, on a field with no table type or several across the module's records, or in a module that binds one of the names the shape relies on. The message names the line and the reason. Rewrite it into the shape that is read. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
-| `UNCAPTURED_MODIFY_TABLE_FIELDS` | A `modifyTableFields` outside the shape under "DB-settings renames": not applied directly to an argument, an argument that isn't an unqualified variable or isn't the `modelFieldModification` binding of a table of this module, a binding name also bound elsewhere in the module (a parameter or a `where` binding, say) or rebound by a record wildcard `{..}`, a module that binds `modifyTableFields`, `tableModification`, `fieldNamed` or `(<>)` itself, a type application, or a binding that isn't a `tableModification { … }` with at least one field. The message names the line and the reason. Pass the binding named in `modelFieldModification`; if no column is renamed, drop `modifyTableFields`. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
+| `UNRECOGNIZED_MODIFIER_SHAPE`  | `modelFieldModification`, or the `xxxTMod` binding it names, isn't a single unguarded `tableModification { … }` in plain record update syntax (`OverloadedRecordUpdate` syntax and a derived `ModelMeta` instance included), or `modelFieldModification` is bound twice, by a pattern, or with `where` bindings. Override via `allowNonStandardModifier`. |
+| `UNRESOLVABLE_MODIFIER_BINDING`| `modelFieldModification` names a binding the plugin can't read: it reads only a plain top-level `x = …` binding of this module, referenced unqualified, bound once, with one unguarded right-hand side and no `where` bindings. Define it that way, or use `allowNonStandardModifier`. |
+| `UNCAPTURED_SET_ENTITY_NAME`   | A `setEntityName` the plugin doesn't capture as an override: one outside the shape under "What it extracts" (in an EMod or other separate binding, a `where` or `let` binding, an instance method, a splice, or a `dbModification` that `withDbModification` does not apply to a top-level binding's result), with a non-literal name, in a `<>` chain with two of them or with another kind of operand, under a type annotation, a label qualified with another module or a record wildcard `{..}`, in an update whose labels no single record of the module declares, before a later `withDbModification` operand that isn't a `dbModification { … }` update, on a field with no table type or several across the module's records, or in a module that binds one of the names the shape relies on or declares a type named `TableEntity`. The message names the line and the reason. Rewrite it into the shape that is read. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
+| `UNCAPTURED_MODIFY_TABLE_FIELDS` | A `modifyTableFields` outside the shape under "DB-settings renames": not applied directly to an argument, an argument that isn't an unqualified variable or isn't the `modelFieldModification` binding of a table of this module, a binding name also bound elsewhere in the module (a parameter or a `where` binding, say) or rebound by a record wildcard `{..}`, a module that binds `modifyTableFields`, `tableModification`, `fieldNamed` or `(<>)` itself, a type application, or a binding that isn't one equation with no arguments, guards or `where` bindings, a `tableModification { … }` with at least one field. The message names the line and the reason. Pass the binding named in `modelFieldModification`; if no column is renamed, drop `modifyTableFields`. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
 | `UNSUPPORTED_ENTITY_RENAME`    | A use of `modifyTable`, `modifyEntityName`, `withTableModification` or `renamingFields`, or of `EntityModification`, `DatabaseEntity`, `dbEntityName` or `dbTableCurrentName` as a variable, a constructor or a constructor pattern (a signature or a record label may name them): each can rename a table or its columns in a way the plugin can't read. Rename the table with `setEntityName "sql_name"` and its columns with `modifyTableFields` as under "DB-settings renames". No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
+| `REDEFINED_NAME`               | The module defines, itself, a name the plugin reads a table through: `tableModification` or `fieldNamed`, or a name `primaryKey` applies (`.`, `<$>`, `<*>`, `getField`, or a field name the module also binds another way, as `NoFieldSelectors` allows), or a pattern synonym named `Just`, `Nothing` or a `TableType` constructor, or a type, type synonym or family named `C`, `Columnar`, `Maybe` or `TableEntity`. Names are matched as written, so the plugin can't tell the module's definition from Beam's or base's. Rename it. There is no opt-out. |
+| `UNSUPPORTED_EXTENSION`        | A module that defines a table or a `setEntityName` override enables `RebindableSyntax`, whether by a pragma or a flag. Under it, record-dot syntax and string literals call the `getField` and `fromString` in scope, so the plugin could record a key, name or column the code does not use. Turn it off in that module (`{-# LANGUAGE NoRebindableSyntax #-}`, with `import Prelude`: `RebindableSyntax` also turned the implicit Prelude import off). There is no opt-out. |
+| `UNSUPPORTED_RULES`            | A module that defines a table or a `setEntityName` override has a `RULES` pragma. A rule can rewrite `fieldNamed` or another name the plugin reads, and GHC applies it when it optimises. Move the rules to a module this module does not import, directly or not: GHC applies a rule in every module that imports its module, however indirectly. There is no opt-out. |
+| `UNSUPPORTED_RECORD_WILDCARD`  | A module that defines a table or a `setEntityName` override binds a record wildcard pattern at top level (`R{..} = …`), which binds names the parser does not show. Bind the fields by name, or move it to another module. There is no opt-out. |
 | `INVALID_PLUGIN_OPTIONS`       | The `-fplugin-opt` JSON is malformed, has an unknown key, a wrong-typed value, an invalid `blacklistModules` entry or `fragmentsDir`, or is given more than once. |
 | `STAGED_FRAGMENT_MISSING`      | The module's staged fragment was gone when the plugin went to publish it (see Architecture notes): something else removed it from `fragmentsDir`, such as a compile of a same-named module at the same time (see `fragmentsDir` above). Rebuild the module. |
 
@@ -216,6 +298,9 @@ primaryKey x = Con x.f1 x.f2             -- native OverloadedRecordDot,
 primaryKey   = Con <$> f1 <*> f2 <*> …   -- applicative composite
 primaryKey _ = ConNullary                -- no-column PK
 ```
+
+`primaryKey` is written once, with no guards or `where` bindings, and each
+field it applies is one of the table's own columns, unqualified.
 
 ## Architecture notes
 
