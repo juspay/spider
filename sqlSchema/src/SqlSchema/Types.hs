@@ -31,6 +31,9 @@ module SqlSchema.Types
   , SqlSchemaError(..)
   , errorCode
   , generateErrorMessage
+    -- * Message backstop, exported for the test-suite
+  , escapeUnsafe
+  , capMessage
   ) where
 
 import           Control.Monad (unless, when)
@@ -323,10 +326,28 @@ data SqlSchemaError
     --   unguarded right-hand side.
     UNRESOLVABLE_MODIFIER_BINDING String String
     --                            typeName  binding-name
+  | -- | A @setEntityName@ that is not captured as an override: the contract
+    --   would not record a rename Beam applies.
+    UNCAPTURED_SET_ENTITY_NAME String String
+    --                         line:col  reason
+  | -- | A @modifyTableFields@ not applied to the modifier binding of a table
+    --   extracted from this module: the column renames Beam applies could
+    --   differ from the contract's.
+    UNCAPTURED_MODIFY_TABLE_FIELDS String String
+    --                             line:col  reason
+  | -- | A use of a Beam function, constructor or field that can rename a
+    --   table or its columns in a way the plugin cannot read, e.g.
+    --   @modifyEntityName@.
+    UNSUPPORTED_ENTITY_RENAME String String
+    --                        line:col  name
   | -- | The @-fplugin-opt@ JSON was malformed, had an unknown key, a
     --   wrong-typed value, an invalid @blacklistModules@ entry or
     --   @fragmentsDir@, or was given more than once.
     INVALID_PLUGIN_OPTIONS String
+  | -- | The publish pass found the file the parse step staged gone:
+    --   publishing nothing would leave the module's old fragment in place.
+    STAGED_FRAGMENT_MISSING String
+    --                      staged-file path
   deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 -- | The constructor name, e.g. @UNRESOLVABLE_TABLE_NAME@.
@@ -355,37 +376,54 @@ generateErrorMessage :: FilePath -> SqlSchemaError -> String
 generateErrorMessage fragDir e =
   capMessage ("sql-schema: " <> errorCode e <> ": " <> escapeUnsafe (errorText fragDir e))
 
--- Messages quote source text (names, types, quasi-quotes) that could otherwise
--- start a forged "sql-schema:" line or put terminal escapes in the log; only a
--- template's "\n  " continuation keeps a real newline.
+-- The backstop for template text: each value a message quotes has been through
+-- escapeField, and only a template's "\n  " continuation keeps a real newline.
 escapeUnsafe :: String -> String
 escapeUnsafe = \case
   '\n' : rest@(' ' : ' ' : _) -> '\n' : escapeUnsafe rest
   c : rest
-    | generalCategory c `elem` [Control, Format, LineSeparator, ParagraphSeparator]
-                -> showLitChar c (escapeUnsafe rest)
-    | otherwise -> c : escapeUnsafe rest
-  []            -> []
+    | unsafeChar c -> showLitChar c (escapeUnsafe rest)
+    | otherwise    -> c : escapeUnsafe rest
+  []               -> []
 
--- Generous: the longest template is about 600 characters.
+-- Generous: the longest message with empty values is 1116 characters, so three
+-- values cut at fieldCap stay under the 4000-character cap unless they are full
+-- of escapes.
 capMessage :: String -> String
 capMessage msg
   | length msg <= 4000 = msg
-  | otherwise          = dropWhileEnd isSpace (take (4000 - length marker) msg) <> marker
+  | otherwise          = dropWhileEnd isSpace (take (4000 - length truncatedMarker) msg) <> truncatedMarker
+
+-- Each value a message quotes: escaping every unsafe character, newlines included,
+-- keeps it from forging a "sql-schema:" line or a terminal escape, and the cut
+-- keeps a long one from crowding the template's fix out of the capped message.
+escapeField :: String -> String
+escapeField s = case splitAt fieldCap s of
+  (kept, [])    -> escapeAll kept
+  (kept, _ : _) -> escapeAll kept <> truncatedMarker
   where
-    marker = " … [truncated]"
+    escapeAll = foldr (\c rest -> if unsafeChar c then showLitChar c rest else c : rest) ""
+
+fieldCap :: Int
+fieldCap = 500
+
+unsafeChar :: Char -> Bool
+unsafeChar c = generalCategory c `elem` [Control, Format, LineSeparator, ParagraphSeparator]
+
+truncatedMarker :: String
+truncatedMarker = " … [truncated]"
 
 errorText :: FilePath -> SqlSchemaError -> String
 errorText fragDir = \case
   UNRESOLVABLE_TABLE_NAME t ->
-    "modelTableName for '" <> t <> "' is not a string literal — the sql-schema plugin cannot statically extract it.\n" <>
+    "modelTableName for '" <> escapeField t <> "' is not a string literal — the sql-schema plugin cannot statically extract it.\n" <>
     "  Replace the computed value with a literal string.\n" <>
-    "  (Fragments dir: " <> fragDir <> ")"
+    "  (Fragments dir: " <> escapeField fragDir <> ")"
   UNRESOLVABLE_COLUMN_NAME t f ->
-    "The RHS of '" <> f <> "' inside the *TMod for '" <> t <> "' is not 'fieldNamed \"…\"' with a literal.\n" <>
-    "  Either rewrite it as 'fieldNamed \"explicit_name\"' or drop the override so the column falls back to Beam's default name '" <> beamDefaultColumnName f <> "'."
+    "The RHS of '" <> escapeField f <> "' inside the *TMod for '" <> escapeField t <> "' is not 'fieldNamed \"…\"' with a literal.\n" <>
+    "  Either rewrite it as 'fieldNamed \"explicit_name\"' or drop the override so the column falls back to Beam's default name '" <> escapeField (beamDefaultColumnName f) <> "'."
   UNRESOLVABLE_PRIMARY_KEY t ->
-    "primaryKey for '" <> t <> "' is not in a recognised shape.\n" <>
+    "primaryKey for '" <> escapeField t <> "' is not in a recognised shape.\n" <>
     "  Accepted forms:\n" <>
     "    primaryKey x = Con (f1 x) (f2 x) …      (function equation, any arity)\n" <>
     "    primaryKey   = \\x -> Con (f1 x) …       (explicit lambda)\n" <>
@@ -393,18 +431,36 @@ errorText fragDir = \case
     "    primaryKey   = Con <$> f1 <*> f2 <*> …   (applicative composite)\n" <>
     "    primaryKey _ = ConNullary                (no-column PK)"
   UNRECOGNIZED_FIELD_WRAPPER t f ty ->
-    "Field '" <> f <> "' on table '" <> t <> "' has type '" <> ty <> "', which the plugin does not recognise as a Beam column wrapper.\n" <>
+    "Field '" <> escapeField f <> "' on table '" <> escapeField t <> "' has type '" <> escapeField ty <> "', which the plugin does not recognise as a Beam column wrapper.\n" <>
     "  Expected 'Columnar f T' or 'C f T'.\n" <>
     "  Silently dropping this field from the YAML would cause a downstream false-pass against the prod DB; refusing to extract instead.\n" <>
     "  Either rewrite the field to use Columnar, or set allowUnknownColumnWrapper in the plugin options to opt out per-build."
   UNRECOGNIZED_MODIFIER_SHAPE t binding ->
-    "Modifier binding '" <> binding <> "' for table '" <> t <> "' is not a single unguarded 'tableModification { … }'.\n" <>
+    "Modifier binding '" <> escapeField binding <> "' for table '" <> escapeField t <> "' is not a single unguarded 'tableModification { … }'.\n" <>
     "  The plugin cannot statically read column-name overrides from any other shape.\n" <>
     "  Silently falling back to Beam's default (defaultDbSettings) names would produce a wrong YAML; refusing to extract instead.\n" <>
     "  Either rewrite the binding, or set allowNonStandardModifier in the plugin options to opt out per-build."
   UNRESOLVABLE_MODIFIER_BINDING t binding ->
-    "Modifier binding '" <> binding <> "' for table '" <> t <> "' cannot be read: the plugin reads only a plain top-level 'x = …' binding of this module, referenced unqualified, with a single unguarded right-hand side.\n" <>
+    "Modifier binding '" <> escapeField binding <> "' for table '" <> escapeField t <> "' cannot be read: the plugin reads only a plain top-level 'x = …' binding of this module, referenced unqualified, with a single unguarded right-hand side.\n" <>
     "  Define the modifier that way, or pass allowNonStandardModifier in the plugin options to treat it as no overrides."
+  UNCAPTURED_SET_ENTITY_NAME loc reason ->
+    "setEntityName at " <> escapeField loc <> ": " <> escapeField reason <> ".\n" <>
+    "  A rename the plugin does not read is never checked against modelTableName, so the contract could name a table the code does not use; refusing to compile instead.\n" <>
+    "  Write the rename as 'field = setEntityName \"sql_name\"' in a dbModification { … } that is the right operand of withDbModification in the result of a top-level binding (not in a where or let binding, a case or if branch, an instance method or another function's argument), alone or in a '<>' chain whose other operands are 'modifyTableFields x' or 'setEntitySchema x'.\n" <>
+    "  'field' must have one type, 'f (TableEntity T)', across this module's records, and one record of this module must declare every label of the update, none qualified with another module; later withDbModification operands must be dbModification { … } updates; neither the dbModification nor the settings expression may carry a type annotation; no record wildcard '{..}' may cover the binding; and the module must not bind setEntityName, dbModification, withDbModification, (<>), modifyTableFields or setEntitySchema itself."
+  UNCAPTURED_MODIFY_TABLE_FIELDS loc reason ->
+    "modifyTableFields at " <> escapeField loc <> ": " <> escapeField reason <> ".\n" <>
+    "  The contract reads column names from the table's modelFieldModification binding, so a rename the DB settings apply from anything else could make it name a column the code does not use; refusing to compile instead.\n" <>
+    "  The accepted shape is 'modifyTableFields xxxTMod' applied directly, where 'xxxTMod' is unqualified and is the binding named in modelFieldModification of a table of this module: a top-level 'xxxTMod = tableModification { … }' with at least one field, bound nowhere else in the module, with no record wildcard '{..}' covering the use, in a module that binds none of modifyTableFields, tableModification, fieldNamed and (<>) itself.\n" <>
+    "  To fix it, pass the binding named in modelFieldModification; if no column is renamed, drop modifyTableFields."
+  UNSUPPORTED_ENTITY_RENAME loc name ->
+    escapeField name <> " at " <> escapeField loc <> ": it can rename a table or its columns in a way the plugin cannot read.\n" <>
+    "  A rename the plugin does not read is never checked against the contract, so the contract could name a table or column the code does not use; refusing to compile instead.\n" <>
+    "  Rename a table with setEntityName \"sql_name\" as the value of its dbModification { … } field, and its columns with 'modifyTableFields xxxTMod': pass the binding named in modelFieldModification; if no column is renamed, drop modifyTableFields."
   INVALID_PLUGIN_OPTIONS msg ->
-    "Invalid sql-schema plugin options: " <> msg <> "\n" <>
+    "Invalid sql-schema plugin options: " <> escapeField msg <> "\n" <>
     "  Pass one -fplugin-opt=SqlSchema.Plugin:{...} JSON object using only the documented keys."
+  STAGED_FRAGMENT_MISSING pending ->
+    "Nothing is staged at '" <> escapeField pending <> "' to publish: the plugin stages a module's fragment there when it parses the module, and publishes it once the module has passed type checking, desugaring and -Werror.\n" <>
+    "  Publishing nothing would keep the module's previous fragment in the contract, so the compile fails instead.\n" <>
+    "  Keep fragmentsDir for this plugin's files only, compile each module name into it once at a time, then rebuild the module."

@@ -18,7 +18,10 @@
 -- Per-module fragments solve the incremental-build problem: each module's
 -- fragment is rewritten (or deleted, once the module has nothing to record)
 -- only when GHC recompiles the module, and stale fragments are pruned at
--- merge time by checking that the source file still exists.
+-- merge time by checking that the source file still exists.  A compile
+-- stages the fragment when it parses the module and publishes it only once
+-- the module has passed type checking, desugaring and -Werror, so a compile
+-- that fails in between leaves the published fragment as it was.
 --
 -- Safety policy: anything the extractor cannot recognise becomes a hard
 -- compile error.  Silent omission of a table or wrong column name would
@@ -31,22 +34,28 @@ module SqlSchema.Plugin
   , beamDefaultColumnName
   , optionsFingerprint
   , parseCliOptions
-  , syncFragment
+  , pendingPath
+  , stagePending
+  , publishStaged
   ) where
 
-import           Control.Exception          (catch, throwIO)
+import           Control.Exception          (Exception, IOException, catch, onException, throwIO,
+                                             try)
 import           Control.Monad              (unless)
-import           Control.Monad.IO.Class     (liftIO)
+import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import qualified Data.Aeson                 as A
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Lazy       as BL
+import           Data.Foldable              (toList)
+import           Data.List.NonEmpty         (NonEmpty (..), nonEmpty)
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (encodeUtf8)
 import qualified Data.Yaml                  as YAML
 import           GHC.Fingerprint            (Fingerprint, fingerprintString)
-import           System.Directory           (createDirectoryIfMissing,
+import           System.Directory           (createDirectoryIfMissing, getFileSize,
                                              removeFile, renameFile)
-import           System.FilePath            (takeDirectory, (</>))
+import           System.FilePath            (takeDirectory, takeFileName, (</>))
+import           System.IO                  (hClose, openBinaryTempFileWithDefaultPermissions)
 import           System.IO.Error            (isDoesNotExistError)
 
 -- GHC API (>= 9.0)
@@ -62,9 +71,12 @@ import           GHC.Driver.Plugins         (ParsedResult (..))
 import           GHC.Utils.Error            (mkErrorMsgEnvelope)
 #endif
 import           GHC.Hs
+import           GHC.Plugins                (CoreM, CoreToDo (..), ModGuts (..))
 import qualified GHC.Types.Error            as ParseError
+import           GHC.Types.SourceFile       (isHsBootOrSig)
 import           GHC.Types.SrcLoc           (SrcSpan, mkGeneralSrcSpan, unLoc)
 import qualified GHC.Types.SourceError      as ParseError
+import           GHC.Unit.Module            (isInteractiveModule)
 import           GHC.Unit.Module.Location   (ModLocation (..))
 import           GHC.Unit.Module.ModSummary (ModSummary (..))
 import           GHC.Utils.Outputable       (docToSDoc, reallyAlwaysQualify)
@@ -85,15 +97,29 @@ plugin :: Plugin
 plugin = defaultPlugin
   { pluginRecompile    = \opts -> pure (MaybeRecompile (optionsFingerprint opts))
   , parsedResultAction = onParsed
+  , installCoreToDos   = \opts todos -> pure $
+      if any isPublishPass todos then todos
+      else todos ++ [CoreDoPluginPass publishPassName (publishPass opts)]
   }
+
+publishPassName :: String
+publishPassName = "sql-schema: publish the staged fragment"
+
+-- | A plugin given twice installs its passes twice; a second publish pass would
+-- find the staged fragment already published.
+isPublishPass :: CoreToDo -> Bool
+isPublishPass = \case
+  CoreDoPluginPass name _ -> name == publishPassName
+  CoreDoPasses todos      -> any isPublishPass todos
+  _                       -> False
 
 -- | GHC 9.4 wrapped the parsed module in 'ParsedResult'; it is returned unchanged.
 #if __GLASGOW_HASKELL__ >= 904
 onParsed :: [CommandLineOption] -> ModSummary -> ParsedResult -> Hsc ParsedResult
-onParsed opts modSummary pr = pr <$ writeFragment opts modSummary (parsedResultModule pr)
+onParsed opts modSummary pr = pr <$ stageFragment opts modSummary (parsedResultModule pr)
 #else
 onParsed :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc HsParsedModule
-onParsed opts modSummary hpm = hpm <$ writeFragment opts modSummary hpm
+onParsed opts modSummary hpm = hpm <$ stageFragment opts modSummary hpm
 #endif
 
 
@@ -112,69 +138,138 @@ parseCliOptions = \case
                    <> show (length raws))
 
 
-writeFragment
+stageFragment
   :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc ()
-writeFragment opts modSummary hpm = do
+stageFragment opts modSummary hpm = do
   let modSpan  = mkFileSrcSpan (ms_location modSummary)
   case parseCliOptions opts of
     Left err  -> throwSqlSchemaErrors (fragmentsDir defaultCliOptions) modSpan
-                   [INVALID_PLUGIN_OPTIONS err]
-    Right cli -> writeFragmentWith cli modSummary hpm
+                   (INVALID_PLUGIN_OPTIONS err :| [])
+    Right cli -> stageFragmentWith cli modSummary hpm
 
-writeFragmentWith :: CliOptions -> ModSummary -> HsParsedModule -> Hsc ()
-writeFragmentWith cli modSummary hpm = do
-  let fragDir  = fragmentsDir cli
-      modSpan  = mkFileSrcSpan (ms_location modSummary)
+stageFragmentWith :: CliOptions -> ModSummary -> HsParsedModule -> Hsc ()
+stageFragmentWith cli modSummary hpm = do
+  let modSpan  = mkFileSrcSpan (ms_location modSummary)
       modStr   = moduleNameToString modSummary
       srcPath  = modulePath modSummary
-      fragPath = fragDir </> modStr <> ".yaml"
       decls    = hsmodDecls (unLoc (hpm_module hpm))
 
   case planFragment cli (ms_hsc_src modSummary) modStr srcPath decls of
-    Left errs              -> throwSqlSchemaErrors fragDir modSpan errs
+    Left errs              -> case nonEmpty errs of
+      Just es -> throwSqlSchemaErrors (fragmentsDir cli) modSpan es
+      Nothing -> throwPluginMessages modSpan (internalError :| [])
     Right LeaveUntouched   -> pure ()
-    Right (Stage fragment) -> liftIO (syncFragment fragPath fragment)
+    Right (Stage fragment) -> liftIO (stagePending (fragmentPath cli modStr) fragment)
+  where
+    internalError =
+      "sql-schema: INTERNAL_ERROR: the extractor rejected this module without saying why.\n"
+      <> "  This is a bug in the sql-schema plugin, not in the module; report it with the module's source."
 
--- | Writes the module's fragment, or with 'Nothing' removes the one an earlier
--- compile left: a restored build directory would otherwise keep a dropped
--- table in the contract.
-syncFragment :: FilePath -> Maybe Fragment -> IO ()
-syncFragment path = \case
-  Just fragment -> do
-    createDirectoryIfMissing True (takeDirectory path)
-    atomicYamlWrite path fragment
-  Nothing -> removeFile path `catch` \e -> unless (isDoesNotExistError e) (throwIO e)
+-- | Appended to the end of the Core pipeline, which GHC starts only after
+-- type checking, desugaring and the -Werror check pass: for a module it
+-- generates code for, and on 9.8 for any module under -fwrite-if-simplified-core.
+-- GHC never starts it for an hs-boot or hsig file; the guard keeps such a file
+-- from publishing its module's staged fragment if a later GHC does.  GHCi's
+-- prompt declarations reach it without the parse step, so they have nothing staged.
+publishPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
+publishPass opts guts
+  | isHsBootOrSig (mg_hsc_src guts)      = pure guts
+  | isInteractiveModule (mg_module guts) = pure guts
+  | otherwise = guts <$ case parseCliOptions opts of
+      Left err  -> throwSqlSchemaErrors (fragmentsDir defaultCliOptions) (mg_loc guts)
+                     (INVALID_PLUGIN_OPTIONS err :| [])
+      Right cli -> do
+        let frag = fragmentPath cli (GHC.moduleNameString (GHC.moduleName (mg_module guts)))
+        published <- liftIO (try (publishStaged frag))
+        case published of
+          Left (StagedFragmentMissing pending) ->
+            throwSqlSchemaErrors (fragmentsDir cli) (mg_loc guts) (STAGED_FRAGMENT_MISSING pending :| [])
+          Right () -> pure ()
+
+fragmentPath :: CliOptions -> String -> FilePath
+fragmentPath cli modStr = fragmentsDir cli </> modStr <> ".yaml"
+
+-- | Where a fragment is staged.  The merge reads only @*.yaml@ files, so a
+-- staged fragment never reaches the contract.
+pendingPath :: FilePath -> FilePath
+pendingPath = (<> ".pending")
+
+-- | Stages the fragment for 'publishStaged': its YAML, or with 'Nothing' an
+-- empty file, which publishes as a deletion of the fragment an earlier compile
+-- left (a restored build directory would otherwise keep a dropped table).
+stagePending :: FilePath -> Maybe Fragment -> IO ()
+stagePending frag fragment = do
+  createDirectoryIfMissing True (takeDirectory frag)
+  atomicWrite (pendingPath frag) (maybe BS.empty YAML.encode fragment)
+
+-- | Replaces the fragment with what was staged, or throws 'StagedFragmentMissing'.
+-- A deletion removes the staged file first: a kill between the two removals
+-- then leaves the fragment as before this compile, which matches the interface
+-- file GHC never wrote, so the next build recompiles and stages again.
+publishStaged :: FilePath -> IO ()
+publishStaged frag = publish `catch` \e ->
+  -- The fragment's own removal ignores a missing file, so a missing file here is the staged one.
+  if isDoesNotExistError e then throwIO (StagedFragmentMissing pending) else throwIO e
+  where
+    pending = pendingPath frag
+    publish = do
+      size <- getFileSize pending
+      if size == 0
+        then do
+          removeFile pending
+          removeFile frag `catch` \e -> unless (isDoesNotExistError e) (throwIO e)
+        else renameFile pending frag
+
+-- | Nothing is staged at this path.  'show' renders the compile error, code first,
+-- since that is what an uncaught exception prints.
+newtype StagedFragmentMissing = StagedFragmentMissing FilePath
+
+instance Show StagedFragmentMissing where
+  show (StagedFragmentMissing pending) =
+    generateErrorMessage (takeDirectory pending) (STAGED_FRAGMENT_MISSING pending)
+
+instance Exception StagedFragmentMissing
 
 
 -- ---------------------------------------------------------------------------
 -- Atomic file write
 -- ---------------------------------------------------------------------------
 
-atomicYamlWrite :: A.ToJSON a => FilePath -> a -> IO ()
-atomicYamlWrite path value = do
-  let tmp = path <> ".tmp"
-  BS.writeFile tmp (YAML.encode value)
-  renameFile tmp path
+-- | Each write gets a fresh temp name: same-named modules compiled at once into
+-- one directory would otherwise race on one fixed temp file.
+atomicWrite :: FilePath -> BS.ByteString -> IO ()
+atomicWrite path bytes = do
+  (tmp, h) <- openBinaryTempFileWithDefaultPermissions (takeDirectory path) (takeFileName path <> ".tmp")
+  (BS.hPut h bytes >> hClose h >> renameFile tmp path)
+    `onException` ((hClose h `catch` ignore) >> (removeFile tmp `catch` ignore))
+  where
+    ignore :: IOException -> IO ()
+    ignore _ = pure ()
 
 
 -- ---------------------------------------------------------------------------
 -- Compile-error emission
 -- ---------------------------------------------------------------------------
 
-throwSqlSchemaErrors :: FilePath -> SrcSpan -> [SqlSchemaError] -> Hsc ()
-throwSqlSchemaErrors fragDir modSpan errs =
+throwSqlSchemaErrors :: MonadIO m => FilePath -> SrcSpan -> NonEmpty SqlSchemaError -> m a
+throwSqlSchemaErrors fragDir modSpan = throwPluginMessages modSpan . fmap (generateErrorMessage fragDir)
+
+-- | Fails the compile with one error per message.  'NonEmpty', because GHC
+-- treats an empty set of errors as a failure with nothing to report.
+throwPluginMessages :: MonadIO m => SrcSpan -> NonEmpty String -> m a
+throwPluginMessages modSpan msgs =
 #if __GLASGOW_HASKELL__ >= 904
   ParseError.throwErrors $ ParseError.mkMessages $ listToBag
     [ mkErrorMsgEnvelope modSpan reallyAlwaysQualify
         (ghcUnknownMessage (ParseError.mkPlainError ParseError.noHints
-           (docToSDoc (Pretty.text (generateErrorMessage fragDir e)))))
-    | e <- errs ]
+           (docToSDoc (Pretty.text m))))
+    | m <- toList msgs ]
 #else
   ParseError.throwErrors $ listToBag
     [ ParseError.mkErr modSpan reallyAlwaysQualify
         (ParseError.mkDecorated
-           [docToSDoc (Pretty.text (generateErrorMessage fragDir e))])
-    | e <- errs ]
+           [docToSDoc (Pretty.text m)])
+    | m <- toList msgs ]
 #endif
 
 

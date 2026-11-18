@@ -14,6 +14,65 @@
   so the contract still listed a table the module no longer defines or the
   options now exclude. A module's `.hs-boot` or `.hsig` file is skipped
   entirely: it is not checked and never touches the module's fragment.
+* **Breaking:** every `setEntityName` in a module must be captured as an
+  override, or the compile fails with `UNCAPTURED_SET_ENTITY_NAME`, naming
+  the line and the reason. Before, a rename the plugin didn't read was left
+  out of the contract without a word, so the merge never checked it against
+  `modelTableName`: one in an EMod or other separate binding, a `where` or
+  `let` binding, an instance method or a splice, one with a non-literal
+  name, and one whose field is in no `Database` record of the module. A
+  rename in a `<>` chain (`setEntityName "x" <> modifyTableFields m`) is now
+  read when the chain's other operands are `modifyTableFields x` or
+  `setEntitySchema x`. A rename could also be credited to the wrong table, or
+  read though it was never applied. These are now refused:
+  - a `dbModification` that isn't the right operand of `withDbModification`
+    in a top-level binding's result;
+  - a label of the update qualified with another module;
+  - a type annotation on the `dbModification` or the settings expression;
+  - a field whose name has another type in any record of the module (before,
+    only records deriving `Database` were read, and the one whose name sorts
+    first supplied the type);
+  - a `<>` chain with any other operand;
+  - an update whose labels no single record of the module declares (GHC
+    resolves an update to the record that has all its labels); a record
+    inside a Template Haskell declaration quote doesn't count;
+  - a later `withDbModification` operand that isn't a `dbModification { … }`
+    update;
+  - a record wildcard `{..}` in the binding's declaration, a top-level pattern
+    binding or a top-level splice;
+  - a module that binds `setEntityName`, `dbModification`,
+    `withDbModification`, `(<>)`, `modifyTableFields` or `setEntitySchema`
+    itself.
+
+  A punned record field named like a checked function
+  (`R { setEntityName }`) counts as a use, and under `OverloadedRecordUpdate`
+  it is reported at its field. Still undetected: an unannotated update whose
+  labels all name fields of one local record, read as that record's even if
+  its type were to come from elsewhere (GHC 9.2.8 and 9.8.4 reject every such
+  shape tried as ambiguous).
+* **Fix:** under `-haddock`, which nixpkgs passes to library builds, a
+  deriving clause with a doc comment, such as
+  `deriving (Generic, Database -- ^ doc)`, is read. GHC wraps a documented
+  type, and the wrapper hid the class: such a record's `setEntityName` renames
+  were dropped, and a table whose `Beamable` deriving had a doc comment was
+  left out of the contract.
+* **Breaking:** a `modifyTableFields` whose argument isn't the table's own
+  modifier binding, or any
+  `modifyTable`/`modifyEntityName`/`withTableModification`, is now a compile
+  error. So is `renamingFields`, and any use, as a variable, a constructor or
+  a constructor pattern, of `EntityModification`, `DatabaseEntity`,
+  `dbEntityName` or `dbTableCurrentName`, from which a modification can be
+  written by hand; signatures and record labels may still name them. The
+  errors, `UNCAPTURED_MODIFY_TABLE_FIELDS` and `UNSUPPORTED_ENTITY_RENAME`,
+  name the line. Before, column renames
+  applied through the DB settings were never compared with the contract's,
+  which come from `modelFieldModification`. The accepted shape is
+  `modifyTableFields xxxTMod` with `xxxTMod` the unqualified, top-level binding
+  named in `modelFieldModification` of a table of the module, setting at least
+  one field and bound nowhere else in the module, with no record wildcard
+  `{..}` covering the use, in a module that binds none of `modifyTableFields`,
+  `tableModification`, `fieldNamed` and `(<>)` itself; if no column is
+  renamed, drop `modifyTableFields`.
 * **Fix:** a `--source-dirs` entry with a trailing slash (`src/`) shifted every
   module name it produced, so all of its fragments were pruned as stale.
 * **Breaking:** `sql-schema-merge` fails instead of dropping tables. Each of
@@ -36,6 +95,25 @@
   with no tables.
 * **Fix:** modules in `.lhs`, `.hsc`, `.chs`, `.x`, `.y` and `.ly` files count as
   live, so their fragments are no longer pruned as stale.
+* **Fix:** a compile that fails after parsing (a type error, or a warning made
+  an error by `-Werror`) no longer publishes the module's fragment. The plugin
+  stages the fragment as `<Module>.yaml.pending` when it parses the module, and
+  a pass at the end of the Core pipeline, which GHC reaches only after type
+  checking, desugaring and the `-Werror` check, publishes it. Before, the
+  fragment was written at parse time; when the failed edit was then reverted,
+  GHC 9.8, which recompiles by source hash, did not recompile the module, and
+  the contract kept the edit. A staged file missing at publish time is the new
+  compile error `STAGED_FRAGMENT_MISSING`.
+* **Breaking:** a compile that generates no code (`-fno-code`, haddock) no
+  longer writes `<Module>.yaml`: it leaves `<Module>.yaml.pending`, which the
+  merge ignores, so run the merge after a build that generates code. Two
+  cases still publish, after the `-Werror` check: the modules GHC compiles
+  to code for Template Haskell, and on GHC 9.8 `-fno-code
+  -fwrite-if-simplified-core`, which runs the Core pipeline.
+  `fragmentsDir` must hold only this plugin's files, and same-named modules
+  without tables (several test suites' `Main`) must not be compiled into it
+  at the same time: the losing compile fails with `STAGED_FRAGMENT_MISSING`.
+  Give such components their own `fragmentsDir`, or no plugin.
 * Drops unused dependencies: `references`, `uniplate`, `extra`,
   `ordered-containers` and `unordered-containers` from the library, and
   `directory` and `filepath` from `sql-schema-merge`.
@@ -50,10 +128,11 @@
   directory, where deleting a table-less module's stale `<Module>.yaml` could
   delete an unrelated file: on a case-insensitive file system, compiling
   `module Stack` deleted `stack.yaml`.
-* **Fix:** plugin error messages escape the control, format and line- or
-  paragraph-separator characters they quote from source (e.g. a newline or ESC
-  in a quasi-quote) and are capped at 4000 characters, so source text can no
-  longer add lines or terminal escapes to a build log.
+* **Fix:** plugin error messages escape every control, format and line- or
+  paragraph-separator character, newlines included, in each value they quote
+  (source text such as a quasi-quote, an option value, a path), cut each such
+  value at 500 characters, and are capped at 4000 characters, so source text
+  can no longer add lines or terminal escapes to a build log.
 
 ## 0.4.2
 

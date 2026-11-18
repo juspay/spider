@@ -44,6 +44,7 @@ run = do
   testGeneratorStamped
   testIncludeWithoutGenerator
   testIncludedStampIgnored
+  testMergeIgnoresStagedFiles
 
 -- ---------------------------------------------------------------------------
 -- Test cases
@@ -592,3 +593,19 @@ testIncludeMergedMalformedFile = withTmpProject $ \tmp -> do
   BS.writeFile bad ":::not::valid:::yaml:::"
   expectMergeError "failed to parse" =<< runMerge (baseOpts tmp)
     { moIncludeMerged = [bad] }
+
+-- | A build that only staged (-fno-code, haddock) leaves @.pending@ files, and a
+-- killed stage a @.tmp@ file; the merge must read neither.
+testMergeIgnoresStagedFiles :: IO ()
+testMergeIgnoresStagedFiles = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "A.yaml") (sampleFragment "A" "A.AT" "a_tab")
+  writeFragYaml (fragDir </> "B.yaml.pending") (sampleFragment "B" "B.BT" "b_tab")
+  writeFragYaml (fragDir </> "C.yaml.pending.tmp") (sampleFragment "C" "C.CT" "c_tab")
+  writeFragYaml (fragDir </> "E.yaml.pending4821-7.tmp") (sampleFragment "E" "E.ET" "e_tab")
+  BS.writeFile (fragDir </> "D.yaml.pending") ""
+  report <- expectOk =<< runMerge (baseOpts tmp)
+  assertEq "fragmentsRead" 1 (mrFragmentsRead report)
+  merged <- decodeFile (tmp </> "merged.yaml")
+  assertEq "tables" ["A.AT"] (map qualifiedType (mergedTables merged))

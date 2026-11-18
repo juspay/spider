@@ -19,10 +19,14 @@ module SqlSchema.Extract
   ) where
 
 import           Control.Monad              (when)
+import           Data.Data                  (Data, cast, gmapQ)
+import           Data.Either                (partitionEithers)
 import           Data.Foldable              (toList)
 import           Data.List                  (foldl', nub)
+import           Data.List                  (intercalate, (\\))
 import           Data.List.NonEmpty         (NonEmpty (..))
 import qualified Data.Map.Strict            as Map
+import           Data.Maybe                 (fromMaybe, isJust, mapMaybe)
 import           Data.Set                   (Set)
 import qualified Data.Set                   as Set
 import qualified Data.Text                  as T
@@ -35,8 +39,10 @@ import           GHC.Data.FastString        (unpackFS)
 import           Language.Haskell.Syntax.Basic (field_label)
 #endif
 import           GHC.Hs
+import           GHC.Types.Name.Occurrence  (occNameString)
 import           GHC.Types.Name.Reader      (RdrName (..), rdrNameOcc)
-import           GHC.Types.SrcLoc           (GenLocated (..), SrcSpan, unLoc)
+import           GHC.Types.SrcLoc           (GenLocated (..), SrcSpan, srcSpanStartCol, srcSpanStartLine,
+                                             srcSpanToRealSrcSpan, unLoc)
 import           GHC.Types.SourceFile       (HscSource, isHsBootOrSig)
 import           GHC.Utils.Outputable       (Outputable, ppr, showSDocUnsafe)
 
@@ -70,9 +76,11 @@ planFragment cli src modStr srcPath decls =
     else do
       let rm           = foldl' visitDecl emptyRawModule decls
           rows         = extractFromModule cli modStr rm
-          errs         = concat [es | (_, Left es) <- rows]
+          errs         = concat [es | (_, Left es) <- rows] <> entityNameErrs <> tableModErrs
           okTables     = [ts | (_, Right ts) <- rows]
-          dbOverrides  = extractDbOverrides modStr srcPath rm
+          uses         = watchedUses decls
+          (dbOverrides, entityNameErrs) = extractDbOverrides modStr srcPath decls uses rm
+          tableModErrs = checkTableModifications decls uses rm
 
       when (not (null errs))
         (Left (nub errs))
@@ -105,11 +113,11 @@ data RawModule = RawModule
   , rmBindings        :: Map.Map String (LHsExpr GhcPs)
     -- ^ top-level @name = expr@ value bindings (e.g. each table's
     --   @xxxTMod@, and any @appDb@-style DB-settings binding).
-  , rmDbRecords       :: Map.Map String (Map.Map String String)
+  , rmDbRecords       :: Map.Map String (Map.Map String (Set String))
     -- ^ DB-record data declarations (those that derive @Database@) keyed
     --   by the record type name (e.g. @\"AppDb\"@), with an inner map
     --   from record-field name (e.g. @\"gadgets\"@) to the unqualified
-    --   table-type constructor inside @TableEntity@ (e.g. @\"GadgetT\"@).
+    --   table-type constructors inside @TableEntity@ (e.g. @\"GadgetT\"@).
   }
 
 emptyRawModule :: RawModule
@@ -229,6 +237,8 @@ tyConHead = \case
   HsAppTy _ (L _ a) _   -> tyConHead a
   HsParTy _ (L _ a)     -> tyConHead a
   HsKindSig _ (L _ a) _ -> tyConHead a
+  -- -haddock wraps a documented deriving type, e.g. @Database -- ^ doc@.
+  HsDocTy _ (L _ a) _   -> tyConHead a
   _                     -> Nothing
 
 
@@ -343,15 +353,15 @@ derivesAny names defn = any clauseHas (dd_derivs defn)
 
 -- | Read a DB-record data decl of the form
 --   @data Db f = Db { x :: f (TableEntity XT), y :: f (TableEntity YT) } deriving (.., Database)@
--- and return the @fieldName -> unqualified TableT name@ map.  Fields whose
+-- and return the @fieldName -> unqualified TableT names@ map.  Fields whose
 -- type doesn't fit the @f (TableEntity SomeT)@ pattern are skipped silently
 -- (they aren't tables — they might be auxiliary).
-extractDbRecord :: LHsQTyVars GhcPs -> HsDataDefn GhcPs -> Maybe (Map.Map String String)
+extractDbRecord :: LHsQTyVars GhcPs -> HsDataDefn GhcPs -> Maybe (Map.Map String (Set String))
 extractDbRecord _ defn =
   case toList (dd_cons defn) of
     [L _ (ConDeclH98{ con_args = RecCon (L _ recs) })] -> Just $
-      Map.fromList
-        [ (occNameFromFieldOcc (unLoc ln), tt)
+      Map.fromListWith Set.union
+        [ (occNameFromFieldOcc (unLoc ln), Set.singleton tt)
         | L _ (ConDeclField{ cd_fld_names = lnames, cd_fld_type = L _ ty }) <- recs
         , ln <- lnames
         , Just tt <- [tableEntityOf ty]
@@ -378,64 +388,388 @@ tableEntityOf = \case
 -- DB-entity overrides extraction (setEntityName from withDbModification)
 -- ---------------------------------------------------------------------------
 
--- | Walk every top-level binding's RHS, collect every
--- @dbModification { f = setEntityName "lit", … }@ found anywhere in the
--- expression, and pair each field with the unqualified table type drawn
--- from any DB-record decl in the same module.
-extractDbOverrides :: String -> FilePath -> RawModule -> [DbEntityOverride]
-extractDbOverrides modName srcPath RawModule{ rmBindings, rmDbRecords } =
-  let fieldToType = Map.unions (Map.elems rmDbRecords)
-        -- If two DB records share a field name (very unusual), the union
-        -- prefers the first.  The merge CLI will catch any ambiguity by
-        -- type lookup; this is a best-effort field→type map.
-      raw = concatMap (collectDbModUpdates . unLoc) (Map.elems rmBindings)
-  in  [ DbEntityOverride
-          { dbField              = f
-          , dbTableType          = tt
-          , sqlName              = sql
-          , overrideSourceModule = modName
-          , overrideSourceFile   = srcPath
-          }
-      | (f, sql) <- raw
-      , Just tt  <- [Map.lookup f fieldToType]
-      ]
-
--- | Find every @dbModification { … }@ record-update anywhere in an
--- expression tree.  Returns the union of all
--- @(fieldName, setEntityName literal)@ pairs found in any such update.
-collectDbModUpdates :: HsExpr GhcPs -> [(String, String)]
-collectDbModUpdates = go
+-- | The renames the module's DB settings apply ('appliedRenames'), each
+-- resolved to the one table type its field has across the module's records,
+-- and an error for every other @setEntityName@ use: a rename the contract does
+-- not record would never be checked.
+extractDbOverrides
+  :: String -> FilePath -> [LHsDecl GhcPs] -> Uses -> RawModule
+  -> ([DbEntityOverride], [SqlSchemaError])
+extractDbOverrides modName srcPath decls uses RawModule{ rmBindings } =
+  ( [o | (_, Right o) <- reached]
+  , [ UNCAPTURED_SET_ENTITY_NAME (lineCol sp) (reason sp)
+    | sp <- usesOf "setEntityName" uses \\ captured ] )
   where
-    go expr = case stripPar expr of
+    reached    = [ (sp, lit >>= resolve f sp)
+                 | (f, sp, lit) <- concatMap (appliedRenames modName labelSets . unLoc) (Map.elems rmBindings) ]
+    captured   = [sp | (sp, Right _) <- reached]
+    refused    = [(sp, why) | (sp, Left why) <- reached]
+    reason sp  = fromMaybe (unread sp) (lookup sp refused)
+    unread sp
+      | sp `elem` inModifications = "its dbModification { … } is not the right operand of withDbModification in the result of a top-level binding"
+      | otherwise                 = "it is not in a field of a dbModification { … }"
+    inModifications = usesInDbModifications decls
+    fieldTypes = recordFieldTypes decls
+    labelSets  = recordLabelSets decls
+    shadowing  = [n | n <- trustedNames, Map.member n (binderCounts decls)]
+    covered    = underRecordWildcard decls uses
+    resolve f sp sql
+      | not (null shadowing) =
+          Left ("this module binds " <> intercalate ", " ["'" <> n <> "'" | n <- shadowing] <> " itself, so a use may not be Beam's")
+      | covered sp =
+          Left "a record wildcard '{..}' in its declaration, a top-level pattern binding or a top-level splice may rebind setEntityName or a name the rename relies on"
+      | otherwise = case Set.toList (Map.findWithDefault Set.empty f fieldTypes) of
+          [TableType tt] -> Right DbEntityOverride
+                              { dbField              = f
+                              , dbTableType          = tt
+                              , sqlName              = sql
+                              , overrideSourceModule = modName
+                              , overrideSourceFile   = srcPath
+                              }
+          []  -> Left ("its field '" <> f <> "' is declared in no record of this module")
+          tys -> Left ("its field '" <> f <> "' has more than one type, or one other than f (TableEntity T), across this module's records ("
+                       <> intercalate ", " (map fieldTypeText tys) <> ")")
+
+-- | The names a captured rename's meaning rests on: a module that binds one of
+-- them anywhere could give it another meaning, so its renames are not read.
+trustedNames :: [String]
+trustedNames = ["setEntityName", "dbModification", "withDbModification", "<>", "modifyTableFields", "setEntitySchema"]
+
+-- | Each setEntityName in a @dbModification { … }@ that a top-level binding's
+-- result applies (a right operand of @withDbModification@), with its literal
+-- or why it is not read.  A dbModification elsewhere may never be applied.
+appliedRenames :: String -> [Set String] -> HsExpr GhcPs -> [(String, SrcSpan, Either String String)]
+appliedRenames modName labelSets = settings Nothing
+  where
+    settings why = \case
+      Par (L _ e) -> settings why e
+      Let (L _ e) -> settings why e
+      HsLam _ MG{ mg_alts = L _ ms } ->
+        [ r | L _ Match{ m_grhss = g } <- ms, Just (L _ e) <- [grhssExpr g], r <- settings why e ]
+      ExprWithTySig _ (L _ e) _ ->
+        settings (Just "the settings expression carries a type annotation, which may select another module's Database record") e
+      OpApp _ (L _ l) (L _ op) (L _ r)
+        | isVar "withDbModification" op -> settings (maybe (later r) Just why) l <> modification why r
+      HsApp _ (L _ inner) (L _ r)
+        | HsApp _ (L _ f) (L _ l) <- stripPar inner
+        , isVar "withDbModification" f -> settings (maybe (later r) Just why) l <> modification why r
+      _ -> []
+
+    later r
+      | isModificationUpdate r = Nothing
+      | otherwise = Just "a later withDbModification operand is not a dbModification { … } update, so it could change the rename"
+
+    modification why e = case stripPar e of
       RecordUpd _ (L _ base) flds
-        | varName base == Just "dbModification" -> extractUpdates flds
-        | otherwise                              -> []
-      OpApp _ (L _ a) _ (L _ b) -> go a <> go b
-      HsApp _ (L _ f) (L _ x)   -> go f <> go x
-      HsLam _ MG{ mg_alts = L _ matches }
-                                -> concatMap (matchBody . unLoc) matches
-      Let (L _ e)               -> go e
-      ExprWithTySig _ (L _ e) _ -> go e
-      Par (L _ e)               -> go e
-      _                         -> []
+        | isVar "dbModification" base -> fields why flds
+        | annotatedDbModification base ->
+            fields (Just "its dbModification carries a type annotation or type application, which may select another module's Database record") flds
+      ExprWithTySig _ (L _ x) _ ->
+        modification (Just "its dbModification { … } carries a type annotation, which may select another module's Database record") x
+      _ -> []
 
-    matchBody Match{ m_grhss = grhss } = case grhssExpr grhss of
-      Just (L _ e) -> go e
-      Nothing      -> []
+    fields why flds =
+      let regular = regularRecUpdFields flds
+          why'    = maybe (updatedRecord [lbl | L _ (RecField (L _ lbl) _ _) <- regular]) Just why
+          plain   = concat [ field why' lbl rhs | L _ (RecField (L _ lbl) (L _ rhs) False) <- regular ]
+      in  plain <> [ ("", sp, Left "its dbModification field is not a plain 'field = value' update (record-dot syntax or a pun), which the plugin does not read")
+                   | sp <- usesOf "setEntityName" (watchedUses flds) \\ [s | (_, s, _) <- plain] ]
 
-    extractUpdates flds =
-      [ (ambiguousFieldName lbl, lit)
-      | L _ (RecField (L _ lbl) (L _ rhs) False) <- regularRecUpdFields flds
-      , Just lit <- [setEntityNameLit rhs]
-      ]
+    field why lbl rhs =
+      let f    = ambiguousFieldName lbl
+          uses = usesOf "setEntityName" (watchedUses rhs)
+      in case why of
+           Just reason -> [ (f, sp, Left reason) | sp <- uses ]
+           Nothing     ->
+             let readings = setEntityNameLit rhs
+             in  [ (f, sp, r) | (sp, r) <- readings ]
+              <> [ (f, sp, Left ("the value of field '" <> f <> "' is not setEntityName applied to a string literal, alone or in a '<>' chain"))
+                 | sp <- uses \\ map fst readings ]
 
-setEntityNameLit :: HsExpr GhcPs -> Maybe String
-setEntityNameLit = \case
-  HsApp _ (L _ f) (L _ arg)
-    | varName f == Just "setEntityName"
-    , Just s <- stringLiteral arg -> Just s
-  Par (L _ e) -> setEntityNameLit e
+    -- GHC resolves an unannotated update to the record that declares all of its
+    -- labels, which is this module's only if one of its records declares them.
+    updatedRecord lbls
+      | r : _ <- mapMaybe qualifiedLabel lbls = Just r
+      | any (\s -> all (`Set.member` s) names) labelSets = Nothing
+      | otherwise = Just ("no single record of this module declares all of its dbModification's labels ("
+                          <> intercalate ", " ["'" <> n <> "'" | n <- names] <> "), so it may update another module's record")
+      where names = map ambiguousFieldName lbls
+
+    qualifiedLabel lbl = case ambiguousFieldRdr lbl of
+      Unqual _ -> Nothing
+      Qual m _ | GHC.moduleNameString m == modName -> Nothing
+      rdr -> Just ("its dbModification's label '" <> sdocText rdr <> "' is qualified with another module, so it may name that module's record")
+
+isModificationUpdate :: HsExpr GhcPs -> Bool
+isModificationUpdate e = case stripPar e of
+  RecordUpd _ (L _ base) _  -> isVar "dbModification" base || annotatedDbModification base
+  ExprWithTySig _ (L _ x) _ -> isModificationUpdate x
+  _                         -> False
+
+annotatedDbModification :: HsExpr GhcPs -> Bool
+annotatedDbModification e = case stripPar e of
+  ExprWithTySig _ (L _ x) _ -> isVar "dbModification" x || annotatedDbModification x
+  AppType (L _ x) _         -> isVar "dbModification" x || annotatedDbModification x
+  _                         -> False
+
+-- | The @setEntityName@ applications of a dbModification field value, each
+-- with the span of its @setEntityName@: the literal when the value is
+-- @setEntityName "lit"@, alone or the only such operand of a @<>@ chain
+-- whose other operands are @modifyTableFields x@ or @setEntitySchema x@
+-- (@<>@ is associative, so its nesting doesn't matter); else why not.
+setEntityNameLit :: HsExpr GhcPs -> [(SrcSpan, Either String String)]
+setEntityNameLit rhs = case partitionEithers (map operand (mappendOperands rhs)) of
+  ([(sp, arg)], others)
+    | all nonRenaming others -> [(sp, maybe (Left "its argument is not a string literal") Right (stringLiteral arg))]
+    | otherwise -> [(sp, Left "its '<>' chain has an operand other than 'modifyTableFields x' or 'setEntitySchema x', which could change or drop the rename")]
+  (apps, _) -> [(sp, Left "its '<>' chain has more than one setEntityName operand") | (sp, _) <- apps]
+  where
+    mappendOperands e = case stripPar e of
+      OpApp _ (L _ a) (L _ op) (L _ b)
+        | varName op == Just "<>" -> mappendOperands a <> mappendOperands b
+      _ -> [e]
+
+    operand e = case stripPar e of
+      HsApp _ (L _ f) (L _ arg)
+        | Just sp <- varSpanNamed "setEntityName" f -> Left (sp, arg)
+      _ -> Right e
+
+    nonRenaming e = case stripPar e of
+      HsApp _ (L _ f) _ -> any (\n -> isJust (varSpanNamed n f)) ["modifyTableFields", "setEntitySchema"]
+      _                 -> False
+
+usesInDbModifications :: Data a => a -> [SrcSpan]
+usesInDbModifications = go
+  where
+    go :: forall d. Data d => d -> [SrcSpan]
+    go d = case cast d :: Maybe (HsExpr GhcPs) of
+      Just (RecordUpd _ (L _ base) flds)
+        | isVar "dbModification" base || annotatedDbModification base -> usesOf "setEntityName" (watchedUses flds)
+      _ -> concat (gmapQ go d)
+
+data FieldType = TableType String | NotTableEntity
+  deriving (Eq, Ord)
+
+fieldTypeText :: FieldType -> String
+fieldTypeText = \case
+  TableType t    -> t
+  NotTableEntity -> "a type other than TableEntity"
+
+-- | Each record field declared in the declarations (data types and instances,
+-- GADT records, record pattern synonyms) with its type: 'TableType' when it
+-- is @f (TableEntity T)@.
+recordFieldTypes :: Data a => a -> Map.Map String (Set FieldType)
+recordFieldTypes = Map.fromListWith Set.union . go
+  where
+    go :: forall d. Data d => d -> [(String, Set FieldType)]
+    go d
+      | Just ConDeclField{ cd_fld_names = ns, cd_fld_type = L _ ty } <- (cast d :: Maybe (ConDeclField GhcPs)) =
+          [ (occNameFromFieldOcc (unLoc n), Set.singleton (maybe NotTableEntity TableType (tableEntityOf ty))) | n <- ns ]
+      | Just RecordPatSynField{ recordPatSynField = fo } <- (cast d :: Maybe (RecordPatSynField GhcPs)) =
+          [ (occNameFromFieldOcc fo, Set.singleton NotTableEntity) ]
+      | otherwise = concat (gmapQ go d)
+
+-- | The labels of each record constructor and record pattern synonym, outside
+-- declaration quotes: a quoted record may never be spliced.
+recordLabelSets :: Data a => a -> [Set String]
+recordLabelSets = go
+  where
+    go :: forall d. Data d => d -> [Set String]
+    go d
+      | Just DecBrL{} <- (cast d :: Maybe UntypedQuote) = []
+      | Just fs <- (cast d :: Maybe [LConDeclField GhcPs]) =
+          [Set.fromList [occNameFromFieldOcc (unLoc n) | L _ ConDeclField{ cd_fld_names = ns } <- fs, n <- ns]]
+      | Just fs <- (cast d :: Maybe [RecordPatSynField GhcPs]) =
+          [Set.fromList [occNameFromFieldOcc fo | RecordPatSynField{ recordPatSynField = fo } <- fs]]
+      | otherwise = concat (gmapQ go d)
+
+watchedNames :: [String]
+watchedNames = "setEntityName" : "modifyTableFields" : entityRenamers
+
+-- | The sites the checks need, found in one traversal, in source order.  A
+-- pun's value is a parser placeholder, so a punned field counts as a use of its
+-- label.  Comments and import lists are not in the declarations.
+data Uses = Uses
+  { useSites              :: [(String, SrcSpan)]
+  , conSites              :: [(String, SrcSpan)]
+  , modifyTableFieldsArgs :: [(SrcSpan, HsExpr GhcPs)]
+  , typeAppliedSites      :: [SrcSpan]
+    -- ^ @modifyTableFields \@T@
+  , wildcardSites         :: [SrcSpan]
+    -- ^ record wildcard patterns @C{..}@
+  }
+
+data Site
+  = UseSite (String, SrcSpan) | ConSite (String, SrcSpan) | AppSite (SrcSpan, HsExpr GhcPs)
+  | TyAppSite SrcSpan | WildSite SrcSpan
+
+watchedUses :: Data a => a -> Uses
+watchedUses x = Uses [u | UseSite u <- found] [c | ConSite c <- found] [a | AppSite a <- found]
+                     [t | TyAppSite t <- found] [w | WildSite w <- found]
+  where
+    found = go x
+
+    go :: forall d. Data d => d -> [Site]
+    go d
+      | Just e <- (cast d :: Maybe (HsExpr GhcPs)) = case e of
+          HsVar _ (L l rdr)               -> use l rdr
+          RecordCon{ rcon_con = L l rdr } -> con l rdr <> below
+          HsApp _ (L _ f) (L _ arg)
+            | Just sp <- varSpanNamed "modifyTableFields" f -> AppSite (sp, arg) : below
+          AppType (L _ f) _
+            | Just sp <- varSpanNamed "modifyTableFields" f -> TyAppSite sp : below
+          _                               -> below
+      | Just (VarBr _ _ (L l rdr)) <- (cast d :: Maybe UntypedQuote) = use l rdr
+      | Just ConPat{ pat_con = L l rdr, pat_args = args } <- (cast d :: Maybe (Pat GhcPs)) =
+          con l rdr <> [WildSite (GHC.locA l) | RecCon HsRecFields{ rec_dotdot = Just _ } <- [args]] <> below
+      -- An OverloadedRecordUpdate pun's variable has no location: report it at its field.
+      | Just (L l (RecField _ (L _ (HsVar _ (L _ rdr))) True)) <- (cast d :: Maybe (LHsRecUpdProj GhcPs)) =
+          useAt (GHC.locA l) rdr
+      | Just (L l (RecField (L _ lbl) _ True)) <- (cast d :: Maybe (LHsRecField GhcPs (LHsExpr GhcPs))) =
+          pun l (occNameFromFieldOcc lbl) <> below
+      | Just (L l (RecField (L _ lbl) _ True)) <- (cast d :: Maybe UpdField) =
+          pun l (ambiguousFieldName lbl) <> below
+      | otherwise = below
+      where below = concat (gmapQ go d)
+
+    use l = useAt (GHC.locA l)
+    useAt sp rdr = [UseSite (n, sp) | let n = occNameString (rdrNameOcc rdr), n `elem` watchedNames]
+    con l rdr = [ConSite (n, GHC.locA l) | let n = occNameString (rdrNameOcc rdr), n `elem` watchedNames]
+    pun l n   = [UseSite (n, GHC.locA l) | n `elem` watchedNames]
+
+usesOf :: String -> Uses -> [SrcSpan]
+usesOf name uses = [sp | (n, sp) <- useSites uses, n == name]
+
+-- | Whether a record wildcard may bind names at a use: one in the use's
+-- top-level declaration, or in a top-level pattern binding or splice, which can
+-- bind them module-wide.  The declaration is found by its uses, not its span: a
+-- line directive can split a declaration's span across files.
+underRecordWildcard :: [LHsDecl GhcPs] -> Uses -> SrcSpan -> Bool
+underRecordWildcard decls uses
+  | null (wildcardSites uses) = const False
+  | otherwise                 = \sp -> any (covers sp) wild
+  where
+    wild = [ (moduleWide d, map snd (useSites u)) | d <- decls, let u = watchedUses d, not (null (wildcardSites u)) ]
+    covers sp (wide, held) = wide || sp `elem` held
+    moduleWide = \case
+      L _ (ValD _ PatBind{}) -> True
+      L _ (SpliceD _ _)      -> True
+      _                      -> False
+
+
+-- ---------------------------------------------------------------------------
+-- DB-settings column renames (modifyTableFields)
+-- ---------------------------------------------------------------------------
+
+-- | An error for every DB-settings rename that could differ from the contract:
+-- each @modifyTableFields@ not applied to the modifier binding the contract's
+-- column names come from, and each use of an 'entityRenamers' name.
+checkTableModifications :: [LHsDecl GhcPs] -> Uses -> RawModule -> [SqlSchemaError]
+checkTableModifications decls uses rm@RawModule{ rmBindings } =
+  [ UNCAPTURED_MODIFY_TABLE_FIELDS (lineCol sp) (fromMaybe (unapplied sp) (lookup sp refused))
+  | sp <- usesOf "modifyTableFields" uses \\ captured ]
+  <> [ UNSUPPORTED_ENTITY_RENAME (lineCol sp) fn | fn <- entityRenamers, sp <- usesOf fn uses ]
+  <> [ UNSUPPORTED_ENTITY_RENAME (lineCol sp) con | (con, sp) <- conSites uses, con `elem` entityRenamers ]
+  where
+    applied   = [ (sp, argumentRead sp arg) | (sp, arg) <- modifyTableFieldsArgs uses ]
+    captured  = [ sp | (sp, Right ()) <- applied ]
+    refused   = [ (sp, why) | (sp, Left why) <- applied ]
+    modifiers = modifierBindings rm
+    binders   = binderCounts decls
+    covered   = underRecordWildcard decls uses
+    unapplied sp
+      | sp `elem` typeAppliedSites uses = "it has a type application, which the plugin does not read"
+      | otherwise                       = "it is not applied directly to an argument"
+    trusted = [n | n <- ["modifyTableFields", "tableModification", "fieldNamed", "<>"], Map.member n binders]
+    argumentRead sp arg = case varRdrName arg of
+      Just rdr@(Unqual _)
+        | not (Set.member b modifiers) ->
+            Left (quoted b <> " is not the modelFieldModification binding of a table extracted from this module")
+        | Map.findWithDefault 0 b binders > 1 ->
+            Left (quoted b <> " is also bound elsewhere in this module, so this use may not name the modifier binding")
+        | not (null trusted) ->
+            Left ("this module binds " <> intercalate ", " (map quoted trusted) <> " itself, so the use may not be Beam's")
+        | covered sp ->
+            Left ("a record wildcard '{..}' in its declaration, a top-level pattern binding or a top-level splice may rebind " <> quoted b <> " or modifyTableFields")
+        | not (setsAField b) ->
+            Left ("the modifier binding " <> quoted b <> " is not a 'tableModification { … }' record update with at least one field")
+        | otherwise -> Right ()
+        where b = occToString rdr
+      _ -> Left "its argument is not an unqualified variable"
+    setsAField b = maybe False (> 0) (tableModificationFields . unLoc =<< Map.lookup b rmBindings)
+    quoted b = "'" <> b <> "'"
+
+-- | Beam names that can rename a table or its columns in a way the plugin
+-- cannot read: functions that rename through a @Text -> Text@ or
+-- @NonEmpty Text -> Text@ function or apply a table modification directly,
+-- and the entity internals a hand-written modification is built from.
+entityRenamers :: [String]
+entityRenamers =
+  [ "modifyTable", "modifyEntityName", "withTableModification", "renamingFields"
+  , "EntityModification", "DatabaseEntity", "dbEntityName", "dbTableCurrentName" ]
+
+-- | The binding each extracted table's @modelFieldModification@ names, resolved
+-- as 'extractOverrides' resolves it.
+modifierBindings :: RawModule -> Set String
+modifierBindings RawModule{ rmTables, rmBeamableTypes, rmModelMetas, rmBindings } = Set.fromList
+  [ b
+  | (_, tyName, _) <- rmTables
+  , Set.member tyName rmBeamableTypes
+  , Just RawModelMeta{ rmmModifier = ModifierRhs rhs } <- [Map.lookup tyName rmModelMetas]
+  , Just rdr@(Unqual _) <- [varRdrName (unLoc rhs)]
+  , let b = occToString rdr
+  , b /= "tableModification"
+  , Map.member b rmBindings
+  ]
+
+-- | How many fields a modifier's @tableModification { … }@ sets, as
+-- 'extractColumnOverrides' reads it: none for a bare @tableModification@.
+tableModificationFields :: HsExpr GhcPs -> Maybe Int
+tableModificationFields expr = case stripPar expr of
+  HsVar _ (L _ n) | occToString n == "tableModification" -> Just 0
+  RecordUpd _ (L _ base) flds
+    | varName base == Just "tableModification" -> Just (length (regularRecUpdFields flds))
   _ -> Nothing
+
+-- | How many times each name is bound in the declarations: by a binding, a
+-- pattern, a punned record pattern field, a RULES binder, a record field, a
+-- class method, a foreign import or a record pattern synonym's field, which
+-- binds a selector even when its pattern binds the variable through a record
+-- wildcard.  An instance method's own name is not counted: it defines its
+-- class's method and cannot rebind the name.  Names that a record wildcard or a
+-- splice's output binds are not seen.
+binderCounts :: Data a => a -> Map.Map String Int
+binderCounts = Map.fromListWith (+) . map (\n -> (n, 1)) . go
+  where
+    go :: forall d. Data d => d -> [String]
+    go d
+      | Just (_ :: ClsInstDecl GhcPs) <- cast d = concat (gmapQ instancePart d)
+      | otherwise                              = bound d <> concat (gmapQ go d)
+
+    -- The methods' bodies and the instance's other parts can still bind names.
+    instancePart :: forall e. Data e => e -> [String]
+    instancePart e = case cast e :: Maybe (LHsBinds GhcPs) of
+      Just methods -> concat [concat (gmapQ go m) | L _ m <- bagToList methods]
+      Nothing      -> go e
+
+    bound :: forall d. Data d => d -> [String]
+    bound d
+      | Just FunBind{ fun_id = L _ n } <- (cast d :: Maybe (HsBind GhcPs)) = [occToString n]
+      | Just (RecField (L _ lbl) _ True) <- (cast d :: Maybe PatRecField)  = [occNameFromFieldOcc lbl]
+      | Just (_ :: Pat GhcPs) <- cast d                                     = namesBelow d
+      | Just (_ :: RuleBndr GhcPs) <- cast d                                = namesBelow d
+      | Just ConDeclField{ cd_fld_names = ns } <- (cast d :: Maybe (ConDeclField GhcPs)) =
+          [occNameFromFieldOcc (unLoc n) | n <- ns]
+      | Just (ClassOpSig _ False ns _) <- (cast d :: Maybe (Sig GhcPs))   = [occToString n | L _ n <- ns]
+      | Just ForeignImport{ fd_name = L _ n } <- (cast d :: Maybe (ForeignDecl GhcPs)) = [occToString n]
+      | Just RecordPatSynField{ recordPatSynField = fo } <- (cast d :: Maybe (RecordPatSynField GhcPs)) =
+          [occNameFromFieldOcc fo]
+      | otherwise                                                           = []
+
+    -- The names a pattern or RULES binder holds directly are those it binds,
+    -- plus a constructor pattern's constructor, which no value binding shares.
+    namesBelow :: forall d. Data d => d -> [String]
+    namesBelow d = [occToString n | Just (L _ n) <- gmapQ (\c -> cast c :: Maybe (LIdP GhcPs)) d]
 
 
 -- ---------------------------------------------------------------------------
@@ -878,6 +1212,27 @@ regularRecUpdFields
 regularRecUpdFields = either id (const [])
 #endif
 
+-- GHC 9.4 moved the untyped quotes, name quotes included, from HsBracket to HsQuote.
+#if __GLASGOW_HASKELL__ >= 904
+type UntypedQuote = HsQuote GhcPs
+#else
+type UntypedQuote = HsBracket GhcPs
+#endif
+
+-- A field of a record update expression; GHC 9.8 gave it a second index.
+#if __GLASGOW_HASKELL__ >= 908
+type UpdField = LHsRecUpdField GhcPs GhcPs
+#else
+type UpdField = LHsRecUpdField GhcPs
+#endif
+
+-- A field of a record pattern; a punned one binds its label.
+#if __GLASGOW_HASKELL__ >= 904
+type PatRecField = HsFieldBind (LFieldOcc GhcPs) (LPat GhcPs)
+#else
+type PatRecField = HsRecField' (FieldOcc GhcPs) (LPat GhcPs)
+#endif
+
 
 -- ---------------------------------------------------------------------------
 -- Small AST helpers
@@ -894,6 +1249,11 @@ ambiguousFieldName :: AmbiguousFieldOcc GhcPs -> String
 ambiguousFieldName = \case
   Unambiguous _ (L _ n) -> occToString n
   Ambiguous   _ (L _ n) -> occToString n
+
+ambiguousFieldRdr :: AmbiguousFieldOcc GhcPs -> RdrName
+ambiguousFieldRdr = \case
+  Unambiguous _ (L _ n) -> n
+  Ambiguous   _ (L _ n) -> n
 
 stripParens :: String -> String
 stripParens s = case T.strip (T.pack s) of
@@ -940,6 +1300,29 @@ varRdrName = \case
   Par (L _ e)               -> varRdrName e
   ExprWithTySig _ (L _ e) _ -> varRdrName e
   _                         -> Nothing
+
+-- | The span of the name in what 'varRdrName' reads, when its OccName is @name@.
+varSpanNamed :: String -> HsExpr GhcPs -> Maybe SrcSpan
+varSpanNamed name = \case
+  HsVar _ (L l n) | hasOcc name n -> Just (GHC.locA l)
+  Par (L _ e)                     -> varSpanNamed name e
+  ExprWithTySig _ (L _ e) _       -> varSpanNamed name e
+  _                               -> Nothing
+
+hasOcc :: String -> RdrName -> Bool
+hasOcc name rdr = occNameString (rdrNameOcc rdr) == name
+
+-- | A variable with this OccName, any qualifier, under parentheses only: a
+-- type annotation could change what it means.
+isVar :: String -> HsExpr GhcPs -> Bool
+isVar name e = case stripPar e of
+  HsVar _ (L _ n) -> hasOcc name n
+  _               -> False
+
+lineCol :: SrcSpan -> String
+lineCol sp = case srcSpanToRealSrcSpan sp of
+  Just r  -> show (srcSpanStartLine r) <> ":" <> show (srcSpanStartCol r)
+  Nothing -> sdocText sp
 
 conName :: HsExpr GhcPs -> Maybe String
 conName = varName

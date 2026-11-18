@@ -3,7 +3,7 @@
 -- | Parses a fixture module in-process with GHC's parser.  No GHC session,
 -- libdir or package database is needed, so the suite also runs in a
 -- nixpkgs checkPhase, where this package is not registered yet.
-module ParseFixture (parseFixture) where
+module ParseFixture (parseFixture, parseFixtureHaddock) where
 
 import           Control.Monad         (when)
 import           Data.Char             (isSpace, toUpper)
@@ -34,7 +34,15 @@ import           TestUtil              (failWith, isInfixOf)
 -- module with the named extensions (spelled as for @-X@) and returns its
 -- declarations; @name@ labels locations and failures.
 parseFixture :: String -> [String] -> String -> IO [LHsDecl GhcPs]
-parseFixture name extNames src = do
+parseFixture = parseFixtureWith False
+
+-- | 'parseFixture' keeping Haddock comments, as @-haddock@ does (nixpkgs
+-- passes it to library builds): a documented type becomes an 'HsDocTy'.
+parseFixtureHaddock :: String -> [String] -> String -> IO [LHsDecl GhcPs]
+parseFixtureHaddock = parseFixtureWith True
+
+parseFixtureWith :: Bool -> String -> [String] -> String -> IO [LHsDecl GhcPs]
+parseFixtureWith haddock name extNames src = do
   -- The bare parser skips header pragmas, so an extension set there would
   -- silently not apply.
   when ("LANGUAGE" `isInfixOf` src || any optionPragma (tails src)) $
@@ -42,9 +50,9 @@ parseFixture name extNames src = do
   exts <- mapM extension extNames
   let enabled = closeImplied (languageExtensions (Just Haskell2010) ++ exts)
 #if __GLASGOW_HASKELL__ >= 908
-      opts    = mkParserOpts (ES.fromList enabled) emptyDiagOpts [] False False False False
+      opts    = mkParserOpts (ES.fromList enabled) emptyDiagOpts [] False haddock False False
 #else
-      opts    = mkParserOpts ES.empty (ES.fromList enabled) False False False False
+      opts    = mkParserOpts ES.empty (ES.fromList enabled) False haddock False False
 #endif
       start   = initParserState opts (stringToStringBuffer src) (mkRealSrcLoc (mkFastString name) 1 1)
   case unP parseModule start of

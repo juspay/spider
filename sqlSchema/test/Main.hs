@@ -3,23 +3,18 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Test runner: the merge tests ('MergeTests'), the extractor tests
--- ('ExtractTests'), and the helpers exported by 'SqlSchema.Plugin': the
--- column-name helper, 'parseCliOptions', 'optionsFingerprint' and
--- 'syncFragment'.
+-- ('ExtractTests'), the fragment staging tests ('StageTests'), and the
+-- helpers exported by 'SqlSchema.Plugin': the column-name helper,
+-- 'parseCliOptions' and 'optionsFingerprint'.
 module Main (main) where
 
-import           Control.Exception   (IOException, try)
 import           Control.Monad       (when)
-import qualified Data.ByteString     as BS
-import qualified Data.Yaml           as YAML
-import           System.Directory    (createDirectoryIfMissing, doesFileExist)
-import           System.FilePath     ((</>))
 
 import qualified ExtractTests
 import qualified MergeTests
-import           SqlSchema.Plugin    (beamDefaultColumnName, optionsFingerprint, parseCliOptions,
-                                      syncFragment)
+import           SqlSchema.Plugin    (beamDefaultColumnName, optionsFingerprint, parseCliOptions)
 import           SqlSchema.Types     hiding (beamDefaultColumnName)
+import qualified StageTests
 import           TestUtil
 
 main :: IO ()
@@ -28,7 +23,7 @@ main = do
   testBeamDefaultColumnName
   testParseCliOptions
   testOptionsFingerprint
-  testSyncFragment
+  StageTests.run
   ExtractTests.run
   putStrLn "sql-schema-test: all cases passed"
 
@@ -73,24 +68,3 @@ testOptionsFingerprint = do
   assertEq "same options" (optionsFingerprint a) (optionsFingerprint a)
   when (optionsFingerprint a == optionsFingerprint b) $
     failWith "different options gave equal fingerprints"
-
--- | A recompiled module with nothing to record (or a blacklisted one) must
--- not leave its earlier fragment behind for the merge to pick up.
-testSyncFragment :: IO ()
-testSyncFragment = withTmpProject $ \tmp -> do
-  let path = tmp </> "fragments" </> "Foo.yaml"
-      frag = sampleFragment "Foo" "Foo.FooT" "foo"
-  syncFragment path (Just frag)
-  bs <- BS.readFile path
-  assertEq "written" (Right frag) (either (Left . show) Right (YAML.decodeEither' bs))
-  syncFragment path Nothing
-  stale <- doesFileExist path
-  when stale (failWith "stale fragment not removed")
-  syncFragment path Nothing
-  -- Only a missing file is ignored; any other failure must fail the compile.
-  let dirPath = tmp </> "fragments" </> "Dir.yaml"
-  createDirectoryIfMissing True dirPath
-  r <- try (syncFragment dirPath Nothing)
-  case r of
-    Left (_ :: IOException) -> pure ()
-    Right ()                -> failWith "deleting a directory fragment path did not fail"
