@@ -9,3 +9,4 @@ packages:
   ./socket_lib
   ./fieldInspector
   ./api-contract
+  ./sqlSchema
