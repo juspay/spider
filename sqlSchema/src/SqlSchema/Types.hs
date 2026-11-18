@@ -25,6 +25,11 @@ module SqlSchema.Types
   , beamDefaultColumnName
     -- * Extraction rules
   , tableTypeConstructors
+  , beamCoreModule
+  , sequelizeModule
+  , largeGenericsModule
+  , throughLRGenericsModule
+  , classModule
     -- * Plugin CLI options
   , CliOptions(..)
   , defaultCliOptions
@@ -39,6 +44,9 @@ module SqlSchema.Types
   , reasonDatabaseRecord
   , reasonGenericNotStock
   , reasonBeamableMethods
+  , reasonUnseenInstance
+  , reasonForeignLargeRecord
+  , reasonForeignHead
     -- * Message backstop, exported for the test-suite
   , escapeUnsafe
   , capMessage
@@ -160,6 +168,26 @@ data ModelSchemaName
 -- | The five constructors of the ModelMeta library's @TableType@.
 tableTypeConstructors :: [String]
 tableTypeConstructors = ["DOMAIN", "CONFIG", "COMMON_CONFIG", "TRACKER", "COMMON_TRACKER"]
+
+-- | (package, module) defining @Table@, @Beamable@ and @Columnar@ (beam-core 0.9.0.0), and
+-- @ModelMeta@ and @TableType@ (sequelize 1.2.1.2), as GHC reports them.
+beamCoreModule, sequelizeModule :: (String, String)
+beamCoreModule  = ("beam-core", "Database.Beam.Schema.Tables")
+sequelizeModule = ("sequelize", "Sequelize")
+
+-- | (package, module) defining large-generics' (0.2.3) @MetadataOf@, and its @ThroughLRGenerics@,
+-- the representation large-records 0.4.4 gives a table's GHC.Generics instance.
+largeGenericsModule, throughLRGenericsModule :: (String, String)
+largeGenericsModule     = ("large-generics", "Data.Record.Generic")
+throughLRGenericsModule = ("large-generics", "Data.Record.Generic.GHC")
+
+-- | Where the class the parse step reads instances of by this name is defined.
+classModule :: String -> Maybe (String, String)
+classModule = \case
+  "Table"     -> Just beamCoreModule
+  "Beamable"  -> Just beamCoreModule
+  "ModelMeta" -> Just sequelizeModule
+  _           -> Nothing
 
 -- | A @setEntityName@-style override discovered in a @withDbModification@
 -- block on a @defaultDbSettings@ binding.  At Beam runtime this overrides
@@ -399,13 +427,39 @@ data SqlSchemaError
     --   wildcard pattern at top level.
     UNSUPPORTED_RECORD_WILDCARD String
     --                          line:col
-  | -- | The publish pass found the file the parse step staged gone:
-    --   publishing nothing would leave the module's old fragment in place.
+  | -- | The type-check step or the publish pass found the file the parse step
+    --   staged gone: publishing nothing would leave the module's old fragment in place.
     STAGED_FRAGMENT_MISSING String
     --                      staged-file path
-  | -- | A file operation the plugin does to stage or publish a fragment failed.
+  | -- | A file operation the plugin does to stage, read back or publish a
+    --   fragment failed.
     FRAGMENT_IO_ERROR String String String
     --                action  path  the system's error
+  | -- | The type-check step found that the file the parse step staged does not
+    --   decode as a fragment, so it cannot compare the staged tables with GHC's.
+    STAGED_FRAGMENT_UNREADABLE String String
+    --                         staged-file path  the decode error
+  | -- | As GHC resolves it, the class of a Table, Beamable or ModelMeta instance
+    --   is not beam-core's or sequelize's but a same-named one.
+    UNEXPECTED_CLASS String String String
+    --               class  typeName  where GHC says the class is defined
+  | -- | As GHC resolves it, a table's modelTableType or modelSchemaName is not
+    --   the value the parse step read.
+    MODEL_META_FIELD_MISMATCH String String String
+    --                        typeName  field  what GHC resolved
+  | -- | As GHC types it, a column is not what the parse step read: another
+    --   nullability, no such field, or no beam-core Columnar.
+    COLUMN_TYPE_MISMATCH String String String
+    --                   typeName  field  what GHC found
+  | -- | The GHC.Generics instance GHC resolves for a table, which Beam takes its
+    --   column names from (through large-generics' metadata for a large-records
+    --   table), does not name the record's fields in order.
+    GENERIC_FIELD_MISMATCH String String
+    --                     typeName  what GHC resolved
+  | -- | As GHC resolves them, the Semigroup or Monoid instances at the
+    --   EntityModification of a table the module renames are not beam-core's alone.
+    UNEXPECTED_INSTANCE String String String
+    --                  class  typeName  what GHC found
   deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 -- | The constructor name, e.g. @UNRESOLVABLE_TABLE_NAME@.
@@ -570,11 +624,35 @@ errorText fragDir = \case
     "Nothing is staged at '" <> escapeField pending <> "' to publish: the plugin stages a module's fragment there when it parses the module, and publishes it once the module has passed type checking, desugaring and -Werror.\n" <>
     "  Publishing nothing would keep the module's previous fragment in the contract, so the compile fails instead.\n" <>
     "  Keep fragmentsDir for this plugin's files only, compile each module name into it once at a time, then rebuild the module."
-
   FRAGMENT_IO_ERROR action path reason ->
     "Could not " <> escapeField action <> " the fragment at '" <> escapeField path <> "': " <> escapeField reason <> "\n" <>
-    "  A fragment that is not written would keep the module's previous fragment in the contract, so the compile fails instead.\n" <>
-    "  Make fragmentsDir a directory this build can write, reached through no chain of symbolic links longer than the system follows, then rebuild the module."
+    "  A fragment the plugin cannot stage, read back or publish would leave the module's previous fragment, or one the type-check step did not check, in the contract, so the compile fails instead.\n" <>
+    "  Make fragmentsDir a directory this build can read and write, reached through no chain of symbolic links longer than the system follows, then rebuild the module."
+  STAGED_FRAGMENT_UNREADABLE pending why ->
+    "The file staged at '" <> escapeField pending <> "' does not decode as this module's fragment: " <> escapeField why <> "\n" <>
+    "  The plugin stages the fragment whole, through a rename, when it parses the module, and after type checking compares the tables it holds with what GHC resolves; with them unknown, that check cannot run, so the compile fails instead.\n" <>
+    "  Something other than this plugin wrote the file: keep fragmentsDir for this plugin's files only, then rebuild the module."
+
+  UNEXPECTED_CLASS cls t origin ->
+    "The " <> escapeField cls <> " instance for '" <> escapeField t <> "' is of the class " <> escapeField cls <> " defined in " <> escapeField origin <> ", not of " <> expectedClass cls <> ".\n" <>
+    "  The plugin reads Table, Beamable and ModelMeta instances by class name, before GHC resolves it, so it took this one for " <> expectedClass cls <> "; another class need not mean what it read, and the contract could record a table, key or route the code does not use; refusing to compile instead.\n" <>
+    "  Make it an instance of " <> expectedClass cls <> ", or give the other class another name."
+  MODEL_META_FIELD_MISMATCH t field detail ->
+    "The " <> escapeField field <> " of '" <> escapeField t <> "' is not what the plugin read from the source: " <> escapeField detail <> ".\n" <>
+    "  The plugin reads Just, Nothing and TableType constructors by name, before GHC resolves them; recorded as read, the table would be routed by a value the code does not use; refusing to compile instead.\n" <>
+    "  Write " <> escapeField field <> " with base's Just and Nothing" <> metaFieldValue field <> ", not with an imported pattern synonym or a same-named constructor of another type."
+  COLUMN_TYPE_MISMATCH t f detail ->
+    "The column '" <> escapeField f <> "' of '" <> escapeField t <> "' is not what the plugin read from the source: " <> escapeField detail <> ".\n" <>
+    "  The plugin reads a column's nullability from its type as written, a Maybe at the head of the type inside Columnar, before GHC expands type synonyms; recorded as read, the contract would give the column a nullability the code does not use, which hides drift from the schema check; refusing to compile instead.\n" <>
+    "  Write the field's type as 'Columnar f T' or 'C f T' with beam-core's Columnar, and base's Maybe written out in T when the column is nullable, not through a type synonym or type family that adds or hides the Maybe."
+  GENERIC_FIELD_MISMATCH t detail ->
+    "The GHC.Generics instance GHC resolves for '" <> escapeField t <> "' does not name its record's fields: " <> escapeField detail <> ".\n" <>
+    "  Beam names a table's columns after the selectors of that instance's representation, or for a large-records table after large-generics' metadata, in order, while the plugin names them after the record's fields as written; recorded as read, the contract would name columns the code does not use; refusing to compile instead.\n" <>
+    "  Derive GHC.Generics' Generic for it with the stock strategy, or, for a table annotated with large-records' largeRecord, leave both Generic instances to that plugin, and remove any other Generic instance for it: hand-written, generated by Template Haskell, or an orphan in another module."
+  UNEXPECTED_INSTANCE cls t detail ->
+    "The " <> escapeField cls <> " instance at the EntityModification of '" <> escapeField t <> "' is not beam-core's alone: " <> escapeField detail <> ".\n" <>
+    "  The plugin reads the module's DB-settings renames as beam-core's instance (module Database.Beam.Schema.Tables) combines them; another instance GHC can select may drop or change a rename the contract records; refusing to compile instead.\n" <>
+    "  Remove the other instance, or keep its module out of this module's imports."
 
 extensionEffect, extensionFix :: String -> String
 extensionEffect = \case
@@ -597,6 +675,12 @@ reasonDatabaseRecord = "it derives Database, so its data declaration is read as 
 reasonGenericNotStock = "this module does not derive its Generic instance with the stock strategy or annotate it as a large record, or has another Generic instance that could be its, so the column names Beam takes from it need not be its field names"
 reasonBeamableMethods = "this module writes a Beamable instance with methods for it, its key or a type synonym of it, or derives one via another type, so its methods need not come from its Generic representation, and they decide the field each of the modifier's column renames goes to"
 
+-- | The reasons the type-check cross-check gives.
+reasonUnseenInstance, reasonForeignLargeRecord, reasonForeignHead :: String
+reasonUnseenInstance = "GHC reports an instance for it that the parse-stage extractor did not see (e.g. generated by Template Haskell)"
+reasonForeignLargeRecord = "its large-records annotation names a 'largeRecord' that GHC does not resolve to the large-records package's, so that plugin need not generate its Generic instance, and the column names Beam takes from the instance need not be its field names"
+reasonForeignHead = "GHC resolves the instance's type to one this module does not declare (e.g. an imported type of that name, in an instance Template Haskell generates), and the plugin extracts only the tables a module declares"
+
 unextractedFix :: String -> String -> String
 unextractedFix t reason
   | reason == reasonNoDeclaration =
@@ -611,6 +695,12 @@ unextractedFix t reason
       "Derive Generic for '" <> escapeField t <> "' in this module with the stock strategy, in its deriving clause or by 'deriving instance Generic (" <> escapeField t <> " f)' with '" <> escapeField t <> "' itself in the head (a large record keeps its '{-# ANN type " <> escapeField t <> " largeRecord #-}'), and drop each other Generic instance that could be its: a written one, or one derived via, newtype or anyclass, also for a type synonym of this module or a head the plugin cannot read. Beam then names its columns from its record fields."
   | reason == reasonBeamableMethods =
       "Drop the methods of the Beamable instances of '" <> escapeField t <> "' and its key ('instance Beamable " <> escapeField t <> "' with no where), or derive them ('deriving anyclass (Beamable)'), not via another type, so Beam takes them from the Generic representation."
+  | reason == reasonUnseenInstance =
+      "Write its record declaration, its Beamable deriving and its Table and ModelMeta instances out in this module's source, not through Template Haskell or another plugin: the plugin reads only the source as written."
+  | reason == reasonForeignHead =
+      "Drop the instance, or write it out beside its type's declaration: a module's Table, Beamable and ModelMeta instances must be for the tables it declares."
+  | reason == reasonForeignLargeRecord =
+      "Import largeRecord from the large-records package (module Data.Record.Plugin) for its '{-# ANN type " <> escapeField t <> " largeRecord #-}', or give it a stock 'deriving (Generic)' and drop the annotation."
   | otherwise =
       "Keep the table's record declaration, its Beamable deriving and its Table and ModelMeta instances, all written out, in one module."
 
@@ -618,6 +708,18 @@ metaFieldShapes :: String -> String
 metaFieldShapes = \case
   "modelTableType" -> "Nothing or Just <TableType constructor> (one of " <> intercalate ", " tableTypeConstructors <> "; qualified or not)"
   _                -> "Nothing, Just \"literal\" or Just <value name> (qualified or not)"
+
+-- | The class 'UNEXPECTED_CLASS' expected in place of one named @cls@.
+expectedClass :: String -> String
+expectedClass cls = case classModule cls of
+  Just (pkg, m) -> pkg <> "'s " <> escapeField cls <> " (module " <> m <> ")"
+  Nothing       -> "the class the plugin reads"
+
+-- | What base's Just holds in a field 'MODEL_META_FIELD_MISMATCH' reports.
+metaFieldValue :: String -> String
+metaFieldValue = \case
+  "modelTableType" -> " around a constructor of sequelize's TableType (module Sequelize)"
+  _                -> " around a string literal or a value name"
 
 -- | The rendered derivation of a derived instance starts with @deriving@, which no written binding does.
 metaFieldFix :: String -> String -> String -> String

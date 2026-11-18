@@ -18,6 +18,22 @@ module SqlSchema.Extract
   , planFragment
   , extensionErrors
   , refusedExtensions
+    -- * Type-check cross-check
+  , Origin (..)
+  , fromModule
+  , renderOrigin
+  , ResolvedField (..)
+  , ResolvedValue (..)
+  , ResolvedColumn (..)
+  , ResolvedGeneric (..)
+  , InstanceHead (..)
+  , unextractedInstances
+  , unexpectedClasses
+  , routingMismatches
+  , columnMismatches
+  , foreignLargeRecords
+  , genericMismatches
+  , untrustedInstances
   ) where
 
 import           Control.Monad              (when)
@@ -25,7 +41,7 @@ import           Data.Data                  (Data, cast, gmapQ)
 import           Data.Either                (partitionEithers)
 import           Data.Foldable              (toList)
 import           Data.List                  (foldl', nub)
-import           Data.List                  (intercalate, (\\))
+import           Data.List                  (intercalate, isSubsequenceOf, (\\))
 import           Data.List.NonEmpty         (NonEmpty (..))
 import qualified Data.Map.Strict            as Map
 import           Data.Maybe                 (fromMaybe, isJust, isNothing, mapMaybe)
@@ -1776,3 +1792,234 @@ maybeShape inner expr = case peel expr of
       Par (L _ e)               -> peel e
       ExprWithTySig _ (L _ e) _ -> peel e
       e                         -> e
+
+
+-- ---------------------------------------------------------------------------
+-- Type-check cross-check
+-- ---------------------------------------------------------------------------
+
+-- | Where GHC says a name is defined: the package of its unit, 'Nothing' when no
+-- package of the package database provides the unit (the package being compiled,
+-- say), and its module.
+data Origin = Origin (Maybe String) String
+  deriving (Eq, Show)
+
+-- | Whether a name is defined in this (package, module), as 'beamCoreModule' gives one.
+fromModule :: Maybe Origin -> (String, String) -> Bool
+fromModule origin (pkg, m) = origin == Just (Origin (Just pkg) m)
+
+renderOrigin :: Maybe Origin -> String
+renderOrigin = \case
+  Just (Origin (Just pkg) m) -> "module " <> m <> " of package " <> pkg
+  Just (Origin Nothing m)    -> "module " <> m <> ", which no package of the package database provides"
+  Nothing                    -> "no module"
+
+-- | A table's modelTableType or modelSchemaName binding as GHC resolved it, under the
+-- parentheses and type signatures the parse step peels.
+data ResolvedField
+  = FieldAbsent
+    -- ^ The instance does not bind it, so it is the class's default.
+  | FieldNothing
+    -- ^ base's @Nothing@.
+  | FieldJust ResolvedValue
+    -- ^ base's @Just@ applied to this.
+  | FieldForeign String (Maybe Origin)
+    -- ^ A @Just@ or @Nothing@ that is not base's, and where it is defined.
+  | FieldOther String
+    -- ^ Any other shape, rendered.
+  deriving (Eq, Show)
+
+data ResolvedValue
+  = ValueConstructor String (Maybe Origin) String
+    -- ^ A data constructor, its type constructor's origin and its type constructor.
+  | ValuePatternSynonym String (Maybe Origin)
+  | ValueVariable String
+  | ValueLiteral String
+  | ValueOther String
+    -- ^ Anything else, rendered.
+  deriving (Eq, Show)
+
+-- | A staged column's record field as GHC types it, type synonyms expanded.
+data ResolvedColumn
+  = ColumnMissing
+    -- ^ The table's record has no field of that name.
+  | ColumnColumnar Bool String
+    -- ^ beam-core's @Columnar@ applied to the table's column functor and a type,
+    --   whether that type is base's @Maybe t@, and the field's type rendered.
+  | ColumnOther String
+    -- ^ Why it is neither.
+  deriving (Eq, Show)
+
+-- | The type constructor heading an instance's last type, as GHC resolves it.
+data InstanceHead
+  = HeadLocal String
+  | HeadForeign String
+  | HeadKey
+    -- ^ beam-core's @PrimaryKey@ family.
+  | HeadNone
+  deriving (Eq, Show)
+
+-- | The errors for the module's instances ('tcg_insts': class name, head) of a table the
+-- parse step did not stage, such as one Template Haskell generated, or of a type this
+-- module does not declare.  A key's (@PrimaryKey t@) instance is for no table.
+unextractedInstances :: [String] -> [(String, InstanceHead)] -> [SqlSchemaError]
+unextractedInstances staged insts = nub
+  [ err
+  | (cls, h) <- insts
+  , isJust (classModule cls)
+  , err <- case h of
+      HeadNone      -> [UNREADABLE_INSTANCE_HEAD cls noTyConHead]
+      HeadKey       -> []
+      HeadForeign t -> [UNEXTRACTED_TABLE t reasonForeignHead]
+      HeadLocal t   -> [UNEXTRACTED_TABLE t reasonUnseenInstance | t `notElem` staged]
+  ]
+
+-- | The errors for the instances of a class the parse step reads by name that is not
+-- defined in that class's package and module ('classModule').
+unexpectedClasses :: [(String, Maybe String, Maybe Origin)] -> [SqlSchemaError]
+unexpectedClasses insts = nub
+  [ UNEXPECTED_CLASS cls (fromMaybe noTyConHead mhead) (renderOrigin origin)
+  | (cls, mhead, origin) <- insts
+  , Just expected <- [classModule cls]
+  , not (fromModule origin expected)
+  ]
+
+noTyConHead :: String
+noTyConHead = "a type with no type constructor at its head"
+
+-- | The errors for a staged table whose modelTableType and modelSchemaName, as GHC
+-- resolved them, are not the values the parse step read and staged.
+routingMismatches :: TableSchema -> ResolvedField -> ResolvedField -> [SqlSchemaError]
+routingMismatches t tableType schemaName =
+  [ MODEL_META_FIELD_MISMATCH (codeName t) "modelTableType" (mismatch staged tableType)
+  | let staged = maybe "Nothing" ("Just " <>) (modelTableType t)
+  , not (tableTypeAgrees (modelTableType t) tableType) ]
+  <> [ MODEL_META_FIELD_MISMATCH (codeName t) "modelSchemaName" (mismatch staged schemaName)
+     | let staged = maybe "Nothing" (("Just " <>) . schemaText) (modelSchemaName t)
+     , not (schemaNameAgrees (modelSchemaName t) schemaName) ]
+  where
+    mismatch staged r = "the plugin read '" <> staged <> "', which GHC resolves to " <> describeField r
+    schemaText = \case
+      SchemaLiteral s -> show s
+      SchemaConfig v  -> v
+
+-- | An absent binding agrees with 'Nothing': the class default is @Nothing@, and
+-- 'unexpectedClasses' reports a class that is not the library's.
+tableTypeAgrees :: Maybe String -> ResolvedField -> Bool
+tableTypeAgrees staged r = case (staged, r) of
+  (Nothing, FieldAbsent)  -> True
+  (Nothing, FieldNothing) -> True
+  (Just c, FieldJust (ValueConstructor c' origin "TableType")) -> c' == c && fromModule origin sequelizeModule
+  _ -> False
+
+-- | The staged value name keeps its qualifier as written; GHC's has none.
+schemaNameAgrees :: Maybe ModelSchemaName -> ResolvedField -> Bool
+schemaNameAgrees staged r = case (staged, r) of
+  (Nothing, FieldAbsent)  -> True
+  (Nothing, FieldNothing) -> True
+  (Just (SchemaLiteral s), FieldJust (ValueLiteral s')) -> s' == s
+  (Just (SchemaConfig v), FieldJust (ValueVariable n))  -> n == v || T.pack ('.' : n) `T.isSuffixOf` T.pack v
+  _ -> False
+
+describeField :: ResolvedField -> String
+describeField = \case
+  FieldAbsent           -> "no binding, the class's default"
+  FieldNothing          -> "base's Nothing"
+  FieldJust v           -> "base's Just applied to " <> describeValue v
+  FieldForeign n origin -> "the '" <> n <> "' of " <> renderOrigin origin <> ", not base's"
+  FieldOther e          -> "'" <> e <> "', which is not Nothing or Just applied to a value"
+
+describeValue :: ResolvedValue -> String
+describeValue = \case
+  ValueConstructor c origin tc -> "the constructor " <> c <> " of the type " <> tc <> " of " <> renderOrigin origin
+  ValuePatternSynonym p origin -> "the pattern synonym " <> p <> " of " <> renderOrigin origin
+  ValueVariable v              -> "the variable " <> v
+  ValueLiteral s               -> "the string literal " <> show s
+  ValueOther e                 -> "'" <> e <> "'"
+
+-- | The errors for a staged table's columns whose record fields, as GHC types them,
+-- are not what the parse step read: its nullability rule, a @Maybe@ at the head of
+-- the type inside @Columnar f@ or @C f@, any qualifier, read as written.
+columnMismatches :: String -> [(ColumnInfo, ResolvedColumn)] -> [SqlSchemaError]
+columnMismatches t cols =
+  [ COLUMN_TYPE_MISMATCH t (hsField c) why
+  | (c, r) <- cols
+  , why <- case r of
+      ColumnMissing -> ["GHC finds no field of that name in the table's record"]
+      ColumnColumnar isMaybe ty
+        | isMaybe == nullable c -> []
+        | isMaybe   -> ["the plugin read it as not nullable, but GHC, expanding type synonyms, types it as '" <> ty <> "', with a base Maybe inside Columnar"]
+        | otherwise -> ["the plugin read it as nullable, but GHC, expanding type synonyms, types it as '" <> ty <> "', with no base Maybe at the head of the type inside Columnar"]
+      ColumnOther why -> [why]
+  ]
+
+-- | The errors for the staged tables annotated @{-# ANN type T largeRecord #-}@, each given as
+-- the annotated type's name, where GHC says that @largeRecord@ is defined and where the type
+-- constructor of its type is, whose @largeRecord@ or its options type is not the large-records
+-- package's: the parse step takes the annotation, by name, for that plugin's.
+foreignLargeRecords :: [String] -> [(String, Maybe Origin, Maybe Origin)] -> [SqlSchemaError]
+foreignLargeRecords staged anns = nub
+  [ UNEXTRACTED_TABLE t reasonForeignLargeRecord
+  | (t, origin, typeOrigin) <- anns
+  , t `elem` staged
+  , not (all fromLargeRecords [origin, typeOrigin])
+  ]
+  where
+    fromLargeRecords = \case
+      Just (Origin (Just "large-records") _) -> True
+      _                                      -> False
+
+-- | A table's GHC.Generics instance as GHC resolves it.
+data ResolvedGeneric
+  = GenericSelectors [Maybe String]
+    -- ^ One instance, whose representation is one record constructor: its selectors in
+    --   order, 'Nothing' for a field without one.
+  | GenericMetadata [String]
+    -- ^ One instance, whose representation is large-generics' @ThroughLRGenerics@ of the
+    --   table, as large-records generates it: the field names of its @MetadataOf@, in order.
+  | GenericInstances [Maybe Origin] [Maybe Origin]
+    -- ^ Not exactly one instance: where those that match and those that could are defined.
+  | GenericOther String
+    -- ^ Why its representation is not one record constructor's.
+  deriving (Eq, Show)
+
+-- | Beam pairs a table's columns with its representation's selectors, or a large-records
+-- table's metadata names, by position, so they must be all the record's fields (@labels@)
+-- in order; the staged columns are those fields, in order, less any the plugin leaves out
+-- when @leftOut@ (allowUnknownColumnWrapper) allows it.
+genericMismatches :: Bool -> String -> [String] -> [String] -> ResolvedGeneric -> [SqlSchemaError]
+genericMismatches leftOut t labels staged = \case
+  GenericSelectors sels
+    | sels == map Just labels -> stagedInOrder
+    | otherwise -> [ GENERIC_FIELD_MISMATCH t ("its representation's selectors, in order, are " <> listed sels
+                                               <> ", not the record's fields " <> listed fields) ]
+  GenericMetadata names
+    | names == labels -> stagedInOrder
+    | otherwise -> [ GENERIC_FIELD_MISMATCH t ("its large-records metadata names, in order, are " <> listed (map Just names)
+                                               <> ", not the record's fields " <> listed fields) ]
+  GenericInstances [] [] -> [GENERIC_FIELD_MISMATCH t "GHC finds no Generic instance for it"]
+  GenericInstances matches unifiers ->
+    [ GENERIC_FIELD_MISMATCH t ("GHC finds " <> show (length matches) <> " matching and " <> show (length unifiers)
+                                <> " possibly matching Generic instances for it, not one (in "
+                                <> intercalate "; " (map renderOrigin (matches <> unifiers)) <> ")") ]
+  GenericOther why -> [GENERIC_FIELD_MISMATCH t why]
+  where
+    fields = map Just labels
+    listed xs = "[" <> intercalate ", " (map (fromMaybe "(no selector)") xs) <> "]"
+    stagedInOrder
+      | if leftOut then staged `isSubsequenceOf` labels else staged == labels = []
+      | leftOut = [ GENERIC_FIELD_MISMATCH t ("the plugin read its columns as " <> listed (map Just staged)
+                                              <> ", which are not among the record's fields " <> listed fields <> " in that order") ]
+      | otherwise = [ GENERIC_FIELD_MISMATCH t ("the plugin read its columns as " <> listed (map Just staged)
+                                                <> ", not all the record's fields " <> listed fields
+                                                <> " in order, and only allowUnknownColumnWrapper leaves a field out") ]
+
+-- | The errors for a table's @cls@ instances at its EntityModification, each given as where
+-- it is defined: anything but beam-core's one.
+untrustedInstances :: String -> String -> [Maybe Origin] -> [SqlSchemaError]
+untrustedInstances cls t = \case
+  [o] | fromModule o beamCoreModule -> []
+  []  -> [UNEXPECTED_INSTANCE cls t "GHC finds no instance for it"]
+  [o] -> [UNEXPECTED_INSTANCE cls t ("GHC finds one, in " <> renderOrigin o)]
+  os  -> [ UNEXPECTED_INSTANCE cls t ("GHC finds " <> show (length os) <> " that match or could match it, in "
+                                      <> intercalate "; " (map renderOrigin os)) ]

@@ -3,7 +3,7 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 
 -- | Tests of the fragment protocol: 'stagePending' when a module is parsed,
--- 'publishStaged' at the end of its Core pipeline.
+-- 'stagedTables' after type checking, 'publishStaged' at the end of its Core pipeline.
 module StageTests (run) where
 
 import           Control.Exception   (SomeException, try)
@@ -16,7 +16,8 @@ import           System.Directory    (createDirectoryIfMissing, createDirectoryL
                                       pathIsSymbolicLink, removeDirectory, removeFile, withCurrentDirectory)
 import           System.FilePath     (takeDirectory, (</>))
 
-import           SqlSchema.Plugin    (loadCliOptions, pendingPath, publishStaged, stagePending)
+import           SqlSchema.Plugin    (loadCliOptions, pendingPath, publishStaged, stagePending, stagedTableNames,
+                                      stagedTables)
 import           SqlSchema.Types
 import           TestUtil
 
@@ -33,6 +34,7 @@ run = do
   testPublishOntoDirectoryFails
   testLinksReplacedNotFollowed
   testFileFailuresAreCodedErrors
+  testStagedTableNames
 
 -- ---------------------------------------------------------------------------
 -- Test cases
@@ -115,10 +117,10 @@ testPublishWithoutStageFails = withTmpProject $ \tmp -> do
   stagePending frag (Just (sampleFragment "Foo" "Foo.FooT" "foo"))
   publishStaged frag
   before <- BS.readFile frag
-  expectStagedMissing "a published fragment, nothing staged" frag
+  expectStagedMissing "a published fragment, nothing staged" frag (publishStaged frag)
   assertEq "published fragment untouched" before =<< BS.readFile frag
   let other = tmp </> "fragments" </> "Bar.yaml"
-  expectStagedMissing "nothing published or staged" other
+  expectStagedMissing "nothing published or staged" other (publishStaged other)
   assertAbsent other
 
 testStageOverwritesStalePending :: IO ()
@@ -234,6 +236,44 @@ testFileFailuresAreCodedErrors = withTmpProject $ \tmp -> do
       (stagePending long (Just (sampleFragment "Foo" "Foo.FooT" "foo")))
     assertEq "nothing written below the chain" [] =<< listDirectory (tmp </> "own")
 
+-- | The type-check step reads the staged tables back: nothing staged is STAGED_FRAGMENT_MISSING, as
+-- at publish; a staged file it cannot read is FRAGMENT_IO_ERROR, as any file operation of the plugin;
+-- and one that does not decode is STAGED_FRAGMENT_UNREADABLE, with the decode error.
+testStagedTableNames :: IO ()
+testStagedTableNames = withTmpProject $ \tmp -> do
+  let frag     = tmp </> "fragments" </> "Foo.yaml"
+      pending  = pendingPath frag
+      readBack = () <$ stagedTables frag
+      f        = (sampleFragment "Foo" "Foo.FooT" "foo")
+                   { fragmentTables = [sampleTable "Foo.FooT" "Foo" "foo", sampleTable "Foo.BarT" "Foo" "bar"] }
+      undecodable label bytes = do
+        BS.writeFile pending bytes
+        reason <- either (pure . takeWhile (/= '\n') . YAML.prettyPrintParseException)
+                         (\fr -> failWith (label <> ": decodes as " <> show (fr :: Fragment)))
+                         (YAML.decodeEither' bytes)
+        try readBack >>= \case
+          Left (e :: SomeException)
+            | ("sql-schema: STAGED_FRAGMENT_UNREADABLE: The file staged at '" <> pending
+                 <> "' does not decode as this module's fragment: " <> reason) `isInfixOf` show e
+              -> pure ()
+          other -> failWith (label <> ": expected STAGED_FRAGMENT_UNREADABLE naming " <> pending <> " and " <> show reason
+                             <> ", got " <> show other)
+  stagePending frag (Just f)
+  assertEq "staged YAML" ["FooT", "BarT"] =<< stagedTableNames frag
+  assertEq "staged tables" (fragmentTables f) =<< stagedTables frag
+  stagePending frag Nothing
+  assertEq "a staged deletion" [] =<< stagedTableNames frag
+  removeFile pending
+  expectStagedMissing "nothing staged" frag readBack
+  createDirectoryIfMissing True pending
+  expectCodedFailure "a directory at the staged path" pending readBack
+  try readBack >>= \case
+    Left (e :: SomeException) | ("Could not read the fragment at '" <> pending <> "': ") `isInfixOf` show e -> pure ()
+    other -> failWith ("a directory at the staged path: expected the action 'read', got " <> show other)
+  removeDirectory pending
+  undecodable "garbage" "fragmentModule: [unclosed"
+  undecodable "YAML that is not a fragment" "just a string"
+
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
@@ -257,15 +297,15 @@ expectCodedFailure label path act = try act >>= \case
     | otherwise -> failWith (label <> ": expected FRAGMENT_IO_ERROR naming " <> path <> ", got " <> show e)
   Right () -> failWith (label <> ": succeeded")
 
-expectStagedMissing :: String -> FilePath -> IO ()
-expectStagedMissing label frag = do
-  r <- try (publishStaged frag)
+expectStagedMissing :: String -> FilePath -> IO () -> IO ()
+expectStagedMissing label frag act = do
+  r <- try act
   case r of
     Left (e :: SomeException)
       | ("sql-schema: STAGED_FRAGMENT_MISSING: Nothing is staged at '" <> pendingPath frag <> "'") `isInfixOf` show e
                 -> pure ()
       | otherwise -> failWith (label <> ": expected STAGED_FRAGMENT_MISSING, got " <> show e)
-    Right () -> failWith (label <> ": publishStaged succeeded")
+    Right () -> failWith (label <> ": succeeded")
 
 expectNoTemp :: String -> FilePath -> IO ()
 expectNoTemp label dir = do

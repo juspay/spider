@@ -412,8 +412,8 @@ isSkippedLink = \case
 -- steps.  Each directory entry listed is one step, and each link followed (to a directory or a file),
 -- or hop of a chain, one step per path component its resolution walks: the link's path, then its
 -- target's.  A directory is read whole before its entries are counted, so one directory's listing
--- can pass the cap.  A
--- directory that several links lead to is listed once per link, so links can multiply the steps.
+-- can pass the cap.  A directory that several links lead to is listed once per link, so links can
+-- multiply the steps.
 walkEntryCap :: Int
 walkEntryCap = 200000
 
@@ -496,7 +496,6 @@ walkHs cap root = do
       entry depth above name path = tryIOError (pathKind path) >>= \case
         Right PathDirectory -> descend depth above name path
         -- A dangling link ('PathMissing') counts like a file.
-        -- Charged like a directory link: 190000 uncharged links to a file took 26 s under the cap.
         Right _             -> do
           isLink <- pathIsSymbolicLink path
           when isLink (canonicalizePath path >>= chargeLink path)

@@ -180,7 +180,7 @@ parseArgs = go (defaultMergeOptions "" "")
     go o ("--allow-empty-include" : rest) = go o { moAllowEmptyInclude = True } rest
     go o ("--allow-unmatched-override" : rest) = go o { moAllowUnmatchedOverride = True } rest
     go o ("--allow-columnless-table" : rest) = go o { moAllowColumnlessTable = True } rest
-    go _ (other : _) = Left ("unrecognised argument: " <> other)
+    go _ (other : _) = Left ("unrecognised argument: " <> show other)
 
     once flag firstTime next
       | firstTime = next
@@ -191,5 +191,5 @@ parseArgs = go (defaultMergeOptions "" "")
       v : r
         | null v -> Left (flag <> " has an empty value; is a shell variable unset?")
         | "--" `isPrefixOf` v ->
-            Left (flag <> " needs a value, but the next argument is the option " <> v)
+            Left (flag <> " needs a value, but the next argument is the option " <> show v)
         | otherwise -> next v r

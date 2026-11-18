@@ -32,8 +32,8 @@ For every Beam table (`data XxxT (f :: Type -> Type) = Xxx { … } deriving
 
   The names are matched as written, not resolved, so a pattern synonym of
   this module that reuses `Just`, `Nothing` or the name of a `TableType`
-  constructor is refused (`REDEFINED_NAME`); an imported one is the **Limit**
-  below.
+  constructor is refused (`REDEFINED_NAME`); an imported one is refused after
+  type checking (`MODEL_META_FIELD_MISMATCH`, see "Type-check cross-check").
 - `primaryKey` from the `Table` instance — the key constructor and the Haskell field names it applies (not a column list).
   Each must be a column field the plugin extracts for the table
   (`UNKNOWN_PRIMARY_KEY_FIELD`).
@@ -88,7 +88,10 @@ neither, or with another `Generic` instance in the module that could be its
 (written, derived `via`, `newtype` or `anyclass`, also for a type synonym of
 the module or a head the plugin can't read), is refused (`UNEXTRACTED_TABLE`):
 Beam names the columns from the Generic representation, which only a stock
-derivation, or that plugin, takes from the record's fields. A table's
+derivation, or that plugin, takes from the record's fields. A `Generic`
+instance the source doesn't show (from Template Haskell, an orphan in another
+module, or behind a module class named `Generic`) is checked after type
+checking (`GENERIC_FIELD_MISMATCH`, see "Type-check cross-check"). A table's
 `Beamable` instance, and its key's, may be derived (not `via` another type) or
 written with no methods (`instance Beamable XxxT`); one written with a method,
 or derived `via` another type, is refused (`UNEXTRACTED_TABLE`), since
@@ -107,16 +110,114 @@ unaffected.
 
 **Limit:** the plugin reads the parsed module, so it cannot see a
 redefinition it would have to resolve: an imported one (a project module
-that exports its own `fieldNamed`, a pattern synonym named `Just`, a type
-named `C`, or a Prelude replacement with its own `.`), a qualified operator
-(`P.<$>`), or a name a Template Haskell splice binds at top level. Each is read
-as Beam's or base's name. Nor does it
-see a `RULES` pragma in another module, which GHC applies in any module that
-imports it, directly or not. Model code must not import such redefinitions or
-rules. Type synonyms are read as written as well: a column typed through one
-that hides `Maybe` (`type Opt = Maybe`, then `C f (Opt Text)`) is recorded as
-not nullable. A typecheck-time pass will check nullability against the
-expanded types.
+that exports its own `fieldNamed` or `tableModification`, or a Prelude
+replacement with its own `.`), a qualified operator (`P.<$>`), or a name a
+Template Haskell splice binds at top level. Each is read as Beam's or base's
+name. Nor does it see a `RULES` pragma in another module, which GHC applies in
+any module that imports it, directly or not. Model code must not import such
+redefinitions or rules. The type-check cross-check below resolves the names the
+contract's routing, nullability and table list rest on: `Just`, `Nothing`, the
+`TableType` constructor, `Columnar`/`C`, `Maybe` and the three classes. Type
+synonyms are read as written too, so a column typed through one that hides
+`Maybe` (`type Opt = Maybe`, then `C f (Opt Text)`) is read as not nullable;
+the cross-check expands the synonyms and refuses it (`COLUMN_TYPE_MISMATCH`):
+a column passes only when its type inside beam-core's `Columnar` is headed by
+base's `Maybe` exactly when the parse step recorded it nullable.
+
+### Type-check cross-check
+
+After GHC type checks a module (`typeCheckResultAction`), the plugin compares
+what it staged at parse time with what GHC resolved, which the parse step
+cannot see. It runs in every build that type checks the module, `-fno-code`,
+haddock and HLS included, but not for a blacklisted module, an `hs-boot` or
+`hsig` file, or GHCi's prompt declarations. Each mismatch is a compile error,
+located at the instance, the table's declaration or the column's field when
+GHC gives it a place in the module, else at the module; there is no opt-out.
+
+- Every `Table`, `ModelMeta` or `Beamable` instance GHC reports for the
+  module, Template Haskell's and other plugins' included, must be for a table
+  the parse step staged, declared in the module (a key's instance, for
+  beam-core's `PrimaryKey` family by package and module, is for none), or the
+  compile fails with `UNEXTRACTED_TABLE`: a splice's instance for an imported
+  type named like one of the module's tables is refused, not taken for the
+  table's. One whose head has no type constructor is
+  `UNREADABLE_INSTANCE_HEAD`.
+- The class of each such instance must be beam-core's `Table` or `Beamable`
+  (package `beam-core`, module `Database.Beam.Schema.Tables`) or sequelize's
+  `ModelMeta` (package `sequelize`, module `Sequelize`): `UNEXPECTED_CLASS`.
+  The package is checked too: a module of the package being compiled named
+  `Sequelize` shadows the package's without a word.
+- A staged table's `modelTableType` and `modelSchemaName`, as written, must
+  resolve to base's `Just` and `Nothing`, a data constructor (not a pattern
+  synonym) of sequelize's `TableType` with the recorded name, and the recorded
+  string literal or value name: `MODEL_META_FIELD_MISMATCH`.
+- Each staged column's field, with type synonyms expanded, must be
+  beam-core's `Columnar` applied to the table's last type parameter and a type
+  that is base's `Maybe t` exactly when the column was recorded as nullable,
+  or else `COLUMN_TYPE_MISMATCH`. So `type Opt = Maybe` (then
+  `C f (Opt Text)`), an imported `C` that adds a `Maybe`, another module's
+  `Columnar` or `Maybe`, and a type family in the column type are refused.
+  For a large-records table (below), whose fields that plugin types as
+  existential type variables, each fixed by an equality constraint of the
+  constructor (`forall f1. (f1 ~ τ) => …`), the type checked is that `τ`; a
+  field no one such constraint fixes is refused.
+- A staged table's `{-# ANN type T largeRecord #-}` must name the large-records
+  package's `largeRecord`, whose type is that package's options type
+  (`UNEXTRACTED_TABLE`). The large-records plugin consumes the annotation
+  before GHC renames the module, so this sees one only where that plugin is
+  not loaded.
+- Each staged table's GHC.Generics `Generic` instance, looked up by class among
+  every instance GHC sees in the module (imported and orphan ones included),
+  must be the only one that matches or could match. Its representation, with
+  type families reduced, must be one constructor whose selectors are all the
+  record's fields in order: Beam names the columns after those selectors, by
+  position. A large-records table is one whose representation is instead
+  large-generics' `ThroughLRGenerics` of the table (package `large-generics`,
+  module `Data.Record.Generic.GHC`), which the large-records plugin generates
+  with large-generics' `Generic` instance. Beam is taken to reach its columns
+  through beam-large-records' instances for that representation (unverified
+  offline: Hackage's beam-large-records 0.1.3 needs beam-core 0.10.3 or later,
+  and the corpus builds with 0.9.0.0, so its copy is another build), so
+  large-generics' `MetadataOf` of the table, reduced, must name all the
+  record's fields in order; a package named large-generics without that
+  `MetadataOf` is refused too. Either way the staged columns must be those
+  fields in order: all of them, or with `allowUnknownColumnWrapper` those it
+  does not leave out. Otherwise `GENERIC_FIELD_MISMATCH`.
+- Once the module uses beam-core's `setEntityName` or `modifyTableFields`, the
+  only `Semigroup` or `Monoid` instance that could apply at the
+  `EntityModification` of a table it can rename (one staged here, or the table
+  of a record field here, a large record's field read at the type its equality
+  constraint fixes), for any database and backend, must be beam-core's
+  own (`UNEXPECTED_INSTANCE`). Instances of every module GHC sees count,
+  incoherent ones included.
+
+It reads the renamed source, which GHC keeps only on request, so the plugin
+asks for it (`keepRenamedSource`); on GHC 9.8 a build without `-haddock` then
+writes the module's documentation structure into its `.hi` file, as `-haddock`
+does. A table counts as a large-records table by its representation, not by
+its annotation: one annotated but compiled without that plugin has another
+representation, checked by its selectors. The large-records checks are written
+against large-records 0.4.4 and large-generics 0.2.3. The pinned fork
+(`infinitumkiran/large-records` rev 35005b63) is not available offline; if it
+differs from 0.4.4 in how it encodes fields or `MetadataOf`, CI fails loudly
+rather than passing. The check does not cover a name the parse step reads
+elsewhere (the modifier, the key, `setEntityName`).
+
+### What the type-check cross-check cannot see
+
+It checks the instances GHC resolves in the table's module, by type. Two kinds
+of instance defeat it; both are deliberate code by someone with commit access,
+which is outside the threat model:
+
+- A written or Template Haskell `Generic` instance (GHC.Generics' or
+  large-generics') whose selectors or `MetadataOf` names are the record's
+  fields in order, but whose `to` and `from`, or large-generics' value-level
+  metadata, permute or rename the fields.
+- An orphan `OVERLAPPING` `Generic` instance, or an overlapping instance of
+  beam-core's generic plumbing (`GDefaultTableFieldSettings`,
+  `GAutoDbSettings`, `IsDatabaseEntity`, `GZipDatabase`, …), in a module
+  imported only where the database is built: GHC selects it there, not in the
+  table's module.
 
 ### DB-settings renames
 
@@ -176,8 +277,9 @@ The plugin reads the parsed source, before names and types are resolved:
   `Semigroup` (`<>`, `sconcat`, `stimes`) or `Monoid` (`mempty`, `mappend`,
   `mconcat`). An instance that overlaps by the `OverlappingInstances` or
   `IncoherentInstances` extension instead of a pragma can't arise: those
-  extensions are refused (above). Not seen: such an instance in another
-  module.
+  extensions are refused (above). Such an instance in another module, or one
+  that names those types only through a type synonym, is refused after type
+  checking (`UNEXPECTED_INSTANCE`).
 - `coerce` can build an `EntityModification` without naming it, for example
   by substituting another `Database` record's entity for a table's. That
   rename is not seen.
@@ -214,10 +316,11 @@ in command-line order, 9.2.8 in reverse (9.2's `addPluginModuleName` puts each
 `-fplugin` at the head of the list and its `loadPlugins` uses the list as is;
 9.8's `loadPlugins` reverses it). A plugin that rewrites the parse tree
 (large-records, record-dot-preprocessor) changes what this plugin reads if it
-runs first: a large-records record, whose fields have become other types, is
-`UNRECOGNIZED_FIELD_WRAPPER`, or with `allowUnknownColumnWrapper` a table with
-no columns, which the merge refuses (`--allow-columnless-table`); a rewritten
-modifier is a compile error too. So list `-fplugin=SqlSchema.Plugin` before
+runs first: a large-records table is refused as `UNEXTRACTED_TABLE` (observed
+on 9.8.4 with large-records 0.4.4: that plugin adds a written `Generic`
+instance, and `allowUnknownColumnWrapper` does not change that); a rewritten
+modifier is a compile error too. The order on 9.2 is from GHC's source and a
+two-plugin probe on 9.2.8; large-records on 9.2 was not run. So list `-fplugin=SqlSchema.Plugin` before
 such plugins on 9.8 and after them on 9.2, and for a package built with both,
 set it per compiler, with every `-fplugin` flag in the branches (`-fplugin-opt`
 may stay outside):
@@ -243,8 +346,9 @@ options (`INVALID_PLUGIN_OPTIONS`), because the plugin could delete an
 unrelated file in the working directory: `""`, `.`, `./` and `./.`; any value
 with a `..` component (`a/..`, and `dist/../frags` too, though that one is
 safe); and a value that resolves to the working directory or a directory above
-it, as an absolute path or through a symbolic link. This is checked before the
-first write; a chain of links past the system's limit can't be resolved, passes
+it, as an absolute path or through a symbolic link. This is checked when the
+module is parsed, before staging, and again in the publish pass, before
+publishing; a chain of links past the system's limit can't be resolved, passes
 the check, and fails at the first write with `FRAGMENT_IO_ERROR`.
 
 ### Nix
@@ -457,18 +561,24 @@ code is listed:
 
 | Hard compile error             | What it means |
 |--------------------------------|---------------|
+| `COLUMN_TYPE_MISMATCH`         | After type checking: a column's field, type synonyms expanded, isn't beam-core's `Columnar` of the table's last type parameter with a base `Maybe` exactly when the column was recorded as nullable (a synonym or family that hides or adds `Maybe`, another `Columnar` or `Maybe`), or the record has no such field. Write `Maybe` out in the field's type. There is no opt-out. |
 | `DUPLICATE_INSTANCE`           | The module has two `Table`, `ModelMeta` or `Beamable` instances, written or derived, for one type name: same-named classes of different modules, or one parameterised type at two arguments (`ModelMeta (Wrap A)` and `ModelMeta (Wrap B)`). Keep one per table type. |
-| `FRAGMENT_IO_ERROR`            | A file operation the plugin does to stage or publish a module's fragment failed: the system's error is quoted with the path (see Architecture notes). Nothing is published, so the module's previous fragment stays and the compile fails instead. Typical causes are a `fragmentsDir` that is not writable, is a file, or lies behind a chain of symbolic links longer than the system follows. |
+| `FRAGMENT_IO_ERROR`            | A file operation the plugin does to stage, read back or publish a module's fragment failed: the system's error is quoted with the path (see Architecture notes). Nothing is published, so the module's previous fragment stays and the compile fails instead. Typical causes are a `fragmentsDir` that is not writable, is a file, or lies behind a chain of symbolic links longer than the system follows. |
+| `GENERIC_FIELD_MISMATCH`       | After type checking: a table has no GHC.Generics `Generic` instance, more than one that matches or could match, or one whose representation is not one constructor whose selectors are all the record's fields in order (a Template Haskell or orphan instance, one behind a module class named `Generic`); for a large-records table, large-generics' `MetadataOf` that does not name all the record's fields in order; or staged columns that are not those fields in order. Beam names the columns after those selectors, or that metadata. Derive it with the stock strategy or, for a table annotated with large-records' `largeRecord`, leave both `Generic` instances to that plugin. There is no opt-out. |
 | `INTERNAL_ERROR`              | The extractor refused a module without giving a reason, which cannot happen: a bug in the plugin, not in the module. Report it with the module's source. There is no opt-out. |
 | `INVALID_PLUGIN_OPTIONS`       | The `-fplugin-opt` JSON is malformed, has an unknown key, a wrong-typed value, an invalid `blacklistModules` entry or `fragmentsDir`, or is given more than once. |
 | `MISSING_MODEL_META`           | A table has no `ModelMeta` instance in its module. `tableNameOverrides` doesn't stand in for one. |
+| `MODEL_META_FIELD_MISMATCH`    | After type checking: a table's `modelTableType` or `modelSchemaName` doesn't resolve to what the plugin recorded: an imported pattern synonym or another module's `Just`, `Nothing` or `TableType` constructor. Write it with base's `Just`/`Nothing` and a constructor of sequelize's `TableType`. There is no opt-out. |
 | `REDEFINED_NAME`               | The module defines, itself, a name the plugin reads a table through: `tableModification` or `fieldNamed`, or a name `primaryKey` applies (`.`, `<$>`, `<*>`, `getField`, or a field name the module also binds another way, as `NoFieldSelectors` allows), or a pattern synonym named `Just`, `Nothing` or a `TableType` constructor, or a type, type synonym or family named `C`, `Columnar`, `Maybe` or `TableEntity`. Names are matched as written, so the plugin can't tell the module's definition from Beam's or base's. Rename it. There is no opt-out. |
-| `STAGED_FRAGMENT_MISSING`      | The module's staged fragment was gone when the plugin went to publish it (see Architecture notes): something else removed it from `fragmentsDir`, such as a compile of a same-named module at the same time (see `fragmentsDir` above). Rebuild the module. |
+| `STAGED_FRAGMENT_MISSING`      | The module's staged fragment was gone when the plugin went to cross-check it after type checking or to publish it (see Architecture notes): something else removed it from `fragmentsDir`, such as a compile of a same-named module at the same time (see `fragmentsDir` above). Rebuild the module. |
+| `STAGED_FRAGMENT_UNREADABLE`   | After type checking, the module's staged fragment does not decode as a fragment: the decode error is quoted with the path. The parse step writes the file whole, through a rename, so something other than the plugin wrote it. Keep `fragmentsDir` for this plugin's files only, and rebuild the module. |
 | `UNCAPTURED_MODIFY_TABLE_FIELDS` | A `modifyTableFields` outside the shape under "DB-settings renames": not applied directly to an argument, an argument that isn't an unqualified variable or isn't the `modelFieldModification` binding of a table of this module, a binding name also bound elsewhere in the module (a parameter or a `where` binding, say) or rebound by a record wildcard `{..}`, a module that binds `modifyTableFields`, `tableModification`, `fieldNamed` or `(<>)` itself, a type application, or a binding that isn't one equation with no arguments, guards or `where` bindings, a `tableModification { … }` with at least one field. The message names the line and the reason. Pass the binding named in `modelFieldModification`; if no column is renamed, drop `modifyTableFields`. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
 | `UNCAPTURED_SET_ENTITY_NAME`   | A `setEntityName` the plugin doesn't capture as an override: one outside the shape under "What it extracts" (in an EMod or other separate binding, a `where` or `let` binding, an instance method, a splice, or a `dbModification` that `withDbModification` does not apply to a top-level binding's result), with a non-literal name, in a `<>` chain with two of them or with another kind of operand, under a type annotation, a label qualified with another module or a record wildcard `{..}`, in an update whose labels no single record of the module declares, before a later `withDbModification` operand that isn't a `dbModification { … }` update, on a field with no table type or several across the module's records, or in a module that binds one of the names the shape relies on or declares a type named `TableEntity`. The message names the line and the reason. Rewrite it into the shape that is read. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
-| `UNEXTRACTED_TABLE`            | A type with a `Beamable`, `Table` or `ModelMeta` instance in the module (written, derived inline or derived standalone) isn't a table the plugin can read: it has no data declaration in the module; its declaration isn't a single-constructor record (Haskell 98 syntax) with the column functor as last type parameter; nothing in the module derives or declares `Beamable` for it (Template Haskell output isn't seen); it derives `Database`; the module neither derives its `Generic` instance with the stock strategy nor annotates it `{-# ANN type T largeRecord #-}`, or has another `Generic` instance that could be its (written, derived `via`, `newtype` or `anyclass`, also for a type synonym of the module); or the module writes a `Beamable` instance with a method for it, its key or a type synonym of it, or derives one `via` another type. The message gives the fix for its reason. |
+| `UNEXPECTED_CLASS`             | After type checking: the class of a `Table`, `Beamable` or `ModelMeta` instance is a same-named class, not beam-core's (`Database.Beam.Schema.Tables`) or sequelize's (`Sequelize`), by package and module. Make it an instance of the library's class, or rename the other class. There is no opt-out. |
+| `UNEXPECTED_INSTANCE`          | After type checking, in a module that uses `setEntityName` or `modifyTableFields`: a `Semigroup` or `Monoid` instance other than beam-core's could apply at a renamed table's `EntityModification` (an `OVERLAPPING` or incoherent one, in any module GHC sees). It can drop or change a rename the contract records. Remove it. There is no opt-out. |
+| `UNEXTRACTED_TABLE`            | A type with a `Beamable`, `Table` or `ModelMeta` instance in the module (written, derived inline or derived standalone) isn't a table the plugin can read: it has no data declaration in the module; its declaration isn't a single-constructor record (Haskell 98 syntax) with the column functor as last type parameter; nothing in the module derives or declares `Beamable` for it (an instance Template Haskell generates doesn't count); it derives `Database`; the module neither derives its `Generic` instance with the stock strategy nor annotates it `{-# ANN type T largeRecord #-}`, or has another `Generic` instance that could be its (written, derived `via`, `newtype` or `anyclass`, also for a type synonym of the module); or the module writes a `Beamable` instance with a method for it, its key or a type synonym of it, or derives one `via` another type. After type checking: an instance the parse step did not see, from Template Haskell or another plugin; an instance whose type GHC resolves to one the module does not declare, such as a splice's instance for an imported type of a table's name; or a table's `largeRecord` annotation that is not the large-records package's value of its options type. The message gives the fix for its reason. |
 | `UNKNOWN_PRIMARY_KEY_FIELD`    | A field `primaryKey` applies isn't a column the plugin extracts for the table: a helper function, another module's name (`M.fooId`), or a field `allowUnknownColumnWrapper` left out. There is no opt-out. |
-| `UNREADABLE_INSTANCE_HEAD`     | A `Table`, `ModelMeta` or `Beamable` instance isn't for one unqualified type constructor, so the plugin can't tell which table it belongs to: e.g. `instance Table t => ModelMeta t`, `instance ModelMeta M.FooT`, a promoted `'FooT`, `instance Table (PrimaryKey FooT)` (a key's `Beamable` instance is fine), or a class applied to two types (`instance X.Table Int FooT`). |
+| `UNREADABLE_INSTANCE_HEAD`     | A `Table`, `ModelMeta` or `Beamable` instance isn't for one unqualified type constructor, so the plugin can't tell which table it belongs to: e.g. `instance Table t => ModelMeta t`, `instance ModelMeta M.FooT`, a promoted `'FooT`, `instance Table (PrimaryKey FooT)` (a key's `Beamable` instance is fine), or a class applied to two types (`instance X.Table Int FooT`). After type checking: an instance the parse step did not see whose head has no type constructor. |
 | `UNRECOGNIZED_FIELD_WRAPPER`   | A field's type isn't `Columnar f T` / `C f T`. Override via `allowUnknownColumnWrapper` only if you accept that field being omitted (the table is still emitted). |
 | `UNRECOGNIZED_MODIFIER_SHAPE`  | `modelFieldModification`, or the `xxxTMod` binding it names, isn't a single unguarded `tableModification { … }` in plain record update syntax (`OverloadedRecordUpdate` syntax and a derived `ModelMeta` instance included), or `modelFieldModification` is bound twice, by a pattern, or with `where` bindings. Override via `allowNonStandardModifier`. |
 | `UNRESOLVABLE_COLUMN_NAME`     | The RHS inside `xxxTMod` isn't `fieldNamed "lit"`, a punned field (`{ fooName }`) included. Either rewrite or drop the override. |
@@ -529,14 +639,16 @@ field it applies is one of the table's own columns, unqualified.
   `STAGED_FRAGMENT_MISSING` when a staged file is gone at publish time, and
   with `FRAGMENT_IO_ERROR` when one of these file operations fails, a
   `fragmentsDir` behind a chain of symbolic links past the system's limit
-  included; the error names the path and the module.
+  included, or when the type-check step cannot read a staged file back, and
+  with `STAGED_FRAGMENT_UNREADABLE` when the staged file it reads does not
+  decode as a fragment; the error names the path and the module.
 - Staged files and the merged YAML are written to a temp file and renamed
   into place.
 - The extractor runs at `parsedResultAction` time and inspects only what
   the parser produces, so it does not depend on type-class resolution.
   In particular, `Columnar` / `Beamable` / `Database` are matched by
-  the syntactic tail of the qualifier; no GHC API typecheck is
-  performed.
+  the syntactic tail of the qualifier. The type-check cross-check then
+  compares what it read with GHC's resolution (see above).
 
 ## Known limits
 
@@ -548,9 +660,15 @@ field it applies is one of the table's own columns, unqualified.
   the contract. Nix builds are unaffected: they start from scratch or from a
   successful build's intermediates.
 - The check that `fragmentsDir` is neither the working directory nor above it
-  runs once per compile, before the first write. Someone who can write to the
-  build tree can swap a link between the check and the write and defeat it.
-  That is outside the threat model: it takes a deliberate action by someone
-  with write access to the tree, who could delete the file directly.
+  runs twice per compile, each time before that step's own writes: when the
+  module is parsed, before staging, and in the publish pass, before
+  publishing (the type-check step between them only reads). Someone who can
+  write to the build tree can swap a link between a check and the writes after
+  it and defeat it. That is outside the threat model: it takes a deliberate
+  action by someone with write access to the tree, who could delete the file
+  directly.
 - An editor session (HLS, ghcide) with the plugin on may publish fragments
-  of unsaved buffers, so keep the plugin flag off there.
+  of unsaved buffers, so keep the plugin flag off there. With it on,
+  re-type-checking a module from a cached parse after a cabal build has
+  published the module's fragment can show `STAGED_FRAGMENT_MISSING` in the
+  editor; a rebuild clears it. This is unverified: no HLS was run.

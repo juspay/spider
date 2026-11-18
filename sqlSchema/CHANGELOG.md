@@ -77,10 +77,9 @@
   the name `s`. A derived `ModelMeta` instance is refused too, even under
   `allowNonStandardModifier` and `tableNameOverrides`: deriving via can take
   both fields from another type, and they used to be recorded as `null`. The
-  names themselves are matched as written, not resolved: an imported pattern
+  names themselves are matched as written at parse time; an imported pattern
   synonym that reuses `Just`, `Nothing` or a `TableType` constructor name is
-  read as the name written, and the recorded value then differs from the one
-  at runtime.
+  refused after type checking (`MODEL_META_FIELD_MISMATCH`, below).
 * **Fix:** `modelTableType = Just CON :: Maybe TableType`, with the signature
   around the whole value, is read; it used to be recorded as `null`.
 * **Breaking:** a punned field in a modifier's `tableModification { … }`
@@ -118,7 +117,11 @@
   `Nothing` or a `TableType` constructor, or a type, type synonym or family
   named `C`, `Columnar`, `Maybe` or `TableEntity`. They used to be read as
   Beam's or base's names: a `type C f a = Columnar f (Maybe a)` made a nullable
-  column read as not nullable. An imported redefinition is not seen.
+  column read as not nullable. An imported redefinition is not seen at parse
+  time; after type checking, one of `Just`, `Nothing`, a `TableType`
+  constructor, `C`, `Columnar` or `Maybe` that changes what was read is
+  refused (below), while one of `tableModification`, `fieldNamed` or a name
+  `primaryKey` applies is still not seen.
 * **Breaking:** a module that defines a table or a `setEntityName` override is a
   compile error if it enables `RebindableSyntax`, `OverlappingInstances` or
   `IncoherentInstances` (`UNSUPPORTED_EXTENSION`), has a
@@ -195,6 +198,62 @@
   `{..}` covering the use, in a module that binds none of `modifyTableFields`,
   `tableModification`, `fieldNamed` and `(<>)` itself; if no column is
   renamed, drop `modifyTableFields`.
+* **Breaking:** after GHC type checks a module, the plugin cross-checks what it
+  read at parse time against GHC's resolution, in every build that type checks
+  (`-fno-code`, haddock and HLS included; blacklisted modules, `hs-boot` and
+  `hsig` files excepted), with no opt-out. Each error is located at the
+  instance, the table's declaration or the column's field where GHC places it
+  in the module. These compiled before and are now compile errors:
+  - a `Table`, `ModelMeta` or `Beamable` instance the parse step did not see,
+    such as one Template Haskell generates, for a type it did not extract, or
+    for a type the module does not declare, such as an imported one named like
+    a table of the module (`UNEXTRACTED_TABLE`; one whose head has no type
+    constructor is `UNREADABLE_INSTANCE_HEAD`; a key's instance is matched as
+    beam-core's `PrimaryKey` family, by package and module): the table was
+    left out of the contract;
+  - such an instance of a same-named class that is not beam-core's or
+    sequelize's, by package and module (`UNEXPECTED_CLASS`): it was read as the
+    real one;
+  - a `modelTableType` or `modelSchemaName` whose `Just`, `Nothing` or
+    `TableType` constructor is an imported pattern synonym or another module's
+    name (`MODEL_META_FIELD_MISMATCH`): the contract recorded the name written,
+    not the value the code routes by;
+  - a column whose type, with type synonyms expanded, has a base `Maybe` where
+    the plugin read none or none where it read one, or that is not beam-core's
+    `Columnar` (`COLUMN_TYPE_MISMATCH`): `type Opt = Maybe` made a nullable
+    column read as not nullable. A large-records table's field is checked at
+    the type its equality constraint fixes;
+  - a table's `{-# ANN type T largeRecord #-}` whose `largeRecord` is not the
+    large-records package's, or not of that package's options type
+    (`UNEXTRACTED_TABLE`);
+  - a table whose GHC.Generics `Generic` instance, looked up by class among
+    every instance GHC sees (imported and orphan ones included), is missing,
+    not the only one that matches or could match, or has a representation
+    whose selectors are not all the record's fields in order, or, for a
+    large-records table (representation large-generics' `ThroughLRGenerics`),
+    whose large-generics `MetadataOf` is missing or does not name them in
+    order; or whose staged columns are not all those fields in order (with
+    `allowUnknownColumnWrapper`, those it does not leave out)
+    (`GENERIC_FIELD_MISMATCH`):
+    Beam names the columns after those selectors or that metadata, so a
+    Template Haskell or orphan instance, or one behind a module class named
+    `Generic`, could rename a column the contract records under its field
+    name;
+  - in a module that uses `setEntityName` or `modifyTableFields`, a
+    `Semigroup` or `Monoid` instance other than beam-core's that could apply at
+    the `EntityModification` of a table the module can rename (a large-records
+    database record's tables included), from any module GHC sees
+    (`UNEXPECTED_INSTANCE`): it could drop or change a rename.
+
+  A staged file missing at that point is `STAGED_FRAGMENT_MISSING`, one it
+  cannot read is `FRAGMENT_IO_ERROR`, and one that does not decode as a
+  fragment is `STAGED_FRAGMENT_UNREADABLE`. What the check cannot see (a
+  `Generic` instance whose `to`/`from` permute the fields; an overlapping
+  `Generic` or beam-core generic-plumbing instance imported only where the
+  database is built), and its large-records assumptions, are in the README.
+  The check reads the renamed source, which the plugin now asks GHC to keep;
+  on GHC 9.8 a build without `-haddock` then writes the module's
+  documentation structure into its `.hi` file.
 * The `UNRESOLVABLE_PRIMARY_KEY` message lists all seven accepted shapes. The
   `UNRESOLVABLE_COLUMN_NAME` message no longer speaks of a right-hand side for a
   punned field, and the `UNRESOLVABLE_TABLE_NAME` fix names `tableNameOverrides`
@@ -303,19 +362,19 @@
   listed is one step, and each link followed (to a directory or a file, a
   dangling one too), or hop of a chain, one step per path component its
   resolution walks (the link's path, then its target's), so the cap bounds the
-  file-system work of links fanned out deep in a tree too. A
-  tree with no links takes one step per entry; a directory is read whole before
-  its entries are counted. The cap is per `--source-dirs` entry, so one merge
-  takes at most that many steps times the number of entries, which the caller
-  chooses. A walk descends at most 256 directory levels below
-  its entry, a link to a directory counting as a level, and exits 1 past that.
-  Measured on one machine: a chain of 10000 directories, each linking to the
-  next, took 80 s and now stops at the depth limit in 0.1 s; 150000 links to
-  one directory, 250 levels down, took 245 s and now stop at the cap in 1.5 s;
-  190000 links to one file at that depth took 26 s (a link to a file was charged
-  one step) and now stop at the cap in 1.4 s.
-  The warnings of a walk are written 1000 lines at a time, also when
-  the walk fails: stderr is unbuffered, so thousands of them took over a minute.
+  file-system work of links fanned out deep in a tree too. A tree with no
+  links takes one step per entry; a directory is read whole before its entries
+  are counted. The cap is per `--source-dirs` entry, so one merge takes at most
+  that many steps times the number of entries, which the caller chooses. A
+  walk descends at most 256 directory levels below its entry, a link to a
+  directory counting as a level, and exits 1 past that. Measured on one
+  machine: a chain of 10000 directories, each linking to the next, took 80 s
+  and now stops at the depth limit in 0.1 s; 150000 links to one directory,
+  250 levels down, took 245 s and now stop at the cap in 1.5 s; 190000 links
+  to one file at that depth took 26 s (a link to a file was charged one step)
+  and now stop at the cap in 1.4 s. The warnings of a walk are written 1000
+  lines at a time, also when the walk fails: stderr is unbuffered, so
+  thousands of them took over a minute.
   Library: `liveModulesFromDirs` takes the entry cap as its first argument and
   returns each skipped link as a `SourceDirLinkSkipped`; new `walkEntryCap`,
   `maxWalkDepth` and `maxLinkHops`, and `MergeOptions` gains `moWalkEntryCap`
@@ -382,9 +441,9 @@
   names, YAML and I/O error text) goes through `show`, and so does every path
   the command line names (`--fragments`, `--out`, `--source-dirs` and
   `--include-merged` entries, in the warnings, the errors, the refusal and the
-  summary line). Before, a name holding a newline and an escape character could
-  forge a `sql-schema-merge:` line. The warning for two Haskell types with one
-  SQL name now quotes both.
+  summary line), and every argument the command line refuses. Before, a name
+  holding a newline and an escape character could forge a `sql-schema-merge:`
+  line. The warning for two Haskell types with one SQL name now quotes both.
 * **Breaking (library):** `MergeOptions` gains `moAllowEmpty` and
   `moNoOwnTables`, and `runMerge` applies `publishProblem` itself, returning
   `Left` before it writes. New: `defaultMergeOptions`, `refusalLines` and

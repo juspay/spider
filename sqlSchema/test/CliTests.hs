@@ -66,6 +66,7 @@ run = do
   testCliDuplicateFlagExit2
   testCliEmptyValuesExit2
   testCliFlagLikeValueExit2
+  testCliRefusedArgumentsShown
   testParseArgs
   testUsageStatesRules
 
@@ -235,7 +236,7 @@ testCliOptOutFlags = do
   withTmpProject $ \tmp -> do
     liveProject tmp
     refusedAtParse tmp
-      [ (v, argsFor tmp ++ [v], "unrecognised argument: " <> v)
+      [ (v, argsFor tmp ++ [v], "unrecognised argument: " <> show v)
       | v <- [ "--allow-empty-includes", "--allow-unmatched-overrides", "--allow-columnless-tables"
              , "--allow-columnless", "--allow-unmatched", "--allow-empty-include=1" ] ]
 
@@ -625,8 +626,8 @@ testCliArgErrorsExit2 :: IO ()
 testCliArgErrorsExit2 = withTmpProject $ \tmp -> do
   liveProject tmp
   refusedAtParse tmp
-    [ ("unknown flag", argsFor tmp ++ ["--bogus"], "unrecognised argument: --bogus")
-    , ("stray argument", argsFor tmp ++ ["stray"], "unrecognised argument: stray")
+    [ ("unknown flag", argsFor tmp ++ ["--bogus"], "unrecognised argument: \"--bogus\"")
+    , ("stray argument", argsFor tmp ++ ["stray"], "unrecognised argument: \"stray\"")
     , ("missing --fragments", ["--out", outFile tmp], "missing --fragments")
     , ("missing --out", ["--fragments", fragDir tmp], "missing --out")
     , ("no arguments", [], "missing --fragments")
@@ -683,12 +684,26 @@ testCliFlagLikeValueExit2 = withTmpProject $ \tmp -> do
   liveProject tmp
   refusedAtParse tmp
     [ ("--generator-rev --no-own-tables", argsFor tmp ++ ["--generator-rev", "--no-own-tables"]
-      , "--generator-rev needs a value, but the next argument is the option --no-own-tables")
+      , "--generator-rev needs a value, but the next argument is the option \"--no-own-tables\"")
     , ("--fragments --out", ["--fragments", "--out", outFile tmp]
-      , "--fragments needs a value, but the next argument is the option --out")
+      , "--fragments needs a value, but the next argument is the option \"--out\"")
     , ("--source-dirs --allow-empty", argsFor tmp ++ ["--source-dirs", "--allow-empty"]
-      , "--source-dirs needs a value, but the next argument is the option --allow-empty")
+      , "--source-dirs needs a value, but the next argument is the option \"--allow-empty\"")
     ]
+
+-- | A refused argument is printed escaped: one holding a newline and an escape character can't
+-- forge a line of the merge's output.
+testCliRefusedArgumentsShown :: IO ()
+testCliRefusedArgumentsShown = withTmpProject $ \tmp -> do
+  liveProject tmp
+  forM_ [ ("unrecognised", argsFor tmp ++ [hostileField], "unrecognised argument: ")
+        , ("an option as the value", argsFor tmp ++ ["--generator-rev", "--" <> hostileField]
+          , "--generator-rev needs a value, but the next argument is the option ") ] $ \(label, args, phrase) -> do
+    (out, err) <- runCli tmp args (ExitFailure 2)
+    assertEq (label <> ": stdout") "" out
+    assertMentions label phrase err
+    assertHostileEscaped label err
+    assertNothingWritten tmp
 
 testParseArgs :: IO ()
 testParseArgs = do

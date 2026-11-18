@@ -28,6 +28,10 @@ import           GHC.Types.SourceFile (HscSource (..))
 
 import           ParseFixture         (parseFixture, parseFixtureHaddock)
 import           SqlSchema.Extract    (FragmentAction (..), extensionErrors, planFragment, refusedExtensions)
+import           SqlSchema.Extract    (InstanceHead (..), Origin (..), ResolvedColumn (..), ResolvedField (..),
+                                       ResolvedGeneric (..), ResolvedValue (..), columnMismatches, foreignLargeRecords,
+                                       genericMismatches, routingMismatches, unexpectedClasses,
+                                       unextractedInstances, untrustedInstances)
 import           SqlSchema.Plugin     (parseCliOptions)
 import           SqlSchema.Types
 import           TestUtil
@@ -165,6 +169,13 @@ run = do
   testDerivedInstanceAtBeamTypeBindsMethods
   testWrittenBeamableMethodsRefused
   testReasonFixesEscaped
+  testUnextractedInstancesPure
+  testUnexpectedClassesPure
+  testRoutingMismatchesPure
+  testColumnMismatchesPure
+  testForeignLargeRecordsPure
+  testGenericMismatchesPure
+  testUntrustedInstancesPure
 
 -- ---------------------------------------------------------------------------
 -- Test cases
@@ -1307,6 +1318,8 @@ errorSamples =
   , (INVALID_PLUGIN_OPTIONS "not json", "INVALID_PLUGIN_OPTIONS")
   , (STAGED_FRAGMENT_MISSING "d/Fix.Foo.yaml.pending", "STAGED_FRAGMENT_MISSING")
   , (FRAGMENT_IO_ERROR "stage" "d/Fix.Foo.yaml.pending" "Too many levels of symbolic links", "FRAGMENT_IO_ERROR")
+  , ( STAGED_FRAGMENT_UNREADABLE "d/Fix.Foo.yaml.pending" "YAML parse exception at line 0, column 23"
+    , "STAGED_FRAGMENT_UNREADABLE" )
   , (UNEXTRACTED_TABLE "FooT" noDeclaration, "UNEXTRACTED_TABLE")
   , (MISSING_MODEL_META "FooT", "MISSING_MODEL_META")
   , (UNREADABLE_INSTANCE_HEAD "ModelMeta" "t", "UNREADABLE_INSTANCE_HEAD")
@@ -1317,6 +1330,17 @@ errorSamples =
   , (UNSUPPORTED_EXTENSION "RebindableSyntax", "UNSUPPORTED_EXTENSION")
   , (UNSUPPORTED_RULES "14:1", "UNSUPPORTED_RULES")
   , (UNSUPPORTED_RECORD_WILDCARD "14:1", "UNSUPPORTED_RECORD_WILDCARD")
+  , (UNEXPECTED_CLASS "ModelMeta" "FooT" "module Lib.Meta of package app", "UNEXPECTED_CLASS")
+  , ( MODEL_META_FIELD_MISMATCH "FooT" "modelTableType"
+        "the plugin read 'Just TRACKER', which GHC resolves to base's Just applied to the pattern synonym TRACKER of module Lib.Route of package app"
+    , "MODEL_META_FIELD_MISMATCH" )
+  , ( GENERIC_FIELD_MISMATCH "FooT"
+        "its representation's selectors, in order, are [renamedKey, fooName], not the record's fields [fooId, fooName]"
+    , "GENERIC_FIELD_MISMATCH" )
+  , (UNEXPECTED_INSTANCE "Semigroup" "FooT" "GHC finds one, in module DvA", "UNEXPECTED_INSTANCE")
+  , ( COLUMN_TYPE_MISMATCH "FooT" "fooNote"
+        "the plugin read it as not nullable, but GHC, expanding type synonyms, types it as 'Columnar f (Maybe Text)', with a base Maybe inside Columnar"
+    , "COLUMN_TYPE_MISMATCH" )
   ]
 
 -- | For every constructor: values holding a newline, terminal escapes and
@@ -1927,9 +1951,14 @@ testUnextractedFixFitsReason = mapM_ check
   , (databaseRecord, "A database record is not a table")
   , (genericNotStock, "with the stock strategy")
   , (beamableMethods, "Drop the methods")
+  , (unseenInstance, "not through Template Haskell")
+  , (foreignLargeRecord, "from the large-records package")
+  , (foreignHead, "beside its type's declaration")
   , ("some other reason", "all written out") ]
   where
-    fixes = ["the module that declares", "Columnar f T", "Derive Beamable", "A database record is not a table", "with the stock strategy", "Drop the methods", "all written out"]
+    fixes = [ "the module that declares", "Columnar f T", "Derive Beamable", "A database record is not a table", "with the stock strategy"
+            , "Drop the methods", "not through Template Haskell", "from the large-records package", "beside its type's declaration"
+            , "all written out" ]
     check (reason, fix) = do
       let msg = generateErrorMessage "d" (UNEXTRACTED_TABLE "FooT" reason)
       unless (fix `isInfixOf` msg && not (any (`isInfixOf` msg) (filter (/= fix) fixes))) $
@@ -2674,8 +2703,194 @@ testReasonFixesEscaped = forM_ branches $ \(label, mk) -> do
     shown = "x\\n  sql-schema: FORGED: \\ESC[31m"
     branches =
       [ (reason, \t -> UNEXTRACTED_TABLE t reason)
-      | reason <- [noDeclaration, notARecord, noBeamable, databaseRecord, genericNotStock, beamableMethods] ]
+      | reason <- [ noDeclaration, notARecord, noBeamable, databaseRecord, genericNotStock, beamableMethods
+                  , unseenInstance, foreignLargeRecord, foreignHead ] ]
       <> [ ("meta field derived", \t -> UNRESOLVABLE_MODEL_META_FIELD t "modelSchemaName" "deriving anyclass (ModelMeta)") ]
+
+-- ---------------------------------------------------------------------------
+-- Type-check cross-check (the pure decisions; the e2e fixtures drive the GHC side)
+-- ---------------------------------------------------------------------------
+
+testUnextractedInstancesPure :: IO ()
+testUnextractedInstancesPure = do
+  assertEq "an extracted table and its key's Beamable" []
+    (unextractedInstances ["FooT"]
+       [("Table", HeadLocal "FooT"), ("ModelMeta", HeadLocal "FooT"), ("Beamable", HeadLocal "FooT"), ("Beamable", HeadKey)])
+  assertEq "an instance the parse stage did not see" [UNEXTRACTED_TABLE "BarT" unseenInstance]
+    (unextractedInstances ["FooT"] [("Table", HeadLocal "BarT"), ("Beamable", HeadLocal "BarT"), ("ModelMeta", HeadLocal "BarT")])
+  assertEq "no type constructor at the head"
+    [UNREADABLE_INSTANCE_HEAD "ModelMeta" "a type with no type constructor at its head"]
+    (unextractedInstances [] [("ModelMeta", HeadNone)])
+  assertEq "an imported type named like a staged table" [UNEXTRACTED_TABLE "FooT" foreignHead]
+    (unextractedInstances ["FooT"] [("Table", HeadLocal "FooT"), ("Beamable", HeadForeign "FooT"), ("Table", HeadForeign "FooT")])
+  assertEq "a type named PrimaryKey that is not beam-core's family"
+    [UNEXTRACTED_TABLE "PrimaryKey" foreignHead, UNEXTRACTED_TABLE "PrimaryKey" unseenInstance]
+    (unextractedInstances ["FooT"] [("Beamable", HeadForeign "PrimaryKey"), ("Beamable", HeadLocal "PrimaryKey")])
+  assertEq "other classes" []
+    (unextractedInstances [] [("Generic", HeadForeign "BarT"), ("Show", HeadNone), ("HasField", HeadLocal "FooT")])
+
+testUnexpectedClassesPure :: IO ()
+testUnexpectedClassesPure = do
+  let beam = Just (Origin (Just "beam-core") "Database.Beam.Schema.Tables")
+      seqz = Just (Origin (Just "sequelize") "Sequelize")
+  assertEq "beam-core's and sequelize's classes" []
+    (unexpectedClasses
+       [ ("Table", Just "FooT", beam), ("Beamable", Just "PrimaryKey", beam), ("ModelMeta", Just "FooT", seqz)
+       , ("Generic", Just "FooT", Just (Origin (Just "base") "GHC.Generics")) ])
+  assertEq "same-named classes"
+    [ UNEXPECTED_CLASS "ModelMeta" "FooT" "module Lib.Meta of package app"
+    , UNEXPECTED_CLASS "ModelMeta" "BarT" "module Sequelize of package other"
+    , UNEXPECTED_CLASS "Table" "FooT" "module Database.Beam.Schema.Tables, which no package of the package database provides"
+    , UNEXPECTED_CLASS "Beamable" "a type with no type constructor at its head" "module Sequelize of package sequelize"
+    , UNEXPECTED_CLASS "ModelMeta" "BazT" "module Sequelize.Types of package sequelize" ]
+    (unexpectedClasses
+       [ ("ModelMeta", Just "FooT", Just (Origin (Just "app") "Lib.Meta"))
+       , ("ModelMeta", Just "BarT", Just (Origin (Just "other") "Sequelize"))
+       , ("Table", Just "FooT", Just (Origin Nothing "Database.Beam.Schema.Tables"))
+       , ("Beamable", Nothing, seqz)
+       , ("ModelMeta", Just "BazT", Just (Origin (Just "sequelize") "Sequelize.Types")) ])
+
+testRoutingMismatchesPure :: IO ()
+testRoutingMismatchesPure = do
+  let seqz = Just (Origin (Just "sequelize") "Sequelize")
+      lib  = Just (Origin (Just "app") "Lib.Route")
+      table tt sn = (sampleTable "Fix.FooT" "Fix" "foo") { modelTableType = tt, modelSchemaName = sn }
+      tracker = FieldJust (ValueConstructor "TRACKER" seqz "TableType")
+      ok name t tt sn = assertEq name [] (routingMismatches t tt sn)
+      tableType name staged r detail =
+        assertEq name [MODEL_META_FIELD_MISMATCH "FooT" "modelTableType" detail] (routingMismatches (table staged Nothing) r FieldAbsent)
+      schemaName name staged r detail =
+        assertEq name [MODEL_META_FIELD_MISMATCH "FooT" "modelSchemaName" detail] (routingMismatches (table Nothing staged) FieldNothing r)
+  ok "resolved as read" (table (Just "TRACKER") (Just (SchemaLiteral "public"))) tracker (FieldJust (ValueLiteral "public"))
+  ok "absent, or base's Nothing" (table Nothing Nothing) FieldAbsent FieldNothing
+  ok "a qualified value name" (table Nothing (Just (SchemaConfig "Config.getAppDbSchema"))) FieldNothing
+    (FieldJust (ValueVariable "getAppDbSchema"))
+  ok "an unqualified value name" (table Nothing (Just (SchemaConfig "appSchema"))) FieldAbsent (FieldJust (ValueVariable "appSchema"))
+  tableType "a pattern synonym" (Just "TRACKER") (FieldJust (ValuePatternSynonym "TRACKER" lib))
+    "the plugin read 'Just TRACKER', which GHC resolves to base's Just applied to the pattern synonym TRACKER of module Lib.Route of package app"
+  tableType "another module's Just" (Just "TRACKER") (FieldForeign "Just" lib)
+    "the plugin read 'Just TRACKER', which GHC resolves to the 'Just' of module Lib.Route of package app, not base's"
+  tableType "another module's TableType" (Just "TRACKER") (FieldJust (ValueConstructor "TRACKER" lib "TableType"))
+    "the plugin read 'Just TRACKER', which GHC resolves to base's Just applied to the constructor TRACKER of the type TableType of module Lib.Route of package app"
+  tableType "another module of sequelize" (Just "TRACKER")
+    (FieldJust (ValueConstructor "TRACKER" (Just (Origin (Just "sequelize") "Sequelize.Types")) "TableType"))
+    "the plugin read 'Just TRACKER', which GHC resolves to base's Just applied to the constructor TRACKER of the type TableType of module Sequelize.Types of package sequelize"
+  tableType "another type of sequelize's module" (Just "TRACKER") (FieldJust (ValueConstructor "TRACKER" seqz "Route"))
+    "the plugin read 'Just TRACKER', which GHC resolves to base's Just applied to the constructor TRACKER of the type Route of module Sequelize of package sequelize"
+  tableType "another constructor" (Just "TRACKER") (FieldJust (ValueConstructor "DOMAIN" seqz "TableType"))
+    "the plugin read 'Just TRACKER', which GHC resolves to base's Just applied to the constructor DOMAIN of the type TableType of module Sequelize of package sequelize"
+  tableType "a Just for a Nothing" Nothing tracker
+    "the plugin read 'Nothing', which GHC resolves to base's Just applied to the constructor TRACKER of the type TableType of module Sequelize of package sequelize"
+  tableType "an absent binding for a Just" (Just "TRACKER") FieldAbsent
+    "the plugin read 'Just TRACKER', which GHC resolves to no binding, the class's default"
+  tableType "another shape" (Just "TRACKER") (FieldOther "pure TRACKER")
+    "the plugin read 'Just TRACKER', which GHC resolves to 'pure TRACKER', which is not Nothing or Just applied to a value"
+  schemaName "another module's Nothing" Nothing (FieldForeign "Nothing" lib)
+    "the plugin read 'Nothing', which GHC resolves to the 'Nothing' of module Lib.Route of package app, not base's"
+  schemaName "another literal" (Just (SchemaLiteral "public")) (FieldJust (ValueLiteral "other"))
+    "the plugin read 'Just \"public\"', which GHC resolves to base's Just applied to the string literal \"other\""
+  schemaName "a variable for a literal" (Just (SchemaLiteral "public")) (FieldJust (ValueVariable "public"))
+    "the plugin read 'Just \"public\"', which GHC resolves to base's Just applied to the variable public"
+  schemaName "another variable" (Just (SchemaConfig "Config.xs")) (FieldJust (ValueVariable "s"))
+    "the plugin read 'Just Config.xs', which GHC resolves to base's Just applied to the variable s"
+  schemaName "a constructor for a variable" (Just (SchemaConfig "s")) (FieldJust (ValueOther "S"))
+    "the plugin read 'Just s', which GHC resolves to base's Just applied to 'S'"
+
+testColumnMismatchesPure :: IO ()
+testColumnMismatchesPure = do
+  let col name isNull = ColumnInfo name name "Int" isNull False
+      mismatch f detail = COLUMN_TYPE_MISMATCH "FooT" f detail
+  assertEq "as read" []
+    (columnMismatches "FooT"
+       [ (col "a" True, ColumnColumnar True "Columnar f (Maybe Int)"), (col "b" False, ColumnColumnar False "Columnar f Int") ])
+  assertEq "mismatches"
+    [ mismatch "c" "the plugin read it as not nullable, but GHC, expanding type synonyms, types it as 'Columnar f (Maybe Int)', with a base Maybe inside Columnar"
+    , mismatch "d" "the plugin read it as nullable, but GHC, expanding type synonyms, types it as 'Columnar f (M Int)', with no base Maybe at the head of the type inside Columnar"
+    , mismatch "e" "GHC finds no field of that name in the table's record"
+    , mismatch "f" "its type is a type family application" ]
+    (columnMismatches "FooT"
+       [ (col "c" False, ColumnColumnar True "Columnar f (Maybe Int)"), (col "d" True, ColumnColumnar False "Columnar f (M Int)")
+       , (col "e" False, ColumnMissing), (col "f" False, ColumnOther "its type is a type family application") ])
+
+testForeignLargeRecordsPure :: IO ()
+testForeignLargeRecordsPure = do
+  let lr  = Just (Origin (Just "large-records") "Data.Record.Internal.Plugin.Options")
+      app = Just (Origin (Just "app") "Lib.Records")
+  assertEq "large-records' largeRecord of its options type, or a type that is no staged table" []
+    (foreignLargeRecords ["FooT"] [("FooT", lr, lr), ("Settings", app, app)])
+  assertEq "another largeRecord on a staged table"
+    [UNEXTRACTED_TABLE "FooT" foreignLargeRecord, UNEXTRACTED_TABLE "BarT" foreignLargeRecord]
+    (foreignLargeRecords ["FooT", "BarT"]
+       [ ("FooT", app, lr), ("BarT", Just (Origin Nothing "Lib.Records"), lr)
+       , ("FooT", Just (Origin (Just "records") "Data.Record.Plugin"), lr) ])
+  assertEq "large-records' largeRecord of another type" [UNEXTRACTED_TABLE "FooT" foreignLargeRecord]
+    (foreignLargeRecords ["FooT"] [("FooT", lr, Just (Origin (Just "base") "GHC.Tuple"))])
+  assertEq "a largeRecord whose type has no type constructor" [UNEXTRACTED_TABLE "FooT" foreignLargeRecord]
+    (foreignLargeRecords ["FooT"] [("FooT", lr, Nothing)])
+
+testGenericMismatchesPure :: IO ()
+testGenericMismatchesPure = do
+  let fields = ["fooId", "fooName"]
+      check = genericMismatches False "FooT" fields fields
+      mismatch detail = [GENERIC_FIELD_MISMATCH "FooT" detail]
+      home = Just (Origin Nothing "Lib.Gen")
+  assertEq "the fields, in order" [] (check (GenericSelectors [Just "fooId", Just "fooName"]))
+  assertEq "a renamed selector"
+    (mismatch "its representation's selectors, in order, are [renamedKey, fooName], not the record's fields [fooId, fooName]")
+    (check (GenericSelectors [Just "renamedKey", Just "fooName"]))
+  assertEq "the fields in another order"
+    (mismatch "its representation's selectors, in order, are [fooName, fooId], not the record's fields [fooId, fooName]")
+    (check (GenericSelectors [Just "fooName", Just "fooId"]))
+  assertEq "a field without a selector, one missing"
+    (mismatch "its representation's selectors, in order, are [(no selector)], not the record's fields [fooId, fooName]")
+    (check (GenericSelectors [Nothing]))
+  assertEq "no instance" (mismatch "GHC finds no Generic instance for it") (check (GenericInstances [] []))
+  assertEq "a possible match besides the match"
+    (mismatch "GHC finds 1 matching and 1 possibly matching Generic instances for it, not one (in module Lib.Gen, which no package of the package database provides; module Lib.Other of package app)")
+    (check (GenericInstances [home] [Just (Origin (Just "app") "Lib.Other")]))
+  assertEq "a representation that is not a record's" (mismatch "its representation is 'X'")
+    (check (GenericOther "its representation is 'X'"))
+  assertEq "large-records metadata naming the fields, in order" [] (check (GenericMetadata fields))
+  assertEq "large-records metadata naming another field"
+    (mismatch "its large-records metadata names, in order, are [renamedKey, fooName], not the record's fields [fooId, fooName]")
+    (check (GenericMetadata ["renamedKey", "fooName"]))
+  assertEq "large-records metadata in another order"
+    (mismatch "its large-records metadata names, in order, are [fooName, fooId], not the record's fields [fooId, fooName]")
+    (check (GenericMetadata ["fooName", "fooId"]))
+  let labels = ["fooId", "fooKey", "fooName"]
+      optedOut = genericMismatches True "FooT" labels
+  assertEq "a field allowUnknownColumnWrapper leaves out, in the selectors" []
+    (optedOut fields (GenericSelectors (map Just labels)))
+  assertEq "a field allowUnknownColumnWrapper leaves out, in the metadata" []
+    (optedOut fields (GenericMetadata labels))
+  assertEq "selectors that are the staged columns, not every field"
+    (mismatch "its representation's selectors, in order, are [fooId, fooName], not the record's fields [fooId, fooKey, fooName]")
+    (optedOut fields (GenericSelectors (map Just fields)))
+  assertEq "staged columns in another order"
+    (mismatch "the plugin read its columns as [fooName, fooId], which are not among the record's fields [fooId, fooKey, fooName] in that order")
+    (optedOut ["fooName", "fooId"] (GenericSelectors (map Just labels)))
+  assertEq "a staged column that is no field"
+    (mismatch "the plugin read its columns as [fooId, fooOther], which are not among the record's fields [fooId, fooKey, fooName] in that order")
+    (optedOut ["fooId", "fooOther"] (GenericMetadata labels))
+  let leftOut = mismatch "the plugin read its columns as [fooId, fooName], not all the record's fields [fooId, fooKey, fooName] in order, and only allowUnknownColumnWrapper leaves a field out"
+  assertEq "without the opt-out, a field left out, in the selectors" leftOut
+    (genericMismatches False "FooT" labels fields (GenericSelectors (map Just labels)))
+  assertEq "without the opt-out, a field left out, in the metadata" leftOut
+    (genericMismatches False "FooT" labels fields (GenericMetadata labels))
+
+testUntrustedInstancesPure :: IO ()
+testUntrustedInstancesPure = do
+  let beam = Just (Origin (Just "beam-core") "Database.Beam.Schema.Tables")
+      home = Just (Origin Nothing "DvA")
+  assertEq "beam-core's alone" [] (untrustedInstances "Semigroup" "FooT" [beam])
+  assertEq "none" [UNEXPECTED_INSTANCE "Monoid" "FooT" "GHC finds no instance for it"]
+    (untrustedInstances "Monoid" "FooT" [])
+  assertEq "another beside beam-core's"
+    [UNEXPECTED_INSTANCE "Semigroup" "FooT" "GHC finds 2 that match or could match it, in module Database.Beam.Schema.Tables of package beam-core; module DvA, which no package of the package database provides"]
+    (untrustedInstances "Semigroup" "FooT" [beam, home])
+  assertEq "one that is not beam-core's"
+    [UNEXPECTED_INSTANCE "Semigroup" "FooT" "GHC finds one, in module Database.Beam.Other of package beam-core"]
+    (untrustedInstances "Semigroup" "FooT" [Just (Origin (Just "beam-core") "Database.Beam.Other")])
 
 -- ---------------------------------------------------------------------------
 -- Fixtures
@@ -2790,6 +3005,11 @@ noBeamable     = "nothing in this module derives or declares Beamable for it"
 databaseRecord = "it derives Database, so its data declaration is read as a database record, not as a table"
 genericNotStock = "this module does not derive its Generic instance with the stock strategy or annotate it as a large record, or has another Generic instance that could be its, so the column names Beam takes from it need not be its field names"
 beamableMethods = "this module writes a Beamable instance with methods for it, its key or a type synonym of it, or derives one via another type, so its methods need not come from its Generic representation, and they decide the field each of the modifier's column renames goes to"
+
+unseenInstance, foreignLargeRecord, foreignHead :: String
+unseenInstance = "GHC reports an instance for it that the parse-stage extractor did not see (e.g. generated by Template Haskell)"
+foreignLargeRecord = "its large-records annotation names a 'largeRecord' that GHC does not resolve to the large-records package's, so that plugin need not generate its Generic instance, and the column names Beam takes from the instance need not be its field names"
+foreignHead = "GHC resolves the instance's type to one this module does not declare (e.g. an imported type of that name, in an instance Template Haskell generates), and the plugin extracts only the tables a module declares"
 
 -- | Lets a fixture parse @deriving [anyclass] instance …@.
 derivingExts :: [String]
