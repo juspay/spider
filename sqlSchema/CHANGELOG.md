@@ -43,7 +43,9 @@
   - a module that binds `setEntityName`, `dbModification`,
     `withDbModification`, `(<>)`, `modifyTableFields` or `setEntitySchema`
     itself; an instance method counts only in an instance whose type names
-    `EntityModification` or `DatabaseEntity`, or that has an overlap pragma;
+    `EntityModification` or `DatabaseEntity`, or that has an overlap pragma,
+    and a derived `Semigroup` or `Monoid` instance under that rule, standalone
+    or in a deriving clause, binds its class's methods;
   - a module that declares a type named `TableEntity`.
 
   A punned record field named like a checked function
@@ -178,13 +180,24 @@
   chain of symlinks past the system's limit is followed one link at a time,
   since that error says nothing about a loop: a chain that ends at a directory
   is an alias, one that leads back to itself is skipped with a warning, and one
-  of more than 1000 links, or an unreadable link, exits 1. At most 200000
-  directory entries are listed, and links of a chain followed, per entry (a
-  directory several links lead to is listed once per link); past that the merge
-  exits 1. The warnings of a walk are written 1000 lines at a time, also when
+  of more than 1000 links, or an unreadable link, exits 1. A walk takes at most
+  200000 steps per entry, past which the merge exits 1: each directory entry
+  listed is one step, and each link followed, or hop of a chain, one step per
+  path component its resolution walks (the link's path, then its target's), so
+  the cap bounds the file-system work of links fanned out deep in a tree too. A
+  tree with no links takes one step per entry; a directory is read whole before
+  its entries are counted. A walk descends at most 256 directory levels below
+  its entry, a link to a directory counting as a level, and exits 1 past that.
+  Measured on one machine: a chain of 10000 directories, each linking to the
+  next, took 80 s and now stops at the depth limit in 0.1 s; 150000 links to
+  one directory, 250 levels down, took 245 s and now stop at the cap in 1.5 s.
+  The warnings of a walk are written 1000 lines at a time, also when
   the walk fails: stderr is unbuffered, so thousands of them took over a minute.
-  Library: new `liveModulesFromDirsCapped`, `walkEntryCap` and `maxLinkHops`;
-  `liveModulesFromDirs` returns each skipped link as a `SourceDirLinkSkipped`.
+  Library: `liveModulesFromDirs` takes the entry cap as its first argument and
+  returns each skipped link as a `SourceDirLinkSkipped`; new `walkEntryCap`,
+  `maxWalkDepth` and `maxLinkHops`, and `MergeOptions` gains `moWalkEntryCap`
+  (`walkEntryCap` in `defaultMergeOptions`). The merge's own walk errors print
+  as written, each path in them shown escaped, not as `user error (…)`.
 * **Fix:** every name a merge message prints from a fragment, an included
   contract or a directory (module, table, override and source names, file
   names, YAML and I/O error text) goes through `show`. Before, a name holding a
@@ -220,16 +233,21 @@
   module it prefixes, so `App.Db.` skips `App.Db.Pool` but not `App.Db`. An
   empty entry, which used to skip every module, and an entry starting with `.`
   are now invalid options (`INVALID_PLUGIN_OPTIONS`).
-* **Breaking:** an empty `fragmentsDir`, or one that normalises to `.` (e.g.
-  `./`), is an invalid option (`INVALID_PLUGIN_OPTIONS`). It meant the working
+* **Breaking:** an empty `fragmentsDir`, one that normalises to `.` (e.g.
+  `./`), one with a `..` component, and one that resolves to the working
+  directory or a directory above it (an absolute path, or through a symbolic
+  link; checked before the first write) are invalid options
+  (`INVALID_PLUGIN_OPTIONS`). The first two meant the working
   directory, where deleting a table-less module's stale `<Module>.yaml` could
   delete an unrelated file: on a case-insensitive file system, compiling
   `module Stack` deleted `stack.yaml`.
 * **Fix:** plugin error messages escape every control, format and line- or
   paragraph-separator character, newlines included, in each value they quote
-  (source text such as a quasi-quote, an option value, a path), cut each such
-  value at 500 characters, and are capped at 4000 characters, so source text
-  can no longer add lines or terminal escapes to a build log.
+  (source text such as a quasi-quote, an option value, a path), and each
+  backslash, so a value's own `\n` text reads apart from an escaped newline;
+  they cut each such value at 500 characters, and are capped at 4000
+  characters, so source text can no longer add lines or terminal escapes to a
+  build log.
 * **Breaking:** a type with a `Beamable` deriving or instance, or a `Table` or
   `ModelMeta` instance, that the plugin can't extract as a table is a compile
   error (`UNEXTRACTED_TABLE`); before, it was silently left out of the
@@ -319,13 +337,21 @@
   Beam names the columns from the Generic representation, which only a stock
   derivation, or that plugin, takes from the record's fields; the contract used
   to name the fields whatever the instance, so one that Template Haskell or
-  another plugin generated could rename the columns unseen.
+  another plugin generated could rename the columns unseen. Likewise a table
+  whose `Beamable` instance, its key's or a type synonym's, is written with a
+  method or derived `via` another type is refused: `zipBeamFieldsM` decides the
+  field each column rename of the modifier goes to, so such an instance could
+  apply a rename to another field.
 * **Breaking:** a module that defines a table or a `setEntityName` override is a
-  compile error if it enables `RebindableSyntax` (`UNSUPPORTED_EXTENSION`), has a
+  compile error if it enables `RebindableSyntax`, `OverlappingInstances` or
+  `IncoherentInstances` (`UNSUPPORTED_EXTENSION`), has a
   `RULES` pragma (`UNSUPPORTED_RULES`) or binds a record wildcard pattern at top
   level (`UNSUPPORTED_RECORD_WILDCARD`), with no opt-out; other modules are
   unaffected. These used to be read as written: under `RebindableSyntax`,
-  `x.f` and string literals call the module's own `getField` and `fromString`; a
+  `x.f` and string literals call the module's own `getField` and `fromString`;
+  under the other two, an instance overlaps a library's without a pragma, so one
+  at an `EntityModification` type, also through a type synonym, changes how a
+  `<>` chain combines the renames unseen; a
   rule can rewrite `fieldNamed` and GHC applies it when it optimises; and a
   record wildcard stands for names the parser does not show.
 * **Fix:** a punned field of a pattern binding in an instance

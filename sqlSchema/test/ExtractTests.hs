@@ -27,7 +27,7 @@ import           GHC.Types.SrcLoc     (GenLocated (..), noSrcSpan)
 import           GHC.Types.SourceFile (HscSource (..))
 
 import           ParseFixture         (parseFixture, parseFixtureHaddock)
-import           SqlSchema.Extract    (FragmentAction (..), extensionErrors, planFragment)
+import           SqlSchema.Extract    (FragmentAction (..), extensionErrors, planFragment, refusedExtensions)
 import           SqlSchema.Plugin     (parseCliOptions)
 import           SqlSchema.Types
 import           TestUtil
@@ -146,7 +146,7 @@ run = do
   testRedefinedNamesNotRead
   testNestedContextHeadsRead
   testDocumentedInstanceHeadRead
-  testRebindableSyntaxRefused
+  testRefusedExtensions
   testRulesRefused
   testPatternSynonymNamesRefused
   testTypeNamesRefused
@@ -162,6 +162,9 @@ run = do
   testLocalTableEntityRefused
   testModifyTableFieldsWhereModifierFails
   testInstanceAtBeamTypeBindsMethods
+  testDerivedInstanceAtBeamTypeBindsMethods
+  testWrittenBeamableMethodsRefused
+  testReasonFixesEscaped
 
 -- ---------------------------------------------------------------------------
 -- Test cases
@@ -1185,10 +1188,15 @@ testPluginOptions = do
   case parseCliOptions ["{\"x\\u001b[2J\\nsql-schema: UNRESOLVABLE_TABLE_NAME: forged\":1}"] of
     Left msg | all (`notElem` msg) "\n\ESC" -> pure ()
     other -> failWith ("unknown key with a newline: expected a one-line error, got " <> show other)
-  forM_ ["", ".", "./", "./."] $ \dir ->
+  forM_ ["", ".", "./", "./.", "a/..", "./a/..", "../x", "x/../y", "dist/../.."] $ \dir ->
     case parseCliOptions ["{\"fragmentsDir\":" <> show dir <> "}"] of
       Left msg | show dir `isInfixOf` msg -> pure ()
       other -> failWith ("fragmentsDir " <> show dir <> ": expected an error naming it, got " <> show other)
+  -- The corpus's own spelling, and names with dots that are no '..' component.
+  forM_ ["./dist/build/sql-schema-fragments", "dist/build/sql-schema-fragments", "a..b", "..x/y"] $ \dir ->
+    case parseCliOptions ["{\"fragmentsDir\":" <> show dir <> "}"] of
+      Right opts | fragmentsDir opts == dir -> pure ()
+      other -> failWith ("fragmentsDir " <> show dir <> ": expected it accepted, got " <> show other)
 
 -- | A boot or signature file shares its module's fragment path; it must not touch it.
 testBootAndSigUntouched :: IO ()
@@ -1317,11 +1325,14 @@ testErrorFieldsEscaped :: IO ()
 testErrorFieldsEscaped = forM_ errorSamples $ \(e, code) -> do
   let evil    = "x\n  sql-schema: FORGED: \ESC[31m\r\x202e\x2028\x2029"
       shown   = "x\\n  sql-schema: FORGED: \\ESC[31m\\r\\8238\\8232\\8233"
+      -- M-2: a value's own backslash, before an "n" here, is escaped apart from an escaped newline.
+      slashed      = "x\\n  sql-schema: FORGED"
+      slashedShown = "x\\\\n  sql-schema: FORGED"
       long    = replicate 10000 'a'
       benign  = generateErrorMessage "d" e
       cut     = generateErrorMessage long (withFields (const long) e)
   -- beamDefaultColumnName keeps a value with an underscore whole, newline included.
-  forM_ [(evil, shown), ("a_" <> evil, "a_" <> shown)] $ \(value, escaped) -> do
+  forM_ [(evil, shown), ("a_" <> evil, "a_" <> shown), (slashed, slashedShown), ("a_" <> slashed, "a_" <> slashedShown)] $ \(value, escaped) -> do
     let hostile = generateErrorMessage value (withFields (const value) e)
         forged  = [l | l <- drop 1 (lines hostile), "sql-schema:" `isPrefixOf` dropWhile (== ' ') l]
     unless (length (lines hostile) == length (lines benign) && null forged && escaped `isInfixOf` hostile
@@ -1914,9 +1925,10 @@ testUnextractedFixFitsReason = mapM_ check
   , (noBeamable, "Derive Beamable")
   , (databaseRecord, "A database record is not a table")
   , (genericNotStock, "with the stock strategy")
+  , (beamableMethods, "Drop the methods")
   , ("some other reason", "all written out") ]
   where
-    fixes = ["the module that declares", "Columnar f T", "Derive Beamable", "A database record is not a table", "with the stock strategy", "all written out"]
+    fixes = ["the module that declares", "Columnar f T", "Derive Beamable", "A database record is not a table", "with the stock strategy", "Drop the methods", "all written out"]
     check (reason, fix) = do
       let msg = generateErrorMessage "d" (UNEXTRACTED_TABLE "FooT" reason)
       unless (fix `isInfixOf` msg && not (any (`isInfixOf` msg) (filter (/= fix) fixes))) $
@@ -2239,14 +2251,18 @@ testDocumentedInstanceHeadRead = do
     , "  modelTableName = \"foo\"" ]
   assertEq "documented heads" [("fooId", "id"), ("fooName", "name")] =<< columnNames "documented heads" r
 
--- | G1, G2 and F1: under RebindableSyntax the module's own getField and fromString
--- decide what the code reads, so a module that stages tables or settings may not enable it.
-testRebindableSyntaxRefused :: IO ()
-testRebindableSyntaxRefused = do
-  assertEq "staged" [UNSUPPORTED_EXTENSION "RebindableSyntax"] (extensionErrors True True)
-  assertEq "nothing staged" [] (extensionErrors True False)
-  assertEq "not enabled" [] (extensionErrors False True)
-  assertEq "not enabled, nothing staged" [] (extensionErrors False False)
+-- | G1, G2 and F1: under RebindableSyntax the module's own getField and fromString decide what the
+-- code reads; M-5: under OverlappingInstances or IncoherentInstances an instance overlaps a library's
+-- without a pragma, also through a type synonym.  A module that stages tables or settings may enable none.
+testRefusedExtensions :: IO ()
+testRefusedExtensions = do
+  let refused = ["RebindableSyntax", "OverlappingInstances", "IncoherentInstances"]
+  assertEq "refused extensions" refused refusedExtensions
+  forM_ refused $ \ext -> do
+    assertEq (ext <> ", staged") [UNSUPPORTED_EXTENSION ext] (extensionErrors (== ext) True)
+    assertEq (ext <> ", nothing staged") [] (extensionErrors (== ext) False)
+  assertEq "all enabled" (map UNSUPPORTED_EXTENSION refused) (extensionErrors (const True) True)
+  assertEq "none enabled" [] (extensionErrors (const False) True)
 
 -- | R1: a rewrite rule can replace a name the plugin reads, and GHC applies it when it optimises.
 testRulesRefused :: IO ()
@@ -2409,6 +2425,8 @@ testUnsupportedMessagesNameTheirCause = mapM_ (uncurry (assertMentions "message"
   [ ("enables ExampleExtension", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "ExampleExtension"))
   , ("{-# LANGUAGE NoExampleExtension #-}", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "ExampleExtension"))
   , ("with 'import Prelude'", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "RebindableSyntax"))
+  , ("can overlap a library's without an overlap pragma", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "OverlappingInstances"))
+  , ("{-# OVERLAPPING #-}", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "IncoherentInstances"))
   , ("a module this module does not import, directly or not", generateErrorMessage "d" (UNSUPPORTED_RULES "12:3"))
   , ("12:3", generateErrorMessage "d" (UNSUPPORTED_RULES "12:3"))
   , ("12:3", generateErrorMessage "d" (UNSUPPORTED_RECORD_WILDCARD "12:3")) ]
@@ -2557,6 +2575,107 @@ testInstanceAtBeamTypeBindsMethods = mapM_ refused
                  [ instanceHead, "  _ <> b = b"
                  , "db = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" <> modifyTableFields fooTMod }" ])
 
+-- | I-2: a derived instance at those types, or with an overlap pragma, binds its class's methods
+-- as a written one does: a derived OVERLAPPING Semigroup can change how a '<>' chain combines.
+testDerivedInstanceAtBeamTypeBindsMethods :: IO ()
+testDerivedInstanceAtBeamTypeBindsMethods = do
+  mapM_ refused
+    [ ("DerivedViaOverlapping", "deriving via (Last (Endo (DatabaseEntity be db (TableEntity FooT)))) instance {-# OVERLAPPING #-} Semigroup (EntityModification (DatabaseEntity be db) be (TableEntity FooT))")
+    , ("DerivedAtEntityModification", "deriving instance Semigroup (EntityModification (DatabaseEntity be db) be (TableEntity FooT))")
+    , ("DerivedAtDatabaseEntity", "deriving newtype instance Semigroup (DatabaseEntity be db (TableEntity FooT))")
+    , ("DerivedQualifiedClass", "deriving instance S.Semigroup (EntityModification (DatabaseEntity be db) be (TableEntity FooT))")
+    , ("DerivedOverlappable", "deriving anyclass instance {-# OVERLAPPABLE #-} Semigroup X")
+    , ("DerivedIncoherent", "deriving instance {-# INCOHERENT #-} Semigroup X")
+    , ("ClauseOnLocalEntityModification", "newtype EntityModification f be e = EM (f e) deriving newtype (Semigroup)")
+    , ("ClauseOnDataInstance", "data instance F (EntityModification e be t) = F deriving anyclass (Semigroup)") ]
+  -- A derived Monoid binds mempty, here also the name of the table's modifier binding.
+  expectErrors "DerivedMonoid"
+    [ ("UNCAPTURED_MODIFY_TABLE_FIELDS", "12:69", "'mempty' is also bound elsewhere in this module") ]
+    =<< planFix defaultCliOptions "DerivedMonoid" exts
+          (modifierTable ["modelFieldModification = mempty"]
+             [ "mempty = tableModification { fooName = fieldNamed \"the_name\" }"
+             , "data Db f = Db { foos :: f (TableEntity FooT) } deriving (Generic, Database)"
+             , "deriving instance Monoid (EntityModification (DatabaseEntity be db) be (TableEntity FooT))"
+             , "db = defaultDbSettings `withDbModification` dbModification { foos = modifyTableFields mempty }" ])
+  -- Kept: a derivation at another type with no overlap pragma, and one of a class whose methods the
+  -- plugin does not read.
+  mapM_ (\(name, line) -> capturedFooV2With exts ("Derived" <> name) [line, renameLine])
+    [ ("OtherType", "deriving instance Semigroup (Mod X)")
+    , ("OtherClass", "deriving instance Show (EntityModification (DatabaseEntity be db) be (TableEntity FooT))")
+    , ("ClauseOnOtherType", "newtype Mod = Mod Int deriving newtype (Semigroup)") ]
+  where
+    exts = ["TypeFamilies", "DerivingVia", "StandaloneDeriving", "DeriveAnyClass", "DerivingStrategies"]
+    renameLine = "db = defaultDbSettings `withDbModification` dbModification { foos = setEntityName \"foo_v2\" <> modifyTableFields fooTMod }"
+    refused (name, derivation) =
+      expectErrors name
+        [ ("UNCAPTURED_SET_ENTITY_NAME", "12:69", "this module binds '<>' itself")
+        , ("UNCAPTURED_MODIFY_TABLE_FIELDS", "12:95", "this module binds '<>' itself") ]
+        =<< planFix defaultCliOptions ("Derived" <> name) exts (entityNameModule [derivation, renameLine])
+
+-- | I-3: a Beamable instance's methods decide the field each column rename of the modifier goes to
+-- (zipBeamFieldsM can pair one field's rename with another), so they must come from the Generic
+-- representation: a table whose instance, its key's or a type synonym's, is written with a method or
+-- derived via another type is refused.
+testWrittenBeamableMethodsRefused :: IO ()
+testWrittenBeamableMethodsRefused = do
+  mapM_ refused
+    [ ("SwappedFields", [], ["instance Beamable FooT where", "  zipBeamFieldsM k (Foo a1 b1) (Foo a2 b2) = Foo <$> k a1 b2 <*> k b1 a2"])
+    , ("SkeletonOnly", [], ["instance Beamable FooT where", "  tblSkeleton = Foo Ignored Ignored"])
+    , ("KeyMethods", ["deriving anyclass instance Beamable FooT"], ["instance Beamable (PrimaryKey FooT) where", "  tblSkeleton = FooId Ignored"])
+    , ("StandaloneVia", ["deriving via (Swapped FooT) instance Beamable FooT"], [])
+    , ("InlineVia", [], [])
+    , ("KeyVia", ["deriving anyclass instance Beamable FooT", "deriving via (Swapped (PrimaryKey FooT)) instance Beamable (PrimaryKey FooT)"], [])
+    , ("KeyClauseVia", [], [])
+    , ("DataInstanceVia", ["deriving anyclass instance Beamable FooT", "data family Fam a :: (Type -> Type) -> Type"
+                          , "data instance Fam Int f = FamC (C f Int) deriving (Beamable) via (Swapped (Fam Int) f)"], []) ]
+  -- Through a synonym, beside FooT's own derived instance (which GHC would also reject as a duplicate).
+  r <- planFix defaultCliOptions "BeamableThroughSynonym" exts
+         (body "ThroughSynonym" ["deriving anyclass instance Beamable FooT", "type AliasT = FooT", "instance Beamable AliasT where", "  tblSkeleton = Foo Ignored Ignored"])
+  case r of
+    Left errs | UNEXTRACTED_TABLE "FooT" beamableMethods `elem` errs -> pure ()
+    _ -> failWith ("BeamableThroughSynonym: expected FooT refused for its synonym's methods, got " <> show r)
+  mapM_ kept
+    [ ("NoWhere", ["instance Beamable FooT"])
+    , ("EmptyWhere", ["instance Beamable FooT where"])
+    , ("Anyclass", ["deriving anyclass instance Beamable FooT"])
+    , ("KeyNoWhere", ["deriving anyclass instance Beamable FooT", "instance Beamable (PrimaryKey FooT)"]) ]
+  where
+    exts = "TypeFamilies" : "DerivingVia" : derivingExts
+    -- InlineVia derives the table's Beamable via another type; KeyClauseVia its key's.
+    table = \case
+      "InlineVia" -> "data FooT f = Foo { fooId :: C f Int, fooName :: C f Text } deriving (Generic) deriving (Beamable) via (Swapped FooT f)"
+      _           -> "data FooT f = Foo { fooId :: C f Int, fooName :: C f Text } deriving (Generic)"
+    key = \case
+      "KeyClauseVia" -> "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic) deriving (Beamable) via (Swapped (PrimaryKey FooT) f)"
+      _              -> "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+    body name extra =
+      [ table name, "instance Table FooT where", key name ]
+      <> drop 3 (modifierTable [] []) <> extra
+      <> ["deriving anyclass instance Beamable FooT" | name == "KeyClauseVia"]
+    refused (name, own, extra) =
+      assertEq name (Left [UNEXTRACTED_TABLE "FooT" beamableMethods])
+        =<< planFix defaultCliOptions ("Beamable" <> name) exts (body name (own <> extra))
+    kept (name, extra) = tablesOf name =<< planFix defaultCliOptions ("Beamable" <> name) exts (body name extra)
+
+-- | M-1: each reason-specific fix quotes the type name too, so each is checked with only the name
+-- hostile; the deriving fix of a meta field likewise.
+testReasonFixesEscaped :: IO ()
+testReasonFixesEscaped = forM_ branches $ \(label, mk) -> do
+  let hostile = generateErrorMessage "d" (mk evil)
+      benign  = generateErrorMessage "d" (mk "FooT")
+      forged  = [l | l <- drop 1 (lines hostile), "sql-schema:" `isPrefixOf` dropWhile (== ' ') l]
+  when ("all written out" `isInfixOf` benign) $ failWith (label <> ": the general fix, not the branch's")
+  unless (length (lines hostile) == length (lines benign) && null forged && shown `isInfixOf` hostile
+          && all (\c -> c == '\n' || not (unsafe c)) hostile) $
+    failWith (label <> ": a hostile type name is not one escaped line: " <> show hostile)
+  where
+    evil  = "x\n  sql-schema: FORGED: \ESC[31m"
+    shown = "x\\n  sql-schema: FORGED: \\ESC[31m"
+    branches =
+      [ (reason, \t -> UNEXTRACTED_TABLE t reason)
+      | reason <- [noDeclaration, notARecord, noBeamable, databaseRecord, genericNotStock, beamableMethods] ]
+      <> [ ("meta field derived", \t -> UNRESOLVABLE_MODEL_META_FIELD t "modelSchemaName" "deriving anyclass (ModelMeta)") ]
+
 -- ---------------------------------------------------------------------------
 -- Fixtures
 -- ---------------------------------------------------------------------------
@@ -2663,12 +2782,13 @@ modifierTable meta rest =
   <> rest
 
 -- | The reasons UNEXTRACTED_TABLE gives, verbatim.
-noDeclaration, notARecord, noBeamable, databaseRecord, genericNotStock :: String
+noDeclaration, notARecord, noBeamable, databaseRecord, genericNotStock, beamableMethods :: String
 noDeclaration  = "no data declaration for it in this module"
 notARecord     = "its data declaration is not a single-constructor record with the column functor as last type parameter"
 noBeamable     = "nothing in this module derives or declares Beamable for it"
 databaseRecord = "it derives Database, so its data declaration is read as a database record, not as a table"
 genericNotStock = "this module does not derive its Generic instance with the stock strategy or annotate it as a large record, or has another Generic instance that could be its, so the column names Beam takes from it need not be its field names"
+beamableMethods = "this module writes a Beamable instance with methods for it, its key or a type synonym of it, or derives one via another type, so its methods need not come from its Generic representation, and they decide the field each of the modifier's column renames goes to"
 
 -- | Lets a fixture parse @deriving [anyclass] instance …@.
 derivingExts :: [String]

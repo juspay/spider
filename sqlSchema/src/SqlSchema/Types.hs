@@ -38,6 +38,7 @@ module SqlSchema.Types
   , reasonNoBeamable
   , reasonDatabaseRecord
   , reasonGenericNotStock
+  , reasonBeamableMethods
     -- * Message backstop, exported for the test-suite
   , escapeUnsafe
   , capMessage
@@ -55,7 +56,7 @@ import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text    as T
 import           GHC.Generics (C1, Constructor (conName), D1, Generic (from), M1 (..), (:+:) (..))
-import           System.FilePath (normalise)
+import           System.FilePath (normalise, splitDirectories)
 
 -- | One @TableSchema@ per Beam table.  Keyed in the merged YAML by its
 -- fully-qualified type ('qualifiedType' = @sourceModule '.' codeName@) so
@@ -295,6 +296,9 @@ instance FromJSON CliOptions where
       fail ("invalid fragmentsDir " <> show (fragmentsDir opts) <> ": it is the working directory,"
             <> " where deleting a module's stale <Module>.yaml can delete an unrelated file;"
             <> " use a directory of its own, e.g. dist/build/sql-schema-fragments")
+    when (".." `elem` splitDirectories (fragmentsDir opts)) $
+      fail ("invalid fragmentsDir " <> show (fragmentsDir opts) <> ": a '..' component can lead back to the"
+            <> " working directory; name the directory without '..'")
     case filter invalidEntry (blacklistModules opts) of
       []  -> pure opts
       bad -> fail ("invalid blacklistModules entries " <> intercalate ", " (map show bad)
@@ -448,12 +452,13 @@ capMessage msg
 -- Each value a message quotes: escaping every unsafe character, newlines included,
 -- keeps it from forging a "sql-schema:" line or a terminal escape, and the cut
 -- keeps a long one from crowding the template's fix out of the capped message.
+-- A backslash is escaped too, so a value's own "\n" text reads apart from an escaped newline.
 escapeField :: String -> String
 escapeField s = case splitAt fieldCap s of
   (kept, [])    -> escapeAll kept
   (kept, _ : _) -> escapeAll kept <> truncatedMarker
   where
-    escapeAll = foldr (\c rest -> if unsafeChar c then showLitChar c rest else c : rest) ""
+    escapeAll = foldr (\c rest -> if unsafeChar c || c == '\\' then showLitChar c rest else c : rest) ""
 
 fieldCap :: Int
 fieldCap = 500
@@ -546,9 +551,9 @@ errorText fragDir = \case
     "  Reading it as those could record a column name, key, table type or nullability the table does not use; refusing to extract instead.\n" <>
     "  Rename this module's own '" <> escapeField n <> "'."
   UNSUPPORTED_EXTENSION ext ->
-    "This module defines tables or database settings and enables " <> escapeField ext <> ", which changes what the names and literals the plugin reads mean: with RebindableSyntax, record-dot syntax ('x.f', '(.f)') calls the getField in scope and a string literal the fromString in scope.\n" <>
+    "This module defines tables or database settings and enables " <> escapeField ext <> ", which changes what the names and literals the plugin reads mean: " <> extensionEffect ext <> "\n" <>
     "  The plugin reads names and literals as written, so it could record a key, table name or column the code does not use; refusing to extract instead.\n" <>
-    "  Turn " <> escapeField ext <> " off in this module ('{-# LANGUAGE No" <> escapeField ext <> " #-}', with 'import Prelude': RebindableSyntax also turned the implicit Prelude import off), or move its tables and database settings to a module without it."
+    "  Turn " <> escapeField ext <> " off in this module ('{-# LANGUAGE No" <> escapeField ext <> " #-}'" <> extensionFix ext <> "), or move its tables and database settings to a module without it."
   UNSUPPORTED_RULES loc ->
     "RULES pragma at " <> escapeField loc <> " in a module that defines tables or database settings: a rewrite rule can replace a name the plugin reads (fieldNamed, tableModification, a key's field, setEntityName, …), and GHC applies rules when it optimises.\n" <>
     "  The plugin does not read rules, so the code could run with a column name, key or table name it did not record; refusing to extract instead.\n" <>
@@ -563,13 +568,26 @@ errorText fragDir = \case
     "  Publishing nothing would keep the module's previous fragment in the contract, so the compile fails instead.\n" <>
     "  Keep fragmentsDir for this plugin's files only, compile each module name into it once at a time, then rebuild the module."
 
+extensionEffect, extensionFix :: String -> String
+extensionEffect = \case
+  "RebindableSyntax" -> "with RebindableSyntax, record-dot syntax ('x.f', '(.f)') calls the getField in scope and a string literal the fromString in scope."
+  ext | ext `elem` ["OverlappingInstances", "IncoherentInstances"] ->
+    "with " <> ext <> ", an instance of this module can overlap a library's without an overlap pragma, so one at an EntityModification type, also through a type synonym, can change how a '<>' chain combines the renames."
+  _ -> "the plugin does not read code under it."
+extensionFix = \case
+  "RebindableSyntax" -> ", with 'import Prelude': RebindableSyntax also turned the implicit Prelude import off"
+  ext | ext `elem` ["OverlappingInstances", "IncoherentInstances"] ->
+    ", marking each instance that must overlap with {-# OVERLAPPING #-}, {-# OVERLAPPABLE #-}, {-# OVERLAPS #-} or {-# INCOHERENT #-}, which the plugin reads"
+  _ -> ""
+
 -- | The reasons 'UNEXTRACTED_TABLE' gives; 'unextractedFix' names the fix for each.
-reasonNoDeclaration, reasonNotARecord, reasonNoBeamable, reasonDatabaseRecord, reasonGenericNotStock :: String
+reasonNoDeclaration, reasonNotARecord, reasonNoBeamable, reasonDatabaseRecord, reasonGenericNotStock, reasonBeamableMethods :: String
 reasonNoDeclaration  = "no data declaration for it in this module"
 reasonNotARecord     = "its data declaration is not a single-constructor record with the column functor as last type parameter"
 reasonNoBeamable     = "nothing in this module derives or declares Beamable for it"
 reasonDatabaseRecord = "it derives Database, so its data declaration is read as a database record, not as a table"
 reasonGenericNotStock = "this module does not derive its Generic instance with the stock strategy or annotate it as a large record, or has another Generic instance that could be its, so the column names Beam takes from it need not be its field names"
+reasonBeamableMethods = "this module writes a Beamable instance with methods for it, its key or a type synonym of it, or derives one via another type, so its methods need not come from its Generic representation, and they decide the field each of the modifier's column renames goes to"
 
 unextractedFix :: String -> String -> String
 unextractedFix t reason
@@ -583,6 +601,8 @@ unextractedFix t reason
       "A database record is not a table: drop its Beamable deriving and any Table or ModelMeta instance for it, and declare each table as its own record."
   | reason == reasonGenericNotStock =
       "Derive Generic for '" <> escapeField t <> "' in this module with the stock strategy, in its deriving clause or by 'deriving instance Generic (" <> escapeField t <> " f)' with '" <> escapeField t <> "' itself in the head (a large record keeps its '{-# ANN type " <> escapeField t <> " largeRecord #-}'), and drop each other Generic instance that could be its: a written one, or one derived via, newtype or anyclass, also for a type synonym of this module or a head the plugin cannot read. Beam then names its columns from its record fields."
+  | reason == reasonBeamableMethods =
+      "Drop the methods of the Beamable instances of '" <> escapeField t <> "' and its key ('instance Beamable " <> escapeField t <> "' with no where), or derive them ('deriving anyclass (Beamable)'), not via another type, so Beam takes them from the Generic representation."
   | otherwise =
       "Keep the table's record declaration, its Beamable deriving and its Table and ModelMeta instances, all written out, in one module."
 

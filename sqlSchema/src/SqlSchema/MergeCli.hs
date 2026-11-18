@@ -7,15 +7,18 @@ module SqlSchema.MergeCli
   ( mergeMain
   , parseArgs
   , usage
+  , ioErrorText
   ) where
 
 import           Control.Exception   (IOException, try)
 import           Control.Monad       (void, when)
+import           Data.Char           (GeneralCategory (Format, LineSeparator, ParagraphSeparator), generalCategory,
+                                      isControl, showLitChar)
 import           Data.List           (isPrefixOf)
 import           Data.Maybe          (isNothing)
 import           System.Exit         (ExitCode (..))
 import           System.IO           (hFlush, hPutStrLn, stderr, stdout)
-import           System.IO.Error     (tryIOError)
+import           System.IO.Error     (ioeGetErrorString, isUserError, tryIOError)
 
 import           SqlSchema.Merge
 
@@ -24,8 +27,7 @@ import           SqlSchema.Merge
 --   * @ExitSuccess@: the contract was written.  A summary line goes to stdout; if it can't be
 --     printed, a note goes to stderr.
 --   * @ExitFailure 1@: the merge failed, was refused ('publishProblem'), or hit
---     an I/O error, printed through 'show' since its paths come from the trees read.
---     Nothing was written to @--out@.
+--     an I/O error ('ioErrorText').  Nothing was written to @--out@.
 --   * @ExitFailure 2@: an argument error ('parseArgs').  Nothing was read.
 mergeMain :: [String] -> IO ExitCode
 mergeMain args = case parseArgs args of
@@ -35,7 +37,7 @@ mergeMain args = case parseArgs args of
     pure (ExitFailure 2)
   Right opts -> try (runMerge opts) >>= \case
     Left (e :: IOException) -> do
-      hPutStrLn stderr ("sql-schema-merge: " <> show (show e))
+      hPutStrLn stderr ("sql-schema-merge: " <> ioErrorText e)
       pure (ExitFailure 1)
     Right (Left errs) -> do
       mapM_ (hPutStrLn stderr) errs
@@ -45,6 +47,18 @@ mergeMain args = case parseArgs args of
       -- The contract is already in place, so a summary that can't be printed is only noted.
       either (void . tryIOError . hPutStrLn stderr . summaryNote) pure printed
       pure ExitSuccess
+
+-- | The merge's own errors ('userError') as written, since each path in them is 'show'n already,
+-- with any control or format character escaped all the same; any other error through 'show', as
+-- the system's text quotes paths from the trees read as they are.
+ioErrorText :: IOException -> String
+ioErrorText e
+  | isUserError e = concatMap escape (ioeGetErrorString e)
+  | otherwise     = show (show e)
+  where
+    escape c
+      | isControl c || generalCategory c `elem` [Format, LineSeparator, ParagraphSeparator] = showLitChar c ""
+      | otherwise = [c]
 
 summaryNote :: IOError -> String
 summaryNote e =
@@ -94,9 +108,12 @@ usage = unlines
   , "                         merge that skipped one is an error (exit 1); any"
   , "                         other link is followed under its own name, so a"
   , "                         directory several links lead to is listed once per"
-  , "                         link.  More than 200000 entries listed and links"
-  , "                         followed for one entry, or a chain of more than 1000"
-  , "                         links, is an error (exit 1)."
+  , "                         link.  More than 200000 walk steps for one entry"
+  , "                         (an entry listed is one step, a link followed one"
+  , "                         per path component resolving it walks), a"
+  , "                         directory more than 256 levels below it (a link to"
+  , "                         a directory is a level), or a chain of more than"
+  , "                         1000 links, is an error (exit 1)."
   , "  --include-merged FILE  (repeatable) pre-merged contract YAML to union into"
   , "                         the output.  Typically '${dep}/share/sql-schema/"
   , "                         sql-schema.yaml' for a dep package whose tables"

@@ -62,8 +62,8 @@ module SqlSchema.Merge
   , pathKind
   , SourceDirProblem(..)
   , liveModulesFromDirs
-  , liveModulesFromDirsCapped
   , walkEntryCap
+  , maxWalkDepth
   , maxLinkHops
   , pruneStaleByModule
   ) where
@@ -86,8 +86,8 @@ import           System.Directory    (canonicalizePath, doesDirectoryExist, does
                                       getPermissions, getSymbolicLinkTarget, listDirectory,
                                       pathIsSymbolicLink, removeFile, renameFile, searchable)
 import           System.FilePath     (dropExtension, dropTrailingPathSeparator, isAbsolute,
-                                      makeRelative, takeBaseName, takeDirectory, takeExtension,
-                                      takeFileName, (</>))
+                                      makeRelative, splitDirectories, takeBaseName, takeDirectory,
+                                      takeExtension, takeFileName, (</>))
 import           System.IO           (Handle, hClose, hPutStrLn,
                                       openBinaryTempFileWithDefaultPermissions, stderr)
 import           System.IO.Error     (isDoesNotExistError, tryIOError)
@@ -108,6 +108,8 @@ data MergeOptions = MergeOptions
     --   is pruned.  Empty list = no pruning (every fragment kept).  An entry
     --   that is missing or not a directory fails the merge if anything is
     --   pruned, and otherwise only warns.
+  , moWalkEntryCap   :: Int
+    -- ^ The most steps the walk of one @--source-dirs@ entry may take ('walkEntryCap').
   , moGeneratorRev   :: Maybe String
     -- ^ Plugin source revision for the @generator@ stamp.
   , moAllowEmpty     :: Bool
@@ -130,6 +132,7 @@ defaultMergeOptions fragmentsDir outFile = MergeOptions
   , moOutFile       = outFile
   , moIncludeMerged = []
   , moSourceDirs    = []
+  , moWalkEntryCap  = walkEntryCap
   , moGeneratorRev  = Nothing
   , moAllowEmpty    = False
   , moNoOwnTables   = False
@@ -167,7 +170,7 @@ runMerge opts@MergeOptions{..} = do
     PathDirectory -> readFragmentFiles moFragmentsDir
     _             -> pure (0, [], [])
   when (fragKind == PathMissing) $ hPutStrLn stderr (fragmentsMissingWarning moFragmentsDir)
-  (live, dirProblems) <- liveModulesFromDirs moSourceDirs
+  (live, dirProblems) <- liveModulesFromDirs moWalkEntryCap moSourceDirs
   let (kept, prunedMods) = pruneStaleByModule moSourceDirs live frags
       -- An unparseable fragment is only safe to drop once --source-dirs shows
       -- its module is gone; otherwise its tables would silently vanish.
@@ -284,7 +287,7 @@ refusalLines opts report = \case
 loadFragments :: FilePath -> IO (Int, [Fragment], [(FilePath, String)])
 loadFragments dir = pathKind dir >>= \case
   PathMissing      -> pure (0, [], [])
-  PathNotDirectory -> ioError (userError ("fragments path is not a directory: " <> dir))
+  PathNotDirectory -> ioError (userError ("fragments path is not a directory: " <> show dir))
   PathDirectory    -> readFragmentFiles dir
 
 -- | 'loadFragments' for a path already found to be a directory, so that 'runMerge' checks it once.
@@ -405,9 +408,11 @@ isSkippedLink = \case
   SourceDirLinkSkipped _ -> True
   _                      -> False
 
--- | At most this many directory entries are listed, and links of a chain followed, per
--- @--source-dirs@ entry.  A directory that several links lead to is listed once per link, so links
--- can multiply the entries.
+-- | The default 'moWalkEntryCap': the walk of one @--source-dirs@ entry fails once it has taken more
+-- steps.  Each directory entry listed is one step, and each link followed, or hop of a chain, one
+-- step per path component its resolution walks: the link's path, then its target's.  A directory is
+-- read whole before its entries are counted, so one directory's listing can pass the cap.  A
+-- directory that several links lead to is listed once per link, so links can multiply the steps.
 walkEntryCap :: Int
 walkEntryCap = 200000
 
@@ -415,21 +420,22 @@ walkEntryCap = 200000
 maxLinkHops :: Int
 maxLinkHops = 1000
 
+-- | The most directory levels a walk may descend below its @--source-dirs@ entry, a link to a
+-- directory counting as a level.  The deepest directory in the trees this serves is 7 levels down.
+maxWalkDepth :: Int
+maxWalkDepth = 256
+
 -- | Walk every directory in the list; collect dotted module names from
 -- every module source file found beneath (see 'walkHs').  An entry that is
 -- missing or not a directory contributes no modules and is returned as a
 -- 'SourceDirProblem' for the caller to judge; one that can't be checked throws.
 -- A link back to a directory on the walk's path from the entry is skipped, and
 -- returned as a 'SourceDirLinkSkipped'; any other link is followed under its own
--- name.  The warnings for the links
--- skipped go to stderr in writes of up to 1000 lines, also when the walk throws.
+-- name.  The warnings for the links skipped go to stderr in writes of up to 1000
+-- lines, also when the walk throws.  Each entry's walk takes at most @cap@ steps ('walkEntryCap').
 -- Returned set is the ground truth for @pruneStaleByModule@.
-liveModulesFromDirs :: [FilePath] -> IO (Set String, [SourceDirProblem])
-liveModulesFromDirs = liveModulesFromDirsCapped walkEntryCap
-
--- | 'liveModulesFromDirs' that lists at most the given number of entries per @--source-dirs@ entry.
-liveModulesFromDirsCapped :: Int -> [FilePath] -> IO (Set String, [SourceDirProblem])
-liveModulesFromDirsCapped cap dirs = do
+liveModulesFromDirs :: Int -> [FilePath] -> IO (Set String, [SourceDirProblem])
+liveModulesFromDirs cap dirs = do
   results <- mapM oneDir dirs
   pure (Set.unions (map fst results), concatMap snd results)
   where
@@ -467,62 +473,74 @@ walkHs cap root = do
         (n, ws) <- readIORef pending
         writeIORef pending (n + 1, w : ws)
         when (n + 1 >= warningChunk) flush
-      -- @name@ is how the directory is reached from the entry, @real@ where it is (no link in it), and
-      -- @above@ the real paths of the directories being listed, this one first.
-      list above name real = do
+      -- @name@ is how the directory is reached from the entry, @real@ where it is (no link in it),
+      -- @above@ the real paths of the directories being listed, this one included, and @depth@ its
+      -- level below the entry.
+      list depth above name real = do
         perms <- getPermissions real
         -- Throws when it can't be searched: read as empty, it would prune every module under it.
         unless (searchable perms) $
-          ioError (userError ("cannot search source directory " <> name))
+          ioError (userError ("cannot search source directory " <> show name))
         names <- sort <$> listDirectory real
         fmap concat $ forM names $ \n -> do
-          charge
-          entry above (name </> n) (real </> n)
-      -- An entry listed, or a link of a chain followed, counts towards the cap.
-      charge = do
-        modifyIORef' listed (+ 1)
+          charge 1
+          entry depth above (name </> n) (real </> n)
+      charge steps = do
+        modifyIORef' listed (+ steps)
         count <- readIORef listed
         when (count > cap) $ ioError (userError (walkCapMessage cap root))
       skip name w = [] <$ (modifyIORef' skipped (name :) >> warn w)
-      entry above name path = tryIOError (pathKind path) >>= \case
-        Right PathDirectory -> descend above name path
+      entry depth above name path = tryIOError (pathKind path) >>= \case
+        Right PathDirectory -> descend depth above name path
         -- A dangling link ('PathMissing') counts like a file.
         Right _             -> pure [name | takeExtension name `elem` moduleExts]
         -- The error "too many links" says the system's limit was passed, not that the chain loops.
         -- Any other error throws: read as a file, the entry would drop the modules behind it.
         Left e
-          | isSymlinkLoop e -> chain above name path
+          | isSymlinkLoop e -> chain depth above name path
           | otherwise       -> ioError e
-      descend above name path = do
+      descend depth above name path = do
         real <- canonicalizePath path
-        if real `elem` above
+        -- @path@ is canonical unless it went through a link, whose resolution walked both paths.
+        when (real /= path) $ charge (components path + components real)
+        if Set.member real above
           then skip name (cycleWarning name real)
-          else list (real : above) name real
-      chain above name path = resolveChain charge path >>= \case
+          else do
+            when (depth >= maxWalkDepth) $ ioError (userError (walkDepthMessage root))
+            list (depth + 1) (Set.insert real above) name real
+      chain depth above name path = resolveChain charge path >>= \case
         Nothing  -> skip name (linkCycleWarning name)
         Just end -> pathKind end >>= \case
-          PathDirectory -> descend above name end
+          PathDirectory -> descend depth above name end
           _             -> pure [name | takeExtension name `elem` moduleExts]
   rootReal <- canonicalizePath root
-  files <- list [rootReal] root rootReal `finally` flush
+  files <- list (0 :: Int) (Set.singleton rootReal) root rootReal `finally` flush
   (,) files . reverse <$> readIORef skipped
   where
     moduleExts = [".hs", ".lhs", ".hsc", ".chs", ".x", ".y", ".ly"]
     warningChunk = 1000 :: Int
+    components = length . splitDirectories
+
+
+walkDepthMessage :: FilePath -> String
+walkDepthMessage root =
+  "cannot walk " <> show root <> ": it has a directory more than " <> show maxWalkDepth <> " directory levels below it "
+  <> "(a link to a directory is a level); name a smaller --source-dirs entry or remove the links"
 
 
 walkCapMessage :: Int -> FilePath -> String
 walkCapMessage cap root =
-  "cannot walk " <> root <> ": more than " <> show cap <> " directory entries listed and links followed (a "
-  <> "directory that several links lead to is listed once per link); name a smaller --source-dirs entry or "
-  <> "remove the links"
+  "cannot walk " <> show root <> ": more than " <> show cap <> " walk steps (a directory entry listed is one "
+  <> "step, a link followed one per path component its resolution walks); name a smaller --source-dirs entry "
+  <> "or remove the links"
 
 
 -- | Follow the symbolic link @start@ one hop at a time, as the system gives up on a chain after a few
 -- dozen links.  @Just end@ is the first path of the chain that is not a link (it may not exist);
 -- @Nothing@ is a chain that leads back to one of its own links, so it has no end.  A chain of more
--- than 'maxLinkHops' links, or a link that can't be read, throws.  @charge@ runs before each hop.
-resolveChain :: IO () -> FilePath -> IO (Maybe FilePath)
+-- than 'maxLinkHops' links, or a link that can't be read, throws.  Before each hop, @charge@ gets the
+-- components the hop walks: the link's directory, resolved, and the link itself.
+resolveChain :: (Int -> IO ()) -> FilePath -> IO (Maybe FilePath)
 resolveChain charge start = go Set.empty (0 :: Int) start
   where
     go seen hops cur = tryIOError (pathIsSymbolicLink cur) >>= \case
@@ -532,9 +550,9 @@ resolveChain charge start = go Set.empty (0 :: Int) start
           then pure Nothing
           else do
             when (hops >= maxLinkHops) $ ioError (userError
-              ("a chain of more than " <> show maxLinkHops <> " symbolic links starts at " <> start
+              ("a chain of more than " <> show maxLinkHops <> " symbolic links starts at " <> show start
                <> "; replace the chain with one link to its end, or remove it"))
-            charge
+            charge (max 1 (length (splitDirectories cur)))
             target <- getSymbolicLinkTarget cur
             let next = if isAbsolute target then target else takeDirectory cur </> target
             go (Set.insert self seen) (hops + 1) (dropTrailingPathSeparator next)

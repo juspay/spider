@@ -9,24 +9,28 @@ import qualified Data.ByteString.Char8 as BC
 import           Data.IORef            (newIORef, readIORef, writeIORef)
 import           Data.List             (isPrefixOf, isSuffixOf, sort)
 import           GHC.IO.Handle         (hDuplicate, hDuplicateTo)
-import           System.Directory      (createDirectoryIfMissing, createDirectoryLink, createFileLink,
+import           System.Directory      (canonicalizePath, createDirectoryIfMissing, createDirectoryLink, createFileLink,
                                         emptyPermissions, getPermissions, listDirectory,
                                         pathIsSymbolicLink, removeFile, searchable, setOwnerReadable,
                                         setOwnerSearchable, setOwnerWritable, setPermissions,
                                         withCurrentDirectory, writable)
 import           System.Exit           (ExitCode (..))
+import           System.IO.Error       (doesNotExistErrorType, mkIOError)
 import           System.FilePath       ((</>))
 import           System.IO             (Handle, IOMode (ReadMode), hClose, openBinaryFile, stderr,
                                         stdout)
 
 import           SqlSchema.Merge
-import           SqlSchema.MergeCli    (mergeMain, parseArgs, usage)
+import           SqlSchema.MergeCli    (ioErrorText, mergeMain, parseArgs, usage)
 import           SqlSchema.Types
 import           TestUtil
 
 run :: IO ()
 run = do
   testCliSuccessExit0
+  testCliDefaultWalkCap
+  testCliWalkErrorsPrintedAsWritten
+  testCliUserErrorTextEscaped
   testCliNoTablesExit1
   testCliRefusalKeepsOldOut
   testCliAllowEmpty
@@ -709,6 +713,58 @@ testParseArgs = do
   where
     valueFlags = ["--source-dirs", "--include-merged", "--generator-rev"]
 
+-- | The merge's own walk errors print as written, each path in them shown, not as @user error (…)@;
+-- a hostile name in one stays escaped.
+testCliWalkErrorsPrintedAsWritten :: IO ()
+testCliWalkErrorsPrintedAsWritten = do
+  withTmpProject $ \tmp -> do
+    liveProject tmp
+    touchFile (foldl (</>) (srcDir tmp) (replicate 257 "d") </> "Leaf.hs")
+    (_, err) <- runCli tmp (argsFor tmp ++ ["--source-dirs", srcDir tmp]) (ExitFailure 1)
+    assertMentions "depth" ("sql-schema-merge: cannot walk " <> show (srcDir tmp) <> ": it has a directory more than 256") err
+    assertLacks "depth" "user error" err
+    assertNothingWritten tmp
+  withTmpProject $ \tmp -> do
+    let locked = srcDir tmp </> hostileField
+        open   = setOwnerSearchable True (setOwnerReadable True (setOwnerWritable True emptyPermissions))
+    liveProject tmp
+    createDirectoryIfMissing True locked
+    setPermissions locked emptyPermissions
+    (do canSearch <- searchable <$> getPermissions locked
+        whenWithheld (not canSearch) "testCliWalkErrorsPrintedAsWritten" "a directory that can't be searched fails the merge" $ do
+          (_, err) <- runCli tmp (argsFor tmp ++ ["--source-dirs", srcDir tmp]) (ExitFailure 1)
+          assertMentions "unsearchable" ("sql-schema-merge: cannot search source directory " <> show locked) err
+          assertHostileEscaped "unsearchable" err
+          assertLacks "unsearchable" "user error" err
+          assertNothingWritten tmp)
+      `finally` setPermissions locked open
+  withTmpProject $ \tmp -> do
+    liveProject tmp
+    createDirectoryIfMissing True (tmp </> "end")
+    linkChain False (maxLinkHops + 1) (tmp </> "chain") (tmp </> "end")
+    createDirectoryLink (tmp </> "chain" </> "c1") (srcDir tmp </> hostileField)
+    refused <- refusesToFollow (srcDir tmp </> hostileField)
+    srcReal <- canonicalizePath (srcDir tmp)
+    whenRefused refused "testCliWalkErrorsPrintedAsWritten" "a chain past the hop cap fails the merge" $ do
+      (_, err) <- runCli tmp (argsFor tmp ++ ["--source-dirs", srcDir tmp]) (ExitFailure 1)
+      assertMentions "hop cap" ("sql-schema-merge: a chain of more than 1000 symbolic links starts at " <> show (srcReal </> hostileField)) err
+      assertHostileEscaped "hop cap" err
+      assertLacks "hop cap" "user error" err
+      assertNothingWritten tmp
+
+-- | A user error's text is printed as written, with any control or format character escaped.
+testCliUserErrorTextEscaped :: IO ()
+testCliUserErrorTextEscaped = do
+  assertEq "user error" "a\\nb\\ESC[31m" (ioErrorText (userError "a\nb\ESC[31m"))
+  assertMentions "other error" "does not exist" (ioErrorText (mkIOError doesNotExistErrorType "open" Nothing (Just "x\ny")))
+  assertMentions "other error, escaped" "x\\ny" (ioErrorText (mkIOError doesNotExistErrorType "open" Nothing (Just "x\ny")))
+
+-- | M-3: the CLI's options take the walk cap from 'defaultMergeOptions'.
+testCliDefaultWalkCap :: IO ()
+testCliDefaultWalkCap = case parseArgs ["--fragments", "f", "--out", "o"] of
+  Right opts -> assertEq "walk cap" 200000 (moWalkEntryCap opts)
+  Left err   -> failWith ("parseArgs: " <> err)
+
 testUsageStatesRules :: IO ()
 testUsageStatesRules = forM_
   [ "may be given once", "empty or start with", "creates no --out and leaves an existing one"
@@ -716,8 +772,10 @@ testUsageStatesRules = forM_
   , "unless a fragment was pruned", "that can't be checked (as above) is always an"
   , "directory on the walk's path from the entry is", "skipped, with a warning, and a fragment pruned in a"
   , "merge that skipped one is an error (exit 1); any"
-  , "other link is followed under its own name", "More than 200000 entries listed and links"
-  , "followed for one entry, or a chain of more than 1000", "errors stop the merge before the table checks"
+  , "other link is followed under its own name", "More than 200000 walk steps for one entry"
+  , "(an entry listed is one step, a link followed one", "per path component resolving it walks), a"
+  , "directory more than 256 levels below it (a link to", "1000 links, is an error (exit 1)."
+  , "errors stop the merge before the table checks"
   , "two different SQL names is an error whatever the flags"
   , "accept an --include-merged contract with no tables"
   , "accept a setEntityName override that matches no table"

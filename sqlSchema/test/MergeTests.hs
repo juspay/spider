@@ -9,13 +9,13 @@ import           Control.Exception   (IOException, finally, try)
 import           Control.Monad       (forM_, unless)
 import qualified Data.ByteString     as BS
 import           Data.Foldable       (toList)
-import           Data.List           (sort)
+import           Data.List           (intercalate, sort)
 import qualified Data.Yaml           as YAML
 import           System.Directory    (canonicalizePath, createDirectoryIfMissing,
                                       createDirectoryLink, createFileLink, emptyPermissions,
                                       getPermissions, removeFile, searchable, setOwnerReadable,
                                       setOwnerSearchable, setOwnerWritable, setPermissions)
-import           System.FilePath     ((</>))
+import           System.FilePath     (splitDirectories, (</>))
 
 import           SqlSchema.Merge
 import           SqlSchema.Types
@@ -61,6 +61,11 @@ run = do
   testWalkChainEndingAtAFileOrNothing
   testWalkEntryCapTrips
   testWalkChainHopsCountTowardsTheCap
+  testWalkLinkCostsItsComponents
+  testWalkCapIsAnOption
+  testWalkDepthLimit
+  testWalkDeepLinkChainFailsFast
+  testWalkChainsCountLevels
   testSkippedLinkWithPruneFatal
   testLiveModulesFromDirsReportsProblems
   testLoadFragmentsPathKinds
@@ -369,8 +374,8 @@ testUnsearchablePathThrows = withTmpProject $ \tmp -> do
         "an error other than \"does not exist\" is thrown, not read as a missing path or a file" $ do
         assertThrowsIO "pathKind" (pathKind inner)
         assertThrowsIO "loadFragments" (loadFragments inner)
-        assertThrowsIO "liveModulesFromDirs" (liveModulesFromDirs [inner])
-        assertThrowsIO "liveModulesFromDirs, a link into it" (liveModulesFromDirs [src])
+        assertThrowsIO "liveModulesFromDirs" (liveModulesFromDirs walkEntryCap [inner])
+        assertThrowsIO "liveModulesFromDirs, a link into it" (liveModulesFromDirs walkEntryCap [src])
         assertThrowsIO "runMerge, --fragments" (runMerge (baseOpts tmp) { moFragmentsDir = inner })
         assertThrowsIO "runMerge, --source-dirs" (runMerge (baseOpts tmp) { moSourceDirs = [inner] }))
     `finally` setPermissions locked open
@@ -383,7 +388,7 @@ testWalkLinkBelowFileThrows = withTmpProject $ \tmp -> do
   touchFile (src </> "A.hs")
   touchFile (tmp </> "file")
   createFileLink (tmp </> "file" </> "x") (src </> "bad")
-  r <- try (liveModulesFromDirs [src])
+  r <- try (liveModulesFromDirs walkEntryCap [src])
   case r of
     Left (e :: IOException) -> assertMentions "the error names the link" (src </> "bad") (show e)
     Right _                 -> failWith "liveModulesFromDirs, a link below a file: expected an IOException"
@@ -395,7 +400,7 @@ testWalkIgnoresDanglingLink = withTmpProject $ \tmp -> do
   touchFile (src </> "A.hs")
   createFileLink (tmp </> "nowhere") (src </> "dangling")
   createFileLink (tmp </> "nowhere") (src </> "Gone.hs")
-  (live, problems) <- liveModulesFromDirs [src]
+  (live, problems) <- liveModulesFromDirs walkEntryCap [src]
   assertEq "live modules" ["A", "Gone"] (toList live)
   assertEq "problems" [] problems
 
@@ -409,7 +414,7 @@ testWalkSkipsLinksBackUp = withTmpProject $ \tmp -> do
   touchFile (src </> "Lib" </> "B.hs")
   mapM_ (uncurry createDirectoryLink) (zip [".", ".", "..", "."] links)
   ((live, problems), err) <- withStderr tmp $
-    withinSeconds 20 "liveModulesFromDirs" (liveModulesFromDirs [src])
+    withinSeconds 20 "liveModulesFromDirs" (liveModulesFromDirs walkEntryCap [src])
   assertEq "live modules" ["A", "Lib.B"] (toList live)
   assertEq "problems, in walk order" (map SourceDirLinkSkipped [src </> "Lib" </> "self", src </> "Lib" </> "up", src </> "a", src </> "b"]) problems
   real <- canonicalizePath src
@@ -425,7 +430,7 @@ testWalkAliasKeepsBothNames = withTmpProject $ \tmp -> do
   touchFile (src </> "Real" </> "X.hs")
   createDirectoryLink "Real" (src </> "Alias")
   createDirectoryLink "Real" (src </> "Zeta")
-  ((live, _), err) <- withStderr tmp (liveModulesFromDirs [src])
+  ((live, _), err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [src])
   assertEq "live modules" ["Alias.X", "Real.X", "Zeta.X"] (toList live)
   assertEq "stderr" "" err
 
@@ -436,7 +441,7 @@ testWalkAliasIsThePathOfItsModules = withTmpProject $ \tmp -> do
   let src = tmp </> "src"
   touchFile (src </> "Legacy" </> "Compat" </> "X.hs")
   createDirectoryLink ("Legacy" </> "Compat") (src </> "Compat")
-  ((live, _), err) <- withStderr tmp (liveModulesFromDirs [src])
+  ((live, _), err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [src])
   assertEq "live modules" ["Compat.X", "Legacy.Compat.X"] (toList live)
   assertEq "stderr" "" err
 
@@ -449,7 +454,7 @@ testWalkEntryThatIsALink = withTmpProject $ \tmp -> do
   touchFile (real </> "Lib" </> "B.hs")
   createDirectoryLink "." (real </> "self")
   createDirectoryLink "real" entry
-  ((live, _), err) <- withStderr tmp (liveModulesFromDirs [entry])
+  ((live, _), err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [entry])
   assertEq "live modules" ["A", "Lib.B"] (toList live)
   assertMentions "stderr" ("warning: skipped " <> show (entry </> "self")) err
 
@@ -463,7 +468,7 @@ testWalkFollowsLinkOutsideTree = withTmpProject $ \tmp -> do
   touchFile (vendor </> "Other" </> "Y.hs")
   createDirectoryLink (vendor </> "Vendor") (src </> "Vendor")
   createDirectoryLink (vendor </> "Other") (vendor </> "Vendor" </> "Inner")
-  ((live, _), err) <- withStderr tmp (liveModulesFromDirs [src])
+  ((live, _), err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [src])
   assertEq "live modules" ["A", "Vendor.Inner.Y", "Vendor.X"] (toList live)
   assertEq "stderr" "" err
 
@@ -475,7 +480,7 @@ testWalkEveryLinkToOneDirectoryIsWalked = withTmpProject $ \tmp -> do
   touchFile (tmp </> "vendor" </> "X.hs")
   createDirectoryIfMissing True src
   forM_ names $ \n -> createDirectoryLink (tmp </> "vendor") (src </> n)
-  ((live, _), err) <- withStderr tmp (liveModulesFromDirs [src])
+  ((live, _), err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [src])
   assertEq "live modules" [n <> ".X" | n <- ["V1", "V2", "V3", "V4", "V5", "V6", "V7", "V8"]] (toList live)
   assertEq "stderr" "" err
 
@@ -490,7 +495,7 @@ testWalkLinksInsideLinkTargetsAreWalked = withTmpProject $ \tmp -> do
   createDirectoryIfMissing True src
   createDirectoryLink (vendor </> "V1") (src </> "A")
   createDirectoryLink (vendor </> "V2") (src </> "B")
-  ((live, _), err) <- withStderr tmp (liveModulesFromDirs [src])
+  ((live, _), err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [src])
   assertEq "live modules" ["A.Inner.Y", "A.X", "B.Y"] (toList live)
   assertEq "stderr" "" err
 
@@ -503,7 +508,7 @@ testWalkRealDirectoryBelowLinkTargetIsWalkedAgain = withTmpProject $ \tmp -> do
   createDirectoryIfMissing True src
   createDirectoryLink (vendor </> "T1" </> "S") (src </> "L0")
   createDirectoryLink (vendor </> "T1") (src </> "L1")
-  ((live, _), err) <- withStderr tmp (liveModulesFromDirs [src])
+  ((live, _), err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [src])
   assertEq "live modules" ["L0.X", "L1.S.X"] (toList live)
   assertEq "stderr" "" err
 
@@ -513,7 +518,7 @@ testWalkWarnsInNameOrder = withTmpProject $ \tmp -> do
   let src = tmp </> "src"
   touchFile (src </> "A.hs")
   forM_ ["s5", "s3", "s8", "s1", "s7", "s2", "s6", "s4"] $ \n -> createDirectoryLink "." (src </> n)
-  (_, err) <- withStderr tmp (liveModulesFromDirs [src])
+  (_, err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [src])
   assertEq "warnings" 8 (length (lines err))
   forM_ (zip (lines err) ["s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]) $ \(l, n) ->
     assertMentions "warning order" ("skipped " <> show (src </> n)) l
@@ -525,7 +530,7 @@ testWalkPrintsEveryWarning = withTmpProject $ \tmp -> do
       names = ["s" <> replicate (4 - length (show i)) '0' <> show i | i <- [0 .. 2499 :: Int]]
   touchFile (src </> "A.hs")
   forM_ names $ \n -> createDirectoryLink "." (src </> n)
-  (_, err) <- withStderr tmp (liveModulesFromDirs [src])
+  (_, err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [src])
   let ls = lines err
   assertEq "warnings" 2500 (length ls)
   forM_ [0, 998, 999, 1000, 1001, 1999, 2000, 2498, 2499] $ \i ->
@@ -539,7 +544,7 @@ testWalkFlushesWarningsBeforeRethrow = withTmpProject $ \tmp -> do
   touchFile (tmp </> "file")
   createDirectoryLink "." (src </> "a")
   createFileLink (tmp </> "file" </> "x") (src </> "z")
-  (r, err) <- withStderr tmp (try (liveModulesFromDirs [src]))
+  (r, err) <- withStderr tmp (try (liveModulesFromDirs walkEntryCap [src]))
   case r of
     Left (_ :: IOException) -> pure ()
     Right _                 -> failWith "expected the walk to fail on the link below a file"
@@ -558,7 +563,7 @@ testWalkChainReachesItsDirectory = forM_ [(40, False), (64, False), (64, True)] 
     refused <- refusesToFollow (src </> "Compat")
     whenRefused refused "testWalkChainReachesItsDirectory"
       ("a chain of " <> show n <> " links ends at its directory" <> if slash then ", with a slash at each hop" else "") $ do
-      ((live, _), err) <- withStderr tmp (liveModulesFromDirs [src])
+      ((live, _), err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [src])
       assertEq "live modules" ["A", "Compat.X"] (toList live)
       assertEq "stderr" "" err
 
@@ -573,7 +578,7 @@ testWalkChainBackToAnAncestorIsSkipped = withTmpProject $ \tmp -> do
   createDirectoryLink (tmp </> "chain" </> "c1") (src </> "Lib" </> "Up")
   refused <- refusesToFollow (src </> "Lib" </> "Up")
   whenRefused refused "testWalkChainBackToAnAncestorIsSkipped" "a chain of 40 links ends at an ancestor" $ do
-    ((live, _), err) <- withStderr tmp (withinSeconds 20 "liveModulesFromDirs" (liveModulesFromDirs [src]))
+    ((live, _), err) <- withStderr tmp (withinSeconds 20 "liveModulesFromDirs" (liveModulesFromDirs walkEntryCap [src]))
     assertEq "live modules" ["A", "Lib.B"] (toList live)
     assertMentions "stderr" ("warning: skipped " <> show (src </> "Lib" </> "Up")) err
     assertEq "warnings" 1 (length (lines err))
@@ -591,7 +596,7 @@ testWalkChainCycleHasNoDirectory = withTmpProject $ \tmp -> do
   createFileLink (".." </> "src" </> "SpellA") (src </> "SpellB")
   linkChain False 40 (tmp </> "chain") "c1"
   createDirectoryLink (tmp </> "chain" </> "c1") (src </> "Cyc")
-  ((live, problems), err) <- withStderr tmp (withinSeconds 20 "liveModulesFromDirs" (liveModulesFromDirs [src]))
+  ((live, problems), err) <- withStderr tmp (withinSeconds 20 "liveModulesFromDirs" (liveModulesFromDirs walkEntryCap [src]))
   assertEq "live modules" ["A", "Lib.B"] (toList live)
   let links = [src </> "loopA", src </> "loopB", src </> "Lib" </> "Lib", src </> "SpellA", src </> "SpellB", src </> "Cyc"]
   forM_ links $ \l -> assertMentions "stderr" ("warning: skipped " <> show l) err
@@ -610,7 +615,7 @@ testWalkChainBelowAFileThrows = withTmpProject $ \tmp -> do
   createDirectoryLink (tmp </> "chain" </> "c1") (src </> "Bad")
   refused <- refusesToFollow (src </> "Bad")
   whenRefused refused "testWalkChainBelowAFileThrows" "a chain of 40 links ends below a file" $
-    assertThrowsIO "liveModulesFromDirs, a chain below a file" (liveModulesFromDirs [src])
+    assertThrowsIO "liveModulesFromDirs, a chain below a file" (liveModulesFromDirs walkEntryCap [src])
 
 -- | A chain of more links than the hop cap, the link in the source directory counted, exits 1; one
 -- of exactly the cap ends at its directory.
@@ -623,7 +628,7 @@ testWalkChainPastTheHopCapThrows = do
     touchFile (tmp </> "legacy" </> "X.hs")
     linkChain False n (tmp </> "chain") (tmp </> "legacy")
     createDirectoryLink (tmp </> "chain" </> "c1") (src </> "Long")
-    r <- try (liveModulesFromDirs [src])
+    r <- try (liveModulesFromDirs walkEntryCap [src])
     case (r, ok) of
       (Right (live, _), True)       -> assertEq "live modules" ["A", "Long.X"] (toList live)
       (Left (e :: IOException), False) -> do
@@ -644,7 +649,7 @@ testWalkChainEndingAtAFileOrNothing = withTmpProject $ \tmp -> do
   createFileLink (tmp </> "chainN" </> "c1") (src </> "Gone.hs")
   refused <- refusesToFollow (src </> "M.hs")
   whenRefused refused "testWalkChainEndingAtAFileOrNothing" "a chain of 40 links ends at a file, or at nothing" $ do
-    ((live, _), err) <- withStderr tmp (liveModulesFromDirs [src])
+    ((live, _), err) <- withStderr tmp (liveModulesFromDirs walkEntryCap [src])
     assertEq "live modules" ["A", "Gone", "M"] (toList live)
     assertEq "stderr" "" err
 
@@ -660,21 +665,22 @@ testWalkEntryCapTrips = withTmpProject $ \tmp -> do
     forM_ ["a", "b"] $ \n -> createDirectoryLink (lvl (i + 1)) (lvl i </> n)
   createDirectoryIfMissing True (lvl 12)
   touchFile (lvl 12 </> "Leaf.hs")
-  r <- try (liveModulesFromDirsCapped 100 [root])
+  r <- try (liveModulesFromDirs 100 [root])
   case r of
     Left (e :: IOException) -> do
-      assertMentions "the cap" "more than 100 directory entries" (show e)
-      assertMentions "the entry" root (show e)
+      assertMentions "the cap" "more than 100 walk steps" (show e)
+      assertMentions "the entry, shown" ("cannot walk " <> show root) (show e)
     Right _ -> failWith "expected the diamond to trip the cap"
-  (live, _) <- liveModulesFromDirsCapped 100000 [lvl 9]
+  (live, _) <- liveModulesFromDirs 100000 [lvl 9]
   assertEq "under the cap" 8 (length live)
   mapM_ (touchFile . (\i -> tmp </> "five" </> ("F" <> show i <> ".hs"))) [1 .. 5 :: Int]
-  (five, _) <- liveModulesFromDirsCapped 5 [tmp </> "five"]
+  (five, _) <- liveModulesFromDirs 5 [tmp </> "five"]
   assertEq "exactly the cap" 5 (length five)
   touchFile (tmp </> "five" </> "F6.hs")
-  assertThrowsIO "one past the cap" (liveModulesFromDirsCapped 5 [tmp </> "five"])
+  assertThrowsIO "one past the cap" (liveModulesFromDirs 5 [tmp </> "five"])
 
--- | Following a chain costs a listed entry per link, so the cap bounds chain work too.
+-- | Each hop of a chain costs the path components it walks, so the cap bounds chain work too: 65 hops
+-- of at least two components each pass no cap of 100.
 testWalkChainHopsCountTowardsTheCap :: IO ()
 testWalkChainHopsCountTowardsTheCap = withTmpProject $ \tmp -> do
   let src = tmp </> "src"
@@ -684,12 +690,107 @@ testWalkChainHopsCountTowardsTheCap = withTmpProject $ \tmp -> do
   createDirectoryLink (tmp </> "chain" </> "c1") (src </> "Long")
   refused <- refusesToFollow (src </> "Long")
   whenRefused refused "testWalkChainHopsCountTowardsTheCap" "64 links of a chain count towards the cap" $ do
-    r <- try (liveModulesFromDirsCapped 50 [src])
+    r <- try (liveModulesFromDirs 100 [src])
     case r of
-      Left (e :: IOException) -> assertMentions "the cap" "more than 50 directory entries listed and links followed" (show e)
-      Right _                 -> failWith "a chain of 64 links passed a cap of 50 entries"
-    (live, _) <- liveModulesFromDirsCapped 100 [src]
+      Left (e :: IOException) -> assertMentions "the cap" "more than 100 walk steps" (show e)
+      Right _                 -> failWith "a chain of 64 links passed a cap of 100 steps"
+    (live, _) <- liveModulesFromDirs walkEntryCap [src]
     assertEq "under the cap" ["A", "Long.X"] (toList live)
+
+-- | A link followed costs the components of its path and of its target's, so a fan-out of links deep
+-- in a tree passes the cap long before its entries would.
+testWalkLinkCostsItsComponents :: IO ()
+testWalkLinkCostsItsComponents = withTmpProject $ \tmp -> do
+  let one = tmp </> "one"
+      target = tmp </> "target"
+  createDirectoryIfMissing True target
+  createDirectoryIfMissing True one
+  createDirectoryLink target (one </> "l")
+  oneReal <- canonicalizePath one
+  targetReal <- canonicalizePath target
+  -- The entry listed, then the components of the link's path and of its target's.
+  let steps = 1 + length (splitDirectories (oneReal </> "l")) + length (splitDirectories targetReal)
+  _ <- liveModulesFromDirs steps [one]
+  short <- try (liveModulesFromDirs (steps - 1) [one])
+  case short of
+    Left (e :: IOException) -> assertMentions "the rule" "a link followed one per path component its resolution walks" (show e)
+    Right _                 -> failWith "one step short of a link's cost passed"
+  -- A tree with no links takes one step per entry: a, b, c and M.hs.
+  touchFile (tmp </> "plain" </> "a" </> "b" </> "c" </> "M.hs")
+  _ <- liveModulesFromDirs 4 [tmp </> "plain"]
+  assertThrowsIO "three steps" (liveModulesFromDirs 3 [tmp </> "plain"])
+  -- Ten links 30 levels down: 40 entries, but each link costs more than 30 steps.
+  let deep = foldl (</>) (tmp </> "deep") (replicate 30 "d")
+  createDirectoryIfMissing True deep
+  forM_ [1 .. 10 :: Int] $ \i -> createDirectoryLink target (deep </> ("l" <> show i))
+  r <- try (liveModulesFromDirs 100 [tmp </> "deep"])
+  case r of
+    Left (e :: IOException) -> assertMentions "the cap" "more than 100 walk steps" (show e)
+    Right _                 -> failWith "ten links 30 levels down passed a cap of 100 steps"
+  (live, _) <- liveModulesFromDirs walkEntryCap [tmp </> "deep"]
+  assertEq "no modules" [] (toList live)
+
+-- | M-3: the walk's cap is a merge option, defaulted once for the library and the CLI.
+testWalkCapIsAnOption :: IO ()
+testWalkCapIsAnOption = withTmpProject $ \tmp -> do
+  assertEq "default option" 200000 (moWalkEntryCap (defaultMergeOptions "f" "o"))
+  let src = tmp </> "src"
+  mapM_ (\n -> touchFile (src </> (n <> ".hs"))) ["A", "B", "C"]
+  ownFragment tmp
+  r <- try (runMerge (baseOpts tmp) { moSourceDirs = [src], moWalkEntryCap = 2 })
+  case r of
+    Left (e :: IOException) -> assertMentions "the cap" "more than 2 walk steps" (show e)
+    Right _                 -> failWith "runMerge walked past its moWalkEntryCap"
+  assertAbsent (tmp </> "merged.yaml")
+
+-- | I-4: a walk lists directories at most 'maxWalkDepth' levels below its entry, and fails naming
+-- the limit and the entry past it.
+testWalkDepthLimit :: IO ()
+testWalkDepthLimit = withTmpProject $ \tmp -> do
+  assertEq "depth limit" 256 maxWalkDepth
+  let nested n = foldl (</>) (tmp </> ("n" <> show n)) (replicate n "d")
+  touchFile (nested 256 </> "Leaf.hs")
+  (live, _) <- liveModulesFromDirs walkEntryCap [tmp </> "n256"]
+  assertEq "256 levels down" [intercalate "." (replicate 256 "d" <> ["Leaf"])] (toList live)
+  touchFile (nested 257 </> "Leaf.hs")
+  r <- try (liveModulesFromDirs walkEntryCap [tmp </> "n257"])
+  case r of
+    Left (e :: IOException) -> do
+      assertMentions "the limit" "more than 256 directory levels below it" (show e)
+      assertMentions "the entry" (tmp </> "n257") (show e)
+    Right _ -> failWith "a directory 257 levels down was walked"
+
+-- | Each link of a chain of directories, each holding a link to the next, is a level: a long one
+-- fails within seconds instead of taking time that grows with the square of its length.
+testWalkDeepLinkChainFailsFast :: IO ()
+testWalkDeepLinkChainFailsFast = withTmpProject $ \tmp -> do
+  let src = tmp </> "src"
+      d i = tmp </> "d" </> show (i :: Int)
+  touchFile (src </> "A.hs")
+  forM_ [0 .. 300] (createDirectoryIfMissing True . d)
+  forM_ [0 .. 299] $ \i -> createDirectoryLink (".." </> show (i + 1)) (d i </> "l")
+  touchFile (d 300 </> "Leaf.hs")
+  createDirectoryLink (".." </> "d" </> "0") (src </> "l")
+  r <- try (withinSeconds 20 "liveModulesFromDirs" (liveModulesFromDirs walkEntryCap [src]))
+  case r of
+    Left (e :: IOException) -> assertMentions "the limit" "more than 256 directory levels below it" (show e)
+    Right _                 -> failWith "a chain of 301 directory levels was walked"
+
+-- | A directory reached through a chain of links the system refuses to follow is a level too.
+testWalkChainsCountLevels :: IO ()
+testWalkChainsCountLevels = withTmpProject $ \tmp -> do
+  let d i = tmp </> "d" </> show (i :: Int)
+  forM_ [0 .. 257] (createDirectoryIfMissing True . d)
+  touchFile (d 257 </> "Leaf.hs")
+  forM_ [0 .. 256] $ \i -> do
+    linkChain False 40 (tmp </> "ch" </> show i) (d (i + 1))
+    createDirectoryLink (tmp </> "ch" </> show i </> "c1") (d i </> "next")
+  refused <- refusesToFollow (d 0 </> "next")
+  whenRefused refused "testWalkChainsCountLevels" "a chain of 40 links is followed one link at a time" $ do
+    r <- try (withinSeconds 20 "liveModulesFromDirs" (liveModulesFromDirs walkEntryCap [d 0]))
+    case r of
+      Left (e :: IOException) -> assertMentions "the limit" "more than 256 directory levels below it" (show e)
+      Right _                 -> failWith "257 levels reached through chains of links were walked"
 
 -- | A module whose file declares the name through a skipped link is named otherwise in the walk
 -- (@src/Foo -> .@ with @module Foo.A@ in @src/A.hs@), so pruning in a merge that skipped a link
@@ -723,7 +824,7 @@ testLiveModulesFromDirsReportsProblems = withTmpProject $ \tmp -> do
   touchFile (src </> "A.hs")
   touchFile (src </> "Lib" </> "B.hs")
   touchFile file
-  (live, problems) <- liveModulesFromDirs [gone, src, file]
+  (live, problems) <- liveModulesFromDirs walkEntryCap [gone, src, file]
   assertEq "live modules" ["A", "Lib.B"] (toList live)
   assertEq "problems, in order" [SourceDirMissing gone, SourceDirNotADirectory file] problems
 

@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -6,21 +7,22 @@
 module StageTests (run) where
 
 import           Control.Exception   (IOException, SomeException, try)
-import           Control.Monad       (unless, when)
+import           Control.Monad       (forM_, unless, when)
 import qualified Data.ByteString     as BS
 import           Data.List           (isSuffixOf, sort)
 import qualified Data.Yaml           as YAML
-import           System.Directory    (createDirectoryIfMissing, createFileLink, doesDirectoryExist,
-                                      doesFileExist, listDirectory,
-                                      pathIsSymbolicLink, removeFile)
-import           System.FilePath     ((</>))
+import           System.Directory    (createDirectoryIfMissing, createDirectoryLink, createFileLink,
+                                      doesDirectoryExist, doesFileExist, listDirectory,
+                                      pathIsSymbolicLink, removeDirectory, removeFile, withCurrentDirectory)
+import           System.FilePath     (takeDirectory, (</>))
 
-import           SqlSchema.Plugin    (pendingPath, publishStaged, stagePending)
+import           SqlSchema.Plugin    (loadCliOptions, pendingPath, publishStaged, stagePending)
 import           SqlSchema.Types
 import           TestUtil
 
 run :: IO ()
 run = do
+  testFragmentsDirResolved
   testStageThenPublish
   testStageLeavesPublished
   testStageNothingDeletes
@@ -34,6 +36,32 @@ run = do
 -- ---------------------------------------------------------------------------
 -- Test cases
 -- ---------------------------------------------------------------------------
+
+-- | A fragmentsDir that resolves to the working directory or one above it, through an absolute
+-- path or a link, is refused before anything is written; the corpus's own spelling is not.
+testFragmentsDirResolved :: IO ()
+testFragmentsDirResolved = withTmpProject $ \tmp -> withCurrentDirectory tmp $ do
+  createDirectoryLink "." (tmp </> "here")
+  createDirectoryLink ".." (tmp </> "up")
+  createDirectoryIfMissing True (tmp </> "own")
+  forM_ [tmp, takeDirectory tmp, "/", "here", "here/", "up", tmp </> "here"] $ \dir ->
+    loadCliOptions ["{\"fragmentsDir\":" <> show dir <> "}"] >>= \case
+      Left msg | show dir `isInfixOf` msg && "working directory" `isInfixOf` msg -> pure ()
+      other -> failWith ("fragmentsDir " <> show dir <> ": expected it refused, got " <> show other)
+  forM_ ["./dist/build/sql-schema-fragments", "own", tmp </> "own", "here/own"] $ \dir ->
+    loadCliOptions ["{\"fragmentsDir\":" <> show dir <> "}"] >>= \case
+      Right cli | fragmentsDir cli == dir -> pure ()
+      other -> failWith ("fragmentsDir " <> show dir <> ": expected it accepted, got " <> show other)
+  assertLeft "the pure checks first" =<< loadCliOptions ["{\"fragmentsDir\":\"a/..\"}"]
+  assertEq "nothing written" ["here", "own", "up"] . sort =<< listDirectory tmp
+  -- A working directory that can't be resolved (here removed) refuses every value.
+  createDirectoryIfMissing True (tmp </> "gone")
+  gone <- withCurrentDirectory (tmp </> "gone") $ do
+    removeDirectory (tmp </> "gone")
+    loadCliOptions ["{\"fragmentsDir\":\"own\"}"]
+  case gone of
+    Left msg | "cannot resolve fragmentsDir" `isInfixOf` msg -> pure ()
+    other -> failWith ("an unresolvable working directory: expected a refusal, got " <> show other)
 
 testStageThenPublish :: IO ()
 testStageThenPublish = withTmpProject $ \tmp -> do

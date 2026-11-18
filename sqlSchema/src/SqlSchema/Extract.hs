@@ -17,6 +17,7 @@ module SqlSchema.Extract
   ( FragmentAction (..)
   , planFragment
   , extensionErrors
+  , refusedExtensions
   ) where
 
 import           Control.Monad              (when)
@@ -79,6 +80,7 @@ planFragment cli src modStr srcPath decls =
             { rmTopBinders      = topBinders decls
             , rmDerivedGeneric  = derivedGeneric decls
             , rmLargeRecords    = largeRecords decls
+            , rmBeamableNotGeneric = beamableNotGeneric decls
             , rmNonStockGeneric = nonStockGeneric decls }
           rm           = foldl' visitDecl seed decls
           rows         = extractFromModule cli modStr rm
@@ -101,10 +103,14 @@ planFragment cli src modStr srcPath decls =
             , fragmentDbEntityOverrides = dbOverrides
             }
 
--- | The refusals for the module's extensions, which 'planFragment' does not see: whether
--- RebindableSyntax is on, and whether the module stages a fragment.
-extensionErrors :: Bool -> Bool -> [SqlSchemaError]
-extensionErrors rebindable staged = [UNSUPPORTED_EXTENSION "RebindableSyntax" | rebindable, staged]
+-- | The refusals for the module's extensions, which 'planFragment' does not see: given whether
+-- an extension is on, and whether the module stages a fragment.
+extensionErrors :: (String -> Bool) -> Bool -> [SqlSchemaError]
+extensionErrors enabled staged = [UNSUPPORTED_EXTENSION ext | staged, ext <- refusedExtensions, enabled ext]
+
+-- | Extensions that change what the names the plugin reads mean, in a way the parse does not show.
+refusedExtensions :: [String]
+refusedExtensions = ["RebindableSyntax", "OverlappingInstances", "IncoherentInstances"]
 
 -- | A rewrite rule, or a record wildcard in a top-level pattern: the parse does not show their
 -- effect on the names the plugin reads.
@@ -160,6 +166,9 @@ data RawModule = RawModule
   , rmLargeRecords    :: Set String
     -- ^ Each type annotated @{-# ANN type T largeRecord #-}@: the large-records plugin
     --   generates its Generic instance from the record.
+  , rmBeamableNotGeneric :: [Maybe String]
+    -- ^ The type of each Beamable instance whose methods need not come from Generic
+    --   ('beamableNotGeneric'); 'Nothing' when it is not one unqualified name.
   , rmNonStockGeneric :: [Maybe String]
     -- ^ The head type constructor of each Generic instance not derived with the stock
     --   strategy: written, or derived anyclass, newtype or via; 'Nothing' when the head is
@@ -167,7 +176,7 @@ data RawModule = RawModule
   }
 
 emptyRawModule :: RawModule
-emptyRawModule = RawModule [] Set.empty Map.empty Map.empty Map.empty Map.empty Set.empty [] [] Map.empty Set.empty Set.empty Set.empty []
+emptyRawModule = RawModule [] Set.empty Map.empty Map.empty Map.empty Map.empty Set.empty [] [] Map.empty Set.empty Set.empty Set.empty [] []
 
 data TopBinder
   = TopValue (HsBind GhcPs)
@@ -357,6 +366,27 @@ nonStockGeneric = concatMap (instances . unLoc)
       InstD _ (ClsInstD _ ClsInstDecl{ cid_poly_ty = lsig })
         | Just ("Generic", args) <- headTypeOfInstance lsig -> [headTyCon args]
       _ -> []
+
+-- | The type of each Beamable instance whose methods need not come from the Generic
+-- representation: written with a method, or derived via another type; a key's instance names its
+-- table, and one in a data instance's deriving clause is 'Nothing'.  'zipBeamFieldsM' decides the
+-- field each of the modifier's column renames goes to.
+beamableNotGeneric :: [LHsDecl GhcPs] -> [Maybe String]
+beamableNotGeneric = concatMap (instances . unLoc)
+  where
+    instances = \case
+      TyClD _ DataDecl{ tcdLName = L _ n, tcdDataDefn = defn } -> [Just (occToString n) | viaBeamable defn]
+      DerivD _ DerivDecl{ deriv_type = HsWC{ hswc_body = lsig }, deriv_strategy = Just (L _ ViaStrategy{}) }
+        | Just ("Beamable", args) <- headTypeOfInstance lsig -> [beamableHead args]
+      InstD _ (ClsInstD _ ClsInstDecl{ cid_poly_ty = lsig, cid_binds = binds, cid_datafam_insts = dfis }) ->
+        [beamableHead args | not (null (bagToList binds)), Just ("Beamable", args) <- [headTypeOfInstance lsig]]
+        <> [Nothing | L _ DataFamInstDecl{ dfid_eqn = FamEqn{ feqn_rhs = defn } } <- dfis, viaBeamable defn]
+      InstD _ (DataFamInstD _ DataFamInstDecl{ dfid_eqn = FamEqn{ feqn_rhs = defn } }) -> [Nothing | viaBeamable defn]
+      _ -> []
+    viaBeamable defn = or [True | (Just (L _ ViaStrategy{}), ty) <- derivingClauses defn, tyConHead ty == Just "Beamable"]
+    beamableHead = \case
+      [ty] | Just (k, t : _) <- typeHead ty, occToString k == "PrimaryKey" -> headTyCon [t]
+      args -> headTyCon args
 
 -- | The types the module derives Generic for at every type argument: in their own declaration, or
 -- standalone with the type itself in the head, applied to distinct type variables.  A narrower
@@ -566,8 +596,12 @@ derivedTypes defn =
 
 -- | Each class a deriving clause names, with whether the clause derives it stock.
 derivingStrategies :: HsDataDefn GhcPs -> [(Bool, HsType GhcPs)]
-derivingStrategies defn =
-  [ (stockStrategy strategy, unLoc (sig_body (unLoc ty)))
+derivingStrategies defn = [(stockStrategy strategy, ty) | (strategy, ty) <- derivingClauses defn]
+
+-- | Each class a deriving clause names, with the clause's strategy.
+derivingClauses :: HsDataDefn GhcPs -> [(Maybe (LDerivStrategy GhcPs), HsType GhcPs)]
+derivingClauses defn =
+  [ (strategy, unLoc (sig_body (unLoc ty)))
   | L _ HsDerivingClause{ deriv_clause_strategy = strategy, deriv_clause_tys = L _ tys } <- dd_derivs defn
   , ty <- case tys of
       DctSingle _ t -> [t]
@@ -968,8 +1002,9 @@ tableModificationFields expr = case stripPar expr of
 -- wildcard.  An instance method's own name is not counted: it defines its
 -- class's method and cannot rebind the name; it can still change what the
 -- method does at the instance's type, so it counts in an instance whose type
--- names EntityModification or DatabaseEntity, or that has an overlap pragma.
--- Names that a record wildcard or a splice's output binds are not seen.
+-- names EntityModification or DatabaseEntity, or that has an overlap pragma.  A derived instance
+-- under the same rule, standalone or in a deriving clause, binds its class's methods, as far as
+-- 'derivedMethods' knows them.  Names that a record wildcard or a splice's output binds are not seen.
 binderCounts :: Data a => a -> Map.Map String Int
 binderCounts = Map.fromListWith (+) . map (\n -> (n, 1)) . go
   where
@@ -977,11 +1012,31 @@ binderCounts = Map.fromListWith (+) . map (\n -> (n, 1)) . go
     go d
       | Just inst <- (cast d :: Maybe (ClsInstDecl GhcPs))
       , not (redefinesBeamMethods inst) = concat (gmapQ instancePart d)
-      | otherwise                       = bound d <> concat (gmapQ go d)
+      | otherwise                       = derived d <> bound d <> concat (gmapQ go d)
 
     redefinesBeamMethods :: ClsInstDecl GhcPs -> Bool
     redefinesBeamMethods ClsInstDecl{ cid_poly_ty = ty, cid_overlap_mode = overlap } =
-      isJust overlap || any (`elem` ["EntityModification", "DatabaseEntity"]) (typeNames ty)
+      isJust overlap || namesBeamEntity (typeNames ty)
+
+    namesBeamEntity = any (`elem` ["EntityModification", "DatabaseEntity"])
+
+    -- A deriving clause has no overlap pragma (GHC rejects one), and the instances that bind names
+    -- here, Semigroup's and Monoid's, take the declared type as their only argument.
+    derived :: forall d. Data d => d -> [String]
+    derived d
+      | Just DerivDecl{ deriv_type = HsWC{ hswc_body = lsig }, deriv_overlap_mode = overlap }
+          <- (cast d :: Maybe (DerivDecl GhcPs))
+      , isJust overlap || namesBeamEntity (typeNames lsig)
+      , Just (cls, _) <- headTypeOfInstance lsig = derivedMethods cls
+      | Just DataDecl{ tcdLName = L _ n, tcdDataDefn = defn } <- (cast d :: Maybe (TyClDecl GhcPs)) =
+          clauses [occToString n] defn
+      | Just FamEqn{ feqn_tycon = L _ n, feqn_pats = pats, feqn_rhs = defn }
+          <- (cast d :: Maybe (FamEqn GhcPs (HsDataDefn GhcPs))) = clauses (occToString n : typeNames pats) defn
+      | otherwise = []
+
+    clauses declared defn =
+      [ m | namesBeamEntity declared, (_, ty) <- derivingStrategies defn, Just cls <- [tyConHead ty]
+          , m <- derivedMethods cls ]
 
     -- The methods' bodies and the instance's other parts can still bind names.
     instancePart :: forall e. Data e => e -> [String]
@@ -1046,6 +1101,14 @@ boundNames :: HsBind GhcPs -> [String]
 boundNames bind =
   map occToString (collectHsBindBinders CollNoDictBinders bind)
   <> [n | PatBind{ pat_lhs = lhs } <- [bind], n <- punnedPatternFields lhs]
+
+-- | The methods a derived instance of the class binds.  Of the names the plugin trusts only '<>' is a
+-- class method; Monoid's count too, as a modifier binding may share a name with one.
+derivedMethods :: String -> [String]
+derivedMethods = \case
+  "Semigroup" -> ["<>", "sconcat", "stimes"]
+  "Monoid"    -> ["mempty", "mappend", "mconcat"]
+  _           -> []
 
 -- | A binding with guards is not read, nor one with where bindings, which could
 -- shadow a name the plugin reads in its equation.
@@ -1126,7 +1189,8 @@ assemble cli modName rm typeName rt =
 
 -- | Definitions in this module that change how the plugin must read the table: names it matches
 -- as written, and Generic instances, from which Beam names the columns.  The table's own must be a
--- stock derivation, or the one the large-records plugin generates.
+-- stock derivation, or the one the large-records plugin generates, and its Beamable methods must
+-- come from that representation.
 ownDefinitions :: RawModule -> String -> [SqlSchemaError]
 ownDefinitions rm typeName =
   [ REDEFINED_NAME typeName n
@@ -1136,6 +1200,7 @@ ownDefinitions rm typeName =
   <> [ UNEXTRACTED_TABLE typeName reasonGenericNotStock
      | not (Set.member typeName (rmDerivedGeneric rm) || Set.member typeName (rmLargeRecords rm))
        || any (maybe True mayBeTable) (rmNonStockGeneric rm) ]
+  <> [ UNEXTRACTED_TABLE typeName reasonBeamableMethods | any (maybe True mayBeTable) (rmBeamableNotGeneric rm) ]
   where
     -- A type synonym of the module may stand for the table.
     mayBeTable n = n == typeName || Set.member n (rmTypeDecls rm)

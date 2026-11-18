@@ -34,6 +34,7 @@ module SqlSchema.Plugin
   , beamDefaultColumnName
   , optionsFingerprint
   , parseCliOptions
+  , loadCliOptions
   , pendingPath
   , stagePending
   , publishStaged
@@ -47,17 +48,18 @@ import qualified Data.Aeson                 as A
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Lazy       as BL
 import           Data.Foldable              (toList)
+import           Data.List                  (isPrefixOf)
 import           Data.List.NonEmpty         (NonEmpty (..), nonEmpty)
 import           Data.Maybe                 (isJust)
 import qualified Data.Text                  as T
 import           Data.Text.Encoding         (encodeUtf8)
 import qualified Data.Yaml                  as YAML
 import           GHC.Fingerprint            (Fingerprint, fingerprintString)
-import           System.Directory           (createDirectoryIfMissing, getFileSize,
+import           System.Directory           (canonicalizePath, createDirectoryIfMissing, getFileSize,
                                              removeFile, renameFile)
-import           System.FilePath            (takeDirectory, takeFileName, (</>))
+import           System.FilePath            (splitDirectories, takeDirectory, takeFileName, (</>))
 import           System.IO                  (hClose, openBinaryTempFileWithDefaultPermissions)
-import           System.IO.Error            (isDoesNotExistError)
+import           System.IO.Error            (isDoesNotExistError, tryIOError)
 
 -- GHC API (>= 9.0)
 import qualified GHC
@@ -140,11 +142,30 @@ parseCliOptions = \case
                    <> show (length raws))
 
 
+-- | 'parseCliOptions', then the fragments directory resolved: it may be neither the working
+-- directory nor one above it, where deleting a module's stale <Module>.yaml can delete an unrelated
+-- file.  An absolute path or a link can name either without the '..' the parse refuses.
+loadCliOptions :: [CommandLineOption] -> IO (Either String CliOptions)
+loadCliOptions opts = case parseCliOptions opts of
+  Left err  -> pure (Left err)
+  Right cli -> do
+    let dir = fragmentsDir cli
+    resolved <- tryIOError ((,) <$> canonicalizePath "." <*> canonicalizePath dir)
+    pure $ case resolved of
+      Left e -> Left ("cannot resolve fragmentsDir " <> show dir <> ": " <> show e)
+      Right (cwd, real)
+        | splitDirectories real `isPrefixOf` splitDirectories cwd ->
+            Left ("invalid fragmentsDir " <> show dir <> ": it resolves to " <> show real <> ", the working"
+                  <> " directory or one above it, where deleting a module's stale <Module>.yaml can delete"
+                  <> " an unrelated file; use a directory of its own, e.g. dist/build/sql-schema-fragments")
+        | otherwise -> Right cli
+
 stageFragment
   :: [CommandLineOption] -> ModSummary -> HsParsedModule -> Hsc ()
 stageFragment opts modSummary hpm = do
   let modSpan  = mkFileSrcSpan (ms_location modSummary)
-  case parseCliOptions opts of
+  loaded <- liftIO (loadCliOptions opts)
+  case loaded of
     Left err  -> throwSqlSchemaErrors (fragmentsDir defaultCliOptions) modSpan
                    (INVALID_PLUGIN_OPTIONS err :| [])
     Right cli -> stageFragmentWith cli modSummary hpm
@@ -162,7 +183,7 @@ stageFragmentWith cli modSummary hpm = do
       Nothing -> throwPluginMessages modSpan (internalError :| [])
     Right LeaveUntouched   -> pure ()
     Right (Stage fragment) ->
-      case nonEmpty (extensionErrors (rebindableSyntaxOn modSummary) (isJust fragment)) of
+      case nonEmpty (extensionErrors (extensionOn modSummary) (isJust fragment)) of
         Just es -> throwSqlSchemaErrors (fragmentsDir cli) modSpan es
         Nothing -> liftIO (stagePending (fragmentPath cli modStr) fragment)
   where
@@ -172,8 +193,8 @@ stageFragmentWith cli modSummary hpm = do
 
 -- | Looked up by name, since the extension's type is in a package this one does not depend on;
 -- an unknown name counts as on.
-rebindableSyntaxOn :: ModSummary -> Bool
-rebindableSyntaxOn ms = case [flagSpecFlag f | f <- xFlags, flagSpecName f == "RebindableSyntax"] of
+extensionOn :: ModSummary -> String -> Bool
+extensionOn ms name = case [flagSpecFlag f | f <- xFlags, flagSpecName f == name] of
   [ext] -> xopt ext (ms_hspp_opts ms)
   _     -> True
 
@@ -187,7 +208,7 @@ publishPass :: [CommandLineOption] -> ModGuts -> CoreM ModGuts
 publishPass opts guts
   | isHsBootOrSig (mg_hsc_src guts)      = pure guts
   | isInteractiveModule (mg_module guts) = pure guts
-  | otherwise = guts <$ case parseCliOptions opts of
+  | otherwise = (guts <$) $ liftIO (loadCliOptions opts) >>= \case
       Left err  -> throwSqlSchemaErrors (fragmentsDir defaultCliOptions) (mg_loc guts)
                      (INVALID_PLUGIN_OPTIONS err :| [])
       Right cli -> do
