@@ -40,7 +40,7 @@ import           GHC.Data.FastString        (unpackFS)
 import           Language.Haskell.Syntax.Basic (field_label)
 #endif
 import           GHC.Hs
-import           GHC.Types.Name.Occurrence  (isTcOcc, isVarOcc, occNameString)
+import           GHC.Types.Name.Occurrence  (isTcOcc, isTvOcc, isVarOcc, occNameString)
 import           GHC.Types.Name.Reader      (RdrName (..), rdrNameOcc)
 import           GHC.Types.SrcLoc           (GenLocated (..), SrcSpan, srcSpanStartCol, srcSpanStartLine,
                                              srcSpanToRealSrcSpan, unLoc)
@@ -75,7 +75,12 @@ planFragment cli src modStr srcPath decls =
   else if isBlacklistedModule cli modStr
     then Right (Stage Nothing)
     else do
-      let rm           = foldl' visitDecl emptyRawModule{ rmTopBinders = topBinders decls, rmNonStockGeneric = nonStockGeneric decls } decls
+      let seed         = emptyRawModule
+            { rmTopBinders      = topBinders decls
+            , rmDerivedGeneric  = derivedGeneric decls
+            , rmLargeRecords    = largeRecords decls
+            , rmNonStockGeneric = nonStockGeneric decls }
+          rm           = foldl' visitDecl seed decls
           rows         = extractFromModule cli modStr rm
           errs         = concat [es | (_, Left es) <- rows] <> moduleErrs <> entityNameErrs <> tableModErrs
           okTables     = [ts | (_, Right ts) <- rows]
@@ -150,6 +155,11 @@ data RawModule = RawModule
   , rmTypeDecls       :: Set String
     -- ^ The name of every type synonym and type or data family declared in this
     --   module, associated ones included; data types are in 'rmDataDecls'.
+  , rmDerivedGeneric  :: Set String
+    -- ^ Each type the module derives Generic for, at every argument.
+  , rmLargeRecords    :: Set String
+    -- ^ Each type annotated @{-# ANN type T largeRecord #-}@: the large-records plugin
+    --   generates its Generic instance from the record.
   , rmNonStockGeneric :: [Maybe String]
     -- ^ The head type constructor of each Generic instance not derived with the stock
     --   strategy: written, or derived anyclass, newtype or via; 'Nothing' when the head is
@@ -157,7 +167,7 @@ data RawModule = RawModule
   }
 
 emptyRawModule :: RawModule
-emptyRawModule = RawModule [] Set.empty Map.empty Map.empty Map.empty Map.empty Set.empty [] [] Map.empty Set.empty []
+emptyRawModule = RawModule [] Set.empty Map.empty Map.empty Map.empty Map.empty Set.empty [] [] Map.empty Set.empty Set.empty Set.empty []
 
 data TopBinder
   = TopValue (HsBind GhcPs)
@@ -347,6 +357,37 @@ nonStockGeneric = concatMap (instances . unLoc)
       InstD _ (ClsInstD _ ClsInstDecl{ cid_poly_ty = lsig })
         | Just ("Generic", args) <- headTypeOfInstance lsig -> [headTyCon args]
       _ -> []
+
+-- | The types the module derives Generic for at every type argument: in their own declaration, or
+-- standalone with the type itself in the head, applied to distinct type variables.  A narrower
+-- head, or one through a synonym, leaves the rest to another instance.  'nonStockGeneric' refuses a
+-- derivation by another strategy than stock.
+derivedGeneric :: [LHsDecl GhcPs] -> Set String
+derivedGeneric = Set.fromList . concatMap (derivations . unLoc)
+  where
+    derivations = \case
+      TyClD _ DataDecl{ tcdLName = L _ n, tcdDataDefn = defn } ->
+        [occToString n | (_, ty) <- derivingStrategies defn, tyConHead ty == Just "Generic"]
+      DerivD _ DerivDecl{ deriv_type = HsWC{ hswc_body = lsig } }
+        | Just ("Generic", args) <- headTypeOfInstance lsig -> toList (atEveryArgument args)
+      _ -> []
+
+atEveryArgument :: [HsType GhcPs] -> Maybe String
+atEveryArgument = \case
+  [ty] | Just (n@(Unqual occ), args) <- typeHead ty, isTcOcc occ
+       , Just vs <- traverse tyVarName args, length (nub vs) == length vs -> Just (occToString n)
+  _ -> Nothing
+  where
+    tyVarName = \case
+      HsTyVar _ _ (L _ v@(Unqual o)) | isTvOcc o -> Just (occToString v)
+      HsParTy _ (L _ t)                          -> tyVarName t
+      HsKindSig _ (L _ t) _                      -> tyVarName t
+      _                                          -> Nothing
+
+-- | The types an annotation @{-# ANN type T largeRecord #-}@ marks, with the name in any qualifier.
+largeRecords :: [LHsDecl GhcPs] -> Set String
+largeRecords decls = Set.fromList
+  [ occToString t | L _ (AnnD _ ann) <- decls, Just (t, e) <- [typeAnnotation ann], varName e == Just "largeRecord" ]
 
 stockStrategy :: Maybe (LDerivStrategy GhcPs) -> Bool
 stockStrategy = \case
@@ -1084,14 +1125,17 @@ assemble cli modName rm typeName rt =
   in (typeName, result)
 
 -- | Definitions in this module that change how the plugin must read the table: names it matches
--- as written, and Generic instances, from which Beam names the columns.
+-- as written, and Generic instances, from which Beam names the columns.  The table's own must be a
+-- stock derivation, or the one the large-records plugin generates.
 ownDefinitions :: RawModule -> String -> [SqlSchemaError]
 ownDefinitions rm typeName =
   [ REDEFINED_NAME typeName n
   | n <- ["C", "Columnar", "Maybe", "TableEntity"], Set.member n (rmDataDecls rm) || Set.member n (rmTypeDecls rm) ]
   <> [ REDEFINED_NAME typeName n
      | n <- "Just" : "Nothing" : tableTypeConstructors, Map.member n (rmTopBinders rm) ]
-  <> [ UNEXTRACTED_TABLE typeName reasonGenericNotStock | any (maybe True mayBeTable) (rmNonStockGeneric rm) ]
+  <> [ UNEXTRACTED_TABLE typeName reasonGenericNotStock
+     | not (Set.member typeName (rmDerivedGeneric rm) || Set.member typeName (rmLargeRecords rm))
+       || any (maybe True mayBeTable) (rmNonStockGeneric rm) ]
   where
     -- A type synonym of the module may stand for the table.
     mayBeTable n = n == typeName || Set.member n (rmTypeDecls rm)
@@ -1518,6 +1562,15 @@ type UpdField = LHsRecUpdField GhcPs GhcPs
 #else
 type UpdField = LHsRecUpdField GhcPs
 #endif
+
+-- The type a @{-# ANN type T e #-}@ annotates, and @e@; GHC 9.6 moved the source text into the extension field.
+typeAnnotation :: AnnDecl GhcPs -> Maybe (RdrName, HsExpr GhcPs)
+#if __GLASGOW_HASKELL__ >= 906
+typeAnnotation (HsAnnotation _ (TypeAnnProvenance (L _ t)) (L _ e)) = Just (t, e)
+#else
+typeAnnotation (HsAnnotation _ _ (TypeAnnProvenance (L _ t)) (L _ e)) = Just (t, e)
+#endif
+typeAnnotation _ = Nothing
 
 -- A field of a record pattern; a punned one binds its label.
 #if __GLASGOW_HASKELL__ >= 904

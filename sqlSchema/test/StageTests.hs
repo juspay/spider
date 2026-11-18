@@ -11,7 +11,7 @@ import qualified Data.ByteString     as BS
 import           Data.List           (isSuffixOf, sort)
 import qualified Data.Yaml           as YAML
 import           System.Directory    (createDirectoryIfMissing, createFileLink, doesDirectoryExist,
-                                      doesFileExist, doesPathExist, listDirectory,
+                                      doesFileExist, listDirectory,
                                       pathIsSymbolicLink, removeFile)
 import           System.FilePath     ((</>))
 
@@ -44,10 +44,10 @@ testStageThenPublish = withTmpProject $ \tmp -> do
   stagePending frag (Just f)
   expectFile "staged" (pendingPath frag)
   expectNoTemp "after staging" (tmp </> "fragments")
-  expectNoPath "published before publishStaged" frag
+  assertAbsent frag
   publishStaged frag
   assertEq "published" f =<< readFragment frag
-  expectNoPath "pending after publishing" (pendingPath frag)
+  assertAbsent (pendingPath frag)
   expectNoTemp "after publishing" (tmp </> "fragments")
 
 testStageLeavesPublished :: IO ()
@@ -73,12 +73,12 @@ testStageNothingDeletes = withTmpProject $ \tmp -> do
   stagePending frag Nothing
   assertEq "a deletion stages an empty file" BS.empty =<< BS.readFile (pendingPath frag)
   publishStaged frag
-  expectNoPath "deleted" frag
-  expectNoPath "pending after the deletion" (pendingPath frag)
+  assertAbsent frag
+  assertAbsent (pendingPath frag)
   -- Nothing published: the deletion still succeeds and clears what it staged.
   stagePending frag Nothing
   publishStaged frag
-  expectNoPath "pending after a deletion of nothing" (pendingPath frag)
+  assertAbsent (pendingPath frag)
 
 testPublishWithoutStageFails :: IO ()
 testPublishWithoutStageFails = withTmpProject $ \tmp -> do
@@ -90,7 +90,7 @@ testPublishWithoutStageFails = withTmpProject $ \tmp -> do
   assertEq "published fragment untouched" before =<< BS.readFile frag
   let other = tmp </> "fragments" </> "Bar.yaml"
   expectStagedMissing "nothing published or staged" other
-  expectNoPath "nothing created" other
+  assertAbsent other
 
 testStageOverwritesStalePending :: IO ()
 testStageOverwritesStalePending = withTmpProject $ \tmp -> do
@@ -104,7 +104,7 @@ testStageOverwritesStalePending = withTmpProject $ \tmp -> do
   stagePending frag (Just stale)
   stagePending frag Nothing
   publishStaged frag
-  expectNoPath "a deletion over a staged fragment" frag
+  assertAbsent frag
   stagePending frag Nothing
   stagePending frag (Just fresh)
   publishStaged frag
@@ -151,7 +151,7 @@ testPublishOntoDirectoryFails = withTmpProject $ \tmp -> do
   stagePending frag Nothing
   expectPublishFails "a deletion onto a directory" frag
   -- A deletion consumes the staged file before it removes the fragment.
-  expectNoPath "the staged deletion" (pendingPath frag)
+  assertAbsent (pendingPath frag)
   stagePending frag (Just (sampleFragment "Dir" "Dir.DirT" "dir"))
   expectPublishFails "a fragment onto a directory" frag
   expectFile "the staged fragment is kept" (pendingPath frag)
@@ -188,7 +188,7 @@ testLinksReplacedNotFollowed = withTmpProject $ \tmp -> do
   stagePending frag Nothing
   publishStaged frag
   outsideKept "a link at the published path, after a deletion"
-  expectNoPath "the link, after a deletion" frag
+  assertAbsent frag
 
 -- ---------------------------------------------------------------------------
 -- Helpers
@@ -225,8 +225,3 @@ expectFile :: String -> FilePath -> IO ()
 expectFile label p = do
   ok <- doesFileExist p
   unless ok (failWith (label <> ": no file at " <> p))
-
-expectNoPath :: String -> FilePath -> IO ()
-expectNoPath label p = do
-  found <- doesPathExist p
-  when found (failWith (label <> ": " <> p <> " exists"))

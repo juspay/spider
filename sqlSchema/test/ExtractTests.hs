@@ -150,7 +150,7 @@ run = do
   testRulesRefused
   testPatternSynonymNamesRefused
   testTypeNamesRefused
-  testNonStockGenericRefused
+  testGenericMustBeStockDerived
   testTopLevelRecordWildcardRefused
   testUnsupportedMessagesNameTheirCause
   testPunnedInstanceBindingsUnreadable
@@ -1794,16 +1794,14 @@ testMetaFieldFixFitsInstance = do
     ["modelTableType = pure TRACKER", "modelSchemaName = pure \"x\""] []
   assertEq "derived messages" 2 (length derived)
   assertEq "written messages" 2 (length written)
-  mapM_ (mentions "Write the ModelMeta instance of 'FooT' instead of deriving it.") derived
-  mapM_ (avoids "Define") derived
-  mapM_ (avoids "instead of deriving") written
-  mapM_ (uncurry mentions) (zip ["Define modelTableType in one of those shapes", "Define modelSchemaName in one of those shapes"] written)
+  mapM_ (assertMentions "message" "Write the ModelMeta instance of 'FooT' instead of deriving it.") derived
+  mapM_ (assertLacks "message" "Define") derived
+  mapM_ (assertLacks "message" "instead of deriving") written
+  mapM_ (uncurry (assertMentions "message")) (zip ["Define modelTableType in one of those shapes", "Define modelSchemaName in one of those shapes"] written)
   where
     messages = \case
       Left errs -> pure (map (generateErrorMessage "d") errs)
       Right action -> failWith ("expected errors, got " <> show action)
-    mentions needle msg = unless (needle `isInfixOf` msg) $ failWith ("message lacks " <> show needle <> ": " <> show msg)
-    avoids needle msg = when (needle `isInfixOf` msg) $ failWith ("message has " <> show needle <> ": " <> show msg)
 
 -- | nixpkgs builds libraries with -haddock, which wraps a documented deriving
 -- type in 'HsDocTy': each is read as without the comment.
@@ -1811,7 +1809,8 @@ testDocumentedDerivingsRead :: IO ()
 testDocumentedDerivingsRead = do
   mapM_ documentedTable
     [ ("DocBeamable", ["  deriving ( Generic", "           , Beamable -- ^ the Beam class", "           )"])
-    , ("DocBeforeBeamable", ["  deriving -- | the Beam class", "    Beamable"]) ]
+    , ("DocBeforeBeamable", ["  deriving (Generic)", "  deriving -- | the Beam class", "    Beamable"])
+    , ("DocGeneric", ["  deriving -- | the representation", "    Generic", "  deriving (Beamable)"]) ]
   assertEq "documented positional mixin" (Left [UNEXTRACTED_TABLE "MixT" notARecord])
     =<< planFixHaddock "DocMixin"
           ["data MixT f = Mix (C f Int)", "  deriving (Generic, Beamable -- ^ the Beam class", "    )"]
@@ -2327,13 +2326,14 @@ testTypeNamesRefused = do
     refused (name, exts, extra, n) =
       assertEq name (Left [REDEFINED_NAME "FooT" n]) =<< planFix defaultCliOptions name exts (controlTable <> extra)
 
--- | H1, H2: Beam names a table's columns from its Generic representation, which a written or
--- non-stock derived instance can set to anything, also through a type synonym.  One the source
--- does not show, as the large-records plugin generates, is not seen.
-testNonStockGenericRefused :: IO ()
-testNonStockGenericRefused = do
+-- | H1, H2: Beam names a table's columns from its Generic representation, which only a stock
+-- derivation, or the large-records plugin, takes from the record's fields; a written or otherwise
+-- derived instance can set them to anything, also through a type synonym.
+testGenericMustBeStockDerived :: IO ()
+testGenericMustBeStockDerived = do
   mapM_ refused
-    [ ("HandGeneric", ["TypeFamilies"], tableWithoutGeneric <> writtenGeneric "Generic (FooT f)")
+    [ ("NoGeneric", [], tableWithoutGeneric)
+    , ("HandGeneric", ["TypeFamilies"], tableWithoutGeneric <> writtenGeneric "Generic (FooT f)")
     , ("HandGenericArgument", ["TypeFamilies"], tableWithoutGeneric <> writtenGeneric "Generic (FooT Identity)")
     , ("HandGenericContext", ["TypeFamilies"], tableWithoutGeneric <> writtenGeneric "Show f => Generic (FooT f)")
     , ("HandGenericQualified", ["TypeFamilies"], tableWithoutGeneric <> writtenGeneric "G.Generic (FooT f)")
@@ -2346,18 +2346,29 @@ testNonStockGenericRefused = do
     , ("StandaloneViaGeneric", "DerivingVia" : derivingExts, tableWithoutGeneric <> ["deriving via (Other f) instance Generic (FooT f)"])
     , ("StandaloneAnyclassGeneric", derivingExts, tableWithoutGeneric <> ["deriving anyclass instance Generic (FooT f)"])
     , ("StandaloneAnyclassBesideStock", derivingExts, tableWith "deriving (Generic, Beamable)" <> ["deriving anyclass instance Generic (FooT f)"])
-    , ("StandaloneViaAlias", "DerivingVia" : derivingExts, tableWithoutGeneric <> ["type AliasT = FooT", "deriving via (Other f) instance Generic (AliasT f)"]) ]
+    , ("StandaloneViaAlias", "DerivingVia" : derivingExts, tableWithoutGeneric <> ["type AliasT = FooT", "deriving via (Other f) instance Generic (AliasT f)"])
+    , ("StandaloneNarrowGeneric", derivingExts, tableWithoutGeneric <> ["deriving instance Generic (FooT Identity)"])
+    , ("StandaloneAliasGeneric", derivingExts, tableWithoutGeneric <> ["type AliasT = FooT", "deriving instance Generic (AliasT f)"])
+    , ("LargeRecordOtherType", [], "{-# ANN type OtherT largeRecord #-}" : tableWithoutGeneric)
+    , ("LargeRecordValueAnnotation", [], "{-# ANN fooId largeRecord #-}" : tableWithoutGeneric)
+    , ("LargeRecordModuleAnnotation", [], "{-# ANN module largeRecord #-}" : tableWithoutGeneric)
+    , ("OtherTypeAnnotation", [], "{-# ANN type FooT otherOptions #-}" : tableWithoutGeneric)
+    , ("LargeRecordApplied", [], "{-# ANN type FooT (largeRecord opts) #-}" : tableWithoutGeneric)
+    , ("LargeRecordBesideWritten", ["TypeFamilies"], ("{-# ANN type FooT largeRecord #-}" : tableWithoutGeneric) <> writtenGeneric "Generic (FooT f)") ]
+  assertEq "StandaloneRepeatedVariable" (Left [UNEXTRACTED_TABLE "PairT" genericNotStock])
+    =<< planFix defaultCliOptions "StandaloneRepeatedVariable" derivingExts (pairTable <> ["deriving instance Generic (PairT f f)"])
   mapM_ kept
-    [ ("NoGeneric", [], tableWithoutGeneric)
-    , ("LargeRecordGeneric", [], "{-# ANN type FooT largeRecord #-}" : tableWithoutGeneric)
-    , ("DerivedGeneric", derivingExts, tableWithoutGeneric <> ["deriving instance Generic (FooT f)"])
+    [ ("DerivedGeneric", derivingExts, tableWithoutGeneric <> ["deriving instance Generic (FooT f)"])
     , ("StockStandaloneGeneric", derivingExts, tableWithoutGeneric <> ["deriving stock instance Generic (FooT f)"])
-    , ("NarrowStandaloneGeneric", derivingExts, tableWithoutGeneric <> ["deriving instance Generic (FooT Identity)"])
-    , ("AliasStandaloneGeneric", derivingExts, tableWithoutGeneric <> ["type AliasT = FooT", "deriving instance Generic (AliasT f)"])
+    , ("KindedStandaloneGeneric", "KindSignatures" : derivingExts, tableWithoutGeneric <> ["deriving instance Generic (FooT (f :: Type -> Type))"])
     , ("StockInlineGeneric", ["DerivingStrategies"], tableWith "deriving stock (Generic) deriving anyclass (Beamable)")
     , ("QualifiedGeneric", [], tableWith "deriving (G.Generic, Beamable)")
     , ("OtherGeneric", ["TypeFamilies"], tableWith "deriving (Generic, Beamable)" <> writtenGeneric "Generic (OtherT f)")
-    , ("OtherTypeViaGeneric", ["DerivingVia"], tableWith "deriving (Generic, Beamable)" <> ["data OtherT = OtherT deriving (Generic) via Other"]) ]
+    , ("OtherTypeViaGeneric", ["DerivingVia"], tableWith "deriving (Generic, Beamable)" <> ["data OtherT = OtherT deriving (Generic) via Other"])
+    , ("PairGeneric", derivingExts, pairTable <> ["deriving instance Generic (PairT x f)"])
+    , ("LargeRecord", [], "{-# ANN type FooT largeRecord #-}" : tableWithoutGeneric)
+    , ("LargeRecordQualified", [], "{-# ANN type FooT Nau.largeRecord #-}" : tableWithoutGeneric)
+    , ("LargeRecordParenthesised", [], "{-# ANN type FooT (largeRecord) #-}" : tableWithoutGeneric) ]
   assertEq "HandGenericNoTable" (Right (Stage Nothing))
     =<< planFix defaultCliOptions "HandGenericNoTable" ["TypeFamilies"] (writtenGeneric "Generic (FooT f)")
   where
@@ -2365,6 +2376,13 @@ testNonStockGenericRefused = do
       assertEq name (Left [UNEXTRACTED_TABLE "FooT" genericNotStock]) =<< planFix defaultCliOptions name exts body
     kept (name, exts, body) = tablesOf name =<< planFix defaultCliOptions name exts body
     tableWith clause = ("data FooT f = Foo { fooId :: C f Int, fooName :: C f Text } " <> clause) : drop 1 tableWithoutGeneric
+    pairTable =
+      [ "data PairT x f = Pair { pairId :: C f Int } deriving (Beamable)"
+      , "instance Table (PairT x) where"
+      , "  data PrimaryKey (PairT x) f = PairId (C f Int) deriving (Generic, Beamable)"
+      , "  primaryKey = PairId . pairId"
+      , "instance ModelMeta (PairT x) where"
+      , "  modelTableName = \"pair\"" ]
 
 -- | A record wildcard in a top-level pattern binding binds every field in scope, and the parser
 -- does not show which names those are.
@@ -2387,15 +2405,13 @@ testTopLevelRecordWildcardRefused = do
 
 -- | Each message names what it refuses: the extension, or the position.
 testUnsupportedMessagesNameTheirCause :: IO ()
-testUnsupportedMessagesNameTheirCause = mapM_ (uncurry mentions)
+testUnsupportedMessagesNameTheirCause = mapM_ (uncurry (assertMentions "message"))
   [ ("enables ExampleExtension", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "ExampleExtension"))
   , ("{-# LANGUAGE NoExampleExtension #-}", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "ExampleExtension"))
   , ("with 'import Prelude'", generateErrorMessage "d" (UNSUPPORTED_EXTENSION "RebindableSyntax"))
   , ("a module this module does not import, directly or not", generateErrorMessage "d" (UNSUPPORTED_RULES "12:3"))
   , ("12:3", generateErrorMessage "d" (UNSUPPORTED_RULES "12:3"))
   , ("12:3", generateErrorMessage "d" (UNSUPPORTED_RECORD_WILDCARD "12:3")) ]
-  where
-    mentions needle msg = unless (needle `isInfixOf` msg) $ failWith ("message lacks " <> show needle <> ": " <> show msg)
 
 -- | P1: a punned field of a pattern binding in the instance binds its label, so the method
 -- is bound by a pattern, or twice; GHC rejects both, but only after this plugin has run.
@@ -2437,7 +2453,7 @@ testImplicitParamBindingsUnreadable = do
 testColumnNameMessageCoversPun :: IO ()
 testColumnNameMessageCoversPun = do
   let msg = generateErrorMessage "d" (UNRESOLVABLE_COLUMN_NAME "FooT" "fooName")
-  mapM_ (\needle -> unless (needle `isInfixOf` msg) $ failWith ("message lacks " <> show needle <> ": " <> show msg))
+  mapM_ (\needle -> assertMentions "message" needle msg)
     ["punned", "{ fooName }", "fooName = fieldNamed"]
   when ("RHS" `isInfixOf` msg) $ failWith ("message speaks of a right-hand side a pun lacks: " <> show msg)
 
@@ -2446,7 +2462,7 @@ testColumnNameMessageCoversPun = do
 testTableNameMessageFix :: IO ()
 testTableNameMessageFix = do
   let msg = generateErrorMessage "d" (UNRESOLVABLE_TABLE_NAME "FooT")
-  mapM_ (\needle -> unless (needle `isInfixOf` msg) $ failWith ("message lacks " <> show needle <> ": " <> show msg))
+  mapM_ (\needle -> assertMentions "message" needle msg)
     ["tableNameOverrides", "modelTableName = \"sql_name\""]
   when ("Replace the computed value" `isInfixOf` msg) $ failWith ("the fix still assumes a computed value: " <> show msg)
 
@@ -2652,7 +2668,7 @@ noDeclaration  = "no data declaration for it in this module"
 notARecord     = "its data declaration is not a single-constructor record with the column functor as last type parameter"
 noBeamable     = "nothing in this module derives or declares Beamable for it"
 databaseRecord = "it derives Database, so its data declaration is read as a database record, not as a table"
-genericNotStock = "a Generic instance in this module that could be its is written, or derived via, newtype or anyclass, so the column names Beam takes from it need not be its field names"
+genericNotStock = "this module does not derive its Generic instance with the stock strategy or annotate it as a large record, or has another Generic instance that could be its, so the column names Beam takes from it need not be its field names"
 
 -- | Lets a fixture parse @deriving [anyclass] instance …@.
 derivingExts :: [String]

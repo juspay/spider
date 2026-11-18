@@ -79,13 +79,16 @@ itself, a name the plugin reads a table through (`REDEFINED_NAME`):
 applies (`.`, `<$>`, `<*>`, `getField`, a field name) in any form but a
 record field, a pattern synonym named `Just`, `Nothing` or a `TableType`
 constructor, or a type, type synonym or family named `C`, `Columnar`, `Maybe`
-or `TableEntity`. A table is refused (`UNEXTRACTED_TABLE`) when a `Generic`
-instance in its module could be its and is not a stock derivation: one written
-by hand, or derived `via`, `newtype` or `anyclass`, also for a type synonym of
-the module or a head the plugin can't read. Beam names the columns from the
-Generic representation, which only a stock derivation takes from the record's
-fields. A `Generic` instance the source doesn't show, from Template Haskell or
-another plugin (large-records generates one), is not seen.
+or `TableEntity`. A table's `Generic` instance must be derived in its module
+with the stock strategy, by its deriving clause (no strategy written, or
+`stock`) or by `deriving instance Generic (XxxT f)` with the table itself in
+the head, or, for a large record, come from the large-records plugin, which
+`{-# ANN type XxxT largeRecord #-}` (any qualifier) asks for. A table with
+neither, or with another `Generic` instance in the module that could be its
+(written, derived `via`, `newtype` or `anyclass`, also for a type synonym of
+the module or a head the plugin can't read), is refused (`UNEXTRACTED_TABLE`):
+Beam names the columns from the Generic representation, which only a stock
+derivation, or that plugin, takes from the record's fields.
 
 A module that defines a table or a `setEntityName` override must not enable
 `RebindableSyntax` (`UNSUPPORTED_EXTENSION`: record-dot syntax and string
@@ -233,16 +236,97 @@ duplicates are silently deduped), on `setEntityName`/`modelTableName`
 disagreement, or on argument errors.  It also fails rather than drop
 tables: on a fragment that doesn't parse (unless `--source-dirs` shows its
 module is gone), a missing or malformed `--include-merged` file, a
-directory it can't read, or `--source-dirs` that prune every fragment.
+directory it can't read, a `--fragments` or `--source-dirs` path it can't
+check (table below), or `--source-dirs` that prune every fragment.
 It refuses a contract with no tables unless `--allow-empty` is passed, and
 one with none of the package's own fragments unless the package declares
 `--no-own-tables` (it defines no tables itself and only composes
 `--include-merged` contracts); with that flag, own fragments that do define
-a table fail the merge, so the declaration can't go stale.  A `--source-dirs`
-entry that doesn't exist only warns, so a mistyped one prunes the
-fragments of its modules; each pruned module is named on stderr.  Two
-different Haskell types mapping to the same SQL `tableName` produces a
-stderr warning, not an error.
+a table fail the merge, so the declaration can't go stale.  Each pruned
+module is named on stderr, in quotes.  Two different Haskell types mapping
+to the same SQL `tableName` produces a stderr warning, not an error.
+
+Three more inputs fail the merge, because each means a check could not run
+or a plugin did not.  Each has an opt-out flag that turns its error into a
+warning:
+
+| Input | Why it fails | Opt-out |
+|-------|--------------|---------|
+| an `--include-merged` contract with no tables | the plugin most likely did not run when that package was built | `--allow-empty-include` |
+| a `setEntityName` override that matches no table in any fragment or included contract | the table is missing from the contract, and the override could not be checked against its `modelTableName` | `--allow-unmatched-override` |
+| a table with no columns, own or included, counted once after duplicates are collapsed | the plugin read none of its fields: for example another plugin rewrote the record first, and `allowUnknownColumnWrapper` dropped them | `--allow-columnless-table` |
+
+An opt-out relaxes only its own check.  An empty include is an input error,
+like a missing or malformed include file, and input errors stop the merge
+before the table checks run, so the errors of those checks (conflicting
+duplicate tables, overrides, tables with no columns) show only once the input
+errors are fixed, or the empty include accepted with `--allow-empty-include`.
+The exit is 1 either way.
+
+The opt-outs are flags of one merge, and the contract records none of them, so
+they are not inherited through an include.  The tables and overrides of an
+included contract are checked again by this merge, so a dependency built with
+`--allow-columnless-table` or `--allow-unmatched-override` needs the same flag
+here, and the flag then also covers this package's own tables and overrides.  An
+upstream `--allow-empty-include` leaves no trace in its contract.  One override
+key (module, field, table type) with two different SQL names is an error
+whatever the flags, in a fragment, in a contract or across them, so an
+override can't be lost when equal entries collapse into one.  Every name read
+from a fragment, an included contract or a directory (modules, tables,
+overrides, files, YAML and I/O errors) is printed quoted and escaped, so a
+name holding a newline can't forge a `sql-schema-merge:` line.
+
+What warns and what fails, for the two kinds of path:
+
+| The path | `--fragments` | each `--source-dirs` entry |
+|----------|---------------|----------------------------|
+| a directory, or a symlink to one | read | walked |
+| missing, or a dangling symlink | warning; reads as no fragments, which the merge refuses (exit 1) unless `--no-own-tables` is given and the includes hold tables, or `--allow-empty` is given and the contract is empty | warning; exit 1 instead if a fragment was pruned |
+| exists but isn't a directory (a file, say) | exit 1 | warning; exit 1 instead if a fragment was pruned |
+| can't be checked: below a file (`file/x`, or `file/` with a trailing slash), a symlink loop, or no search permission on it or a parent | exit 1 | exit 1 |
+
+A `--source-dirs` entry that is missing or isn't a directory holds no modules,
+so a fragment pruned while one is listed may belong to a module that lives
+there: the exit 1 names the entries and the pruned modules (fix the path, or
+delete the stale fragments).  Inside a listed directory, an entry that can't
+be inspected (a symlink into a directory without search permission, say)
+exits 1.  A symlink back to a directory on the walk's path from the entry is
+skipped with a warning naming it: every name through it would repeat one found
+on that path, unless a file there declares its module by the name through the
+link, so a fragment pruned in a merge that skipped such a link exits 1, naming
+the links and the pruned modules.  Every other symlink is followed under its
+own name, an alias of a directory reached another way included, so both names
+are live (over-inclusive, which is safe).  The system stops following a chain
+of symlinks after a few dozen, which says nothing about a loop, so such a
+chain is followed one link at a time: one that ends at a directory is an
+alias, one that leads back to one of its own links has no directory at its end
+and is skipped with a warning, and one of more than 1000 links, or a link that
+can't be read, exits 1.  A dangling symlink is no error and, like a file,
+counts as a module only if its name has a module extension.  A directory that
+several symlinks lead to is listed once per symlink, so a walk lists at most
+200000 entries per `--source-dirs` entry, each link of a chain it follows
+counted as one, and exits 1, naming the entry, when it would list more.  The
+warnings of an entry's walk are written 1000 lines at a time, and also when
+the walk then fails.
+
+The contract is written only after every check has passed, atomically: to a
+new temporary file next to `--out` (an existing `<out>.tmp` is never touched),
+which is then renamed over it.  A merge that exits 1 (failed, refused, or an
+I/O error) never creates or replaces `--out`, so an earlier contract stays as
+it was; one that is killed mid-write can leave its temporary file behind, which
+nothing reads.  A refusal states the fragment, pruned and included counts the
+summary line would have given.
+Argument errors exit 2: a repeated `--fragments`, `--out` or
+`--generator-rev`; an empty value (an unset shell variable); a value that
+starts with `--` (an unset, unquoted variable leaves the next option in its
+place); a flag without its value; an unknown argument.
+
+The same checks run in the library: `SqlSchema.Merge.runMerge` returns
+`Left` before writing when `publishProblem` refuses (`moAllowEmpty` and
+`moNoOwnTables` are its two opt-outs), and `SqlSchema.MergeCli.mergeMain`
+is the CLI as a function from arguments to an exit code.
+`moAllowEmptyInclude`, `moAllowUnmatchedOverride` and `moAllowColumnlessTable`
+relax the three checks above.
 
 ## Plugin options (JSON in `-fplugin-opt`)
 
@@ -262,7 +346,7 @@ shape it can't read precisely:
 
 | Hard compile error             | What it means |
 |--------------------------------|---------------|
-| `UNEXTRACTED_TABLE`            | A type with a `Beamable`, `Table` or `ModelMeta` instance in the module (written, derived inline or derived standalone) isn't a table the plugin can read: it has no data declaration in the module; its declaration isn't a single-constructor record (Haskell 98 syntax) with the column functor as last type parameter; nothing in the module derives or declares `Beamable` for it (Template Haskell output isn't seen); it derives `Database`; or a `Generic` instance in the module that could be its is written by hand, or derived `via`, `newtype` or `anyclass` (also for a type synonym of the module). The message gives the fix for its reason. |
+| `UNEXTRACTED_TABLE`            | A type with a `Beamable`, `Table` or `ModelMeta` instance in the module (written, derived inline or derived standalone) isn't a table the plugin can read: it has no data declaration in the module; its declaration isn't a single-constructor record (Haskell 98 syntax) with the column functor as last type parameter; nothing in the module derives or declares `Beamable` for it (Template Haskell output isn't seen); it derives `Database`; or the module neither derives its `Generic` instance with the stock strategy nor annotates it `{-# ANN type T largeRecord #-}`, or has another `Generic` instance that could be its (written, derived `via`, `newtype` or `anyclass`, also for a type synonym of the module). The message gives the fix for its reason. |
 | `MISSING_MODEL_META`           | A table has no `ModelMeta` instance in its module. `tableNameOverrides` doesn't stand in for one. |
 | `UNREADABLE_INSTANCE_HEAD`     | A `Table`, `ModelMeta` or `Beamable` instance isn't for one unqualified type constructor, so the plugin can't tell which table it belongs to: e.g. `instance Table t => ModelMeta t`, `instance ModelMeta M.FooT`, a promoted `'FooT`, `instance Table (PrimaryKey FooT)` (a key's `Beamable` instance is fine), or a class applied to two types (`instance X.Table Int FooT`). |
 | `DUPLICATE_INSTANCE`           | The module has two `Table`, `ModelMeta` or `Beamable` instances, written or derived, for one type name: same-named classes of different modules, or one parameterised type at two arguments (`ModelMeta (Wrap A)` and `ModelMeta (Wrap B)`). Keep one per table type. |

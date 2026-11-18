@@ -569,7 +569,7 @@ reasonNoDeclaration  = "no data declaration for it in this module"
 reasonNotARecord     = "its data declaration is not a single-constructor record with the column functor as last type parameter"
 reasonNoBeamable     = "nothing in this module derives or declares Beamable for it"
 reasonDatabaseRecord = "it derives Database, so its data declaration is read as a database record, not as a table"
-reasonGenericNotStock = "a Generic instance in this module that could be its is written, or derived via, newtype or anyclass, so the column names Beam takes from it need not be its field names"
+reasonGenericNotStock = "this module does not derive its Generic instance with the stock strategy or annotate it as a large record, or has another Generic instance that could be its, so the column names Beam takes from it need not be its field names"
 
 unextractedFix :: String -> String -> String
 unextractedFix t reason
@@ -582,7 +582,7 @@ unextractedFix t reason
   | reason == reasonDatabaseRecord =
       "A database record is not a table: drop its Beamable deriving and any Table or ModelMeta instance for it, and declare each table as its own record."
   | reason == reasonGenericNotStock =
-      "Derive Generic for '" <> escapeField t <> "' with the stock strategy, in its deriving clause or by 'deriving instance Generic (" <> escapeField t <> " f)', and drop each other Generic instance that could be its: a written one, or one derived via, newtype or anyclass, also for a type synonym of this module or a head the plugin cannot read. Beam then names its columns from its record fields."
+      "Derive Generic for '" <> escapeField t <> "' in this module with the stock strategy, in its deriving clause or by 'deriving instance Generic (" <> escapeField t <> " f)' with '" <> escapeField t <> "' itself in the head (a large record keeps its '{-# ANN type " <> escapeField t <> " largeRecord #-}'), and drop each other Generic instance that could be its: a written one, or one derived via, newtype or anyclass, also for a type synonym of this module or a head the plugin cannot read. Beam then names its columns from its record fields."
   | otherwise =
       "Keep the table's record declaration, its Beamable deriving and its Table and ModelMeta instances, all written out, in one module."
 

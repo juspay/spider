@@ -84,11 +84,27 @@
   - a fragment that doesn't parse, unless `--source-dirs` shows its module is
     gone;
   - a missing or malformed `--include-merged` file;
-  - a fragments or source directory it can't read or search;
+  - a fragments or source directory it can't read or search, or an entry
+    inside a source directory that it can't inspect (a symlink into a
+    directory it can't search, say);
   - `--source-dirs` that prune every fragment.
 
-  A `--source-dirs` entry that doesn't exist still only warns; each pruned
-  module is now named on stderr.
+  Each pruned module is now named on stderr, in quotes.
+* **Breaking:** a `--source-dirs` entry that doesn't exist, or isn't a
+  directory, fails the merge when a fragment is pruned. Before, it only warned
+  (an existing file as "does not exist"), so a mistyped entry pruned the
+  fragments of the modules that live there, and the merge exited 0 without their
+  tables. The error names the entries and the pruned modules; fix the path, or
+  delete the stale fragments. With nothing pruned such an entry still only
+  warns. A `--fragments` path that exists but isn't a directory fails too: it
+  used to read as an empty directory, which `--allow-empty` or `--no-own-tables`
+  then accepted. A `--fragments` path that doesn't exist, or is a dangling
+  symlink, still reads as no fragments, now with a warning. A symlink back to a
+  directory on the walk's path from the entry is skipped, with a warning.
+  Library: `liveModulesFromDirs` returns these entries (`SourceDirProblem`) with
+  the modules instead of warning about them, and prints the warnings of its own
+  walk itself; `loadFragments` throws on a path that isn't a directory. New
+  exports: `PathKind(..)`, `pathKind` and `SourceDirProblem(..)`.
 * **Breaking:** the CLI refuses a contract with none of the package's own
   fragments, as it already refused one with no tables: included tables used
   to hide that the package's plugin never ran. A package that defines no
@@ -96,6 +112,84 @@
   new `--no-own-tables` instead of `--allow-empty`; the merge then fails if
   its own fragments do define a table. `--allow-empty` permits only a contract
   with no tables.
+* **Breaking:** a merge the CLI refuses no longer writes `--out`. Before, the
+  contract was written first and the refusal (0 tables, no own fragments,
+  `--no-own-tables` with own tables) came after, so a refused merge replaced the
+  previous contract with the one it then rejected. A refusal now states the
+  fragment, pruned and included counts instead of the summary line.
+* **Fix:** the contract is written to a new temporary file next to `--out`
+  (`<out>`, a unique suffix, `.tmp`), created exclusively with the default
+  permissions, and renamed over `--out`. Before, it went to the fixed name
+  `<out>.tmp`: a file already there was overwritten, a symlink there was written
+  through to its target, and two merges to the same `--out` shared one file. A
+  failed write now removes only the temporary file it created.
+* **Breaking:** argument errors (exit 2) are stricter. Each of these used to be
+  accepted: a repeated `--fragments`, `--out` or `--generator-rev` (the last one
+  won silently), an empty value (an empty `--fragments` read as a missing
+  directory, which `--no-own-tables` then accepted), and a value that starts
+  with `--` (an unset, unquoted variable let the next option become the value:
+  `--generator-rev --no-own-tables` recorded `--no-own-tables` as the revision).
+  A flag without its value is now reported as that, not as an unrecognised
+  argument.
+* **Breaking (library):** `MergeOptions` gains `moAllowEmpty` and
+  `moNoOwnTables`, and `runMerge` applies `publishProblem` itself, returning
+  `Left` before it writes. New: `defaultMergeOptions`, `refusalLines` and
+  `SqlSchema.MergeCli` (`mergeMain`, `parseArgs`, `usage`), the CLI as a
+  function from arguments to an exit code.
+* **Breaking:** the merge fails on three more inputs, each with an opt-out flag
+  that turns its error into a warning. Before, the second was only a warning and
+  the other two passed silently:
+  - an `--include-merged` contract with no tables (`--allow-empty-include`): the
+    plugin most likely did not run when that package was built;
+  - a `setEntityName` override that matches no table in any fragment or included
+    contract (`--allow-unmatched-override`): the table is missing from the
+    contract, and the override could not be checked against its `modelTableName`;
+  - a table with no columns, own or included, counted once after duplicates are
+    collapsed (`--allow-columnless-table`): the plugin read none of its fields,
+    for example because another plugin rewrote the record first and
+    `allowUnknownColumnWrapper` dropped them.
+
+  An opt-out relaxes only its own check. The flags are not recorded in the
+  contract, so they are not inherited: a dependency's contract is checked again,
+  and one built with `--allow-columnless-table` or `--allow-unmatched-override`
+  needs the same flag in the merge that includes it, which then also covers that
+  package's own tables and overrides. An empty include is an input error, and
+  input errors stop the merge before the table checks, whose errors show once
+  it is fixed. Library: `MergeOptions` gains
+  `moAllowEmptyInclude`, `moAllowUnmatchedOverride` and `moAllowColumnlessTable`,
+  and `loadIncludedMerged` returns the included files with no tables (overrides
+  or not) as a fifth component.
+* **Breaking:** one override key (module, field, table type) with two different
+  SQL names fails the merge, whatever the flags. Before, under
+  `--allow-unmatched-override` the entries collapsed and one of them silently
+  left the contract, so a merge that later included it could not check it
+  against the table. Entries with one name still collapse.
+* **Fix:** the walk of a `--source-dirs` entry no longer follows links round in
+  circles. Two symlinks back to their own directory (`src/a -> .`, `src/b -> .`)
+  made it follow every sequence of them until the system's symlink limit, about
+  2^32 directory listings, and invented live module names through them
+  (`a.Lib.B`), which could keep the fragment of a deleted module. A symlink back
+  to a directory on the walk's path from the entry is now skipped, with a
+  warning naming it, and a merge that skips one and prunes a fragment exits 1,
+  naming both: a file under the link that declares its module by the name
+  through it has no other name in the walk. Every other symlink is followed
+  under its own name, an alias included, so `src/Compat -> Legacy/Compat` keeps
+  `Compat.X` live, and `Legacy.Compat.X` too (over-inclusive, which is safe). A
+  chain of symlinks past the system's limit is followed one link at a time,
+  since that error says nothing about a loop: a chain that ends at a directory
+  is an alias, one that leads back to itself is skipped with a warning, and one
+  of more than 1000 links, or an unreadable link, exits 1. At most 200000
+  directory entries are listed, and links of a chain followed, per entry (a
+  directory several links lead to is listed once per link); past that the merge
+  exits 1. The warnings of a walk are written 1000 lines at a time, also when
+  the walk fails: stderr is unbuffered, so thousands of them took over a minute.
+  Library: new `liveModulesFromDirsCapped`, `walkEntryCap` and `maxLinkHops`;
+  `liveModulesFromDirs` returns each skipped link as a `SourceDirLinkSkipped`.
+* **Fix:** every name a merge message prints from a fragment, an included
+  contract or a directory (module, table, override and source names, file
+  names, YAML and I/O error text) goes through `show`. Before, a name holding a
+  newline and an escape character could forge a `sql-schema-merge:` line. The
+  warning for two Haskell types with one SQL name now quotes both.
 * **Fix:** modules in `.lhs`, `.hsc`, `.chs`, `.x`, `.y` and `.ly` files count as
   live, so their fragments are no longer pruned as stale.
 * **Fix:** a compile that fails after parsing (a type error, or a warning made
@@ -214,14 +308,18 @@
   named `C`, `Columnar`, `Maybe` or `TableEntity`. They used to be read as
   Beam's or base's names: a `type C f a = Columnar f (Maybe a)` made a nullable
   column read as not nullable. An imported redefinition is not seen.
-* **Breaking:** a table is a compile error (`UNEXTRACTED_TABLE`) when a
-  `Generic` instance in its module could be its and is not a stock
-  derivation: one written by hand, or derived `via`, `newtype` or `anyclass`,
-  also for a type synonym of the module or a head the plugin can't read. Beam
-  names the columns from the Generic representation, which only a stock
-  derivation takes from the record's fields; the contract used to name the
-  fields whatever the instance. A `Generic` instance that Template Haskell or
-  another plugin (large-records) generates is not seen.
+* **Breaking:** a table's `Generic` instance must be derived in its module
+  with the stock strategy, by its deriving clause (no strategy written, or
+  `stock`) or by `deriving instance Generic (XxxT f)` with the table itself in
+  the head, or come from the large-records plugin, which
+  `{-# ANN type XxxT largeRecord #-}` (any qualifier) asks for. A table with
+  neither, or with another `Generic` instance that could be its (written,
+  derived `via`, `newtype` or `anyclass`, also for a type synonym of the module
+  or a head the plugin can't read), is a compile error (`UNEXTRACTED_TABLE`).
+  Beam names the columns from the Generic representation, which only a stock
+  derivation, or that plugin, takes from the record's fields; the contract used
+  to name the fields whatever the instance, so one that Template Haskell or
+  another plugin generated could rename the columns unseen.
 * **Breaking:** a module that defines a table or a `setEntityName` override is a
   compile error if it enables `RebindableSyntax` (`UNSUPPORTED_EXTENSION`), has a
   `RULES` pragma (`UNSUPPORTED_RULES`) or binds a record wildcard pattern at top

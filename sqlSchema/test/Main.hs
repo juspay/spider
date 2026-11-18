@@ -1,15 +1,15 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 
--- | Test runner: the merge tests ('MergeTests'), the extractor tests
--- ('ExtractTests'), the fragment staging tests ('StageTests'), and the
--- helpers exported by 'SqlSchema.Plugin': the column-name helper,
--- 'parseCliOptions' and 'optionsFingerprint'.
+-- | Test runner: the merge tests ('MergeTests'), the merge CLI tests
+-- ('CliTests'), the extractor tests ('ExtractTests'), the fragment staging
+-- tests ('StageTests'), and the helpers exported by 'SqlSchema.Plugin': the
+-- column-name helper, 'parseCliOptions' and 'optionsFingerprint'.
 module Main (main) where
 
 import           Control.Monad       (when)
 
+import qualified CliTests
 import qualified ExtractTests
 import qualified MergeTests
 import           SqlSchema.Plugin    (beamDefaultColumnName, optionsFingerprint, parseCliOptions)
@@ -20,6 +20,7 @@ import           TestUtil
 main :: IO ()
 main = do
   MergeTests.run
+  CliTests.run
   testBeamDefaultColumnName
   testParseCliOptions
   testOptionsFingerprint
