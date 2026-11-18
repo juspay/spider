@@ -40,8 +40,10 @@ library
       , filepath
       , ghc ^>=9.2 || ^>=9.8
       , text
-      , aeson
-      , yaml
+        -- Bounded to the versions tested (9.2.8's and 9.8.4's): they decode and write the contract.
+      , aeson >=2.0.3 && <2.3
+      , yaml >=0.11.11 && <0.12
+      , libyaml >=0.1.2 && <0.2
     hs-source-dirs:   src
     default-language: Haskell2010
 
@@ -64,6 +66,7 @@ test-suite sql-schema-test
         TestUtil
       , MergeTests
       , CliTests
+      , ContractTests
       , ParseFixture
       , ExtractTests
       , StageTests

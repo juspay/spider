@@ -37,6 +37,7 @@ module SqlSchema.Plugin
   , loadCliOptions
   , pendingPath
   , stagePending
+  , stagePendingFrom
   , publishStaged
   , stagedTables
   , stagedTableNames
@@ -47,6 +48,14 @@ import           Control.Exception          (Exception, IOException, catch, onEx
 import           Control.Monad              (unless)
 import           Control.Monad.IO.Class     (MonadIO, liftIO)
 import qualified Data.Aeson                 as A
+#if MIN_VERSION_aeson(2,1,2)
+import           Data.Aeson.Decoding.ByteString (bsToTokens)
+import           Data.Aeson.Decoding.Tokens (TkArray (..), TkRecord (..), Tokens (..))
+import           Data.Aeson.Key             (Key)
+#else
+import           Data.Aeson.Internal        (IResult (ISuccess))
+import qualified Data.Aeson.Parser          as AP
+#endif
 import qualified Data.ByteString            as BS
 import qualified Data.ByteString.Lazy       as BL
 import           Data.Foldable              (toList)
@@ -91,15 +100,14 @@ import qualified GHC.Utils.Ppr              as Pretty
 import           SqlSchema.Extract          (FragmentAction (..), extensionErrors, planFragment)
 import           SqlSchema.Types
 
--- The type-check cross-check
 import           Data.Function              (on)
 import           Data.List                  (nubBy)
 import           Data.Maybe                 (isNothing)
 import           GHC.Builtin.Names          (genClassName, m1TyConName, metaConsDataConName, metaDataDataConName,
                                              metaSelDataConName, monoidClassName, prodTyConName, repTyConName,
                                              semigroupClassName, u1TyConName)
-import           GHC.Builtin.Types          (consDataConName, eqTyConName, justDataConName, maybeTyCon, nilDataConName,
-                                             nothingDataConName, tupleDataConName)
+import           GHC.Builtin.Types          (consDataConName, eqTyConName, heqTyConName, justDataConName, maybeTyCon,
+                                             nilDataConName, nothingDataConName, tupleDataConName)
 import           GHC.Core.ConLike           (ConLike (..))
 import           GHC.Core.DataCon           (DataCon, dataConExTyCoVars, dataConFieldLabels, dataConName,
                                              dataConOrigArgTys, dataConTheta, dataConTyCon, dataConUnivTyVars)
@@ -156,9 +164,9 @@ import           SqlSchema.Extract          (InstanceHead (..), Origin (..), Res
 -- Plugin entry point
 -- ---------------------------------------------------------------------------
 
--- | GHC already recompiles every module when the plugin package itself
--- changes (it records the plugin unit); fingerprinting the options makes an
--- option change do the same, so each fragment is rewritten under the new options.
+-- | Fingerprinting the options makes an option change recompile every module,
+-- so each fragment is rewritten under the new options.  A plugin rebuilt under
+-- the same unit id need not: GHC keeps modules while the old library is readable.
 plugin :: Plugin
 plugin = defaultPlugin
   { pluginRecompile    = \opts -> pure (MaybeRecompile (optionsFingerprint opts))
@@ -200,11 +208,44 @@ optionsFingerprint = fingerprintString . show
 parseCliOptions :: [CommandLineOption] -> Either String CliOptions
 parseCliOptions = \case
   []    -> Right defaultCliOptions
-  [raw] -> case A.eitherDecode (BL.fromStrict (encodeUtf8 (T.pack raw))) of
-    Right v  -> Right v
+  [raw] -> let bytes = encodeUtf8 (T.pack raw) in case A.eitherDecode (BL.fromStrict bytes) of
+    Right v
+      | Just dup <- repeatedKey bytes ->
+          Left ("the plugin option gives a key twice in one object, and only one of the values would be read: " <> dup)
+      | otherwise -> Right v
     Left err -> Left ("cannot parse the plugin option as JSON CliOptions: " <> err)
   raws  -> Left ("expected at most one -fplugin-opt JSON string, got "
                    <> show (length raws))
+
+-- | Why the JSON is refused: an object that gives a key twice (aeson's decode keeps one value
+-- silently), or JSON this scan cannot read, which the caller has already decoded.
+repeatedKey :: BS.ByteString -> Maybe String
+#if MIN_VERSION_aeson(2,1,2)
+repeatedKey = either Just (const Nothing) . value . bsToTokens
+  where
+    value :: Tokens k String -> Either String k
+    value = \case
+      TkLit _ k      -> Right k
+      TkText _ k     -> Right k
+      TkNumber _ k   -> Right k
+      TkArrayOpen a  -> array a
+      TkRecordOpen r -> record [] r
+      TkErr e        -> Left e
+    array :: TkArray k String -> Either String k
+    array = \case
+      TkItem t     -> value t >>= array
+      TkArrayEnd k -> Right k
+      TkArrayErr e -> Left e
+    record :: [Key] -> TkRecord k String -> Either String k
+    record seen = \case
+      TkPair key t
+        | key `elem` seen -> Left ("found duplicate key: " <> show key)
+        | otherwise       -> value t >>= record (key : seen)
+      TkRecordEnd k -> Right k
+      TkRecordErr e -> Left e
+#else
+repeatedKey = either (Just . snd) (const Nothing) . AP.eitherDecodeStrictWith AP.jsonNoDup' ISuccess
+#endif
 
 
 -- | 'parseCliOptions', then the fragments directory resolved: it may be neither the working
@@ -250,7 +291,7 @@ stageFragmentWith cli modSummary hpm = do
     Right (Stage fragment) ->
       case nonEmpty (extensionErrors (extensionOn modSummary) (isJust fragment)) of
         Just es -> throwSqlSchemaErrors (fragmentsDir cli) modSpan es
-        Nothing -> liftIO (try (stagePending (fragmentPath cli modStr) fragment)) >>= \case
+        Nothing -> liftIO (try (stagePendingFrom (ml_hs_file (ms_location modSummary)) (fragmentPath cli modStr) fragment)) >>= \case
           Left (StagingFailure err) -> throwSqlSchemaErrors (fragmentsDir cli) modSpan (err :| [])
           Right ()                  -> pure ()
   where
@@ -297,9 +338,13 @@ pendingPath = (<> ".pending")
 -- empty file, which publishes as a deletion of the fragment an earlier compile
 -- left (a restored build directory would otherwise keep a dropped table).
 stagePending :: FilePath -> Maybe Fragment -> IO ()
-stagePending frag fragment = ioFailure "stage" (pendingPath frag) $ do
+stagePending = stagePendingFrom Nothing
+
+-- | 'stagePending', with the module's source file recorded in the fragment ('encodeFragmentFile').
+stagePendingFrom :: Maybe FilePath -> FilePath -> Maybe Fragment -> IO ()
+stagePendingFrom source frag fragment = ioFailure "stage" (pendingPath frag) $ do
   createDirectoryIfMissing True (takeDirectory frag)
-  atomicWrite (pendingPath frag) (maybe BS.empty YAML.encode fragment)
+  atomicWrite (pendingPath frag) (maybe BS.empty (encodeFragmentFile source) fragment)
 
 -- | Replaces the fragment with what was staged, or throws a 'StagingFailure'.
 -- A deletion removes the staged file first: a kill between the two removals
@@ -394,8 +439,8 @@ stagedTables frag = do
     if isDoesNotExistError e then throwIO (StagingFailure (STAGED_FRAGMENT_MISSING pending)) else throwIO e
   if BS.null bytes
     then pure []
-    else case YAML.decodeEither' bytes of
-      Right fragment -> pure (fragmentTables fragment)
+    else case decodeFragmentFile bytes of
+      Right (fragment, _) -> pure (fragmentTables fragment)
       Left err       -> throwIO (StagingFailure (STAGED_FRAGMENT_UNREADABLE pending (YAML.prettyPrintParseException err)))
   where
     pending = pendingPath frag
@@ -465,7 +510,7 @@ checkInstances opts ms env
     modStr  = moduleNameToString ms
     renamedSourceMissing =
       "sql-schema: INTERNAL_ERROR: GHC kept no renamed source for this module, so its tables' routing fields cannot be checked.\n"
-      <> "  This is a bug in the sql-schema plugin, not in the module; report it with the module's source."
+      <> "  This plugin asks GHC to keep it, so another plugin of this compile dropped it: compile the module without the other -fplugin flags to find which, and report it with the module's source and those flags."
 
 nameOrigin :: UnitState -> Name -> Maybe Origin
 nameOrigin units n = do
@@ -602,15 +647,25 @@ resolveColumns origin large env t =
 -- | large-records 0.4.4 types each field as an existential type variable of the constructor,
 -- which one equality constraint of the constructor fixes, written @forall f1. (f1 ~ τ) => …@.
 fixedType :: DataCon -> Type -> Either String Type
-fixedType dc ty = case getTyVar_maybe ty of
-  Just v | v `elem` dataConExTyCoVars dc -> case nubBy eqType (concatMap (equated v) (dataConTheta dc)) of
-    [x] -> Right x
-    xs  -> Left ("GHC types it as the type variable '" <> rendered ty <> "', which " <> show (length xs)
-                 <> " constraints '" <> rendered ty <> " ~ t' of its record's constructor fix, not one, so its type is not known")
-  _ -> Right ty
+fixedType dc ty = case equatedTypes dc ty of
+  Nothing -> Right ty
+  Just [x]
+    | maybe True (`notElem` dataConExTyCoVars dc) (getTyVar_maybe x) -> Right x
+    | otherwise -> Left ("GHC types it as the type variable '" <> rendered ty <> "', which an equality constraint of its record's constructor fixes only to the type variable '"
+                         <> rendered x <> "', so its type is not known")
+  Just xs -> Left ("GHC types it as the type variable '" <> rendered ty <> "', which " <> show (length xs)
+                   <> " constraints '" <> rendered ty <> " ~ t' of its record's constructor fix, not one, so its type is not known")
+
+-- | For a field typed by an existential type variable of its constructor, the types the
+-- constructor's equality constraints (@~@ or @~~@, either way round) equate the variable with.
+equatedTypes :: DataCon -> Type -> Maybe [Type]
+equatedTypes dc ty = case getTyVar_maybe ty of
+  Just v | v `elem` dataConExTyCoVars dc -> Just (nubBy eqType (concatMap (equated v) (dataConTheta dc)))
+  _ -> Nothing
   where
     equated v p = case splitTyConApp_maybe p of
-      Just (tc, args) | tyConName tc == eqTyConName, Just (a, b) <- lastTwo args, getTyVar_maybe a == Just v -> [b]
+      Just (tc, args) | tyConName tc `elem` [eqTyConName, heqTyConName], Just (a, b) <- lastTwo args ->
+        [b | getTyVar_maybe a == Just v] <> [a | getTyVar_maybe b == Just v]
       _ -> []
 
 -- | Mirrors the parse step's reading of a column field: @Columnar f a@ or @C f a@, @f@ the
@@ -749,35 +804,50 @@ lastTwo xs = case reverse xs of
 -- Scanning the class's instances, unlike lookupInstEnv, also finds incoherent ones.
 instanceTrustErrors :: (Name -> Maybe Origin) -> (Name -> SrcSpan) -> TcGblEnv -> [TableSchema] -> TcM [(SrcSpan, SqlSchemaError)]
 instanceTrustErrors origin at env tables =
-  case [ m | n <- nameSetElemsStable (allUses (tcg_dus env))
-           , getOccString n `elem` ["setEntityName", "modifyTableFields"]
-           , fromModule (origin n) beamCoreModule, Just m <- [nameModule_maybe n] ] of
+  case [ (n, m) | n <- nameSetElemsStable (allUses (tcg_dus env))
+                , getOccString n `elem` ["setEntityName", "modifyTableFields"]
+                , fromModule (origin n) beamCoreModule, Just m <- [nameModule_maybe n] ] of
     []    -> pure []
-    m : _ -> do
-      modification <- tcLookupTyCon =<< lookupOrig m (mkTcOcc "EntityModification")
-      entity       <- tcLookupTyCon =<< lookupOrig m (mkTcOcc "TableEntity")
-      envs         <- tcGetInstEnvs
-      classes      <- mapM tcLookupClass [semigroupClassName, monoidClassName]
-      let local   = typeEnvTyCons (tcg_type_env env)
-          renamed = nubBy ((==) `on` fst) ([(tc, getName tc) | t <- tables, Just tc <- [tableTyCon env t]] <> recordTables entity local)
-      pure [ (at n, e) | (t, n) <- renamed, cls <- classes
-               , e <- untrustedInstances (getOccString cls) (getOccString t)
-                        [origin (is_dfun_name i) | i <- classInstances envs cls, mayApplyAt modification entity t i] ]
+    (use, m) : _ -> do
+      -- A beam-core that defines them in another module would fail the compile with GHC's uncoded lookup error.
+      found <- mapM (\o -> (,) o . fst <$> tryTc (tcLookupTyCon =<< lookupOrig m (mkTcOcc o))) ["EntityModification", "TableEntity"]
+      case found of
+        [(_, Just modification), (_, Just entity)] -> do
+          envs    <- tcGetInstEnvs
+          classes <- mapM tcLookupClass [semigroupClassName, monoidClassName]
+          let (fieldTables, unknown) = recordTables entity (typeEnvTyCons (tcg_type_env env))
+              renamed = nubBy ((==) `on` fst) ([(tc, getName tc) | t <- tables, Just tc <- [tableTyCon env t]] <> fieldTables)
+          pure $ [ (at n, UNCHECKABLE_RENAMES what why) | (n, what, why) <- unknown ]
+              <> [ (at n, e) | (t, n) <- renamed, cls <- classes
+                   , e <- untrustedInstances (getOccString cls) (getOccString t)
+                            [origin (is_dfun_name i) | i <- classInstances envs cls, mayApplyAt modification entity t i] ]
+        _ -> pure [ (at use, UNCHECKABLE_RENAMES ("module " <> GHC.moduleNameString (GHC.moduleName m) <> " of the beam-core it uses")
+                                                ("GHC finds no " <> o <> " in it, where beam-core 0.9 defines it beside setEntityName"))
+                  | (o, Nothing) <- found ]
 
 -- | The tables of this module's record fields typed @f (TableEntity T)@, each with the field's
 -- selector, or its record's type for a field without one; a large record's field is read at the
--- type its equality constraint fixes ('fixedType').
-recordTables :: TyCon -> [TyCon] -> [(TyCon, Name)]
+-- type its equality constraint fixes ('fixedType').  Second, each field of an existential type
+-- variable that equality constraints mention but do not fix to one type, which could hold a
+-- table unseen; a variable no equality constraint mentions (@forall a. Show a => …@) holds none.
+recordTables :: TyCon -> [TyCon] -> ([(TyCon, Name)], [(Name, String, String)])
 recordTables entity tcs =
-  [ (x, n)
-  | tc <- tcs, isAlgTyCon tc, dc <- tyConDataCons tc
-  , let tys = map scaledThing (dataConOrigArgTys dc)
-        fls = dataConFieldLabels dc
-  , (ty, n) <- zip tys (if length fls == length tys then map flSelector fls else map (const (getName tc)) tys)
-  , Right fixed <- [fixedType dc ty]
-  , Just (_, arg) <- [splitAppTy_maybe (expandTypeSynonyms fixed)]
-  , Just (etc, [a]) <- [splitTyConApp_maybe arg], etc == entity
-  , Just x <- [tyConAppTyCon_maybe a] ]
+  ( [ (x, n)
+    | (dc, ty, n, _) <- fields
+    , Right fixed <- [fixedType dc ty]
+    , Just (_, arg) <- [splitAppTy_maybe (expandTypeSynonyms fixed)]
+    , Just (etc, [a]) <- [splitTyConApp_maybe arg], etc == entity
+    , Just x <- [tyConAppTyCon_maybe a] ]
+  , [ (n, what, why) | (dc, ty, n, what) <- fields, Just (_ : _) <- [equatedTypes dc ty], Left why <- [fixedType dc ty] ] )
+  where
+    fields =
+      [ (dc, ty, n, what)
+      | tc <- tcs, isAlgTyCon tc, dc <- tyConDataCons tc
+      , let tys = map scaledThing (dataConOrigArgTys dc)
+            fls = dataConFieldLabels dc
+      , (ty, (n, what)) <- zip tys $ if length fls == length tys
+          then [(flSelector fl, "the field '" <> occNameString (occName fl) <> "' of '" <> getOccString tc <> "'") | fl <- fls]
+          else map (const (getName tc, "a field of '" <> getOccString tc <> "'")) tys ]
 
 -- | Whether the instance's head could be @EntityModification f be (TableEntity t)@ for some
 -- @f@ and @be@: a variable where a type constructor would be could be anything.

@@ -189,7 +189,17 @@ GHC gives it a place in the module, else at the module; there is no opt-out.
   of a record field here, a large record's field read at the type its equality
   constraint fixes), for any database and backend, must be beam-core's
   own (`UNEXPECTED_INSTANCE`). Instances of every module GHC sees count,
-  incoherent ones included.
+  incoherent ones included. A record field typed by an existential type
+  variable of its constructor that equality constraints mention but fix to no
+  one type (two constraints, or one to another such variable) could hold a
+  table unseen, so it is refused at the field (`UNCHECKABLE_RENAMES`); a
+  variable no equality constraint mentions, as in
+  `data AnyShow = forall a. Show a => AnyShow a`, holds no table and is
+  skipped. A beam-core whose `Database.Beam.Schema.Tables` defines no
+  `EntityModification` or `TableEntity` beside `setEntityName` is refused
+  too (`UNCHECKABLE_RENAMES`), located at the module rather than a line: the
+  name the check starts from is beam-core's `setEntityName` or
+  `modifyTableFields`, which has no span in the module.
 
 It reads the renamed source, which GHC keeps only on request, so the plugin
 asks for it (`keepRenamedSource`); on GHC 9.8 a build without `-haddock` then
@@ -205,8 +215,8 @@ elsewhere (the modifier, the key, `setEntityName`).
 
 ### What the type-check cross-check cannot see
 
-It checks the instances GHC resolves in the table's module, by type. Two kinds
-of instance defeat it; both are deliberate code by someone with commit access,
+It checks the instances GHC resolves in the table's module, by type. Each of
+these defeats it, and each is deliberate code by someone with commit access,
 which is outside the threat model:
 
 - A written or Template Haskell `Generic` instance (GHC.Generics' or
@@ -218,6 +228,16 @@ which is outside the threat model:
   `GAutoDbSettings`, `IsDatabaseEntity`, `GZipDatabase`, …), in a module
   imported only where the database is built: GHC selects it there, not in the
   table's module.
+- A record field typed by an existential type variable whose equality
+  constraint the rename check does not read as one: written behind a
+  synonym of a constraint tuple
+  (`type Is g f = (g ~ f (TableEntity T), g ~ Maybe Int)`), as a class's
+  superclass (`class (g ~ Maybe Int) => C g`), at the head of a type family,
+  or through `Coercible`. The check reads each `~` or `~~` of the
+  constructor's context, a synonym of a single one expanded, so such a
+  variable counts as one no equality constraint mentions: its field is skipped, as `AnyShow`'s is, not
+  refused (`UNCHECKABLE_RENAMES`), and the `EntityModification` instances of
+  a table it holds go unchecked.
 
 ### DB-settings renames
 
@@ -292,6 +312,16 @@ The plugin reads the parsed source, before names and types are resolved:
   (`#setEntityName`), a rename built in Template Haskell with `mkName`, in a
   quasi-quote or in a splice's output, and a renaming function defined in a
   package without the plugin are not seen.
+- A `tableNameOverrides` entry is not checked against the code: it exists
+  because the plugin can't read the value `modelTableName` names. If that
+  value changes and the override keeps the old name, the contract records the
+  old table; while that table still exists, the validator checks it instead of
+  the one the code uses.
+- Beam's database settings name each table by its default entity name, taken
+  from the database record's field, unless `setEntityName` renames it; the
+  contract records `modelTableName`. A query through those settings whose
+  default name differs from `modelTableName`, with no `setEntityName`, uses a
+  table the contract does not name, and nothing checks that.
 
 ## How to wire it into a downstream package
 
@@ -368,11 +398,16 @@ settings.<pkg> = {
     mkdir -p $out/share/sql-schema
     sql-schema-merge \
       --fragments dist/build/sql-schema-fragments \
-      --source-dirs src \
+      --source-dirs src --source-dirs app \
       --out $out/share/sql-schema/sql-schema.yaml
   '';
 };
 ```
+
+Here the package's components compiled with the plugin have
+`hs-source-dirs: src` and `hs-source-dirs: app`: list every entry of every
+such component (see "`sql-schema-merge` command line"), and run the merge from
+the package root, as `postInstall` does.
 
 When the plugin is enabled by a cabal flag, cabal2nix resolves the conditional
 `sql-schema` dependency with the flag's default, so a build with the flag on
@@ -391,7 +426,7 @@ settings.<service> = {
     mkdir -p $out/share/sql-schema
     sql-schema-merge \
       --fragments dist/build/sql-schema-fragments \
-      --source-dirs src \
+      --source-dirs src --source-dirs app \
       --include-merged ${inputs.app-db.packages.${system}.app-db}/share/sql-schema/sql-schema.yaml \
       --out $out/share/sql-schema/sql-schema.yaml
   '';
@@ -410,7 +445,7 @@ argument and exits 2.
 |------|-------|---------|
 | `--fragments DIR` | once, required | The directory of per-module `*.yaml` fragments (the plugin's `fragmentsDir`). |
 | `--out FILE` | once, required | Where the contract is written, only when every check passes. |
-| `--source-dirs DIR` | repeatable | Source directories: a fragment whose module has no source file in any of them is pruned. Without the flag nothing is pruned. |
+| `--source-dirs DIR` | repeatable | Source directories: a fragment whose module has no source file in any of them is pruned, unless its recorded source file still exists (`UNLISTED_SOURCE_FILE`). List every `hs-source-dirs` entry of every component compiled into the fragments directory (see below). Without the flag nothing is pruned. |
 | `--include-merged FILE` | repeatable | A pre-merged contract whose tables and overrides join the output. |
 | `--no-own-tables` | flag | The package defines no tables and only composes included contracts. |
 | `--allow-empty` | flag | Permit a contract with no tables. |
@@ -435,9 +470,15 @@ The merge CLI exits non-zero on duplicate-type **mismatch** (identical
 duplicates are silently deduped), on `setEntityName`/`modelTableName`
 disagreement, or on argument errors.  It also fails rather than drop
 tables: on a fragment that doesn't parse (unless `--source-dirs` shows its
-module is gone), a missing or malformed `--include-merged` file, a
+module is gone, and the source path it records, if any, is gone too), a
+missing or malformed `--include-merged` file, a
 directory it can't read, a `--fragments` or `--source-dirs` path it can't
-check (table below), or `--source-dirs` that prune every fragment.
+check (table below), or `--source-dirs` that prune every fragment. A
+fragment or include is malformed with a key this version does not write, a
+key it writes but the file lacks (`null` is allowed where the value is
+optional; only the `generator` stamp and `fragmentSourceFile` may be absent,
+as in files written before each was added), or a key given twice in one YAML
+mapping.
 It refuses a contract with no tables unless `--allow-empty` is passed, and
 one with none of the package's own fragments unless the package declares
 `--no-own-tables` (it defines no tables itself and only composes
@@ -521,6 +562,47 @@ levels down).  The
 warnings of an entry's walk are written 1000 lines at a time, and also when
 the walk then fails.
 
+`--source-dirs` must list every `hs-source-dirs` entry of every component
+compiled into the fragments directory: read them from the `.cabal` file
+rather than writing `src` alone. A module in an entry
+left out has no source file in any listed one, so its fragment is pruned, and a
+pruned fragment is only a stderr line: the merge still exits 0, without that
+module's tables. Every component that defines tables must load the plugin too,
+or its tables never reach a fragment. A from-scratch build, one that restores
+no earlier build's directory or intermediates, has no stale fragments and can
+omit the flag, which prunes nothing. A build that reuses intermediates, a nix
+build among them, can have stale fragments.
+
+Before it prunes a fragment, the merge checks the module's source file the
+plugin recorded in it (`fragmentSourceFile`, the path as GHC was given it,
+relative or absolute). If that file still exists, the module is
+most likely still compiled from a directory `--source-dirs` leaves out, so the
+merge fails with `UNLISTED_SOURCE_FILE` (exit 1), naming the module and the
+path, instead of pruning it. A recorded file that is gone is a removed module,
+pruned as before. A fragment that records no path is pruned unchecked: the
+check does not cover it. Such a fragment comes from a plugin before 0.4.3, and
+a build that keeps intermediates across a plugin upgrade can keep it for a
+module that is still compiled (see "Known limits": build from scratch after
+upgrading the plugin). A fragment that no longer decodes gets the same check,
+its path read from it as plain YAML. A file that is no YAML mapping (not YAML,
+a list, bytes that are not UTF-8), or whose key is missing or holds no string,
+records no path, so its fragment is pruned unchecked; a key given twice keeps
+its last value there. The merge only checks whether something
+is at the path (a symbolic link is followed, a dangling one counts as gone).
+A path it can't check fails the merge with `UNCHECKABLE_SOURCE_FILE` (exit 1),
+naming the module and the fragment file: an empty path; one holding U+FFFD,
+which the plugin writes for bytes of a file name that are not UTF-8, so the
+file is not at that path; and one it can't stat, such as one under a directory
+without search permission. A relative recorded path is relative to the
+compile's working directory, so run the merge from there, the package root,
+as `postInstall` does. Run from elsewhere, every relative path reads as gone
+and the check passes everything, as before 0.4.3.
+
+The walk names a module by its file's path, so the fragment of `module Main`
+of an executable whose `main-is` is not `Main.hs` (say `app/Server.hs`) never
+matches a live module: the merge refuses it (`UNLISTED_SOURCE_FILE`), where an
+earlier merge pruned its tables silently. Keep tables out of `Main` modules.
+
 The contract is written only after every check has passed, atomically: to a
 new temporary file next to `--out` (an existing `<out>.tmp` is never touched),
 which is then renamed over it.  A merge that exits 1 (failed, refused, or an
@@ -565,7 +647,7 @@ code is listed:
 | `DUPLICATE_INSTANCE`           | The module has two `Table`, `ModelMeta` or `Beamable` instances, written or derived, for one type name: same-named classes of different modules, or one parameterised type at two arguments (`ModelMeta (Wrap A)` and `ModelMeta (Wrap B)`). Keep one per table type. |
 | `FRAGMENT_IO_ERROR`            | A file operation the plugin does to stage, read back or publish a module's fragment failed: the system's error is quoted with the path (see Architecture notes). Nothing is published, so the module's previous fragment stays and the compile fails instead. Typical causes are a `fragmentsDir` that is not writable, is a file, or lies behind a chain of symbolic links longer than the system follows. |
 | `GENERIC_FIELD_MISMATCH`       | After type checking: a table has no GHC.Generics `Generic` instance, more than one that matches or could match, or one whose representation is not one constructor whose selectors are all the record's fields in order (a Template Haskell or orphan instance, one behind a module class named `Generic`); for a large-records table, large-generics' `MetadataOf` that does not name all the record's fields in order; or staged columns that are not those fields in order. Beam names the columns after those selectors, or that metadata. Derive it with the stock strategy or, for a table annotated with large-records' `largeRecord`, leave both `Generic` instances to that plugin. There is no opt-out. |
-| `INTERNAL_ERROR`              | The extractor refused a module without giving a reason, which cannot happen: a bug in the plugin, not in the module. Report it with the module's source. There is no opt-out. |
+| `INTERNAL_ERROR`              | The extractor refused a module without giving a reason, which cannot happen: a bug in the plugin, not in the module. Report it with the module's source. Also after type checking, when GHC kept no renamed source for a module with tables: the plugin asks GHC to keep it, so another plugin of the compile dropped it; compile without the other `-fplugin` flags to find which. There is no opt-out. |
 | `INVALID_PLUGIN_OPTIONS`       | The `-fplugin-opt` JSON is malformed, has an unknown key, a wrong-typed value, an invalid `blacklistModules` entry or `fragmentsDir`, or is given more than once. |
 | `MISSING_MODEL_META`           | A table has no `ModelMeta` instance in its module. `tableNameOverrides` doesn't stand in for one. |
 | `MODEL_META_FIELD_MISMATCH`    | After type checking: a table's `modelTableType` or `modelSchemaName` doesn't resolve to what the plugin recorded: an imported pattern synonym or another module's `Just`, `Nothing` or `TableType` constructor. Write it with base's `Just`/`Nothing` and a constructor of sequelize's `TableType`. There is no opt-out. |
@@ -574,10 +656,13 @@ code is listed:
 | `STAGED_FRAGMENT_UNREADABLE`   | After type checking, the module's staged fragment does not decode as a fragment: the decode error is quoted with the path. The parse step writes the file whole, through a rename, so something other than the plugin wrote it. Keep `fragmentsDir` for this plugin's files only, and rebuild the module. |
 | `UNCAPTURED_MODIFY_TABLE_FIELDS` | A `modifyTableFields` outside the shape under "DB-settings renames": not applied directly to an argument, an argument that isn't an unqualified variable or isn't the `modelFieldModification` binding of a table of this module, a binding name also bound elsewhere in the module (a parameter or a `where` binding, say) or rebound by a record wildcard `{..}`, a module that binds `modifyTableFields`, `tableModification`, `fieldNamed` or `(<>)` itself, a type application, or a binding that isn't one equation with no arguments, guards or `where` bindings, a `tableModification { … }` with at least one field. The message names the line and the reason. Pass the binding named in `modelFieldModification`; if no column is renamed, drop `modifyTableFields`. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
 | `UNCAPTURED_SET_ENTITY_NAME`   | A `setEntityName` the plugin doesn't capture as an override: one outside the shape under "What it extracts" (in an EMod or other separate binding, a `where` or `let` binding, an instance method, a splice, or a `dbModification` that `withDbModification` does not apply to a top-level binding's result), with a non-literal name, in a `<>` chain with two of them or with another kind of operand, under a type annotation, a label qualified with another module or a record wildcard `{..}`, in an update whose labels no single record of the module declares, before a later `withDbModification` operand that isn't a `dbModification { … }` update, on a field with no table type or several across the module's records, or in a module that binds one of the names the shape relies on or declares a type named `TableEntity`. The message names the line and the reason. Rewrite it into the shape that is read. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
+| `UNCHECKABLE_RENAMES`          | After type checking, in a module that uses `setEntityName` or `modifyTableFields`: the plugin cannot check the `Semigroup` and `Monoid` instances that combine its renames, because a record field is typed by an existential type variable that equality constraints mention but fix to no one type (located at the field), or because the beam-core in use defines no `EntityModification` or `TableEntity` in `Database.Beam.Schema.Tables` (located at the module). Give the field a type GHC can read, or build with beam-core 0.9's layout. There is no opt-out. |
+| `UNCHECKABLE_SOURCE_FILE`      | The merge, not a compile: a fragment whose module is in no `--source-dirs` entry would be pruned, but the source path the plugin recorded for it can't be checked: it is empty, holds U+FFFD (a file name that is not UTF-8), or can't be stat-ed (e.g. a directory without search permission). The error names the module, the fragment file and why. Run the merge where the compile ran, able to search the path's directories, and give source files UTF-8 names (exit 1). |
 | `UNEXPECTED_CLASS`             | After type checking: the class of a `Table`, `Beamable` or `ModelMeta` instance is a same-named class, not beam-core's (`Database.Beam.Schema.Tables`) or sequelize's (`Sequelize`), by package and module. Make it an instance of the library's class, or rename the other class. There is no opt-out. |
 | `UNEXPECTED_INSTANCE`          | After type checking, in a module that uses `setEntityName` or `modifyTableFields`: a `Semigroup` or `Monoid` instance other than beam-core's could apply at a renamed table's `EntityModification` (an `OVERLAPPING` or incoherent one, in any module GHC sees). It can drop or change a rename the contract records. Remove it. There is no opt-out. |
 | `UNEXTRACTED_TABLE`            | A type with a `Beamable`, `Table` or `ModelMeta` instance in the module (written, derived inline or derived standalone) isn't a table the plugin can read: it has no data declaration in the module; its declaration isn't a single-constructor record (Haskell 98 syntax) with the column functor as last type parameter; nothing in the module derives or declares `Beamable` for it (an instance Template Haskell generates doesn't count); it derives `Database`; the module neither derives its `Generic` instance with the stock strategy nor annotates it `{-# ANN type T largeRecord #-}`, or has another `Generic` instance that could be its (written, derived `via`, `newtype` or `anyclass`, also for a type synonym of the module); or the module writes a `Beamable` instance with a method for it, its key or a type synonym of it, or derives one `via` another type. After type checking: an instance the parse step did not see, from Template Haskell or another plugin; an instance whose type GHC resolves to one the module does not declare, such as a splice's instance for an imported type of a table's name; or a table's `largeRecord` annotation that is not the large-records package's value of its options type. The message gives the fix for its reason. |
 | `UNKNOWN_PRIMARY_KEY_FIELD`    | A field `primaryKey` applies isn't a column the plugin extracts for the table: a helper function, another module's name (`M.fooId`), or a field `allowUnknownColumnWrapper` left out. There is no opt-out. |
+| `UNLISTED_SOURCE_FILE`         | The merge, not a compile: a fragment whose module is in no `--source-dirs` entry would be pruned, but the source file the plugin recorded for it still exists, relative to the merge's working directory. Add the directory the file is under to `--source-dirs`, or, if the module is no longer compiled with the plugin, delete the fragments directory and rebuild (exit 1). |
 | `UNREADABLE_INSTANCE_HEAD`     | A `Table`, `ModelMeta` or `Beamable` instance isn't for one unqualified type constructor, so the plugin can't tell which table it belongs to: e.g. `instance Table t => ModelMeta t`, `instance ModelMeta M.FooT`, a promoted `'FooT`, `instance Table (PrimaryKey FooT)` (a key's `Beamable` instance is fine), or a class applied to two types (`instance X.Table Int FooT`). After type checking: an instance the parse step did not see whose head has no type constructor. |
 | `UNRECOGNIZED_FIELD_WRAPPER`   | A field's type isn't `Columnar f T` / `C f T`. Override via `allowUnknownColumnWrapper` only if you accept that field being omitted (the table is still emitted). |
 | `UNRECOGNIZED_MODIFIER_SHAPE`  | `modelFieldModification`, or the `xxxTMod` binding it names, isn't a single unguarded `tableModification { … }` in plain record update syntax (`OverloadedRecordUpdate` syntax and a derived `ModelMeta` instance included), or `modelFieldModification` is bound twice, by a pattern, or with `where` bindings. Override via `allowNonStandardModifier`. |
@@ -612,13 +697,16 @@ field it applies is one of the table's own columns, unqualified.
 ## Architecture notes
 
 - Per-module fragments mean incremental builds stay correct: an
-  unchanged module's fragment on disk is still authoritative. Stale
+  unchanged module's fragment on disk is still authoritative, as long as
+  the plugin is the same. After a plugin upgrade on a build that keeps
+  intermediates it is not: see "Known limits" (build from scratch). Stale
   fragments (whose module has no source file in `--source-dirs`) are pruned at merge
   time, and a recompiled module that no longer defines a table or
   override, or is blacklisted, has its fragment deleted.
 - A compile stages its module's fragment when it parses the module, as
-  `<Module>.yaml.pending`: the fragment's YAML, or an empty file meaning
-  "delete the fragment". A pass the plugin appends to the end of the Core
+  `<Module>.yaml.pending`: the fragment's YAML, with the module's source file
+  as GHC gives it (`fragmentSourceFile`, which the merge checks before it
+  prunes), or an empty file meaning "delete the fragment". A pass the plugin appends to the end of the Core
   pipeline publishes it: it renames the staged file to `<Module>.yaml`, or
   deletes the staged file and then `<Module>.yaml`. GHC runs the Core
   pipeline only after type checking, desugaring and the `-Werror` check
@@ -667,6 +755,31 @@ field it applies is one of the table's own columns, unqualified.
   it and defeat it. That is outside the threat model: it takes a deliberate
   action by someone with write access to the tree, who could delete the file
   directly.
+- On GHC 9.2 the type-check step's scenarios against the real beam-core,
+  sequelize and large-records packages run only against stand-ins of them:
+  9.2's package set here has none of the three.
+- An `--include-merged` file is parsed whole, with YAML aliases expanded, so a
+  crafted include of 40 KB expands to 3.8 MB, growing quadratically. Crafting
+  one takes build access to a dependency, whose code and contract that access
+  could change anyway, so this is outside the threat model. There is no size
+  cap: a cap on the file would not bound the expansion, which happens while it
+  is parsed, and the yaml package has no limit on aliases. Likewise, a crafted
+  file can set a key both through a YAML merge key (`<<: *anchor`) and
+  explicitly: YAML lets the explicit value win, with no repeated key to
+  refuse. The plugin and the merge never write an alias or a merge key.
+- After upgrading the plugin, build from scratch: discard the build's
+  intermediates. GHC 9.2.8 and 9.8.4 recompile no module for a plugin rebuilt
+  under the same unit id and options while the old plugin library is still
+  readable at its old path, as an earlier nix store path stays (probed; they
+  recompile once that library is gone). The unchanged modules then keep the
+  fragments the old plugin wrote, and the new plugin's checks never run on
+  them; a fragment from a plugin before 0.4.3 also records no source path, so
+  the `--source-dirs` check can't hold it (above).
+- A merge in a build directory restored from an earlier build can refuse a
+  removed module whose source file was generated (`.x`, `.y`, `.hsc`, …): the
+  plugin records the generated `.hs` file, which the restored directory may
+  still hold (`UNLISTED_SOURCE_FILE`). Delete the fragments directory and
+  rebuild.
 - An editor session (HLS, ghcide) with the plugin on may publish fragments
   of unsaved buffers, so keep the plugin flag off there. With it on,
   re-type-checking a module from a cached parse after a cabal build has

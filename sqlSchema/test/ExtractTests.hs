@@ -1182,10 +1182,10 @@ testPluginOptions :: IO ()
 testPluginOptions = do
   cli <- expectOk (parseCliOptions
     [ "{\"fragmentsDir\":\"./dist/build/sql-schema-fragments\""
-      <> ",\"blacklistModules\":[\"Test.\",\"Spec.\",\"App.Db.Types.LocalTest\"]"
+      <> ",\"blacklistModules\":[\"Test.\",\"Spec.\",\"App.Model.LocalTest\"]"
       <> ",\"tableNameOverrides\":{\"FooT\":\"foo\"}}" ])
   assertEq "fragmentsDir" "./dist/build/sql-schema-fragments" (fragmentsDir cli)
-  assertEq "blacklistModules" ["Test.", "Spec.", "App.Db.Types.LocalTest"] (blacklistModules cli)
+  assertEq "blacklistModules" ["Test.", "Spec.", "App.Model.LocalTest"] (blacklistModules cli)
   assertEq "allow flags" (False, False) (allowUnknownColumnWrapper cli, allowNonStandardModifier cli)
   tables <- tablesOf "tableNameOverrides" =<< planFix cli "ConsumerOptions" []
     [ "data FooT f = Foo { fooId :: C f Int } deriving (Generic, Beamable)"
@@ -1338,6 +1338,12 @@ errorSamples =
         "its representation's selectors, in order, are [renamedKey, fooName], not the record's fields [fooId, fooName]"
     , "GENERIC_FIELD_MISMATCH" )
   , (UNEXPECTED_INSTANCE "Semigroup" "FooT" "GHC finds one, in module DvA", "UNEXPECTED_INSTANCE")
+  , ( UNCHECKABLE_RENAMES "the field 'gears' of 'GearDb'"
+        "GHC types it as the type variable 'g', which 2 constraints 'g ~ t' of its record's constructor fix, not one, so its type is not known"
+    , "UNCHECKABLE_RENAMES" )
+  , (UNLISTED_SOURCE_FILE "App.B" "gen/App/B.hs", "UNLISTED_SOURCE_FILE")
+  , ( UNCHECKABLE_SOURCE_FILE "App.B" "frags/App.B.yaml" "gen/App/B.hs: getPermissions:getFileStatus: permission denied (Permission denied)"
+    , "UNCHECKABLE_SOURCE_FILE" )
   , ( COLUMN_TYPE_MISMATCH "FooT" "fooNote"
         "the plugin read it as not nullable, but GHC, expanding type synonyms, types it as 'Columnar f (Maybe Text)', with a base Maybe inside Columnar"
     , "COLUMN_TYPE_MISMATCH" )

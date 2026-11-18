@@ -15,7 +15,10 @@
 --   * Stale fragments (whose module has no corresponding source file in
 --     any @--source-dirs@ entry) are pruned, each named on stderr.  Path-based
 --     stale detection was removed in 0.2.0 to make cross-repo composition work
---     without per-package projectRoot juggling.
+--     without per-package projectRoot juggling.  A fragment whose recorded
+--     source file still exists is not pruned but fails the merge
+--     ('UNLISTED_SOURCE_FILE'): an incomplete @--source-dirs@ is the likelier cause;
+--     so does one whose recorded path can't be checked ('UNCHECKABLE_SOURCE_FILE').
 --
 --   * Duplicate 'qualifiedType' across fragments / included contracts is
 --     handled by content-equality:
@@ -166,18 +169,23 @@ currentGenerator rev = Generator
 runMerge :: MergeOptions -> IO (Either [String] MergeReport)
 runMerge opts@MergeOptions{..} = do
   fragKind            <- pathKind moFragmentsDir
-  (read', frags, bad) <- case fragKind of
+  (read', files, bad) <- case fragKind of
     PathDirectory -> readFragmentFiles moFragmentsDir
     _             -> pure (0, [], [])
   when (fragKind == PathMissing) $ hPutStrLn stderr (fragmentsMissingWarning moFragmentsDir)
   (live, dirProblems) <- liveModulesFromDirs moWalkEntryCap moSourceDirs
-  let (kept, prunedMods) = pruneStaleByModule moSourceDirs live frags
+  unlisted <- unlistedSources moSourceDirs live
+                ([(fragmentModule f, p, src) | (p, f, src) <- files] ++ [(takeBaseName p, p, src) | (p, _, src) <- bad])
+  let (kept, staleMods) = pruneStaleByModule moSourceDirs live [f | (_, f, _) <- files]
+      held = map fst unlisted
+      prunedMods = filter (`notElem` held) staleMods
       -- An unparseable fragment is only safe to drop once --source-dirs shows
-      -- its module is gone; otherwise its tables would silently vanish.
+      -- its module is gone, and its recorded source too; otherwise its tables
+      -- would silently vanish.
       (badStale, badLive) =
-        partition (\(f, _) -> not (null moSourceDirs)
-                               && not (Set.member (takeBaseName f) live)) bad
-      prunedNames = prunedMods ++ map (takeBaseName . fst) badStale
+        partition (\(f, _, _) -> not (null moSourceDirs)
+                                  && not (Set.member (takeBaseName f) live)) bad
+      prunedNames = prunedMods ++ filter (`notElem` held) [takeBaseName f | (f, _, _) <- badStale]
       pruned = length prunedNames
   mapM_ (\m -> hPutStrLn stderr ("sql-schema-merge: pruned the fragment of " <> show m
                                  <> ": its module is in no --source-dirs entry"))
@@ -189,7 +197,8 @@ runMerge opts@MergeOptions{..} = do
   when moAllowEmptyInclude $ mapM_ (hPutStrLn stderr . emptyIncludeWarning) emptyIncs
   let inputErrs =
         [ fragmentsNotDirMsg moFragmentsDir | fragKind == PathNotDirectory ]
-        ++ [ "sql-schema-merge: unparseable fragment " <> show f <> ": " <> show e | (f, e) <- badLive ]
+        ++ [ "sql-schema-merge: unparseable fragment " <> show f <> ": " <> show e | (f, e, _) <- badLive ]
+        ++ [ generateErrorMessage "" e | (_, e) <- unlisted ]
         ++ [ "sql-schema-merge: " <> e | e <- incErrs ]
         ++ [ line | not moAllowEmptyInclude, p <- emptyIncs, line <- emptyIncludeMsg p ]
         ++ [ allPrunedMsg read' | read' > 0, pruned == read' ]
@@ -288,19 +297,41 @@ loadFragments :: FilePath -> IO (Int, [Fragment], [(FilePath, String)])
 loadFragments dir = pathKind dir >>= \case
   PathMissing      -> pure (0, [], [])
   PathNotDirectory -> ioError (userError ("fragments path is not a directory: " <> show dir))
-  PathDirectory    -> readFragmentFiles dir
+  PathDirectory    -> (\(n, fs, bad) -> (n, [f | (_, f, _) <- fs], [(p, e) | (p, e, _) <- bad])) <$> readFragmentFiles dir
 
 -- | 'loadFragments' for a path already found to be a directory, so that 'runMerge' checks it once.
-readFragmentFiles :: FilePath -> IO (Int, [Fragment], [(FilePath, String)])
+-- Each file comes with the source path it records, read leniently from an unparseable one.
+readFragmentFiles :: FilePath -> IO (Int, [(FilePath, Fragment, Maybe FilePath)], [(FilePath, String, Maybe FilePath)])
 readFragmentFiles dir = do
   names <- listDirectory dir
   let yamls = sort [dir </> n | n <- names, takeExtension n == ".yaml"]
   parsed <- forM yamls $ \p -> do
     bs <- BS.readFile p
-    pure $ case YAML.decodeEither' bs of
-      Right frag -> Right frag
-      Left e     -> Left (p, YAML.prettyPrintParseException e)
+    pure $ case decodeFragmentFile bs of
+      Right (frag, src) -> Right (p, frag, src)
+      Left e            -> Left (p, YAML.prettyPrintParseException e, lenientSourceFile bs)
   pure (length yamls, [f | Right f <- parsed], [b | Left b <- parsed])
+
+
+-- | Of the fragments (module, file, recorded source) the merge would prune, each it must keep,
+-- with the error that fails the merge: its recorded source exists ('UNLISTED_SOURCE_FILE'), or
+-- can't be checked ('UNCHECKABLE_SOURCE_FILE').  Only stats.  A fragment that records no source
+-- is pruned unchecked, even when its module is still compiled, as a build that kept a fragment
+-- from a plugin before 0.4.3 can leave it.
+unlistedSources :: [FilePath] -> Set String -> [(String, FilePath, Maybe FilePath)] -> IO [(String, SqlSchemaError)]
+unlistedSources sourceDirs live recs = fmap concat $
+  forM [(m, frag, p) | not (null sourceDirs), (m, frag, Just p) <- recs, not (Set.member m live)] check
+  where
+    check (m, frag, p)
+      | null p            = pure (refuse "the recorded path is empty")
+      -- What the plugin's Text writes for bytes of a file name that are not UTF-8.
+      | '\xFFFD' `elem` p = pure (refuse ("the recorded path '" <> p <> "' holds U+FFFD, written for bytes of the file's name that are not UTF-8, so the file is not at that path"))
+      | otherwise = tryIOError (pathKind p) >>= \case
+          Left e            -> pure (refuse (show e))
+          Right PathMissing -> pure []
+          Right _           -> pure [(m, UNLISTED_SOURCE_FILE m p)]
+      where
+        refuse why = [(m, UNCHECKABLE_SOURCE_FILE m frag why)]
 
 
 -- | The error for @--source-dirs@ that prune every fragment.
@@ -603,7 +634,7 @@ loadIncludedMerged paths = do
       then pure (Left ("--include-merged file does not exist: " <> show p))
       else do
         bs <- BS.readFile p
-        case YAML.decodeEither' bs of
+        case decodeYaml bs of
           Left e ->
             pure (Left ("--include-merged file " <> show p <> " failed to parse: "
                          <> show (YAML.prettyPrintParseException e)))
@@ -801,4 +832,4 @@ writeMerged path merged =
   bracketOnError
     (openBinaryTempFileWithDefaultPermissions (takeDirectory path) (takeFileName path <> ".tmp"))
     (\(tmp, h) -> tryIOError (hClose h) >> tryIOError (removeFile tmp))
-    (\(tmp, h) -> BS.hPut h (YAML.encode merged) >> hClose h >> renameFile tmp path)
+    (\(tmp, h) -> BS.hPut h (encodeYaml merged) >> hClose h >> renameFile tmp path)

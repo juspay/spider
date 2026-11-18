@@ -449,6 +449,71 @@
   `Left` before it writes. New: `defaultMergeOptions`, `refusalLines` and
   `SqlSchema.MergeCli` (`mergeMain`, `parseArgs`, `usage`), the CLI as a
   function from arguments to an exit code.
+* **Breaking:** contracts and fragments are read strictly. A key this version
+  does not write, or a misspelled one, fails the merge in an `--include-merged`
+  contract or a fragment, and fails the compile in a staged fragment
+  (`STAGED_FRAGMENT_UNREADABLE`); the `{tag, contents}` object of
+  `modelSchemaName` and the `generator` stamp are covered too. aeson used to
+  ignore an unknown key and read a misspelled optional one as `null`, so an
+  include with `modelSchemaNam` was re-emitted with `modelSchemaName: null`,
+  which routes the table to MySQL. A key this version writes but the file
+  lacks fails the same way (`null` stays allowed where the value is optional):
+  an include from an older or newer merge without `modelSchemaName` used to
+  read as `null` too. Only the `generator` stamp and `fragmentSourceFile` may
+  be absent, as in files written before each was added. A key given twice in one
+  YAML mapping fails the same way as well; Data.Yaml kept its last value.
+* **Breaking:** a `-fplugin-opt` JSON object that gives a key twice, at the
+  top level or inside `tableNameOverrides`, is an invalid option
+  (`INVALID_PLUGIN_OPTIONS`); aeson kept one of the values without a word.
+* **Fix:** the contract and the fragments single-quote every string that
+  PyYAML, which the validator loads the contract with, would read as another
+  type under YAML 1.1 (`1_000`, `0b101`, `1:20`, `2001-12-14`, `.inf`, `.NaN`,
+  `<<`, `=` and the like). Data.Yaml left them plain, so such a name loaded as
+  a number, a date or null, and `<<`, `=` or `0b_` stopped the load. No other
+  string is written differently.
+* **Breaking:** each fragment records its module's source file
+  (`fragmentSourceFile`, the path as GHC was given it, relative or absolute),
+  staged and published with the fragment. The merge
+  refuses to prune a fragment whose module is in no `--source-dirs` entry while
+  that file exists (`UNLISTED_SOURCE_FILE`, exit 1): an incomplete
+  `--source-dirs` used to drop live tables with exit 0. It refuses one whose
+  recorded path it can't check too (`UNCHECKABLE_SOURCE_FILE`, exit 1, naming
+  the module and the fragment file): an empty path, one holding U+FFFD (what
+  the plugin writes for a file name that is not UTF-8), or one it can't stat.
+  A fragment that no longer decodes gets the same check, its path read from it
+  as plain YAML; one that is no YAML mapping, or whose record is missing or
+  no string, is pruned unchecked, and a record given twice keeps its last
+  value. Run the merge from the directory the compile ran in. A
+  fragment without the record, from an earlier plugin, is pruned unchecked, as
+  before. After upgrading the plugin, build from scratch: a plugin rebuilt
+  under the same unit id recompiles no module while the old library is still
+  readable, so unchanged modules keep the old plugin's fragments, which the new
+  checks never ran on. The contract's bytes are unchanged.
+* **Breaking:** in a module that uses `setEntityName` or `modifyTableFields`, a
+  record field typed by an existential type variable of its constructor that
+  equality constraints mention but fix to no one type (two constraints, or one
+  to another such variable) is a compile error at the field
+  (`UNCHECKABLE_RENAMES`): it could hold a table whose `EntityModification`
+  instances would go unchecked. A variable no equality constraint mentions, as
+  in `data AnyShow = forall a. Show a => AnyShow a`, is skipped as before. A
+  beam-core whose `Database.Beam.Schema.Tables` defines no `EntityModification`
+  or `TableEntity` beside `setEntityName` is `UNCHECKABLE_RENAMES` too, located
+  at the module; it used
+  to fail with GHC's uncoded lookup error.
+* `INTERNAL_ERROR` for a module whose renamed source GHC did not keep now says
+  that another plugin of the compile dropped it, instead of blaming this
+  plugin. `STAGED_FRAGMENT_MISSING` names both steps that raise it: the read
+  after type checking and the publish.
+* The library's `aeson` and `yaml` dependencies, and `libyaml`, now a direct
+  one, are bounded to the tested versions: `aeson >=2.0.3 && <2.3`,
+  `yaml >=0.11.11 && <0.12`, `libyaml >=0.1.2 && <0.2`.
+* Documentation: `--source-dirs` must list every `hs-source-dirs` entry of
+  every component compiled into the fragments directory, and every component
+  that defines tables must load the plugin (README, the merge's usage text,
+  `nix/postInstall.nix`); the README's residuals add a YAML alias bomb in an
+  include, `tableNameOverrides` drift, the default entity names of Beam's
+  database settings, and the type-check step's real-package scenarios running
+  only on stubs under GHC 9.2.
 
 ## 0.4.2
 

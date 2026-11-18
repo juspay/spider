@@ -13,10 +13,18 @@
 #       mkdir -p $out/share/sql-schema
 #       sql-schema-merge \
 #         --fragments dist/build/sql-schema-fragments \
-#         --source-dirs src \
+#         --source-dirs src --source-dirs app \
 #         --out $out/share/sql-schema/sql-schema.yaml
 #     '';
 #   };
+#
+# --source-dirs must list every hs-source-dirs entry of every component compiled into the fragments
+# directory (here `src` and `app`; read them from the .cabal file), and every component that defines
+# tables must load the plugin. A fragment pruned for a directory left out is only a stderr line, and the
+# merge exits 0, unless the source file the plugin recorded for it still exists (UNLISTED_SOURCE_FILE,
+# exit 1); relative ones are relative to the package root, where postInstall runs. A build that restores
+# no earlier intermediates has no stale fragments and can omit the flag. After upgrading the plugin,
+# build from scratch: modules not recompiled keep the old plugin's fragments.
 #
 # haskell-flake has no `postInstall` setting, and `drvAttrs.postInstall` would
 # replace the package's postInstall instead of appending to it. If the plugin

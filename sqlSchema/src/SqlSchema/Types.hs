@@ -1,9 +1,12 @@
-{-# LANGUAGE DeriveAnyClass    #-}
-{-# LANGUAGE DeriveGeneric     #-}
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE LambdaCase        #-}
-{-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeOperators     #-}
+{-# LANGUAGE DeriveAnyClass      #-}
+{-# LANGUAGE DeriveGeneric       #-}
+{-# LANGUAGE FlexibleContexts    #-}
+{-# LANGUAGE FlexibleInstances   #-}
+{-# LANGUAGE KindSignatures      #-}
+{-# LANGUAGE LambdaCase          #-}
+{-# LANGUAGE OverloadedStrings   #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeOperators       #-}
 
 -- | Data types and error categories for the sql-schema plugin.
 --
@@ -21,6 +24,12 @@ module SqlSchema.Types
   , Fragment(..)
   , MergedSchema(..)
   , Generator(..)
+  , encodeFragmentFile
+  , decodeFragmentFile
+  , lenientSourceFile
+  , decodeYaml
+  , encodeYaml
+  , yaml11NonString
     -- * Column naming
   , beamDefaultColumnName
     -- * Extraction rules
@@ -53,18 +62,30 @@ module SqlSchema.Types
   ) where
 
 import           Control.Monad (unless, when)
-import           Data.Aeson   (FromJSON (..), ToJSON (..), Value, (.!=), (.:?), withObject,
-                               Options, defaultOptions, fieldLabelModifier, genericParseJSON,
-                               genericToJSON)
-import           Data.Aeson.Types (Parser)
+import           Data.Aeson   (FromJSON (..), GFromJSON, ToJSON (..), Value (Object, String), Zero, (.!=), (.:?),
+                               withObject, Options, defaultOptions, fieldLabelModifier, genericParseJSON,
+                               genericToJSON, rejectUnknownFields)
+import           Data.Aeson.Key (Key)
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KeyMap
+import           Data.Aeson.Types (Parser, formatPath)
+import qualified Data.ByteString as BS
 import           Data.Char    (GeneralCategory (Control, Format, LineSeparator, ParagraphSeparator),
                                generalCategory, isSpace, isUpper, showLitChar, toLower)
+import           Data.Kind    (Type)
 import           Data.List    (dropWhileEnd, intercalate, isPrefixOf, isSuffixOf)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text    as T
-import           GHC.Generics (C1, Constructor (conName), D1, Generic (from), M1 (..), (:+:) (..))
+import           Data.Proxy   (Proxy (..))
+import qualified Data.Yaml    as YAML
+import qualified Data.Yaml.Internal as YamlInternal (Warning (DuplicateKey))
+import           GHC.Generics (C1, Constructor (conName), D1, Generic (Rep, from), M1 (..), S1, Selector (selName),
+                               (:*:), (:+:) (..))
 import           System.FilePath (normalise, splitDirectories)
+import           System.IO.Unsafe (unsafePerformIO)
+import           Text.Libyaml (Style (PlainNoTag, SingleQuoted), Tag (NoTag))
+import qualified Text.Libyaml as Libyaml (decode)
 
 -- | One @TableSchema@ per Beam table.  Keyed in the merged YAML by its
 -- fully-qualified type ('qualifiedType' = @sourceModule '.' codeName@) so
@@ -107,7 +128,10 @@ data TableSchema = TableSchema
   , primaryKey     :: PrimaryKeyInfo
   , columns        :: [ColumnInfo]
     -- ^ Columns in source order from the record definition.
-  } deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+  } deriving (Show, Eq, Ord, Generic, ToJSON)
+
+instance FromJSON TableSchema where
+  parseJSON = strictParse strictOptions []
 
 -- | Fully-qualified Haskell type, reconstructed from the module and the
 -- code-side type name.  Replaces the former standalone @haskellType@ field
@@ -124,7 +148,10 @@ data ColumnInfo = ColumnInfo
   , hsType       :: String
   , nullable     :: Bool
   , isPrimaryKey :: Bool
-  } deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+  } deriving (Show, Eq, Ord, Generic, ToJSON)
+
+instance FromJSON ColumnInfo where
+  parseJSON = strictParse strictOptions []
 
 -- | Port of beam-core's @unCamelCaseSel@ (Database/Beam/Schema/Tables.hs, juspay/beam 25f1bcd960).
 beamDefaultColumnName :: String -> String
@@ -149,7 +176,10 @@ beamDefaultColumnName original =
 data PrimaryKeyInfo = PrimaryKeyInfo
   { pkConstructor :: String
   , pkColumns     :: [String]
-  } deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+  } deriving (Show, Eq, Ord, Generic, ToJSON)
+
+instance FromJSON PrimaryKeyInfo where
+  parseJSON = strictParse strictOptions []
 
 -- | The two shapes of @modelSchemaName = Just _@ the plugin reads:
 -- @Just "lit"@ and @Just <value name>@.  The qualifier on a 'SchemaConfig'
@@ -163,7 +193,15 @@ data PrimaryKeyInfo = PrimaryKeyInfo
 data ModelSchemaName
   = SchemaLiteral String
   | SchemaConfig   String
-  deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+  deriving (Show, Eq, Ord, Generic, ToJSON)
+
+-- | rejectUnknownFields does not reach the {tag, contents} object of a constructor with one field.
+instance FromJSON ModelSchemaName where
+  parseJSON v = do
+    keys <- Map.keys <$> (parseJSON v :: Parser (Map T.Text Value))
+    case filter (`notElem` ["tag", "contents"]) keys of
+      []    -> genericParseJSON strictOptions v
+      extra -> fail ("unknown fields: " <> show extra)
 
 -- | The five constructors of the ModelMeta library's @TableType@.
 tableTypeConstructors :: [String]
@@ -203,23 +241,30 @@ data DbEntityOverride = DbEntityOverride
     -- ^ The literal passed to @setEntityName@.
   , overrideSourceModule :: String
   , overrideSourceFile   :: String
-  } deriving (Show, Eq, Ord, Generic, ToJSON, FromJSON)
+  } deriving (Show, Eq, Ord, Generic, ToJSON)
+
+instance FromJSON DbEntityOverride where
+  parseJSON = strictParse strictOptions []
 
 -- | A single module's contribution.  Each module that the plugin processes
 -- writes exactly one fragment file under the configured fragments
 -- directory; the merge CLI combines all fragments into the final YAML.
 --
--- Staleness is detected by the merger walking @--source-dirs@: any
--- fragment whose @fragmentModule@ is not backed by a source file in any
--- listed source dir is pruned.  No path lives on the fragment itself,
--- which is what lets fragments from different repositories (e.g. a
--- pinned dependency's contract) compose into a single merged YAML without
--- the per-package CWD juggling that file-relative paths would require.
+-- Staleness is detected by the merger walking @--source-dirs@: a fragment
+-- whose @fragmentModule@ is not backed by a source file in any listed source
+-- dir is pruned, unless the source path its file records still exists.  That
+-- path rides beside this type in the file ('encodeFragmentFile'), never in
+-- it nor in the merged YAML, which is what lets fragments from different
+-- repositories (e.g. a pinned dependency's contract) compose into a single
+-- merged YAML without the per-package CWD juggling that paths would require.
 data Fragment = Fragment
   { fragmentModule   :: String
   , fragmentTables   :: [TableSchema]
   , fragmentDbEntityOverrides :: [DbEntityOverride]
-  } deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  } deriving (Show, Eq, Generic, ToJSON)
+
+instance FromJSON Fragment where
+  parseJSON = strictParse strictOptions []
 
 -- | Final merged on-disk contract.  This is what downstream prod-DB
 -- validation reads.
@@ -232,7 +277,12 @@ data MergedSchema = MergedSchema
     --   downstream auditability.
   , generator                :: Maybe Generator
     -- ^ Absent in contracts written before 0.4.3.
-  } deriving (Show, Eq, Generic, ToJSON, FromJSON)
+  } deriving (Show, Eq, Generic, ToJSON)
+
+-- | The stamp alone may be absent: contracts written before 0.4.3 have none, and an included
+-- contract's stamp is never read.
+instance FromJSON MergedSchema where
+  parseJSON = strictParse strictOptions ["generator"]
 
 -- | Which plugin build wrote a contract.  Fields are prefixed because
 -- @version@ would clash with @Paths_sql_schema.version@.
@@ -252,7 +302,135 @@ instance ToJSON Generator where
   toJSON = genericToJSON generatorOptions
 
 instance FromJSON Generator where
-  parseJSON = genericParseJSON generatorOptions
+  parseJSON = strictParse generatorOptions { rejectUnknownFields = True } []
+
+-- | aeson's default ignores a key it does not know, and reads a misspelled optional key as
+-- absent; a contract or fragment of another format version must fail to load instead.
+strictOptions :: Options
+strictOptions = defaultOptions { rejectUnknownFields = True }
+
+-- | @genericParseJSON opts@, also requiring every key the record's ToJSON writes but @optional@:
+-- aeson reads an absent Maybe field as Nothing, so a contract or fragment from a writer without
+-- the key would read as null.
+strictParse :: forall a. (Generic a, GFromJSON Zero (Rep a), RecordKeys (Rep a)) => Options -> [String] -> Value -> Parser a
+strictParse opts optional v = do
+  parsed <- genericParseJSON opts v
+  case v of
+    Object o | key : _ <- [ k | k <- map (fieldLabelModifier opts) (recordKeys (Proxy :: Proxy (Rep a)))
+                              , k `notElem` optional, not (KeyMap.member (Key.fromString k) o) ] ->
+      fail ("key " <> show key <> " not found")
+    _ -> pure parsed
+
+-- | The field names of a record's Generic representation, in order.
+class RecordKeys (f :: Type -> Type) where
+  recordKeys :: Proxy f -> [String]
+
+instance RecordKeys f => RecordKeys (D1 c f) where
+  recordKeys _ = recordKeys (Proxy :: Proxy f)
+
+instance RecordKeys f => RecordKeys (C1 c f) where
+  recordKeys _ = recordKeys (Proxy :: Proxy f)
+
+instance (RecordKeys f, RecordKeys g) => RecordKeys (f :*: g) where
+  recordKeys _ = recordKeys (Proxy :: Proxy f) <> recordKeys (Proxy :: Proxy g)
+
+instance Selector s => RecordKeys (S1 s f) where
+  recordKeys _ = [selName (undefined :: S1 s f ())]
+
+-- | A fragment file: the module's 'Fragment' and the source file GHC compiled it from, as
+-- @ml_hs_file@ gives it, which the merge checks before it prunes the fragment.  The path rides
+-- in the same file so it is staged, published and deleted with the fragment, atomically.
+encodeFragmentFile :: Maybe FilePath -> Fragment -> BS.ByteString
+encodeFragmentFile source fragment = encodeYaml $ case (source, toJSON fragment) of
+  (Just p, Object o) -> Object (KeyMap.insert sourceFileKey (String (T.pack p)) o)
+  (_, v)             -> v
+
+-- | A file without the path, from a plugin before 0.4.3, reads as 'Nothing'.
+decodeFragmentFile :: BS.ByteString -> Either YAML.ParseException (Fragment, Maybe FilePath)
+decodeFragmentFile bytes = (\(FragmentFile f) -> f) <$> decodeYaml bytes
+
+-- | The path recorded in a file that does not decode as a fragment, read from it as plain YAML; a
+-- key that is missing or holds no string is no record.
+lenientSourceFile :: BS.ByteString -> Maybe FilePath
+lenientSourceFile bytes = case YAML.decodeEither' bytes of
+  Right (Object o) | Just (String p) <- KeyMap.lookup sourceFileKey o -> Just (T.unpack p)
+  _                                                                  -> Nothing
+
+-- | 'YAML.decodeEither'', which is this composition in yaml 0.11.11, but refusing a key given twice
+-- in one mapping, of which Data.Yaml keeps the last value with only a warning.
+decodeYaml :: FromJSON a => BS.ByteString -> Either YAML.ParseException a
+decodeYaml bytes = case unsafePerformIO (YAML.decodeHelper (Libyaml.decode bytes)) of
+  Left e -> Left e
+  Right (YamlInternal.DuplicateKey path : _, _) ->
+    Left (YAML.AesonException ("Error in " <> formatPath path <> ": the key is given more than once"))
+  Right ([], result) -> either (Left . YAML.AesonException) Right result
+
+newtype FragmentFile = FragmentFile (Fragment, Maybe FilePath)
+
+instance FromJSON FragmentFile where
+  parseJSON = withObject "Fragment" $ \o -> do
+    source <- o .:? sourceFileKey
+    fragment <- parseJSON (Object (KeyMap.delete sourceFileKey o))
+    pure (FragmentFile (fragment, source))
+
+sourceFileKey :: Key
+sourceFileKey = "fragmentSourceFile"
+
+-- | 'YAML.encode', also single-quoting each string that PyYAML, which the validator loads the
+-- contract with, would read as another type: Data.Yaml quotes only the ones it reads so itself.
+encodeYaml :: ToJSON a => a -> BS.ByteString
+encodeYaml = YAML.encodeWith (YAML.setStringStyle style YAML.defaultEncodeOptions)
+  where
+    style s = case YAML.defaultStringStyle s of
+      (_, PlainNoTag) | yaml11NonString (T.unpack s) -> (NoTag, SingleQuoted)
+      other                                          -> other
+
+-- | Whether one of PyYAML's implicit resolvers (YAML 1.1: bool, int, float, null, timestamp,
+-- merge, value; yaml/resolver.py) matches the plain scalar, which then loads as no string.
+-- Each pattern below is one of those regular expressions, alternative for alternative.
+yaml11NonString :: String -> Bool
+yaml11NonString s = s `elem` words11 || any (\m -> any null (m s)) [float11, int11, timestamp11]
+  where
+    words11 :: [String]
+    words11 = [ "yes", "Yes", "YES", "no", "No", "NO", "true", "True", "TRUE", "false", "False", "FALSE"
+              , "on", "On", "ON", "off", "Off", "OFF", "~", "null", "Null", "NULL", "", "<<", "=" ]
+    float11 = alt [ sign >>> digit >>> star digit_ >>> lit "." >>> star digit_ >>> opt expo
+                  , lit "." >>> digit >>> star digit_ >>> opt expo
+                  , sign >>> digit >>> star digit_ >>> plus sexagesimal >>> lit "." >>> star digit_
+                  , sign >>> lit "." >>> alt (map lit ["inf", "Inf", "INF"])
+                  , lit "." >>> alt (map lit ["nan", "NaN", "NAN"]) ]
+    int11 = alt [ sign >>> lit "0b" >>> plus (oneOf "01_")
+                , sign >>> lit "0" >>> plus (oneOf "01234567_")
+                , sign >>> alt [lit "0", oneOf ['1' .. '9'] >>> star digit_]
+                , sign >>> lit "0x" >>> plus (oneOf "0123456789abcdefABCDEF_")
+                , sign >>> oneOf ['1' .. '9'] >>> star digit_ >>> plus sexagesimal ]
+    timestamp11 = alt
+      [ digits 4 >>> lit "-" >>> digits 2 >>> lit "-" >>> digits 2
+      , digits 4 >>> lit "-" >>> digit >>> opt digit >>> lit "-" >>> digit >>> opt digit
+          >>> alt [oneOf "Tt", plus blank] >>> digit >>> opt digit >>> lit ":" >>> digits 2
+          >>> lit ":" >>> digits 2 >>> opt (lit "." >>> star digit)
+          >>> opt (star blank >>> alt [lit "Z", oneOf "-+" >>> digit >>> opt digit >>> opt (lit ":" >>> digits 2)]) ]
+    sign        = opt (oneOf "-+")
+    expo        = oneOf "eE" >>> oneOf "-+" >>> plus digit
+    sexagesimal = lit ":" >>> opt (oneOf ['0' .. '5']) >>> digit
+    digit       = oneOf ['0' .. '9']
+    digit_      = oneOf ('_' : ['0' .. '9'])
+    blank       = oneOf " \t"
+    digits n    = foldr (>>>) pure (replicate n digit)
+    -- A pattern maps a string to every remainder a match of one of its prefixes leaves.
+    oneOf :: String -> String -> [String]
+    oneOf cs = \case
+      c : rest | c `elem` cs -> [rest]
+      _                      -> []
+    lit :: String -> String -> [String]
+    lit = foldr (\c m -> oneOf [c] >>> m) pure
+    (>>>) :: (String -> [String]) -> (String -> [String]) -> String -> [String]
+    (f >>> g) x = f x >>= g
+    alt ms x    = concatMap ($ x) ms
+    opt m x     = x : m x
+    star m x    = x : (m x >>= star m)
+    plus m      = m >>> star m
+    infixr 5 >>>
 
 -- | Parsed from the JSON plugin option string.  All fields are optional
 -- in the on-disk JSON; missing ones use the defaults from
@@ -460,6 +638,18 @@ data SqlSchemaError
     --   EntityModification of a table the module renames are not beam-core's alone.
     UNEXPECTED_INSTANCE String String String
     --                  class  typeName  what GHC found
+  | -- | After type checking, the plugin cannot check the Semigroup and Monoid instances that
+    --   combine the module's renames: a record field's type, or a beam-core type, is not known.
+    UNCHECKABLE_RENAMES String String
+    --                  what it cannot read  why
+  | -- | The merge would prune, as in no --source-dirs entry, a fragment whose recorded source
+    --   file exists.
+    UNLISTED_SOURCE_FILE String String
+    --                   module  source file path
+  | -- | The merge would prune, as in no --source-dirs entry, a fragment whose recorded source file
+    --   it cannot check: an empty path, one holding U+FFFD, or one it cannot stat.
+    UNCHECKABLE_SOURCE_FILE String String String
+    --                      module  fragment file  why
   deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 -- | The constructor name, e.g. @UNRESOLVABLE_TABLE_NAME@.
@@ -621,9 +811,9 @@ errorText fragDir = \case
     "  Bind only the fields you need, by name ('C{f1, f2} = …' with NamedFieldPuns), or move the binding to a module that defines no tables or database settings."
 
   STAGED_FRAGMENT_MISSING pending ->
-    "Nothing is staged at '" <> escapeField pending <> "' to publish: the plugin stages a module's fragment there when it parses the module, and publishes it once the module has passed type checking, desugaring and -Werror.\n" <>
-    "  Publishing nothing would keep the module's previous fragment in the contract, so the compile fails instead.\n" <>
-    "  Keep fragmentsDir for this plugin's files only, compile each module name into it once at a time, then rebuild the module."
+    "Nothing is staged at '" <> escapeField pending <> "': the plugin stages a module's fragment there when it parses the module, reads it back after type checking to compare its tables with GHC's, and publishes it once the module has passed type checking, desugaring and -Werror, but something removed it in between.\n" <>
+    "  Without it the tables cannot be compared, and publishing nothing would keep the module's previous fragment in the contract, so the compile fails instead.\n" <>
+    "  Keep fragmentsDir for this plugin's files only, never compile two modules of the same name into it at the same time, then rebuild the module."
   FRAGMENT_IO_ERROR action path reason ->
     "Could not " <> escapeField action <> " the fragment at '" <> escapeField path <> "': " <> escapeField reason <> "\n" <>
     "  A fragment the plugin cannot stage, read back or publish would leave the module's previous fragment, or one the type-check step did not check, in the contract, so the compile fails instead.\n" <>
@@ -653,6 +843,18 @@ errorText fragDir = \case
     "The " <> escapeField cls <> " instance at the EntityModification of '" <> escapeField t <> "' is not beam-core's alone: " <> escapeField detail <> ".\n" <>
     "  The plugin reads the module's DB-settings renames as beam-core's instance (module Database.Beam.Schema.Tables) combines them; another instance GHC can select may drop or change a rename the contract records; refusing to compile instead.\n" <>
     "  Remove the other instance, or keep its module out of this module's imports."
+  UNCHECKABLE_RENAMES what why ->
+    "This module uses beam-core's setEntityName or modifyTableFields, so after type checking the plugin checks that only beam-core's Semigroup and Monoid instances combine its renames, but it cannot read " <> escapeField what <> ": " <> escapeField why <> ".\n" <>
+    "  Unchecked, another instance GHC can select could drop or change a rename the contract records; refusing to compile instead.\n" <>
+    "  Give each field of this module's records a type GHC can read (written out, or a constructor's type variable fixed by one equality constraint to a type that is no other such variable), and build with a beam-core whose Database.Beam.Schema.Tables defines EntityModification and TableEntity beside setEntityName."
+  UNLISTED_SOURCE_FILE m path ->
+    "The fragment of module '" <> escapeField m <> "' would be pruned as stale, since its module is in no --source-dirs entry, but the source file the plugin recorded for it, '" <> escapeField path <> "', exists.\n" <>
+    "  Pruning it would drop the module's tables from the contract while the module may still be compiled; refusing to merge instead.\n" <>
+    "  Add the directory the file is under to --source-dirs (list every hs-source-dirs entry of the components compiled into the fragments directory), or, if the module is no longer compiled with this plugin, delete the fragments directory and rebuild."
+  UNCHECKABLE_SOURCE_FILE m frag why ->
+    "The fragment of module '" <> escapeField m <> "' at '" <> escapeField frag <> "' would be pruned as stale, since its module is in no --source-dirs entry, but the merge cannot check the source file the plugin recorded for it: " <> escapeField why <> ".\n" <>
+    "  Pruning it could drop the tables of a module still compiled from a directory --source-dirs leaves out; refusing to merge instead.\n" <>
+    "  Run the merge where the compile ran, able to search the recorded path's directories, and give source files UTF-8 names; if the module is no longer compiled with this plugin, delete the fragments directory and rebuild."
 
 extensionEffect, extensionFix :: String -> String
 extensionEffect = \case

@@ -9,6 +9,7 @@ module StageTests (run) where
 import           Control.Exception   (SomeException, try)
 import           Control.Monad       (forM_, unless, when)
 import qualified Data.ByteString     as BS
+import qualified Data.ByteString.Char8 as BC
 import           Data.List           (isSuffixOf, sort)
 import qualified Data.Yaml           as YAML
 import           System.Directory    (createDirectoryIfMissing, createDirectoryLink, createFileLink,
@@ -18,6 +19,7 @@ import           System.FilePath     (takeDirectory, (</>))
 
 import           SqlSchema.Plugin    (loadCliOptions, pendingPath, publishStaged, stagePending, stagedTableNames,
                                       stagedTables)
+import           SqlSchema.Plugin    (stagePendingFrom)
 import           SqlSchema.Types
 import           TestUtil
 
@@ -35,6 +37,7 @@ run = do
   testLinksReplacedNotFollowed
   testFileFailuresAreCodedErrors
   testStagedTableNames
+  testStageRecordsSource
 
 -- ---------------------------------------------------------------------------
 -- Test cases
@@ -273,6 +276,27 @@ testStagedTableNames = withTmpProject $ \tmp -> do
   removeDirectory pending
   undecodable "garbage" "fragmentModule: [unclosed"
   undecodable "YAML that is not a fragment" "just a string"
+
+-- | The plugin records the module's source file in the fragment it stages, so the publish moves
+-- both at once; a stage without one writes the fragment as before, and a deletion stays empty.
+testStageRecordsSource :: IO ()
+testStageRecordsSource = withTmpProject $ \tmp -> do
+  let frag  = tmp </> "fragments" </> "Foo.yaml"
+      plain = tmp </> "fragments" </> "Bar.yaml"
+      f     = sampleFragment "Foo" "Foo.FooT" "foo"
+  stagePendingFrom (Just "src/Foo.hs") frag (Just f)
+  assertEq "the staged tables" (fragmentTables f) =<< stagedTables frag
+  publishStaged frag
+  published <- BS.readFile frag
+  either (failWith . show) (assertEq "the published fragment and its source" (f, Just "src/Foo.hs"))
+    (decodeFragmentFile published)
+  assertEq "the source as a key of the fragment" (encodeYaml f) (BS.concat (BC.lines published `without` "fragmentSourceFile: src/Foo.hs"))
+  stagePending plain (Just f)
+  assertEq "a stage without a source" (encodeYaml f) =<< BS.readFile (pendingPath plain)
+  stagePendingFrom (Just "src/Foo.hs") frag Nothing
+  assertEq "a deletion" BS.empty =<< BS.readFile (pendingPath frag)
+  where
+    without ls l = [x <> "\n" | x <- ls, x /= BC.pack l]
 
 -- ---------------------------------------------------------------------------
 -- Helpers

@@ -8,6 +8,7 @@ module MergeTests (run) where
 import           Control.Exception   (IOException, finally, try)
 import           Control.Monad       (forM_, unless)
 import qualified Data.ByteString     as BS
+import qualified Data.ByteString.Char8 as BC
 import           Data.Foldable       (toList)
 import           Data.List           (intercalate, sort)
 import qualified Data.Yaml           as YAML
@@ -113,6 +114,7 @@ run = do
   testIncludeWithoutGenerator
   testIncludedStampIgnored
   testMergeIgnoresStagedFiles
+  testYaml11Resolvers
 
 -- ---------------------------------------------------------------------------
 -- Test cases
@@ -1693,3 +1695,29 @@ testMergeIgnoresStagedFiles = withTmpProject $ \tmp -> do
   assertEq "fragmentsRead" 1 (mrFragmentsRead report)
   merged <- decodeFile (tmp </> "merged.yaml")
   assertEq "tables" ["A.AT"] (map qualifiedType (mergedTables merged))
+
+-- | yaml11NonString against PyYAML 6.0's implicit resolvers, each expectation read from
+-- @Resolver().resolve(ScalarNode, s, (True, False))@; encodeYaml quotes exactly what that or
+-- Data.Yaml's own rule reads as no string, and leaves the rest as Data.Yaml writes them.
+testYaml11Resolvers :: IO ()
+testYaml11Resolvers = do
+  forM_ resolved $ \(s, nonString) -> assertEq ("yaml11NonString " <> show s) nonString (yaml11NonString s)
+  let strs = map fst resolved
+  assertEq "read back" (Right strs) (either (Left . show) Right (YAML.decodeEither' (encodeYaml strs) :: Either YAML.ParseException [String]))
+  forM_ resolved $ \(s, nonString) ->
+    if nonString
+      then unless (encodeYaml [s] `elem` [BC.pack ("- '" <> s <> "'\n"), YAML.encode [s]] && encodeYaml [s] /= BC.pack ("- " <> s <> "\n")) $
+             failWith ("encodeYaml left " <> show s <> " plain: " <> show (encodeYaml [s]))
+      else assertEq ("encodeYaml " <> show s <> " as Data.Yaml writes it") (YAML.encode [s]) (encodeYaml [s])
+  where
+    resolved =
+      [ ("1_000", True), ("0b101", True), ("1:20", True), ("190:20:30", True), ("2001-12-14", True)
+      , ("2001-12-14t21:59:43.10-05:00", True), ("2001-12-14 21:59:43.10 -5", True), ("2001-1-1 1:00:00", True)
+      , ("2001-1-1", False), (".inf", True), ("-.inf", True), ("+.inf", True), (".Inf", True), (".iNF", False)
+      , (".NaN", True), (".nan", True), ("-.nan", False), ("+.5", False), (".5", True), ("1.", True)
+      , ("1_0.5", True), ("1e3", False), ("1.0e+3", True), ("1.0e3", False), ("12e", False), ("0o17", False)
+      , ("0x1F", True), ("0x_", True), ("0b_", True), ("0b", False), ("+1", True), ("-0", True), ("017", True)
+      , ("08", False), ("1:5", True), ("1:60", False), ("<<", True), ("=", True), ("~", True), ("yes", True)
+      , ("Yes", True), ("yES", False), ("TRUE", True), ("NULL", True), ("Null", True), ("nULL", False)
+      , ("on", True), ("Off", True), ("y", False), ("n", False), ("Lib.A", False), ("public", False)
+      , ("gadget_id", False), ("src/App/A.hs", False), ("2001-12-14x", False), ("1:20:", False), ("1__0", True) ]
