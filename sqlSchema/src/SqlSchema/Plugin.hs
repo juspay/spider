@@ -18,7 +18,7 @@
 -- Per-module fragments solve the incremental-build problem: each module's
 -- fragment is rewritten (or deleted, once the module has nothing to record)
 -- only when GHC recompiles the module, and stale fragments are pruned at
--- merge time by checking that the source file still exists.  A compile
+-- merge time, by module, against @--source-dirs@.  A compile
 -- stages the fragment when it parses the module and publishes it only once
 -- the module has passed type checking, desugaring and -Werror, so a compile
 -- that fails in between leaves the published fragment as it was.
@@ -185,7 +185,9 @@ stageFragmentWith cli modSummary hpm = do
     Right (Stage fragment) ->
       case nonEmpty (extensionErrors (extensionOn modSummary) (isJust fragment)) of
         Just es -> throwSqlSchemaErrors (fragmentsDir cli) modSpan es
-        Nothing -> liftIO (stagePending (fragmentPath cli modStr) fragment)
+        Nothing -> liftIO (try (stagePending (fragmentPath cli modStr) fragment)) >>= \case
+          Left (StagingFailure err) -> throwSqlSchemaErrors (fragmentsDir cli) modSpan (err :| [])
+          Right ()                  -> pure ()
   where
     internalError =
       "sql-schema: INTERNAL_ERROR: the extractor rejected this module without saying why.\n"
@@ -215,9 +217,8 @@ publishPass opts guts
         let frag = fragmentPath cli (GHC.moduleNameString (GHC.moduleName (mg_module guts)))
         published <- liftIO (try (publishStaged frag))
         case published of
-          Left (StagedFragmentMissing pending) ->
-            throwSqlSchemaErrors (fragmentsDir cli) (mg_loc guts) (STAGED_FRAGMENT_MISSING pending :| [])
-          Right () -> pure ()
+          Left (StagingFailure err) -> throwSqlSchemaErrors (fragmentsDir cli) (mg_loc guts) (err :| [])
+          Right ()                  -> pure ()
 
 fragmentPath :: CliOptions -> String -> FilePath
 fragmentPath cli modStr = fragmentsDir cli </> modStr <> ".yaml"
@@ -231,18 +232,18 @@ pendingPath = (<> ".pending")
 -- empty file, which publishes as a deletion of the fragment an earlier compile
 -- left (a restored build directory would otherwise keep a dropped table).
 stagePending :: FilePath -> Maybe Fragment -> IO ()
-stagePending frag fragment = do
+stagePending frag fragment = ioFailure "stage" (pendingPath frag) $ do
   createDirectoryIfMissing True (takeDirectory frag)
   atomicWrite (pendingPath frag) (maybe BS.empty YAML.encode fragment)
 
--- | Replaces the fragment with what was staged, or throws 'StagedFragmentMissing'.
+-- | Replaces the fragment with what was staged, or throws a 'StagingFailure'.
 -- A deletion removes the staged file first: a kill between the two removals
 -- then leaves the fragment as before this compile, which matches the interface
 -- file GHC never wrote, so the next build recompiles and stages again.
 publishStaged :: FilePath -> IO ()
-publishStaged frag = publish `catch` \e ->
+publishStaged frag = ioFailure "publish" frag $ publish `catch` \e ->
   -- The fragment's own removal ignores a missing file, so a missing file here is the staged one.
-  if isDoesNotExistError e then throwIO (StagedFragmentMissing pending) else throwIO e
+  if isDoesNotExistError e then throwIO (StagingFailure (STAGED_FRAGMENT_MISSING pending)) else throwIO e
   where
     pending = pendingPath frag
     publish = do
@@ -253,15 +254,19 @@ publishStaged frag = publish `catch` \e ->
           removeFile frag `catch` \e -> unless (isDoesNotExistError e) (throwIO e)
         else renameFile pending frag
 
--- | Nothing is staged at this path.  'show' renders the compile error, code first,
+-- | A staging or publishing step failed.  'show' renders the compile error, code first,
 -- since that is what an uncaught exception prints.
-newtype StagedFragmentMissing = StagedFragmentMissing FilePath
+newtype StagingFailure = StagingFailure SqlSchemaError
 
-instance Show StagedFragmentMissing where
-  show (StagedFragmentMissing pending) =
-    generateErrorMessage (takeDirectory pending) (STAGED_FRAGMENT_MISSING pending)
+instance Show StagingFailure where
+  show (StagingFailure err) = generateErrorMessage "" err
 
-instance Exception StagedFragmentMissing
+instance Exception StagingFailure
+
+-- | An I/O error in @act@ becomes a 'StagingFailure' naming @path@.
+ioFailure :: String -> FilePath -> IO a -> IO a
+ioFailure action path act = act `catch` \e ->
+  throwIO (StagingFailure (FRAGMENT_IO_ERROR action path (show (e :: IOException))))
 
 
 -- ---------------------------------------------------------------------------

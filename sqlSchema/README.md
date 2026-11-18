@@ -207,33 +207,91 @@ ghc-options:
   -fplugin-opt=SqlSchema.Plugin:{"fragmentsDir":"dist/build/sql-schema-fragments","blacklistModules":["Test.","Spec."]}
 ```
 
-In the package's `flake.nix` haskell-flake settings, run the merger as
-part of `postInstall` so every `nix build .#default` publishes the
-contract:
+### Plugin order
+
+GHC runs a module's plugins in an order that depends on its version: 9.8.4
+in command-line order, 9.2.8 in reverse (9.2's `addPluginModuleName` puts each
+`-fplugin` at the head of the list and its `loadPlugins` uses the list as is;
+9.8's `loadPlugins` reverses it). A plugin that rewrites the parse tree
+(large-records, record-dot-preprocessor) changes what this plugin reads if it
+runs first: a large-records record, whose fields have become other types, is
+`UNRECOGNIZED_FIELD_WRAPPER`, or with `allowUnknownColumnWrapper` a table with
+no columns, which the merge refuses (`--allow-columnless-table`); a rewritten
+modifier is a compile error too. So list `-fplugin=SqlSchema.Plugin` before
+such plugins on 9.8 and after them on 9.2, and for a package built with both,
+set it per compiler, with every `-fplugin` flag in the branches (`-fplugin-opt`
+may stay outside):
+
+```
+if impl(ghc >= 9.8)
+  ghc-options: -fplugin=SqlSchema.Plugin -fplugin=Other.Plugin
+else
+  ghc-options: -fplugin=Other.Plugin -fplugin=SqlSchema.Plugin
+```
+
+Check the order in the compiler's command line (`cabal build -v2`).
+
+### `fragmentsDir`
+
+The directory is dedicated to the plugin, which creates, renames and deletes
+files in it (see Architecture notes). It must be unique per set of components
+compiled at the same time that share module names (a library and test suites
+that each have a `Main`, say): give each its own `fragmentsDir`, or no plugin.
+A concurrent compile of a same-named module that loses the race fails with
+`STAGED_FRAGMENT_MISSING`, never with a wrong fragment. These are invalid
+options (`INVALID_PLUGIN_OPTIONS`), because the plugin could delete an
+unrelated file in the working directory: `""`, `.`, `./` and `./.`; any value
+with a `..` component (`a/..`, and `dist/../frags` too, though that one is
+safe); and a value that resolves to the working directory or a directory above
+it, as an absolute path or through a symbolic link. This is checked before the
+first write; a chain of links past the system's limit can't be resolved, passes
+the check, and fails at the first write with `FRAGMENT_IO_ERROR`.
+
+### Nix
+
+In the package's `flake.nix` haskell-flake settings, run the merger as part of
+`postInstall` so every `nix build .#default` publishes the contract. haskell-flake
+has no `postInstall` setting: `settings.<pkg>.drvAttrs.postInstall` would replace
+the package's `postInstall` (`drvAttrs` is applied as `oldAttrs // attrs`) and
+would not put `sql-schema-merge` on `PATH`. This package's setting module adds
+`sqlSchemaPostInstall`, which appends the snippet and adds `sql-schema` to the
+build tools:
 
 ```nix
-settings.<pkg>.postInstall = ''
-  mkdir -p $out/share/sql-schema
-  sql-schema-merge \
-    --fragments dist/build/sql-schema-fragments \
-    --source-dirs src \
-    --out $out/share/sql-schema/sql-schema.yaml
-'';
+settings.<pkg> = {
+  imports = [ (inputs.sql-schema-src + "/sqlSchema/nix/postInstall.nix") ];
+  sqlSchemaPostInstall = ''
+    mkdir -p $out/share/sql-schema
+    sql-schema-merge \
+      --fragments dist/build/sql-schema-fragments \
+      --source-dirs src \
+      --out $out/share/sql-schema/sql-schema.yaml
+  '';
+};
 ```
+
+When the plugin is enabled by a cabal flag, cabal2nix resolves the conditional
+`sql-schema` dependency with the flag's default, so a build with the flag on
+lacks it: add `extraBuildDepends = [ self.sql-schema ];` to the same settings,
+which then take the module argument `self` (the Haskell package set):
+`settings.<pkg> = { self, ... }: { … };`.
 
 For a package that consumes pre-built dep contracts (the typical
 service case where a dependency's tables must compose into the service's
 yaml):
 
 ```nix
-settings.<service>.postInstall = ''
-  mkdir -p $out/share/sql-schema
-  sql-schema-merge \
-    --fragments dist/build/sql-schema-fragments \
-    --source-dirs src \
-    --include-merged ${inputs.app-db.packages.${system}.app-db}/share/sql-schema/sql-schema.yaml \
-    --out $out/share/sql-schema/sql-schema.yaml
-'';
+settings.<service> = {
+  imports = [ (inputs.sql-schema-src + "/sqlSchema/nix/postInstall.nix") ];
+  sqlSchemaPostInstall = ''
+    mkdir -p $out/share/sql-schema
+    sql-schema-merge \
+      --fragments dist/build/sql-schema-fragments \
+      --source-dirs src \
+      --include-merged ${inputs.app-db.packages.${system}.app-db}/share/sql-schema/sql-schema.yaml \
+      --out $out/share/sql-schema/sql-schema.yaml
+  '';
+};
 ```
 
 Pass `--generator-rev ${inputs.sql-schema-src.rev}` (only if the plugin source
@@ -241,6 +299,33 @@ is pinned by a rev) to record the plugin revision in the contract's
 `generator` stamp; without it `rev` is `null`. The flag needs sql-schema
 0.4.3 or later: an older `sql-schema-merge` rejects it as an unrecognised
 argument and exits 2.
+
+### `sql-schema-merge` command line
+
+| Flag | Given | Meaning |
+|------|-------|---------|
+| `--fragments DIR` | once, required | The directory of per-module `*.yaml` fragments (the plugin's `fragmentsDir`). |
+| `--out FILE` | once, required | Where the contract is written, only when every check passes. |
+| `--source-dirs DIR` | repeatable | Source directories: a fragment whose module has no source file in any of them is pruned. Without the flag nothing is pruned. |
+| `--include-merged FILE` | repeatable | A pre-merged contract whose tables and overrides join the output. |
+| `--no-own-tables` | flag | The package defines no tables and only composes included contracts. |
+| `--allow-empty` | flag | Permit a contract with no tables. |
+| `--allow-empty-include` | flag | Accept an included contract with no tables, with a warning. |
+| `--allow-unmatched-override` | flag | Accept an override that matches no table, with a warning. |
+| `--allow-columnless-table` | flag | Accept a table with no columns, with a warning. |
+| `--generator-rev REV` | once | The plugin revision recorded in the `generator` stamp; `null` without it. |
+
+Exit codes:
+
+| Exit | Meaning |
+|------|---------|
+| 0 | The contract was written; a summary line is on stdout. |
+| 1 | The merge failed, was refused, or hit an I/O error. Nothing was written to `--out`. |
+| 2 | An argument error, including a missing `--fragments` or `--out`, an unknown flag (`--help` too) and the cases listed under "Argument errors" below. Nothing was read. |
+
+The walk of a `--source-dirs` entry has a fixed step cap, in the library
+`moWalkEntryCap` (200000 steps by default, `walkEntryCap`), and a depth limit of
+256 levels (`maxWalkDepth`); neither has a flag.
 
 The merge CLI exits non-zero on duplicate-type **mismatch** (identical
 duplicates are silently deduped), on `setEntityName`/`modelTableName`
@@ -316,13 +401,16 @@ can't be read, exits 1.  A dangling symlink is no error and, like a file,
 counts as a module only if its name has a module extension.  A walk takes at
 most 200000 steps per `--source-dirs` entry, and exits 1, naming the entry,
 when it would take more: each directory entry listed is one step, and each
-symlink followed, or hop of a chain followed one link at a time, is one step
-per path component its resolution walks (the link's path, then its target's).
-That bounds the file-system work, not only the entries: a directory that
-several symlinks lead to is listed once per symlink, and resolving a link deep
-in a tree walks every component above it.  A tree with no symlinks takes one
-step per entry.  A directory is read whole before its entries are counted, so
-one listing can pass the cap.  A walk also descends at most 256 directory levels below its
+symlink followed (to a directory or a file, a dangling one too), or hop of a
+chain followed one link at a time, is one step per path component its
+resolution walks (the link's path, then its target's).  That bounds the
+file-system work, not only the entries: a directory that several symlinks lead
+to is listed once per symlink, and resolving a link deep in a tree walks every
+component above it.  A tree with no symlinks takes one step per entry.  A
+directory is read whole before its entries are counted, so one listing can pass
+the cap.  The cap applies to each `--source-dirs` entry on its own, so the
+worst case of one merge is that many steps times the number of entries, which
+the caller chooses.  A walk also descends at most 256 directory levels below its
 entry, a link to a directory counting as a level, and exits 1, naming the limit
 and the entry, past that (the deepest directory in the trees it serves is 7
 levels down).  The
@@ -336,7 +424,7 @@ I/O error) never creates or replaces `--out`, so an earlier contract stays as
 it was; one that is killed mid-write can leave its temporary file behind, which
 nothing reads.  A refusal states the fragment, pruned and included counts the
 summary line would have given.
-Argument errors exit 2: a repeated `--fragments`, `--out` or
+"Argument errors" exit 2: a repeated `--fragments`, `--out` or
 `--generator-rev`; an empty value (an unset shell variable); a value that
 starts with `--` (an unset, unquoted variable leaves the next option in its
 place); a flag without its value; an unknown argument.
@@ -352,7 +440,7 @@ relax the three checks above.
 
 | Key                         | Type         | Default                              | Notes |
 |-----------------------------|--------------|--------------------------------------|-------|
-| `fragmentsDir`              | string       | `./.juspay/sql-schema-fragments`     | Where per-module fragments are written; it must hold only this plugin's files. For incremental builds that restore the build directory, keep it inside that directory (e.g. `dist/build/sql-schema-fragments`), or the fragments of modules that were not recompiled are lost. Components that share one directory must not define same-named modules with tables: their fragments share a file, and the last compile wins. Same-named modules without tables (several test suites' `Main`) must not be compiled at the same time: they race on that file, and the losing compile fails with `STAGED_FRAGMENT_MISSING`, never with a wrong fragment. Give such components their own `fragmentsDir`, or no plugin. An empty value, the working directory (`.`, `./`), a value with a `..` component, and one that resolves to the working directory or a directory above it (an absolute path, or through a symbolic link) are invalid options. |
+| `fragmentsDir`              | string       | `./.juspay/sql-schema-fragments`     | Where per-module fragments are written; it must hold only this plugin's files. For incremental builds that restore the build directory, keep it inside that directory (e.g. `dist/build/sql-schema-fragments`), or the fragments of modules that were not recompiled are lost. Components that share one directory must not define same-named modules with tables: their fragments share a file, and the last compile wins. Same-named modules without tables (several test suites' `Main`) must not be compiled at the same time: they race on that file, and the losing compile fails with `STAGED_FRAGMENT_MISSING`, never with a wrong fragment. Give such components their own `fragmentsDir`, or no plugin. An empty value, the working directory (`.`, `./`, `./.`), a value with a `..` component, and one that resolves to the working directory or a directory above it (an absolute path, or through a symbolic link) are invalid options (see `fragmentsDir` under the wiring section). |
 | `blacklistModules`          | [string]     | `[]`                                 | Modules to skip entirely. An entry ending in `.` (e.g. `Test.`) skips every module it prefixes; any other entry skips only the module of exactly that name (`App.Db` skips only `App.Db`; `App.Db.` skips `App.Db.Pool`, but not `App.Db`). An empty entry, or one starting with `.`, is an invalid option. |
 | `allowUnknownColumnWrapper` | bool         | `false`                              | If `true`, fields whose type isn't `Columnar f T` / `C f T` are silently left out of the table (no warning). Use only for migrations — the default refusal is the safe stance. |
 | `allowNonStandardModifier`  | bool         | `false`                              | If `true`, a modifier the plugin can't read is silently treated as "no overrides" (Beam default names): one that isn't `tableModification { … }` (guarded, repeated or `where`-bound definitions and `OverloadedRecordUpdate` syntax included), or a binding that isn't a plain top-level `x = …` of this module, bound once, with one unguarded right-hand side and no `where` bindings (imported, qualified, or bound by a pattern). It does not cover `REDEFINED_NAME` or the `UNSUPPORTED_` errors. Same caveat as above. |
@@ -362,31 +450,36 @@ relax the three checks above.
 
 The contract drives a production gate. A false-pass (YAML says fine,
 prod isn't) is the worst outcome, so the plugin refuses to extract any
-shape it can't read precisely:
+shape it can't read precisely. Each error's first line starts with exactly
+`sql-schema: <CODE>: `, where `<CODE>` matches `[A-Z_]+` and is the code in
+the table below; any further lines of the message start with two spaces. Every
+code is listed:
 
 | Hard compile error             | What it means |
 |--------------------------------|---------------|
-| `UNEXTRACTED_TABLE`            | A type with a `Beamable`, `Table` or `ModelMeta` instance in the module (written, derived inline or derived standalone) isn't a table the plugin can read: it has no data declaration in the module; its declaration isn't a single-constructor record (Haskell 98 syntax) with the column functor as last type parameter; nothing in the module derives or declares `Beamable` for it (Template Haskell output isn't seen); it derives `Database`; the module neither derives its `Generic` instance with the stock strategy nor annotates it `{-# ANN type T largeRecord #-}`, or has another `Generic` instance that could be its (written, derived `via`, `newtype` or `anyclass`, also for a type synonym of the module); or the module writes a `Beamable` instance with a method for it, its key or a type synonym of it, or derives one `via` another type. The message gives the fix for its reason. |
-| `MISSING_MODEL_META`           | A table has no `ModelMeta` instance in its module. `tableNameOverrides` doesn't stand in for one. |
-| `UNREADABLE_INSTANCE_HEAD`     | A `Table`, `ModelMeta` or `Beamable` instance isn't for one unqualified type constructor, so the plugin can't tell which table it belongs to: e.g. `instance Table t => ModelMeta t`, `instance ModelMeta M.FooT`, a promoted `'FooT`, `instance Table (PrimaryKey FooT)` (a key's `Beamable` instance is fine), or a class applied to two types (`instance X.Table Int FooT`). |
 | `DUPLICATE_INSTANCE`           | The module has two `Table`, `ModelMeta` or `Beamable` instances, written or derived, for one type name: same-named classes of different modules, or one parameterised type at two arguments (`ModelMeta (Wrap A)` and `ModelMeta (Wrap B)`). Keep one per table type. |
-| `UNRESOLVABLE_TABLE_NAME`      | `modelTableName` isn't a literal written once, as one equation with no arguments, guards or `where` bindings. Inline the literal, or use `tableNameOverrides`. |
-| `UNRESOLVABLE_MODEL_META_FIELD` | `modelTableType` or `modelSchemaName` isn't in a shape listed under "What it extracts" (e.g. `Just $ x`, `pure x`, `Just (f x)`, `Just someVar` for `modelTableType`, a guarded binding), or comes from a derived `ModelMeta` instance. There is no opt-out. |
-| `UNRESOLVABLE_COLUMN_NAME`     | The RHS inside `xxxTMod` isn't `fieldNamed "lit"`, a punned field (`{ fooName }`) included. Either rewrite or drop the override. |
-| `UNRESOLVABLE_PRIMARY_KEY`     | `primaryKey` is missing, or isn't written once, as one equation with no guards or `where` bindings, in a recognised shape. Rewrite into one of the supported forms. |
+| `FRAGMENT_IO_ERROR`            | A file operation the plugin does to stage or publish a module's fragment failed: the system's error is quoted with the path (see Architecture notes). Nothing is published, so the module's previous fragment stays and the compile fails instead. Typical causes are a `fragmentsDir` that is not writable, is a file, or lies behind a chain of symbolic links longer than the system follows. |
+| `INTERNAL_ERROR`              | The extractor refused a module without giving a reason, which cannot happen: a bug in the plugin, not in the module. Report it with the module's source. There is no opt-out. |
+| `INVALID_PLUGIN_OPTIONS`       | The `-fplugin-opt` JSON is malformed, has an unknown key, a wrong-typed value, an invalid `blacklistModules` entry or `fragmentsDir`, or is given more than once. |
+| `MISSING_MODEL_META`           | A table has no `ModelMeta` instance in its module. `tableNameOverrides` doesn't stand in for one. |
+| `REDEFINED_NAME`               | The module defines, itself, a name the plugin reads a table through: `tableModification` or `fieldNamed`, or a name `primaryKey` applies (`.`, `<$>`, `<*>`, `getField`, or a field name the module also binds another way, as `NoFieldSelectors` allows), or a pattern synonym named `Just`, `Nothing` or a `TableType` constructor, or a type, type synonym or family named `C`, `Columnar`, `Maybe` or `TableEntity`. Names are matched as written, so the plugin can't tell the module's definition from Beam's or base's. Rename it. There is no opt-out. |
+| `STAGED_FRAGMENT_MISSING`      | The module's staged fragment was gone when the plugin went to publish it (see Architecture notes): something else removed it from `fragmentsDir`, such as a compile of a same-named module at the same time (see `fragmentsDir` above). Rebuild the module. |
+| `UNCAPTURED_MODIFY_TABLE_FIELDS` | A `modifyTableFields` outside the shape under "DB-settings renames": not applied directly to an argument, an argument that isn't an unqualified variable or isn't the `modelFieldModification` binding of a table of this module, a binding name also bound elsewhere in the module (a parameter or a `where` binding, say) or rebound by a record wildcard `{..}`, a module that binds `modifyTableFields`, `tableModification`, `fieldNamed` or `(<>)` itself, a type application, or a binding that isn't one equation with no arguments, guards or `where` bindings, a `tableModification { … }` with at least one field. The message names the line and the reason. Pass the binding named in `modelFieldModification`; if no column is renamed, drop `modifyTableFields`. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
+| `UNCAPTURED_SET_ENTITY_NAME`   | A `setEntityName` the plugin doesn't capture as an override: one outside the shape under "What it extracts" (in an EMod or other separate binding, a `where` or `let` binding, an instance method, a splice, or a `dbModification` that `withDbModification` does not apply to a top-level binding's result), with a non-literal name, in a `<>` chain with two of them or with another kind of operand, under a type annotation, a label qualified with another module or a record wildcard `{..}`, in an update whose labels no single record of the module declares, before a later `withDbModification` operand that isn't a `dbModification { … }` update, on a field with no table type or several across the module's records, or in a module that binds one of the names the shape relies on or declares a type named `TableEntity`. The message names the line and the reason. Rewrite it into the shape that is read. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
+| `UNEXTRACTED_TABLE`            | A type with a `Beamable`, `Table` or `ModelMeta` instance in the module (written, derived inline or derived standalone) isn't a table the plugin can read: it has no data declaration in the module; its declaration isn't a single-constructor record (Haskell 98 syntax) with the column functor as last type parameter; nothing in the module derives or declares `Beamable` for it (Template Haskell output isn't seen); it derives `Database`; the module neither derives its `Generic` instance with the stock strategy nor annotates it `{-# ANN type T largeRecord #-}`, or has another `Generic` instance that could be its (written, derived `via`, `newtype` or `anyclass`, also for a type synonym of the module); or the module writes a `Beamable` instance with a method for it, its key or a type synonym of it, or derives one `via` another type. The message gives the fix for its reason. |
 | `UNKNOWN_PRIMARY_KEY_FIELD`    | A field `primaryKey` applies isn't a column the plugin extracts for the table: a helper function, another module's name (`M.fooId`), or a field `allowUnknownColumnWrapper` left out. There is no opt-out. |
+| `UNREADABLE_INSTANCE_HEAD`     | A `Table`, `ModelMeta` or `Beamable` instance isn't for one unqualified type constructor, so the plugin can't tell which table it belongs to: e.g. `instance Table t => ModelMeta t`, `instance ModelMeta M.FooT`, a promoted `'FooT`, `instance Table (PrimaryKey FooT)` (a key's `Beamable` instance is fine), or a class applied to two types (`instance X.Table Int FooT`). |
 | `UNRECOGNIZED_FIELD_WRAPPER`   | A field's type isn't `Columnar f T` / `C f T`. Override via `allowUnknownColumnWrapper` only if you accept that field being omitted (the table is still emitted). |
 | `UNRECOGNIZED_MODIFIER_SHAPE`  | `modelFieldModification`, or the `xxxTMod` binding it names, isn't a single unguarded `tableModification { … }` in plain record update syntax (`OverloadedRecordUpdate` syntax and a derived `ModelMeta` instance included), or `modelFieldModification` is bound twice, by a pattern, or with `where` bindings. Override via `allowNonStandardModifier`. |
+| `UNRESOLVABLE_COLUMN_NAME`     | The RHS inside `xxxTMod` isn't `fieldNamed "lit"`, a punned field (`{ fooName }`) included. Either rewrite or drop the override. |
+| `UNRESOLVABLE_MODEL_META_FIELD` | `modelTableType` or `modelSchemaName` isn't in a shape listed under "What it extracts" (e.g. `Just $ x`, `pure x`, `Just (f x)`, `Just someVar` for `modelTableType`, a guarded binding), or comes from a derived `ModelMeta` instance. There is no opt-out. |
 | `UNRESOLVABLE_MODIFIER_BINDING`| `modelFieldModification` names a binding the plugin can't read: it reads only a plain top-level `x = …` binding of this module, referenced unqualified, bound once, with one unguarded right-hand side and no `where` bindings. Define it that way, or use `allowNonStandardModifier`. |
-| `UNCAPTURED_SET_ENTITY_NAME`   | A `setEntityName` the plugin doesn't capture as an override: one outside the shape under "What it extracts" (in an EMod or other separate binding, a `where` or `let` binding, an instance method, a splice, or a `dbModification` that `withDbModification` does not apply to a top-level binding's result), with a non-literal name, in a `<>` chain with two of them or with another kind of operand, under a type annotation, a label qualified with another module or a record wildcard `{..}`, in an update whose labels no single record of the module declares, before a later `withDbModification` operand that isn't a `dbModification { … }` update, on a field with no table type or several across the module's records, or in a module that binds one of the names the shape relies on or declares a type named `TableEntity`. The message names the line and the reason. Rewrite it into the shape that is read. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
-| `UNCAPTURED_MODIFY_TABLE_FIELDS` | A `modifyTableFields` outside the shape under "DB-settings renames": not applied directly to an argument, an argument that isn't an unqualified variable or isn't the `modelFieldModification` binding of a table of this module, a binding name also bound elsewhere in the module (a parameter or a `where` binding, say) or rebound by a record wildcard `{..}`, a module that binds `modifyTableFields`, `tableModification`, `fieldNamed` or `(<>)` itself, a type application, or a binding that isn't one equation with no arguments, guards or `where` bindings, a `tableModification { … }` with at least one field. The message names the line and the reason. Pass the binding named in `modelFieldModification`; if no column is renamed, drop `modifyTableFields`. No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
+| `UNRESOLVABLE_PRIMARY_KEY`     | `primaryKey` is missing, or isn't written once, as one equation with no guards or `where` bindings, in a recognised shape. Rewrite into one of the supported forms. |
+| `UNRESOLVABLE_TABLE_NAME`      | `modelTableName` isn't a literal written once, as one equation with no arguments, guards or `where` bindings. Inline the literal, or use `tableNameOverrides`. |
 | `UNSUPPORTED_ENTITY_RENAME`    | A use of `modifyTable`, `modifyEntityName`, `withTableModification` or `renamingFields`, or of `EntityModification`, `DatabaseEntity`, `dbEntityName` or `dbTableCurrentName` as a variable, a constructor or a constructor pattern (a signature or a record label may name them): each can rename a table or its columns in a way the plugin can't read. Rename the table with `setEntityName "sql_name"` and its columns with `modifyTableFields` as under "DB-settings renames". No option turns the check off; a module in `blacklistModules` is skipped entirely, this check included. |
-| `REDEFINED_NAME`               | The module defines, itself, a name the plugin reads a table through: `tableModification` or `fieldNamed`, or a name `primaryKey` applies (`.`, `<$>`, `<*>`, `getField`, or a field name the module also binds another way, as `NoFieldSelectors` allows), or a pattern synonym named `Just`, `Nothing` or a `TableType` constructor, or a type, type synonym or family named `C`, `Columnar`, `Maybe` or `TableEntity`. Names are matched as written, so the plugin can't tell the module's definition from Beam's or base's. Rename it. There is no opt-out. |
 | `UNSUPPORTED_EXTENSION`        | A module that defines a table or a `setEntityName` override enables `RebindableSyntax`, `OverlappingInstances` or `IncoherentInstances`, whether by a pragma or a flag. Under `RebindableSyntax`, record-dot syntax and string literals call the `getField` and `fromString` in scope; under the other two, an instance overlaps a library's without a pragma, so one at an `EntityModification` type, also through a type synonym, can change how a `<>` chain combines the renames. Either way the plugin could record a key, name or column the code does not use. Turn the extension off in that module (`{-# LANGUAGE NoRebindableSyntax #-}`, with `import Prelude`: `RebindableSyntax` also turned the implicit Prelude import off; for the other two, mark each instance that must overlap with a pragma). There is no opt-out. |
-| `UNSUPPORTED_RULES`            | A module that defines a table or a `setEntityName` override has a `RULES` pragma. A rule can rewrite `fieldNamed` or another name the plugin reads, and GHC applies it when it optimises. Move the rules to a module this module does not import, directly or not: GHC applies a rule in every module that imports its module, however indirectly. There is no opt-out. |
 | `UNSUPPORTED_RECORD_WILDCARD`  | A module that defines a table or a `setEntityName` override binds a record wildcard pattern at top level (`R{..} = …`), which binds names the parser does not show. Bind the fields by name, or move it to another module. There is no opt-out. |
-| `INVALID_PLUGIN_OPTIONS`       | The `-fplugin-opt` JSON is malformed, has an unknown key, a wrong-typed value, an invalid `blacklistModules` entry or `fragmentsDir`, or is given more than once. |
-| `STAGED_FRAGMENT_MISSING`      | The module's staged fragment was gone when the plugin went to publish it (see Architecture notes): something else removed it from `fragmentsDir`, such as a compile of a same-named module at the same time (see `fragmentsDir` above). Rebuild the module. |
+| `UNSUPPORTED_RULES`            | A module that defines a table or a `setEntityName` override has a `RULES` pragma. A rule can rewrite `fieldNamed` or another name the plugin reads, and GHC applies it when it optimises. Move the rules to a module this module does not import, directly or not: GHC applies a rule in every module that imports its module, however indirectly. There is no opt-out. |
 
 ## Supported `primaryKey` shapes
 
@@ -410,7 +503,7 @@ field it applies is one of the table's own columns, unqualified.
 
 - Per-module fragments mean incremental builds stay correct: an
   unchanged module's fragment on disk is still authoritative. Stale
-  fragments (whose source file has been deleted) are pruned at merge
+  fragments (whose module has no source file in `--source-dirs`) are pruned at merge
   time, and a recompiled module that no longer defines a table or
   override, or is blacklisted, has its fragment deleted.
 - A compile stages its module's fragment when it parses the module, as
@@ -432,8 +525,11 @@ field it applies is one of the table's own columns, unqualified.
   reads only `*.yaml`, so run it after a build that generates code.
 - `fragmentsDir` must hold only this plugin's files: it creates, renames
   and deletes `<Module>.yaml`, `<Module>.yaml.pending` and temp files named
-  `<Module>.yaml.pending*.tmp` there, and fails a compile with
-  `STAGED_FRAGMENT_MISSING` when a staged file is gone at publish time.
+  `<Module>.yaml.pending*.tmp` there. A compile fails with
+  `STAGED_FRAGMENT_MISSING` when a staged file is gone at publish time, and
+  with `FRAGMENT_IO_ERROR` when one of these file operations fails, a
+  `fragmentsDir` behind a chain of symbolic links past the system's limit
+  included; the error names the path and the module.
 - Staged files and the merged YAML are written to a temp file and renamed
   into place.
 - The extractor runs at `parsedResultAction` time and inspects only what
@@ -451,5 +547,10 @@ field it applies is one of the table's own columns, unqualified.
   timestamp). A published deletion silently drops the module's tables from
   the contract. Nix builds are unaffected: they start from scratch or from a
   successful build's intermediates.
+- The check that `fragmentsDir` is neither the working directory nor above it
+  runs once per compile, before the first write. Someone who can write to the
+  build tree can swap a link between the check and the write and defeat it.
+  That is outside the threat model: it takes a deliberate action by someone
+  with write access to the tree, who could delete the file directly.
 - An editor session (HLS, ghcide) with the plugin on may publish fragments
   of unsaved buffers, so keep the plugin flag off there.

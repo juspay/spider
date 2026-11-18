@@ -74,7 +74,7 @@ summary opts report =
   <> " tables), " <> show (mrDeduped report)
   <> " duplicates collapsed, " <> show (mrTablesEmitted report)
   <> " tables emitted, " <> show (mrOverridesEmitted report)
-  <> " overrides recorded -> " <> moOutFile opts
+  <> " overrides recorded -> " <> show (moOutFile opts)
 
 usage :: String
 usage = unlines

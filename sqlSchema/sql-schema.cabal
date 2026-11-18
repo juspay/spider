@@ -6,8 +6,15 @@ license:            MIT
 license-file:       LICENSE
 author:             juspay
 maintainer:         saurabh.saini@juspay.in
+description:
+    A GHC plugin that extracts the SQL schema implied by Beam table definitions
+    into one YAML fragment per module, and a companion executable,
+    sql-schema-merge, that combines the fragments (and any pre-merged
+    contracts) into a single schema contract for comparison with a live
+    database.
 category:           Database
 build-type:         Simple
+tested-with:        GHC == 9.2.8, GHC == 9.8.4
 extra-doc-files:    CHANGELOG.md
 
 common warnings
@@ -26,12 +33,12 @@ library
     autogen-modules:
         Paths_sql_schema
     build-depends:
-        base
+        base ^>=4.16 || ^>=4.19
       , bytestring
       , containers
       , directory
       , filepath
-      , ghc
+      , ghc ^>=9.2 || ^>=9.8
       , text
       , aeson
       , yaml
@@ -43,7 +50,7 @@ executable sql-schema-merge
     main-is:          Merge.hs
     hs-source-dirs:   app
     build-depends:
-        base
+        base ^>=4.16 || ^>=4.19
       , sql-schema
     default-language: Haskell2010
 
@@ -61,7 +68,7 @@ test-suite sql-schema-test
       , ExtractTests
       , StageTests
     build-depends:
-        base
+        base ^>=4.16 || ^>=4.19
       , bytestring
       , directory
       , filepath

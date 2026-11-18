@@ -6,7 +6,7 @@
 -- 'publishStaged' at the end of its Core pipeline.
 module StageTests (run) where
 
-import           Control.Exception   (IOException, SomeException, try)
+import           Control.Exception   (SomeException, try)
 import           Control.Monad       (forM_, unless, when)
 import qualified Data.ByteString     as BS
 import           Data.List           (isSuffixOf, sort)
@@ -32,6 +32,7 @@ run = do
   testStageFailureLeavesNoTemp
   testPublishOntoDirectoryFails
   testLinksReplacedNotFollowed
+  testFileFailuresAreCodedErrors
 
 -- ---------------------------------------------------------------------------
 -- Test cases
@@ -158,11 +159,8 @@ testStageFailureLeavesNoTemp = withTmpProject $ \tmp -> do
   let dir   = tmp </> "fragments"
       frag  = dir </> "Foo.yaml"
       other = dir </> "Foo.yaml.pending4821-7.tmp"
-      stageFails = do
-        r <- try (stagePending frag (Just (sampleFragment "Foo" "Foo.FooT" "foo")))
-        case r of
-          Left (_ :: IOException) -> pure ()
-          Right ()                -> failWith "staging onto a directory succeeded"
+      stageFails = expectCodedFailure "staging onto a directory" (pendingPath frag)
+        (stagePending frag (Just (sampleFragment "Foo" "Foo.FooT" "foo")))
   createDirectoryIfMissing True (pendingPath frag)
   stageFails
   expectNoTemp "after a failed stage" dir
@@ -218,6 +216,24 @@ testLinksReplacedNotFollowed = withTmpProject $ \tmp -> do
   outsideKept "a link at the published path, after a deletion"
   assertAbsent frag
 
+-- | A fragmentsDir the system can't write to fails staging with a coded error that names the
+-- path: a file where the directory belongs, and a chain of links past the system's limit, which
+-- 'loadCliOptions' can't tell from a directory.
+testFileFailuresAreCodedErrors :: IO ()
+testFileFailuresAreCodedErrors = withTmpProject $ \tmp -> do
+  let notDir = tmp </> "file"
+  BS.writeFile notDir ""
+  expectCodedFailure "a file as the directory" (pendingPath (notDir </> "Foo.yaml"))
+    (stagePending (notDir </> "Foo.yaml") (Just (sampleFragment "Foo" "Foo.FooT" "foo")))
+  createDirectoryIfMissing True (tmp </> "own")
+  linkChain False 64 (tmp </> "chain") (tmp </> "own")
+  let long = tmp </> "chain" </> "c1" </> "Foo.yaml"
+  refused <- refusesToFollow (tmp </> "chain" </> "c1")
+  whenRefused refused "testFileFailuresAreCodedErrors" "a chain of 64 links is a coded error" $ do
+    expectCodedFailure "a chain of links past the limit, staging" (pendingPath long)
+      (stagePending long (Just (sampleFragment "Foo" "Foo.FooT" "foo")))
+    assertEq "nothing written below the chain" [] =<< listDirectory (tmp </> "own")
+
 -- ---------------------------------------------------------------------------
 -- Helpers
 -- ---------------------------------------------------------------------------
@@ -228,11 +244,18 @@ readFragment p = do
   either (\e -> failWith ("decode " <> p <> ": " <> show e)) pure (YAML.decodeEither' bs)
 
 expectPublishFails :: String -> FilePath -> IO ()
-expectPublishFails label frag = do
-  r <- try (publishStaged frag)
-  case r of
-    Left (_ :: IOException) -> pure ()
-    Right ()                -> failWith (label <> ": publishStaged succeeded")
+expectPublishFails label frag = expectCodedFailure label frag (publishStaged frag)
+
+-- | A file operation of the protocol that fails is a coded compile error naming the path, not an
+-- uncoded I/O error.
+expectCodedFailure :: String -> FilePath -> IO () -> IO ()
+expectCodedFailure label path act = try act >>= \case
+  Left (e :: SomeException)
+    | ("sql-schema: FRAGMENT_IO_ERROR: Could not " `isInfixOf` show e) && ("'" <> path <> "': ") `isInfixOf` show e
+    , not (("'" <> path <> "': \n") `isInfixOf` show e)
+              -> pure ()
+    | otherwise -> failWith (label <> ": expected FRAGMENT_IO_ERROR naming " <> path <> ", got " <> show e)
+  Right () -> failWith (label <> ": succeeded")
 
 expectStagedMissing :: String -> FilePath -> IO ()
 expectStagedMissing label frag = do

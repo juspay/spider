@@ -182,7 +182,7 @@ data DbEntityOverride = DbEntityOverride
 -- directory; the merge CLI combines all fragments into the final YAML.
 --
 -- Staleness is detected by the merger walking @--source-dirs@: any
--- fragment whose @fragmentModule@ is not backed by an @.hs@ file in any
+-- fragment whose @fragmentModule@ is not backed by a source file in any
 -- listed source dir is pruned.  No path lives on the fragment itself,
 -- which is what lets fragments from different repositories (e.g. a
 -- pinned dependency's contract) compose into a single merged YAML without
@@ -197,10 +197,10 @@ data Fragment = Fragment
 -- validation reads.
 data MergedSchema = MergedSchema
   { mergedTables             :: [TableSchema]
-    -- ^ Sorted by 'haskellType' for stable diffs.
+    -- ^ Sorted by 'qualifiedType' for stable diffs.
   , mergedDbEntityOverrides  :: [DbEntityOverride]
     -- ^ All overrides found; the merge CLI has already cross-checked them
-    --   against each table's 'tableName' before emitting.  Kept here for
+    --   against each table's 'modelTableName' before emitting.  Kept here for
     --   downstream auditability.
   , generator                :: Maybe Generator
     -- ^ Absent in contracts written before 0.4.3.
@@ -403,6 +403,9 @@ data SqlSchemaError
     --   publishing nothing would leave the module's old fragment in place.
     STAGED_FRAGMENT_MISSING String
     --                      staged-file path
+  | -- | A file operation the plugin does to stage or publish a fragment failed.
+    FRAGMENT_IO_ERROR String String String
+    --                action  path  the system's error
   deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 -- | The constructor name, e.g. @UNRESOLVABLE_TABLE_NAME@.
@@ -567,6 +570,11 @@ errorText fragDir = \case
     "Nothing is staged at '" <> escapeField pending <> "' to publish: the plugin stages a module's fragment there when it parses the module, and publishes it once the module has passed type checking, desugaring and -Werror.\n" <>
     "  Publishing nothing would keep the module's previous fragment in the contract, so the compile fails instead.\n" <>
     "  Keep fragmentsDir for this plugin's files only, compile each module name into it once at a time, then rebuild the module."
+
+  FRAGMENT_IO_ERROR action path reason ->
+    "Could not " <> escapeField action <> " the fragment at '" <> escapeField path <> "': " <> escapeField reason <> "\n" <>
+    "  A fragment that is not written would keep the module's previous fragment in the contract, so the compile fails instead.\n" <>
+    "  Make fragmentsDir a directory this build can write, reached through no chain of symbolic links longer than the system follows, then rebuild the module."
 
 extensionEffect, extensionFix :: String -> String
 extensionEffect = \case

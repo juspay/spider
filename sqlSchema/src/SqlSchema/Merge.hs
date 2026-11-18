@@ -12,12 +12,12 @@
 -- The merge step is the only place where cross-module invariants are
 -- enforced:
 --
---   * Stale fragments (whose module has no corresponding @.hs@ file in
+--   * Stale fragments (whose module has no corresponding source file in
 --     any @--source-dirs@ entry) are pruned, each named on stderr.  Path-based
 --     stale detection was removed in 0.2.0 to make cross-repo composition work
 --     without per-package projectRoot juggling.
 --
---   * Duplicate @haskellType@ across fragments / included contracts is
+--   * Duplicate 'qualifiedType' across fragments / included contracts is
 --     handled by content-equality:
 --       - All entries byte-equal       → silent dedup (this is the
 --         common case for transitively-pulled dep contracts).
@@ -26,7 +26,7 @@
 --         different pinned versions surfaces as a build failure rather
 --         than a silent picking of one side.
 --
---   * Duplicate @tableName@ across distinct @haskellType@s emits a
+--   * Duplicate 'modelTableName' across distinct 'qualifiedType's emits a
 --     warning, not an error.  Two repos legitimately modelling the
 --     same SQL table from different perspectives is allowed; the
 --     downstream diff tool decides policy.
@@ -259,8 +259,8 @@ refusalLines opts report = \case
   NoOwnFragments -> pluginDidNotRun "no fragment of this package's own modules was read"
   where
     context =
-      [ "  out:        " <> moOutFile opts <> " (not written)"
-      , "  fragments:  " <> moFragmentsDir opts
+      [ "  out:        " <> show (moOutFile opts) <> " (not written)"
+      , "  fragments:  " <> show (moFragmentsDir opts)
       , "  counts:     " <> show (mrFragmentsRead report) <> " fragments read, "
           <> show (mrStalePruned report) <> " stale pruned, "
           <> show (mrIncludedFiles report) <> " included contracts ("
@@ -313,19 +313,19 @@ allPrunedMsg n =
 
 fragmentsMissingWarning :: FilePath -> String
 fragmentsMissingWarning dir =
-  "sql-schema-merge: warning: --fragments directory " <> dir <> " does not exist; reading it as no fragments"
+  "sql-schema-merge: warning: --fragments directory " <> show dir <> " does not exist; reading it as no fragments"
 
 
 fragmentsNotDirMsg :: FilePath -> String
 fragmentsNotDirMsg dir =
-  "sql-schema-merge: ERROR: --fragments is not a directory: " <> dir <> ".  Reading it as an "
+  "sql-schema-merge: ERROR: --fragments is not a directory: " <> show dir <> ".  Reading it as an "
   <> "empty directory would hide every fragment of this package; pass the directory the "
   <> "plugin writes its fragments to (its fragmentsDir option)."
 
 
 emptyIncludeMsg :: FilePath -> [String]
 emptyIncludeMsg p =
-  [ "sql-schema-merge: ERROR: --include-merged file " <> p <> " holds no tables."
+  [ "sql-schema-merge: ERROR: --include-merged file " <> show p <> " holds no tables."
   , "An included contract with no tables usually means the plugin did not run when its package"
   , "was built, so none of that package's tables reach this contract.  Fix that package's build,"
   , "remove the file from --include-merged, or pass --allow-empty-include."
@@ -333,7 +333,7 @@ emptyIncludeMsg p =
 
 
 emptyIncludeWarning :: FilePath -> String
-emptyIncludeWarning p = "sql-schema-merge: warning: --include-merged file " <> p <> " holds no tables"
+emptyIncludeWarning p = "sql-schema-merge: warning: --include-merged file " <> show p <> " holds no tables"
 
 
 unusableSourceDirsMsg :: [SourceDirProblem] -> [String] -> [String]
@@ -377,8 +377,8 @@ linkCycleWarning p =
 
 sourceDirProblemText :: SourceDirProblem -> String
 sourceDirProblemText = \case
-  SourceDirMissing d       -> "source dir " <> d <> " does not exist"
-  SourceDirNotADirectory d -> "source dir " <> d <> " is not a directory"
+  SourceDirMissing d       -> "source dir " <> show d <> " does not exist"
+  SourceDirNotADirectory d -> "source dir " <> show d <> " is not a directory"
   SourceDirLinkSkipped l   -> "skipped link " <> show l
 
 
@@ -409,9 +409,10 @@ isSkippedLink = \case
   _                      -> False
 
 -- | The default 'moWalkEntryCap': the walk of one @--source-dirs@ entry fails once it has taken more
--- steps.  Each directory entry listed is one step, and each link followed, or hop of a chain, one
--- step per path component its resolution walks: the link's path, then its target's.  A directory is
--- read whole before its entries are counted, so one directory's listing can pass the cap.  A
+-- steps.  Each directory entry listed is one step, and each link followed (to a directory or a file),
+-- or hop of a chain, one step per path component its resolution walks: the link's path, then its
+-- target's.  A directory is read whole before its entries are counted, so one directory's listing
+-- can pass the cap.  A
 -- directory that several links lead to is listed once per link, so links can multiply the steps.
 walkEntryCap :: Int
 walkEntryCap = 200000
@@ -489,11 +490,17 @@ walkHs cap root = do
         modifyIORef' listed (+ steps)
         count <- readIORef listed
         when (count > cap) $ ioError (userError (walkCapMessage cap root))
+      -- @path@ is canonical unless it went through a link, whose resolution walked both paths.
+      chargeLink path real = when (real /= path) $ charge (components path + components real)
       skip name w = [] <$ (modifyIORef' skipped (name :) >> warn w)
       entry depth above name path = tryIOError (pathKind path) >>= \case
         Right PathDirectory -> descend depth above name path
         -- A dangling link ('PathMissing') counts like a file.
-        Right _             -> pure [name | takeExtension name `elem` moduleExts]
+        -- Charged like a directory link: 190000 uncharged links to a file took 26 s under the cap.
+        Right _             -> do
+          isLink <- pathIsSymbolicLink path
+          when isLink (canonicalizePath path >>= chargeLink path)
+          pure [name | takeExtension name `elem` moduleExts]
         -- The error "too many links" says the system's limit was passed, not that the chain loops.
         -- Any other error throws: read as a file, the entry would drop the modules behind it.
         Left e
@@ -501,8 +508,7 @@ walkHs cap root = do
           | otherwise       -> ioError e
       descend depth above name path = do
         real <- canonicalizePath path
-        -- @path@ is canonical unless it went through a link, whose resolution walked both paths.
-        when (real /= path) $ charge (components path + components real)
+        chargeLink path real
         if Set.member real above
           then skip name (cycleWarning name real)
           else do
@@ -595,12 +601,12 @@ loadIncludedMerged paths = do
   results <- forM paths $ \p -> do
     exists <- doesFileExist p
     if not exists
-      then pure (Left ("--include-merged file does not exist: " <> p))
+      then pure (Left ("--include-merged file does not exist: " <> show p))
       else do
         bs <- BS.readFile p
         case YAML.decodeEither' bs of
           Left e ->
-            pure (Left ("--include-merged file " <> p <> " failed to parse: "
+            pure (Left ("--include-merged file " <> show p <> " failed to parse: "
                          <> show (YAML.prettyPrintParseException e)))
           Right (m :: MergedSchema) ->
             pure (Right (p, mergedTables m, mergedDbEntityOverrides m))

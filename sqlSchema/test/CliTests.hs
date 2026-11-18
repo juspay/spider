@@ -28,6 +28,7 @@ import           TestUtil
 run :: IO ()
 run = do
   testCliSuccessExit0
+  testCliSummaryShowsOutPath
   testCliDefaultWalkCap
   testCliWalkErrorsPrintedAsWritten
   testCliUserErrorTextEscaped
@@ -99,6 +100,15 @@ runCli tmp args expected = do
               <> "\nstdout: " <> out <> "\nstderr: " <> err)
   pure (out, err)
 
+-- | The summary line is printed with the path as written, so a hostile name can't forge a line.
+testCliSummaryShowsOutPath :: IO ()
+testCliSummaryShowsOutPath = withTmpProject $ \tmp -> do
+  liveProject tmp
+  let out = tmp </> hostileField
+  (stdoutText, _) <- runCli tmp ["--fragments", fragDir tmp, "--out", out, "--source-dirs", srcDir tmp] ExitSuccess
+  assertHostileEscaped "the summary" stdoutText
+  assertEq "one line" 1 (length (lines stdoutText))
+
 testCliSuccessExit0 :: IO ()
 testCliSuccessExit0 = withTmpProject $ \tmp -> do
   liveProject tmp
@@ -106,7 +116,7 @@ testCliSuccessExit0 = withTmpProject $ \tmp -> do
   (out, err) <- runCli tmp args ExitSuccess
   assertEq "stdout"
     ("sql-schema-merge: 1 fragments read, 0 stale pruned, 0 included contracts (0 tables), "
-     <> "0 duplicates collapsed, 1 tables emitted, 0 overrides recorded -> " <> outFile tmp <> "\n")
+     <> "0 duplicates collapsed, 1 tables emitted, 0 overrides recorded -> " <> show (outFile tmp) <> "\n")
     out
   assertEq "stderr" "" err
   merged <- decodeFile (outFile tmp)
@@ -359,7 +369,7 @@ testCliMistypedSourceDirExit1 = withTmpProject $ \tmp -> do
   writeFragYaml (fragDir tmp </> "B.Mod.yaml") (sampleFragment "B.Mod" "B.Mod.BT" "b_tab")
   (out, err) <- runCli tmp (withDirs [srcDir tmp, gne]) (ExitFailure 1)
   assertEq "stdout" "" out
-  assertMentions "stderr" ("source dir " <> gne <> " does not exist") err
+  assertMentions "stderr" ("source dir " <> show gne <> " does not exist") err
   assertMentions "stderr" "pruned fragment of \"B.Mod\"" err
   assertLacks "stderr" "warning:" err
   assertNothingWritten tmp
@@ -378,8 +388,8 @@ testCliSourceDirProblemsWarn = withTmpProject $ \tmp -> do
   touchFile notDir
   (_, err) <- runCli tmp
     (argsFor tmp ++ concat [["--source-dirs", d] | d <- [srcDir tmp, notDir, gone]]) ExitSuccess
-  assertMentions "stderr" ("warning: source dir " <> notDir <> " is not a directory; treating as empty") err
-  assertMentions "stderr" ("warning: source dir " <> gone <> " does not exist; treating as empty") err
+  assertMentions "stderr" ("warning: source dir " <> show notDir <> " is not a directory; treating as empty") err
+  assertMentions "stderr" ("warning: source dir " <> show gone <> " does not exist; treating as empty") err
   assertEq "tables" 1 . length . mergedTables =<< decodeFile (outFile tmp)
 
 -- | A link into a directory that can't be searched fails the merge; read as a file, it would
@@ -555,7 +565,7 @@ testCliFragmentsIsFileExit1 = withTmpProject $ \tmp -> do
     , "--allow-empty", "--no-own-tables" ]
     (ExitFailure 1)
   assertEq "stdout" "" out
-  assertMentions "stderr" ("--fragments is not a directory: " <> file) err
+  assertMentions "stderr" ("--fragments is not a directory: " <> show file) err
   assertLacks "stderr" "warning:" err
   assertNothingWritten tmp
 
@@ -568,7 +578,7 @@ testCliMissingFragmentsWarns = withTmpProject $ \tmp -> do
     (_, err) <- runCli tmp
       ["--fragments", frags, "--out", outFile tmp, "--include-merged", tmp </> "upstream.yaml", "--no-own-tables"]
       ExitSuccess
-    assertMentions "stderr" ("warning: --fragments directory " <> frags <> " does not exist") err
+    assertMentions "stderr" ("warning: --fragments directory " <> show frags <> " does not exist") err
     assertEq "tables" 1 . length . mergedTables =<< decodeFile (outFile tmp)
     removeFile (outFile tmp)
 

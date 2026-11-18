@@ -5,9 +5,9 @@
 # puts `sql-schema-merge` on PATH during the build so the snippet can
 # invoke it without a full nix-store path.
 #
-# Usage (in a consuming package's settings):
+# Usage (in the flake's haskell-flake settings):
 #
-#   app-db = { self, ... }: {
+#   settings.<pkg> = {
 #     imports = [ (inputs.sql-schema-src + "/sqlSchema/nix/postInstall.nix") ];
 #     sqlSchemaPostInstall = ''
 #       mkdir -p $out/share/sql-schema
@@ -17,6 +17,12 @@
 #         --out $out/share/sql-schema/sql-schema.yaml
 #     '';
 #   };
+#
+# haskell-flake has no `postInstall` setting, and `drvAttrs.postInstall` would
+# replace the package's postInstall instead of appending to it. If the plugin
+# is enabled by a cabal flag, also set `extraBuildDepends = [ self.sql-schema ];`
+# (the settings then take the argument `self`): cabal2nix resolves conditional
+# dependencies with the flag's default.
 { pkgs, lib, self, mkCabalSettingOptions, ... }:
 {
   options = mkCabalSettingOptions {

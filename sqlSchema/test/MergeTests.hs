@@ -62,6 +62,7 @@ run = do
   testWalkEntryCapTrips
   testWalkChainHopsCountTowardsTheCap
   testWalkLinkCostsItsComponents
+  testWalkFileLinkCostsItsComponents
   testWalkCapIsAnOption
   testWalkDepthLimit
   testWalkDeepLinkChainFailsFast
@@ -97,6 +98,7 @@ run = do
   testOverrideKeyWithTwoSqlNamesAcrossIncludeFatal
   testHostileFieldsEscaped
   testHostileFragmentFileNameEscaped
+  testCliSuppliedPathsShown
   testOverrideMatchEmitted
   testOverrideMismatchFatal
   testOverrideAmbiguousAgreeing
@@ -231,7 +233,7 @@ testMissingSourceDirWithPruneFatal = withTmpProject $ \tmp -> do
   fragmentsAB tmp
   let opts = (baseOpts tmp) { moSourceDirs = [tmp </> "src", gne] }
   text <- refusalText =<< runMerge opts
-  assertMentions "the entry" ("source dir " <> gne <> " does not exist") text
+  assertMentions "the entry" ("source dir " <> show gne <> " does not exist") text
   assertMentions "the pruned module" "pruned fragment of \"B\"" text
   assertLacks "a live module" "pruned fragment of \"A\"" text
   assertMentions "the consequence" "drops its tables" text
@@ -248,7 +250,7 @@ testNotADirectorySourceDirWithPruneFatal = withTmpProject $ \tmp -> do
   fragmentsAB tmp
   touchFile file
   text <- refusalText =<< runMerge (baseOpts tmp) { moSourceDirs = [tmp </> "src", file] }
-  assertMentions "the entry" ("source dir " <> file <> " is not a directory") text
+  assertMentions "the entry" ("source dir " <> show file <> " is not a directory") text
   assertMentions "the pruned module" "pruned fragment of \"B\"" text
   assertLacks "a live module" "pruned fragment of \"A\"" text
   assertAbsent (tmp </> "merged.yaml")
@@ -271,8 +273,8 @@ testSourceDirProblemsNameEveryEntry = withTmpProject $ \tmp -> do
   writeFragYaml (tmp </> "fragments" </> "C.yaml") (sampleFragment "C" "C.CT" "c")
   touchFile file
   text <- refusalText =<< runMerge (baseOpts tmp) { moSourceDirs = [gone, tmp </> "src", file] }
-  assertMentions "the missing entry" ("source dir " <> gone <> " does not exist") text
-  assertMentions "the file entry" ("source dir " <> file <> " is not a directory") text
+  assertMentions "the missing entry" ("source dir " <> show gone <> " does not exist") text
+  assertMentions "the file entry" ("source dir " <> show file <> " is not a directory") text
   forM_ ["B", "C"] $ \m -> assertMentions ("pruned " <> m) ("pruned fragment of " <> show m) text
   assertLacks "a live module" "pruned fragment of \"A\"" text
 
@@ -285,7 +287,7 @@ testUnparseableFragmentCountsAsPruned = withTmpProject $ \tmp -> do
   writeFragYaml (tmp </> "fragments" </> "A.yaml") (sampleFragment "A" "A.AT" "a")
   BS.writeFile (tmp </> "fragments" </> "Gone.yaml") ":::not::valid:::yaml:::"
   text <- refusalText =<< runMerge (baseOpts tmp) { moSourceDirs = [tmp </> "src", gne] }
-  assertMentions "the entry" ("source dir " <> gne <> " does not exist") text
+  assertMentions "the entry" ("source dir " <> show gne <> " does not exist") text
   assertMentions "the pruned module" "pruned fragment of \"Gone\"" text
 
 -- | The usual typo: the only entry is wrong, so every fragment is pruned.  The
@@ -297,7 +299,7 @@ testAllPrunedBecauseSourceDirMissing = withTmpProject $ \tmp -> do
   writeFragYaml (tmp </> "fragments" </> "A.yaml") (sampleFragment "A" "A.AT" "a")
   text <- refusalText =<< runMerge (baseOpts tmp) { moSourceDirs = [gne] }
   assertMentions "all pruned" "all 1 fragments were pruned" text
-  assertMentions "the entry" ("source dir " <> gne <> " does not exist") text
+  assertMentions "the entry" ("source dir " <> show gne <> " does not exist") text
   assertMentions "the pruned module" "pruned fragment of \"A\"" text
 
 -- | A module name holding a newline or an escape character is printed escaped, so it can't forge a line.
@@ -320,7 +322,7 @@ testFragmentsPathIsFileFatal = withTmpProject $ \tmp -> do
   forM_ [[], [inc]] $ \includes -> do
     text <- refusalText =<< runMerge (baseOpts tmp)
       { moFragmentsDir = file, moAllowEmpty = True, moNoOwnTables = True, moIncludeMerged = includes }
-    assertMentions "the path" ("--fragments is not a directory: " <> file) text
+    assertMentions "the path" ("--fragments is not a directory: " <> show file) text
     assertMentions "the fix" "fragmentsDir" text
     assertAbsent (tmp </> "merged.yaml")
 
@@ -730,6 +732,34 @@ testWalkLinkCostsItsComponents = withTmpProject $ \tmp -> do
   (live, _) <- liveModulesFromDirs walkEntryCap [tmp </> "deep"]
   assertEq "no modules" [] (toList live)
 
+-- | A link to a file, or a dangling one, costs what a link to a directory does: the system walks
+-- the same components to resolve it.
+testWalkFileLinkCostsItsComponents :: IO ()
+testWalkFileLinkCostsItsComponents = withTmpProject $ \tmp -> do
+  touchFile (tmp </> "target" </> "F.hs")
+  forM_ [("file", tmp </> "target" </> "F.hs"), ("dangling", tmp </> "target" </> "gone" </> "G.hs")] $ \(kind, to) -> do
+    let one = tmp </> kind
+    createDirectoryIfMissing True one
+    createFileLink to (one </> "l.hs")
+    oneReal <- canonicalizePath one
+    toReal <- canonicalizePath to
+    let steps = 1 + length (splitDirectories (oneReal </> "l.hs")) + length (splitDirectories toReal)
+    _ <- liveModulesFromDirs steps [one]
+    short <- try (liveModulesFromDirs (steps - 1) [one])
+    case short of
+      Left (e :: IOException) -> assertMentions (kind <> ": the rule") "a link followed one per path component its resolution walks" (show e)
+      Right _                 -> failWith (kind <> ": one step short of a link's cost passed")
+  -- Ten file links 30 levels down: 40 entries, but each link costs more than 30 steps.
+  let deep = foldl (</>) (tmp </> "deep") (replicate 30 "d")
+  createDirectoryIfMissing True deep
+  forM_ [1 .. 10 :: Int] $ \i -> createFileLink (tmp </> "target" </> "F.hs") (deep </> ("l" <> show i <> ".hs"))
+  r <- try (liveModulesFromDirs 100 [tmp </> "deep"])
+  case r of
+    Left (e :: IOException) -> assertMentions "the cap" "more than 100 walk steps" (show e)
+    Right _                 -> failWith "ten file links 30 levels down passed a cap of 100 steps"
+  (live, _) <- liveModulesFromDirs walkEntryCap [tmp </> "deep"]
+  assertEq "every link is a module" 10 (length live)
+
 -- | M-3: the walk's cap is a merge option, defaulted once for the library and the CLI.
 testWalkCapIsAnOption :: IO ()
 testWalkCapIsAnOption = withTmpProject $ \tmp -> do
@@ -1011,7 +1041,7 @@ testEmptyIncludeFatal = withTmpProject $ \tmp -> do
   writeEmptyIncluded empty
   writeIncluded full
   text <- refusalText =<< runMerge (baseOpts tmp) { moIncludeMerged = [full, empty] }
-  assertMentions "the file" ("--include-merged file " <> empty <> " holds no tables") text
+  assertMentions "the file" ("--include-merged file " <> show empty <> " holds no tables") text
   assertMentions "the opt-out" "--allow-empty-include" text
   assertLacks "a contract with tables" full text
   assertAbsent (tmp </> "merged.yaml")
@@ -1026,7 +1056,7 @@ testEmptyIncludeAllowed = withTmpProject $ \tmp -> do
   report <- expectOk result
   assertEq "includedFiles" 1 (mrIncludedFiles report)
   assertEq "tablesEmitted" 1 (mrTablesEmitted report)
-  assertMentions "stderr" ("warning: --include-merged file " <> empty <> " holds no tables") err
+  assertMentions "stderr" ("warning: --include-merged file " <> show empty <> " holds no tables") err
   assertLacks "stderr" "ERROR" err
 
 -- | The m4 layout: a module whose override names a table type that no fragment defines.
@@ -1196,12 +1226,12 @@ testOverridesOnlyIncludeIsEmpty = withTmpProject $ \tmp -> do
   BS.writeFile inc (YAML.encode MergedSchema
     { mergedTables = [], mergedDbEntityOverrides = [matchingOverride], generator = Nothing })
   text <- refusalText =<< runMerge (baseOpts tmp) { moIncludeMerged = [inc] }
-  assertMentions "the file" ("--include-merged file " <> inc <> " holds no tables") text
+  assertMentions "the file" ("--include-merged file " <> show inc <> " holds no tables") text
   assertAbsent (tmp </> "merged.yaml")
   (result, err) <- withStderr tmp (runMerge (baseOpts tmp) { moIncludeMerged = [inc], moAllowEmptyInclude = True })
   report <- expectOk result
   assertEq "overridesEmitted" 1 (mrOverridesEmitted report)
-  assertMentions "stderr" ("warning: --include-merged file " <> inc <> " holds no tables") err
+  assertMentions "stderr" ("warning: --include-merged file " <> show inc <> " holds no tables") err
 
 -- | Only identical overrides collapse: the same key and SQL name from two places is one entry, even
 -- when the source file differs.
@@ -1328,6 +1358,50 @@ testHostileFieldsEscaped = forM_ scenarios $ \(label, phrase, tables, overrides,
       , ("table without columns", "has no columns", [bare h], [], id)
       , ("table without columns, opted out", "warning: table", [bare h], []
         , \o -> o { moAllowColumnlessTable = True })
+      ]
+
+-- | The paths the command line names are printed escaped too: one with a newline and an escape
+-- character can't forge a line of the merge's output.
+testCliSuppliedPathsShown :: IO ()
+testCliSuppliedPathsShown = forM_ scenarios $ \(label, phrase, prepare) ->
+  withTmpProject $ \tmp -> do
+    opts <- prepare tmp
+    text <- mergeOutput tmp opts
+    assertMentions label phrase text
+    assertHostileEscaped label text
+  where
+    bad tmp = tmp </> hostileField
+    withFragment tmp o = ownFragment tmp >> pure o
+    scenarios :: [(String, String, FilePath -> IO MergeOptions)]
+    scenarios =
+      [ ("--fragments missing", "does not exist; reading it as no fragments"
+        , \tmp -> pure (baseOpts tmp) { moFragmentsDir = bad tmp })
+      , ("refusal, --out", "(not written)"
+        , \tmp -> pure (baseOpts tmp) { moOutFile = bad tmp })
+      , ("--fragments a file", "--fragments is not a directory: "
+        , \tmp -> touchFile (bad tmp) >> pure (baseOpts tmp) { moFragmentsDir = bad tmp })
+      , ("empty include", "holds no tables"
+        , \tmp -> writeEmptyIncluded (bad tmp) >> withFragment tmp (baseOpts tmp) { moIncludeMerged = [bad tmp] })
+      , ("empty include, opted out", "warning: --include-merged file "
+        , \tmp -> writeEmptyIncluded (bad tmp)
+            >> withFragment tmp (baseOpts tmp) { moIncludeMerged = [bad tmp], moAllowEmptyInclude = True })
+      , ("include missing", "--include-merged file does not exist: "
+        , \tmp -> withFragment tmp (baseOpts tmp) { moIncludeMerged = [bad tmp] })
+      , ("include unparseable", "failed to parse"
+        , \tmp -> BS.writeFile (bad tmp) ":::not::valid:::yaml:::"
+            >> withFragment tmp (baseOpts tmp) { moIncludeMerged = [bad tmp] })
+      , ("source dir missing, warning", "does not exist; treating as empty"
+        , \tmp -> touchFile (tmp </> "src" </> "Foo.hs")
+            >> withFragment tmp (baseOpts tmp) { moSourceDirs = [bad tmp, tmp </> "src"] })
+      , ("source dir a file, warning", "is not a directory; treating as empty"
+        , \tmp -> touchFile (bad tmp) >> touchFile (tmp </> "src" </> "Foo.hs")
+            >> withFragment tmp (baseOpts tmp) { moSourceDirs = [bad tmp, tmp </> "src"] })
+      , ("source dir missing, with a prune", "while a --source-dirs entry is unusable"
+        , \tmp -> touchFile (tmp </> "src" </> "Other.hs")
+            >> withFragment tmp (baseOpts tmp) { moSourceDirs = [bad tmp, tmp </> "src"] })
+      , ("source dir a file, with a prune", "while a --source-dirs entry is unusable"
+        , \tmp -> touchFile (bad tmp) >> touchFile (tmp </> "src" </> "Other.hs")
+            >> withFragment tmp (baseOpts tmp) { moSourceDirs = [bad tmp, tmp </> "src"] })
       ]
 
 -- | The file name of a fragment comes from the directory, and the YAML error text from its content.
