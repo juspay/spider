@@ -26,6 +26,7 @@ module SqlSchema.Types
   , defaultCliOptions
     -- * Extraction errors
   , SqlSchemaError(..)
+  , errorCode
   , generateErrorMessage
   ) where
 
@@ -299,10 +300,18 @@ data SqlSchemaError
     INVALID_PLUGIN_OPTIONS String
   deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
--- | Human-readable rendering for a compile error.  Only the
+-- | The constructor name, e.g. @UNRESOLVABLE_TABLE_NAME@.
+errorCode :: SqlSchemaError -> String
+errorCode = takeWhile (/= ' ') . show
+
+-- | Human-readable rendering for a compile error, starting with
+-- @sql-schema: <code>: @ so a log scan finds every error by its code.  Only the
 -- UNRESOLVABLE_TABLE_NAME message names the fragments directory.
 generateErrorMessage :: FilePath -> SqlSchemaError -> String
-generateErrorMessage fragDir = \case
+generateErrorMessage fragDir e = "sql-schema: " <> errorCode e <> ": " <> errorText fragDir e
+
+errorText :: FilePath -> SqlSchemaError -> String
+errorText fragDir = \case
   UNRESOLVABLE_TABLE_NAME t ->
     "modelTableName for '" <> t <> "' is not a string literal — the sql-schema plugin cannot statically extract it.\n" <>
     "  Replace the computed value with a literal string.\n" <>

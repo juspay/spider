@@ -19,6 +19,7 @@ library
         SqlSchema.Plugin
       , SqlSchema.Types
       , SqlSchema.Merge
+      , SqlSchema.Extract
     other-modules:
         Paths_sql_schema
     autogen-modules:
@@ -51,11 +52,17 @@ test-suite sql-schema-test
     type:             exitcode-stdio-1.0
     hs-source-dirs:   test
     main-is:          Main.hs
+    other-modules:
+        TestUtil
+      , MergeTests
+      , ParseFixture
+      , ExtractTests
     build-depends:
         base
       , bytestring
       , directory
       , filepath
+      , ghc
       , sql-schema
       , temporary
       , yaml
