@@ -39,6 +39,21 @@
 * Drops unused dependencies: `references`, `uniplate`, `extra`,
   `ordered-containers` and `unordered-containers` from the library, and
   `directory` and `filepath` from `sql-schema-merge`.
+* **Breaking:** a `blacklistModules` entry that doesn't end in `.` matches only
+  the module of exactly that name: `App.Db` no longer also skips `App.DbUtil`
+  or `App.Db.Pool`. An entry ending in `.` (e.g. `Test.`) still matches every
+  module it prefixes, so `App.Db.` skips `App.Db.Pool` but not `App.Db`. An
+  empty entry, which used to skip every module, and an entry starting with `.`
+  are now invalid options (`INVALID_PLUGIN_OPTIONS`).
+* **Breaking:** an empty `fragmentsDir`, or one that normalises to `.` (e.g.
+  `./`), is an invalid option (`INVALID_PLUGIN_OPTIONS`). It meant the working
+  directory, where deleting a table-less module's stale `<Module>.yaml` could
+  delete an unrelated file: on a case-insensitive file system, compiling
+  `module Stack` deleted `stack.yaml`.
+* **Fix:** plugin error messages escape the control, format and line- or
+  paragraph-separator characters they quote from source (e.g. a newline or ESC
+  in a quasi-quote) and are capped at 4000 characters, so source text can no
+  longer add lines or terminal escapes to a build log.
 
 ## 0.4.2
 

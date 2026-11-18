@@ -20,7 +20,7 @@ module SqlSchema.Extract
 
 import           Control.Monad              (when)
 import           Data.Foldable              (toList)
-import           Data.List                  (foldl', isPrefixOf, nub)
+import           Data.List                  (foldl', nub)
 import           Data.List.NonEmpty         (NonEmpty (..))
 import qualified Data.Map.Strict            as Map
 import           Data.Set                   (Set)
@@ -65,7 +65,7 @@ planFragment cli src modStr srcPath decls =
   -- A boot or signature file shares its module's name and fragment path but
   -- defines no tables; it must not touch the real module's fragment.
   if isHsBootOrSig src then Right LeaveUntouched
-  else if any (`isPrefixOf` modStr) (blacklistModules cli)
+  else if isBlacklistedModule cli modStr
     then Right (Stage Nothing)
     else do
       let rm           = foldl' visitDecl emptyRawModule decls

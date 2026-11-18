@@ -94,8 +94,8 @@ stderr warning, not an error.
 
 | Key                         | Type         | Default                              | Notes |
 |-----------------------------|--------------|--------------------------------------|-------|
-| `fragmentsDir`              | string       | `./.juspay/sql-schema-fragments`     | Where per-module fragments are written. For incremental builds that restore the build directory, keep it inside that directory (e.g. `dist/build/sql-schema-fragments`), or the fragments of modules that were not recompiled are lost. Components that share one directory must not define modules with the same name: their fragments share a file. |
-| `blacklistModules`          | [string]     | `[]`                                 | Module-name prefixes to skip entirely. |
+| `fragmentsDir`              | string       | `./.juspay/sql-schema-fragments`     | Where per-module fragments are written. For incremental builds that restore the build directory, keep it inside that directory (e.g. `dist/build/sql-schema-fragments`), or the fragments of modules that were not recompiled are lost. Components that share one directory must not define modules with the same name: their fragments share a file. An empty value or the working directory (`.`, `./`) is an invalid option. |
+| `blacklistModules`          | [string]     | `[]`                                 | Modules to skip entirely. An entry ending in `.` (e.g. `Test.`) skips every module it prefixes; any other entry skips only the module of exactly that name (`App.Db` skips only `App.Db`; `App.Db.` skips `App.Db.Pool`, but not `App.Db`). An empty entry, or one starting with `.`, is an invalid option. |
 | `allowUnknownColumnWrapper` | bool         | `false`                              | If `true`, fields whose type isn't `Columnar f T` / `C f T` are silently left out of the table (no warning). Use only for migrations — the default refusal is the safe stance. |
 | `allowNonStandardModifier`  | bool         | `false`                              | If `true`, a modifier the plugin can't read is silently treated as "no overrides" (Beam default names): one that isn't `tableModification { … }` (guarded definitions included), or a binding that isn't a plain top-level `x = …` of this module with one unguarded right-hand side (imported, qualified, or bound in `where` or by a pattern). Same caveat as above. |
 | `tableNameOverrides`        | {str: str}   | `{}`                                 | Per-type-name SQL-name override; applied only when `modelTableName` is not a static literal (e.g. `modelTableName = SomeConst.fooName`). Lets you assert the resolved value in plugin config instead of editing storage source. |
@@ -114,7 +114,7 @@ shape it can't read precisely:
 | `UNRECOGNIZED_FIELD_WRAPPER`   | A field's type isn't `Columnar f T` / `C f T`. Override via `allowUnknownColumnWrapper` only if you accept that field being omitted (the table is still emitted). |
 | `UNRECOGNIZED_MODIFIER_SHAPE`  | `modelFieldModification`, or the `xxxTMod` binding it names, isn't a single unguarded `tableModification { … }`. Override via `allowNonStandardModifier`. |
 | `UNRESOLVABLE_MODIFIER_BINDING`| `modelFieldModification` names a binding the plugin can't read: it reads only a plain top-level `x = …` binding of this module, referenced unqualified, with one unguarded right-hand side. Define it that way, or use `allowNonStandardModifier`. |
-| `INVALID_PLUGIN_OPTIONS`       | The `-fplugin-opt` JSON is malformed, has an unknown key or a wrong-typed value, or is given more than once. |
+| `INVALID_PLUGIN_OPTIONS`       | The `-fplugin-opt` JSON is malformed, has an unknown key, a wrong-typed value, an invalid `blacklistModules` entry or `fragmentsDir`, or is given more than once. |
 
 ## Supported `primaryKey` shapes
 

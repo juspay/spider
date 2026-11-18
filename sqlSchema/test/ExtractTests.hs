@@ -1,12 +1,20 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeOperators #-}
 
 -- | Extractor tests: each parses a fixture module @Fix.<Name>@ in-process
 -- ('parseFixture') and checks what 'planFragment' makes of it.
 module ExtractTests (run) where
 
 import           Control.Exception    (ErrorCall (..), try)
-import           Control.Monad        (unless)
-import           Data.List            (isPrefixOf)
+import           Control.Monad        (forM_, unless)
+import           Data.Char            (GeneralCategory (Control, Format, LineSeparator,
+                                                        ParagraphSeparator), generalCategory)
+import           Data.List            (isPrefixOf, isSuffixOf, tails)
+import           Data.Proxy           (Proxy (..))
+import           GHC.Generics         (C, C1, Constructor, D1, Generic (..), M1 (..), conName,
+                                       (:+:) (..))
 import           GHC.Types.SourceFile (HscSource (..))
 
 import           ParseFixture         (parseFixture)
@@ -27,12 +35,14 @@ run = do
   testTableNameRules
   testAppDbOverrides
   testBlacklistStagesDelete
+  testPluginOptions
   testBootAndSigUntouched
   testNothingToRecord
   testAcceptedMetaShapes
   testRdpRewrittenModifierFails
   testErrorsDeduplicated
   testErrorMessagesCarryCode
+  testErrorMessagesSanitized
 
 -- ---------------------------------------------------------------------------
 -- Test cases
@@ -231,16 +241,60 @@ testAppDbOverrides = do
     r
 
 -- | A blacklisted module's earlier fragment is deleted, even when its tables
--- could not be read.  Entries match as module-name prefixes.
+-- could not be read.  An entry ending in "." matches every module it prefixes;
+-- any other entry matches only the module of exactly that name.
 testBlacklistStagesDelete :: IO ()
 testBlacklistStagesDelete = do
-  let cli = defaultCliOptions { blacklistModules = ["Test.", "Fix.Black"] }
-  assertEq "blacklisted" (Right (Stage Nothing)) =<< planFix cli "Blacklisted" [] controlTable
+  let plan entries name = planFix defaultCliOptions { blacklistModules = entries } name []
+      skipped entries name =
+        assertEq (show entries <> " skips Fix." <> name) (Right (Stage Nothing))
+          =<< plan entries name controlTable
+      kept entries name = do
+        tables <- tablesOf (show entries <> " keeps Fix." <> name) =<< plan entries name controlTable
+        assertEq (show entries <> " keeps Fix." <> name) ["FooT"] (map codeName tables)
+  skipped ["Test.", "Fix.Blacklisted"] "Blacklisted"
+  skipped ["Fix."] "Blacklisted"
+  skipped ["Fix.Blacklisted."] "Blacklisted.Sub"
+  kept ["Fix.Blacklisted"] "Blacklisted.Sub"
+  kept ["Fix.Black"] "Blacklisted"
+  kept ["Black"] "Blacklisted"
+  kept ["Fix.Black."] "Blacklisted"
+  kept ["Blacklisted"] "Blacklisted"
+  kept ["Fix.Blacklisted."] "Blacklisted"
   assertEq "blacklisted, unreadable" (Right (Stage Nothing))
-    =<< planFix cli "BlackUnreadable" [] (modifierTable ["modelFieldModification = M.fooTMod"] [])
-  tables <- tablesOf "not a prefix"
-    =<< planFix defaultCliOptions { blacklistModules = ["Black"] } "Blacklisted" [] controlTable
-  assertEq "not a prefix" ["FooT"] (map codeName tables)
+    =<< plan ["Fix.BlackUnreadable"] "BlackUnreadable" (modifierTable ["modelFieldModification = M.fooTMod"] [])
+  forM_ ["", ".Foo"] $ \entry ->
+    case parseCliOptions ["{\"blacklistModules\":[" <> show entry <> "]}"] of
+      Left msg | show entry `isInfixOf` msg -> pure ()
+      other -> failWith ("blacklist entry " <> show entry <> ": expected an error naming it, got " <> show other)
+
+-- | A consumer-shaped options object parses as written; an unknown key cannot
+-- start another log line; a working-directory fragmentsDir is refused.
+testPluginOptions :: IO ()
+testPluginOptions = do
+  cli <- expectOk (parseCliOptions
+    [ "{\"fragmentsDir\":\"./dist/build/sql-schema-fragments\""
+      <> ",\"blacklistModules\":[\"Test.\",\"Spec.\",\"App.Db.Types.LocalTest\"]"
+      <> ",\"tableNameOverrides\":{\"FooT\":\"foo\"}}" ])
+  assertEq "fragmentsDir" "./dist/build/sql-schema-fragments" (fragmentsDir cli)
+  assertEq "blacklistModules" ["Test.", "Spec.", "App.Db.Types.LocalTest"] (blacklistModules cli)
+  assertEq "allow flags" (False, False) (allowUnknownColumnWrapper cli, allowNonStandardModifier cli)
+  tables <- tablesOf "tableNameOverrides" =<< planFix cli "ConsumerOptions" []
+    [ "data FooT f = Foo { fooId :: C f Int } deriving (Generic, Beamable)"
+    , "instance Table FooT where"
+    , "  data PrimaryKey FooT f = FooId (C f Int) deriving (Generic, Beamable)"
+    , "  primaryKey = FooId . fooId"
+    , "instance ModelMeta FooT where"
+    , "  modelTableName = SomeConst.fooName"
+    ]
+  assertEq "tableNameOverrides" ["foo"] (map modelTableName tables)
+  case parseCliOptions ["{\"x\\u001b[2J\\nsql-schema: UNRESOLVABLE_TABLE_NAME: forged\":1}"] of
+    Left msg | all (`notElem` msg) "\n\ESC" -> pure ()
+    other -> failWith ("unknown key with a newline: expected a one-line error, got " <> show other)
+  forM_ ["", ".", "./", "./."] $ \dir ->
+    case parseCliOptions ["{\"fragmentsDir\":" <> show dir <> "}"] of
+      Left msg | show dir `isInfixOf` msg -> pure ()
+      other -> failWith ("fragmentsDir " <> show dir <> ": expected an error naming it, got " <> show other)
 
 -- | A boot or signature file shares its module's fragment path; it must not touch it.
 testBootAndSigUntouched :: IO ()
@@ -310,30 +364,84 @@ testErrorsDeduplicated = do
     (Left [UNRESOLVABLE_COLUMN_NAME "FooT" "fooName", UNRESOLVABLE_COLUMN_NAME "FooT" "fooId"]) r
 
 testErrorMessagesCarryCode :: IO ()
-testErrorMessagesCarryCode = mapM_ check
-  [ UNRESOLVABLE_TABLE_NAME "FooT"
-  , UNRESOLVABLE_COLUMN_NAME "FooT" "fooName"
-  , UNRESOLVABLE_PRIMARY_KEY "FooT"
-  , UNRECOGNIZED_FIELD_WRAPPER "FooT" "foo" "Int"
-  , UNRECOGNIZED_MODIFIER_SHAPE "FooT" "fooTMod"
-  , UNRESOLVABLE_MODIFIER_BINDING "FooT" "M.fooTMod"
-  , INVALID_PLUGIN_OPTIONS "not json"
+testErrorMessagesCarryCode = checkAll
+  [ (UNRESOLVABLE_TABLE_NAME "FooT", "UNRESOLVABLE_TABLE_NAME")
+  , (UNRESOLVABLE_COLUMN_NAME "FooT" "fooName", "UNRESOLVABLE_COLUMN_NAME")
+  , (UNRESOLVABLE_PRIMARY_KEY "FooT", "UNRESOLVABLE_PRIMARY_KEY")
+  , (UNRECOGNIZED_FIELD_WRAPPER "FooT" "foo" "Int", "UNRECOGNIZED_FIELD_WRAPPER")
+  , (UNRECOGNIZED_MODIFIER_SHAPE "FooT" "fooTMod", "UNRECOGNIZED_MODIFIER_SHAPE")
+  , (UNRESOLVABLE_MODIFIER_BINDING "FooT" "M.fooTMod", "UNRESOLVABLE_MODIFIER_BINDING")
+  , (INVALID_PLUGIN_OPTIONS "not json", "INVALID_PLUGIN_OPTIONS")
   ]
   where
-    check e = do
-      assertEq "errorCode" (constructorName e) (errorCode e)
-      let msg = generateErrorMessage "d" e
-      unless (("sql-schema: " <> errorCode e <> ": ") `isPrefixOf` msg) $
-        failWith ("message without its code prefix: " <> show msg)
-    -- No wildcard: a new constructor breaks the build here, a reminder to sample it above.
-    constructorName = \case
-      UNRESOLVABLE_TABLE_NAME{}       -> "UNRESOLVABLE_TABLE_NAME"
-      UNRESOLVABLE_COLUMN_NAME{}      -> "UNRESOLVABLE_COLUMN_NAME"
-      UNRESOLVABLE_PRIMARY_KEY{}      -> "UNRESOLVABLE_PRIMARY_KEY"
-      UNRECOGNIZED_FIELD_WRAPPER{}    -> "UNRECOGNIZED_FIELD_WRAPPER"
-      UNRECOGNIZED_MODIFIER_SHAPE{}   -> "UNRECOGNIZED_MODIFIER_SHAPE"
-      UNRESOLVABLE_MODIFIER_BINDING{} -> "UNRESOLVABLE_MODIFIER_BINDING"
-      INVALID_PLUGIN_OPTIONS{}        -> "INVALID_PLUGIN_OPTIONS"
+    -- Every constructor of SqlSchemaError, read from its Generic Rep, needs a
+    -- sample above; the test fails naming any that has none.
+    checkAll samples = do
+      let names   = constructors (Proxy :: Proxy (Rep SqlSchemaError))
+          sampled = map (constructorOf . from . fst) samples
+          missing = [c | c <- names, c `notElem` sampled]
+      unless (null missing) $
+        failWith ("SqlSchemaError constructors without a sample: " <> unwords missing)
+      unless (all (`elem` names) sampled) $
+        failWith ("samples outside the enumerated constructors " <> show names)
+      mapM_ check samples
+    -- The literal pins each code; forcing the whole message also runs its
+    -- errorText case, which plain -Wall only warns about when missing.
+    check (e, code) = do
+      assertEq "errorCode" code (errorCode e)
+      unless (not (null code) && all (`elem` ['A' .. 'Z'] <> "_") code) $
+        failWith ("code is not [A-Z_]+: " <> show code)
+      let prefix = "sql-schema: " <> code <> ": "
+          msg    = generateErrorMessage "d" e
+      unless (prefix `isPrefixOf` msg && length msg > length prefix) $
+        failWith ("message without its code prefix or text: " <> show msg)
+
+-- | Source text in a message can add neither lines nor control bytes, the
+-- templates' own lines are unchanged, and a huge field is cut.
+testErrorMessagesSanitized :: IO ()
+testErrorMessagesSanitized = do
+  let evil = "x\nsql-schema: FORGED: \ESC[31m\r\x202e"
+      unsafe c = generalCategory c `elem` [Control, Format, LineSeparator, ParagraphSeparator]
+  forM_ [ generateErrorMessage evil (UNRESOLVABLE_TABLE_NAME evil)
+        , generateErrorMessage "d" (UNRECOGNIZED_FIELD_WRAPPER evil evil evil)
+        , generateErrorMessage "d" (INVALID_PLUGIN_OPTIONS evil) ] $ \msg -> do
+    let rawNewlines = [() | '\n' : rest <- tails msg, take 2 rest /= "  "]
+        rawOthers   = filter (\c -> unsafe c && c /= '\n') msg
+        forged      = filter ("sql-schema:" `isPrefixOf`) (drop 1 (lines msg))
+    unless (null rawNewlines && null rawOthers && null forged) $
+      failWith ("unsanitized message: " <> show msg)
+  assertEq "UNRESOLVABLE_PRIMARY_KEY message"
+    (  "sql-schema: UNRESOLVABLE_PRIMARY_KEY: primaryKey for 'FooT' is not in a recognised shape.\n"
+    <> "  Accepted forms:\n"
+    <> "    primaryKey x = Con (f1 x) (f2 x) …      (function equation, any arity)\n"
+    <> "    primaryKey   = \\x -> Con (f1 x) …       (explicit lambda)\n"
+    <> "    primaryKey   = Con . field               (single-column composition)\n"
+    <> "    primaryKey   = Con <$> f1 <*> f2 <*> …   (applicative composite)\n"
+    <> "    primaryKey _ = ConNullary                (no-column PK)" )
+    (generateErrorMessage "d" (UNRESOLVABLE_PRIMARY_KEY "FooT"))
+  let huge = generateErrorMessage "d" (UNRESOLVABLE_TABLE_NAME (replicate 10000 'a'))
+  unless (length huge <= 4000 && "sql-schema: UNRESOLVABLE_TABLE_NAME: " `isPrefixOf` huge
+          && "[truncated]" `isSuffixOf` huge) $
+    failWith ("a huge field is not cut: message length " <> show (length huge))
+
+-- | Types.hs keeps errorCode's Generic helper unexported, so the test reads
+-- constructor names from 'Generic' metadata itself.
+class Constructors f where
+  constructors  :: Proxy f -> [String]
+  constructorOf :: f p -> String
+
+instance Constructors f => Constructors (D1 c f) where
+  constructors _ = constructors (Proxy :: Proxy f)
+  constructorOf (M1 x) = constructorOf x
+
+instance (Constructors f, Constructors g) => Constructors (f :+: g) where
+  constructors _ = constructors (Proxy :: Proxy f) <> constructors (Proxy :: Proxy g)
+  constructorOf (L1 x) = constructorOf x
+  constructorOf (R1 x) = constructorOf x
+
+instance Constructor c => Constructors (C1 c f) where
+  constructors _ = [conName (M1 Proxy :: M1 C c Proxy ())]
+  constructorOf = conName
 
 -- ---------------------------------------------------------------------------
 -- Fixtures

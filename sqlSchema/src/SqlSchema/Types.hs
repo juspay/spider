@@ -1,7 +1,9 @@
 {-# LANGUAGE DeriveAnyClass    #-}
 {-# LANGUAGE DeriveGeneric     #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE LambdaCase        #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeOperators     #-}
 
 -- | Data types and error categories for the sql-schema plugin.
 --
@@ -24,23 +26,26 @@ module SqlSchema.Types
     -- * Plugin CLI options
   , CliOptions(..)
   , defaultCliOptions
+  , isBlacklistedModule
     -- * Extraction errors
   , SqlSchemaError(..)
   , errorCode
   , generateErrorMessage
   ) where
 
-import           Control.Monad (unless)
+import           Control.Monad (unless, when)
 import           Data.Aeson   (FromJSON (..), ToJSON (..), Value, (.!=), (.:?), withObject,
                                Options, defaultOptions, fieldLabelModifier, genericParseJSON,
                                genericToJSON)
 import           Data.Aeson.Types (Parser)
-import           Data.Char    (isUpper, toLower)
-import           Data.List    (intercalate)
+import           Data.Char    (GeneralCategory (Control, Format, LineSeparator, ParagraphSeparator),
+                               generalCategory, isSpace, isUpper, showLitChar, toLower)
+import           Data.List    (dropWhileEnd, intercalate, isPrefixOf, isSuffixOf)
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
 import qualified Data.Text    as T
-import           GHC.Generics (Generic)
+import           GHC.Generics (C1, Constructor (conName), D1, Generic (from), M1 (..), (:+:) (..))
+import           System.FilePath (normalise)
 
 -- | One @TableSchema@ per Beam table.  Keyed in the merged YAML by its
 -- fully-qualified type ('qualifiedType' = @sourceModule '.' codeName@) so
@@ -215,10 +220,13 @@ data CliOptions = CliOptions
     --   Default: @./.juspay/sql-schema-fragments@.  For incremental builds
     --   that restore the build directory, put it inside that directory (e.g.
     --   @dist/build/sql-schema-fragments@); otherwise the fragments of
-    --   modules that are not recompiled are lost.
+    --   modules that are not recompiled are lost.  It must not be empty or
+    --   the working directory (@.@, @./@, …): an invalid option.
   , blacklistModules          :: [String]
-    -- ^ Modules to skip entirely.  Each entry matches as a prefix of the
-    --   module name (e.g. @\"Test.\"@ matches @\"Test.KV.…\"@).
+    -- ^ Modules to skip entirely.  An entry ending in @.@ matches every module
+    --   it prefixes (e.g. @\"Test.\"@ matches @\"Test.KV.…\"@); any other entry
+    --   matches only the module of exactly that name.  An empty entry, or one
+    --   starting with @.@, is an invalid option.
   , allowUnknownColumnWrapper :: Bool
     -- ^ If True, fields whose type isn't @Columnar f T@ / @C f T@ are
     --   silently left out of the table's columns instead of being a hard
@@ -250,15 +258,35 @@ defaultCliOptions = CliOptions
   , tableNameOverrides        = Map.empty
   }
 
+-- | No entry skips a module it doesn't name exactly or as a prefix ending in
+-- @.@: skipping is silent, so a near miss must not widen it.
+isBlacklistedModule :: CliOptions -> String -> Bool
+isBlacklistedModule cli modName = any covers (blacklistModules cli)
+  where
+    covers entry
+      | "." `isSuffixOf` entry = entry `isPrefixOf` modName
+      | otherwise              = modName == entry
+
 instance FromJSON CliOptions where
   parseJSON v = do
     keys <- Map.keys <$> (parseJSON v :: Parser (Map T.Text Value))
     let unknown = filter (`notElem` knownKeys) keys
     unless (null unknown) $
-      fail ("unknown plugin option key(s): " <> intercalate ", " (map T.unpack unknown)
+      fail ("unknown plugin option key(s): " <> intercalate ", " (map (show . T.unpack) unknown)
             <> "; known keys: " <> intercalate ", " (map T.unpack knownKeys))
-    parseKnown v
+    opts <- parseKnown v
+    when (workingDir (fragmentsDir opts)) $
+      fail ("invalid fragmentsDir " <> show (fragmentsDir opts) <> ": it is the working directory,"
+            <> " where deleting a module's stale <Module>.yaml can delete an unrelated file;"
+            <> " use a directory of its own, e.g. dist/build/sql-schema-fragments")
+    case filter invalidEntry (blacklistModules opts) of
+      []  -> pure opts
+      bad -> fail ("invalid blacklistModules entries " <> intercalate ", " (map show bad)
+                   <> ": an empty entry or one starting with '.' names no module; use a module"
+                   <> " name, or a prefix ending in '.' for the modules under it")
     where
+    invalidEntry e = null e || "." `isPrefixOf` e
+    workingDir dir = null dir || normalise dir `elem` [".", "./"]
     knownKeys =
       [ "fragmentsDir", "blacklistModules", "allowUnknownColumnWrapper"
       , "allowNonStandardModifier", "tableNameOverrides" ]
@@ -295,20 +323,57 @@ data SqlSchemaError
     --   unguarded right-hand side.
     UNRESOLVABLE_MODIFIER_BINDING String String
     --                            typeName  binding-name
-  | -- | The @-fplugin-opt@ JSON was malformed, had an unknown key or a
-    --   wrong-typed value, or was given more than once.
+  | -- | The @-fplugin-opt@ JSON was malformed, had an unknown key, a
+    --   wrong-typed value, an invalid @blacklistModules@ entry or
+    --   @fragmentsDir@, or was given more than once.
     INVALID_PLUGIN_OPTIONS String
   deriving (Eq, Show, Generic, FromJSON, ToJSON)
 
 -- | The constructor name, e.g. @UNRESOLVABLE_TABLE_NAME@.
 errorCode :: SqlSchemaError -> String
-errorCode = takeWhile (/= ' ') . show
+errorCode = constructorName . from
+
+-- Generic metadata, not 'Show', so neither a 'Show' instance nor an infix
+-- constructor can put other text where the code goes.
+class ConstructorName f where
+  constructorName :: f p -> String
+
+instance ConstructorName f => ConstructorName (D1 c f) where
+  constructorName (M1 x) = constructorName x
+
+instance (ConstructorName f, ConstructorName g) => ConstructorName (f :+: g) where
+  constructorName (L1 x) = constructorName x
+  constructorName (R1 x) = constructorName x
+
+instance Constructor c => ConstructorName (C1 c f) where
+  constructorName = conName
 
 -- | Human-readable rendering for a compile error, starting with
 -- @sql-schema: <code>: @ so a log scan finds every error by its code.  Only the
 -- UNRESOLVABLE_TABLE_NAME message names the fragments directory.
 generateErrorMessage :: FilePath -> SqlSchemaError -> String
-generateErrorMessage fragDir e = "sql-schema: " <> errorCode e <> ": " <> errorText fragDir e
+generateErrorMessage fragDir e =
+  capMessage ("sql-schema: " <> errorCode e <> ": " <> escapeUnsafe (errorText fragDir e))
+
+-- Messages quote source text (names, types, quasi-quotes) that could otherwise
+-- start a forged "sql-schema:" line or put terminal escapes in the log; only a
+-- template's "\n  " continuation keeps a real newline.
+escapeUnsafe :: String -> String
+escapeUnsafe = \case
+  '\n' : rest@(' ' : ' ' : _) -> '\n' : escapeUnsafe rest
+  c : rest
+    | generalCategory c `elem` [Control, Format, LineSeparator, ParagraphSeparator]
+                -> showLitChar c (escapeUnsafe rest)
+    | otherwise -> c : escapeUnsafe rest
+  []            -> []
+
+-- Generous: the longest template is about 600 characters.
+capMessage :: String -> String
+capMessage msg
+  | length msg <= 4000 = msg
+  | otherwise          = dropWhileEnd isSpace (take (4000 - length marker) msg) <> marker
+  where
+    marker = " … [truncated]"
 
 errorText :: FilePath -> SqlSchemaError -> String
 errorText fragDir = \case
