@@ -27,6 +27,17 @@ main = do
   testHappyPath
   testStalePruneByModule
   testNoSourceDirsNoPrune
+  testSourceDirTrailingSlash
+  testAllFragmentsPrunedFatal
+  testMissingSourceDirNotFatal
+  testUnparseableFragmentFatal
+  testUnparseableLiveFragmentFatal
+  testUnparseableStaleFragmentPruned
+  testIncludeOnlyWithSourceDirs
+  testAllPrunedWithIncludeFatal
+  testOtherSourceExtensionsLive
+  testOwnTablesCounted
+  testPublishProblem
   testOverrideMatchEmitted
   testOverrideMismatchFatal
   testOverrideAmbiguousAgreeing
@@ -124,6 +135,157 @@ testNoSourceDirsNoPrune = withTmpProject $ \tmp -> do
     }
   assertEq "stalePruned" 0 (mrStalePruned report)
   assertEq "tablesEmitted" 1 (mrTablesEmitted report)
+
+-- | "src/" names the same modules as "src"; the trailing slash used to shift
+-- every module name, so every fragment was pruned.
+testSourceDirTrailingSlash :: IO ()
+testSourceDirTrailingSlash = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      src     = tmp </> "src"
+  touchFile (src </> "Alive.hs")
+  touchFile (src </> "Lib" </> "Nested.hs")
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "Alive.yaml") (sampleFragment "Alive" "Alive.AliveT" "alive")
+  writeFragYaml (fragDir </> "Lib.Nested.yaml")
+    (sampleFragment "Lib.Nested" "Lib.Nested.NestedT" "nested")
+  report <- expectOk =<< runMerge (baseOpts tmp) { moSourceDirs = [src <> "/"] }
+  assertEq "stalePruned" 0 (mrStalePruned report)
+  assertEq "tablesEmitted" 2 (mrTablesEmitted report)
+
+-- | Pruning every fragment means --source-dirs points at the wrong place.
+testAllFragmentsPrunedFatal :: IO ()
+testAllFragmentsPrunedFatal = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      other   = tmp </> "other"
+  touchFile (other </> "Unrelated.hs")
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "Alive.yaml") (sampleFragment "Alive" "Alive.AliveT" "alive")
+  expectMergeError "pruned as stale" =<< runMerge (baseOpts tmp) { moSourceDirs = [other] }
+
+-- | A listed source dir may not exist (a .cabal can name one); that only warns.
+testMissingSourceDirNotFatal :: IO ()
+testMissingSourceDirNotFatal = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      src     = tmp </> "src"
+  touchFile (src </> "Alive.hs")
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "Alive.yaml") (sampleFragment "Alive" "Alive.AliveT" "alive")
+  report <- expectOk =<< runMerge (baseOpts tmp) { moSourceDirs = [src, tmp </> "absent"] }
+  assertEq "tablesEmitted" 1 (mrTablesEmitted report)
+
+-- | Skipping a live module's unreadable fragment would drop its tables.
+testUnparseableFragmentFatal :: IO ()
+testUnparseableFragmentFatal = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "Alive.yaml") (sampleFragment "Alive" "Alive.AliveT" "alive")
+  BS.writeFile (fragDir </> "Broken.yaml") ":::not::valid:::yaml:::"
+  expectMergeError "unparseable fragment" =<< runMerge (baseOpts tmp)
+
+-- | The same with --source-dirs, as every real merge runs: the module is live,
+-- so its fragment is not stale, and the error is not mistaken for a bad
+-- --source-dirs.
+testUnparseableLiveFragmentFatal :: IO ()
+testUnparseableLiveFragmentFatal = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      src     = tmp </> "src"
+  touchFile (src </> "Alive.hs")
+  createDirectoryIfMissing True fragDir
+  BS.writeFile (fragDir </> "Alive.yaml") ":::not::valid:::yaml:::"
+  result <- runMerge (baseOpts tmp) { moSourceDirs = [src] }
+  expectMergeError "unparseable fragment" result
+  case result of
+    Left errs | any ("pruned as stale" `isInfixOf`) errs ->
+      failWith ("unparseable live fragment reported as pruned: " <> show errs)
+    _ -> pure ()
+
+-- | ... unless --source-dirs shows its module is gone: then it is stale.
+testUnparseableStaleFragmentPruned :: IO ()
+testUnparseableStaleFragmentPruned = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      src     = tmp </> "src"
+  touchFile (src </> "Alive.hs")
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "Alive.yaml") (sampleFragment "Alive" "Alive.AliveT" "alive")
+  BS.writeFile (fragDir </> "Gone.yaml") ":::not::valid:::yaml:::"
+  report <- expectOk =<< runMerge (baseOpts tmp) { moSourceDirs = [src] }
+  assertEq "stalePruned" 1 (mrStalePruned report)
+  assertEq "tablesEmitted" 1 (mrTablesEmitted report)
+
+-- | A package with no tables of its own composes an included contract; with no
+-- fragments, nothing is pruned and the merge succeeds.
+testIncludeOnlyWithSourceDirs :: IO ()
+testIncludeOnlyWithSourceDirs = withTmpProject $ \tmp -> do
+  let src = tmp </> "src"
+      inc = tmp </> "upstream.yaml"
+  touchFile (src </> "Other.hs")
+  writeIncluded inc
+  report <- expectOk =<< runMerge (baseOpts tmp) { moSourceDirs = [src], moIncludeMerged = [inc] }
+  assertEq "tablesEmitted" 1 (mrTablesEmitted report)
+
+-- | Pruning every fragment fails even when an included contract supplies tables.
+testAllPrunedWithIncludeFatal :: IO ()
+testAllPrunedWithIncludeFatal = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      src     = tmp </> "src"
+      inc     = tmp </> "upstream.yaml"
+  touchFile (src </> "Other.hs")
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "Gone.yaml") (sampleFragment "Gone" "Gone.GoneT" "gone")
+  writeIncluded inc
+  expectMergeError "pruned as stale" =<< runMerge (baseOpts tmp)
+    { moSourceDirs = [src], moIncludeMerged = [inc] }
+
+-- | Modules cabal preprocesses (.hsc, .x, …) are live too.
+testOtherSourceExtensionsLive :: IO ()
+testOtherSourceExtensionsLive = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      src     = tmp </> "src"
+  touchFile (src </> "Gen.hsc")
+  touchFile (src </> "Lex.x")
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "Gen.yaml") (sampleFragment "Gen" "Gen.GenT" "gen")
+  writeFragYaml (fragDir </> "Lex.yaml") (sampleFragment "Lex" "Lex.LexT" "lex")
+  report <- expectOk =<< runMerge (baseOpts tmp) { moSourceDirs = [src] }
+  assertEq "stalePruned" 0 (mrStalePruned report)
+  assertEq "tablesEmitted" 2 (mrTablesEmitted report)
+
+-- | Own tables are those of the package's own fragments, not included ones.
+testOwnTablesCounted :: IO ()
+testOwnTablesCounted = withTmpProject $ \tmp -> do
+  let fragDir = tmp </> "fragments"
+      inc     = tmp </> "upstream.yaml"
+  createDirectoryIfMissing True fragDir
+  writeFragYaml (fragDir </> "Alive.yaml") (sampleFragment "Alive" "Alive.AliveT" "alive")
+  writeIncluded inc
+  report <- expectOk =<< runMerge (baseOpts tmp) { moIncludeMerged = [inc] }
+  assertEq "ownTables" 1 (mrOwnTables report)
+  assertEq "tablesEmitted" 2 (mrTablesEmitted report)
+
+-- | Included tables must not hide that the package's own plugin never ran;
+-- --no-own-tables declares there is nothing of its own to miss, and own tables
+-- prove that declaration stale; --allow-empty permits only a 0-table contract.
+testPublishProblem :: IO ()
+testPublishProblem = do
+  let report ownFrags ownTables tables = MergeReport
+        { mrFragmentsRead = ownFrags, mrStalePruned = 0, mrIncludedFiles = 1
+        , mrIncludedTables = tables - ownTables, mrDeduped = 0
+        , mrTablesEmitted = tables, mrOverridesEmitted = 0, mrOwnTables = ownTables }
+      check name flags r expected =
+        assertEq name expected (uncurry publishProblem flags r)
+      none = (False, False); allowEmpty = (True, False); noOwn = (False, True)
+  check "own tables" none (report 2 2 3) Nothing
+  check "include only" none (report 0 0 3) (Just NoOwnFragments)
+  check "include only, --no-own-tables" noOwn (report 0 0 3) Nothing
+  check "include only, --allow-empty" allowEmpty (report 0 0 3) (Just NoOwnFragments)
+  check "own overrides only" none (report 1 0 3) Nothing
+  check "own overrides only, --no-own-tables" noOwn (report 1 0 3) Nothing
+  check "0 tables" none (report 0 0 0) (Just NoTables)
+  check "0 tables, --allow-empty" allowEmpty (report 0 0 0) Nothing
+  check "0 tables, --no-own-tables" noOwn (report 0 0 0) (Just NoTables)
+  check "stale --no-own-tables" noOwn (report 2 2 3) (Just (OwnTablesDeclaredNone 2))
+  check "stale --no-own-tables, --allow-empty" (True, True) (report 2 2 3)
+    (Just (OwnTablesDeclaredNone 2))
 
 testOverrideMatchEmitted :: IO ()
 testOverrideMatchEmitted = withTmpProject $ \tmp -> do
@@ -427,44 +589,21 @@ testIncludedStampIgnored = withTmpProject $ \tmp -> do
   merged <- decodeFile outFile
   assertEq "generator" (Just (currentGenerator (Just "new"))) (generator merged)
 
--- | Missing --include-merged file → warning to stderr, merge still
--- succeeds with zero contribution from that file.
+-- | A missing --include-merged file would drop every table it holds.
 testIncludeMergedMissingFile :: IO ()
 testIncludeMergedMissingFile = withTmpProject $ \tmp -> do
-  let fragDir = tmp </> "fragments"
-      outFile = tmp </> "merged.yaml"
-  createDirectoryIfMissing True fragDir
-  report <- expectOk =<< runMerge MergeOptions
-    { moFragmentsDir   = fragDir
-    , moOutFile        = outFile
-    , moIncludeMerged  = [tmp </> "does-not-exist.yaml"]
-    , moSourceDirs     = []
-    , moGeneratorRev   = Nothing
-    }
-  assertEq "tablesEmitted" 0 (mrTablesEmitted report)
-  assertEq "includedFiles" 0 (mrIncludedFiles report)
+  createDirectoryIfMissing True (tmp </> "fragments")
+  expectMergeError "does not exist" =<< runMerge (baseOpts tmp)
+    { moIncludeMerged = [tmp </> "does-not-exist.yaml"] }
 
--- | Malformed --include-merged file → warning, merge still succeeds.
+-- | So would a malformed one.
 testIncludeMergedMalformedFile :: IO ()
 testIncludeMergedMalformedFile = withTmpProject $ \tmp -> do
-  let fragDir = tmp </> "fragments"
-      outFile = tmp </> "merged.yaml"
-      bad     = tmp </> "broken.yaml"
-  createDirectoryIfMissing True fragDir
+  let bad = tmp </> "broken.yaml"
+  createDirectoryIfMissing True (tmp </> "fragments")
   BS.writeFile bad ":::not::valid:::yaml:::"
-  report <- expectOk =<< runMerge MergeOptions
-    { moFragmentsDir   = fragDir
-    , moOutFile        = outFile
-    , moIncludeMerged  = [bad]
-    , moSourceDirs     = []
-    , moGeneratorRev   = Nothing
-    }
-  assertEq "tablesEmitted" 0 (mrTablesEmitted report)
-  -- Malformed file is reported as a warning and not counted as
-  -- successfully included.
-  when (mrIncludedFiles report /= 0) $
-    failWith ("expected includedFiles=0 for malformed, got "
-              <> show (mrIncludedFiles report))
+  expectMergeError "failed to parse" =<< runMerge (baseOpts tmp)
+    { moIncludeMerged = [bad] }
 
 -- | Expected values: beam-core's @defaultFieldName (sel :| [])@, juspay/beam 25f1bcd960.
 testBeamDefaultColumnName :: IO ()
@@ -554,6 +693,31 @@ sampleTable ht modName tname = TableSchema
           }
       ]
   }
+
+-- | Options for a merge in @tmp@: fragments in @tmp/fragments@, no includes,
+-- no pruning.
+baseOpts :: FilePath -> MergeOptions
+baseOpts tmp = MergeOptions
+  { moFragmentsDir  = tmp </> "fragments"
+  , moOutFile       = tmp </> "merged.yaml"
+  , moIncludeMerged = []
+  , moSourceDirs    = []
+  , moGeneratorRev  = Nothing
+  }
+
+-- | A valid upstream contract with one table.
+writeIncluded :: FilePath -> IO ()
+writeIncluded p = BS.writeFile p (YAML.encode MergedSchema
+  { mergedTables            = [sampleTable "Up.UpT" "Up" "up_tab"]
+  , mergedDbEntityOverrides = []
+  , generator               = Nothing
+  })
+
+expectMergeError :: String -> Either [String] MergeReport -> IO ()
+expectMergeError needle = \case
+  Left errs | any (needle `isInfixOf`) errs -> pure ()
+  Left errs -> failWith ("expected an error containing " <> show needle <> ", got " <> show errs)
+  Right _   -> failWith ("expected an error containing " <> show needle <> ", but the merge succeeded")
 
 withTmpProject :: (FilePath -> IO a) -> IO a
 withTmpProject = withSystemTempDirectory "sql-schema-test"

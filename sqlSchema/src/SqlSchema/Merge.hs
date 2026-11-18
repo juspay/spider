@@ -39,6 +39,8 @@ module SqlSchema.Merge
   ( MergeOptions(..)
   , MergeReport(..)
   , runMerge
+  , PublishProblem(..)
+  , publishProblem
   , currentGenerator
   , loadFragments
   , loadIncludedMerged
@@ -46,20 +48,21 @@ module SqlSchema.Merge
   , pruneStaleByModule
   ) where
 
-import           Control.Exception   (IOException, try)
-import           Control.Monad       (forM)
+import           Control.Monad       (forM, unless)
 import qualified Data.ByteString     as BS
-import           Data.List           (isSuffixOf, sort, sortOn)
+import           Data.List           (isSuffixOf, partition, sort, sortOn)
 import qualified Data.Map.Strict     as Map
-import           Data.Maybe          (catMaybes)
 import           Data.Set            (Set)
 import qualified Data.Set            as Set
 import qualified Data.Yaml           as YAML
 import           Data.Version        (showVersion)
 import           System.Directory    (doesDirectoryExist, doesFileExist,
-                                      listDirectory, renameFile)
-import           System.FilePath     (dropExtension, takeExtension, (</>))
+                                      getPermissions, listDirectory,
+                                      renameFile, searchable)
+import           System.FilePath     (dropExtension, makeRelative, takeBaseName,
+                                      takeExtension, (</>))
 import           System.IO           (hPutStrLn, stderr)
+import           System.IO.Error     (isDoesNotExistError, tryIOError)
 
 import           SqlSchema.Types
 import qualified Paths_sql_schema
@@ -87,6 +90,7 @@ data MergeReport = MergeReport
   , mrDeduped               :: Int     -- ^ Identical-content tables collapsed
   , mrTablesEmitted         :: Int
   , mrOverridesEmitted      :: Int
+  , mrOwnTables             :: Int     -- ^ Tables in the package's own fragments
   } deriving (Show, Eq)
 
 
@@ -100,16 +104,28 @@ currentGenerator rev = Generator
 
 runMerge :: MergeOptions -> IO (Either [String] MergeReport)
 runMerge MergeOptions{..} = do
-  (read', frags)       <- loadFragments moFragmentsDir
+  (read', frags, bad) <- loadFragments moFragmentsDir
   live                 <- liveModulesFromDirs moSourceDirs
-  let (kept, pruned)   = pruneStaleByModule moSourceDirs live frags
-  (incFiles, incTbls, incOvs, incWarns) <- loadIncludedMerged moIncludeMerged
-  mapM_ (hPutStrLn stderr) incWarns
+  let (kept, prunedMods) = pruneStaleByModule moSourceDirs live frags
+      -- An unparseable fragment is only safe to drop once --source-dirs shows
+      -- its module is gone; otherwise its tables would silently vanish.
+      (badStale, badLive) =
+        partition (\(f, _) -> not (null moSourceDirs)
+                               && not (Set.member (takeBaseName f) live)) bad
+      pruned = length prunedMods + length badStale
+  mapM_ (\m -> hPutStrLn stderr ("sql-schema-merge: pruned the fragment of " <> m
+                                 <> ": its module is in no --source-dirs entry"))
+        (prunedMods ++ map (takeBaseName . fst) badStale)
+  (incFiles, incTbls, incOvs, incErrs) <- loadIncludedMerged moIncludeMerged
+  let inputErrs =
+        [ "sql-schema-merge: unparseable fragment " <> f <> ": " <> e | (f, e) <- badLive ]
+        ++ [ "sql-schema-merge: " <> e | e <- incErrs ]
+        ++ [ allPrunedMsg read' | read' > 0, pruned == read' ]
   let fragTables       = concatMap fragmentTables kept
       fragOverrides    = concatMap fragmentDbEntityOverrides kept
       allTables        = fragTables ++ incTbls
       allOverrides     = fragOverrides ++ incOvs
-  case validate allTables allOverrides of
+  case (if null inputErrs then validate allTables allOverrides else Left inputErrs) of
     Left errs -> pure (Left errs)
     Right (unstamped, deduped, warnings) -> do
       let merged = unstamped { generator = Just (currentGenerator moGeneratorRev) }
@@ -123,48 +139,79 @@ runMerge MergeOptions{..} = do
         , mrDeduped          = deduped
         , mrTablesEmitted    = length (mergedTables merged)
         , mrOverridesEmitted = length (mergedDbEntityOverrides merged)
+        , mrOwnTables        = length fragTables
         }
 
 
+-- | Why the CLI refuses to publish a merge's contract.
+data PublishProblem
+  = NoTables
+  | NoOwnFragments
+    -- ^ Included tables would hide that the package's own plugin never ran.
+  | OwnTablesDeclaredNone Int
+    -- ^ @--no-own-tables@ was given, but the package's own fragments define
+    -- this many tables.
+  deriving (Show, Eq)
+
+-- | @publishProblem allowEmpty noOwnTables report@.  @allowEmpty@ permits only a
+-- contract with no tables.  @noOwnTables@ declares that the package defines no
+-- tables of its own: no own fragments is then expected, and an own table
+-- proves the declaration stale.
+publishProblem :: Bool -> Bool -> MergeReport -> Maybe PublishProblem
+publishProblem allowEmpty noOwnTables r
+  | noOwnTables && mrOwnTables r > 0 = Just (OwnTablesDeclaredNone (mrOwnTables r))
+  | mrTablesEmitted r == 0 = if allowEmpty then Nothing else Just NoTables
+  | not noOwnTables && mrFragmentsRead r - mrStalePruned r == 0 = Just NoOwnFragments
+  | otherwise = Nothing
+
+
 -- | Load every @*.yaml@ file in the given directory as a 'Fragment'.
--- Returns @(filesTried, parsed)@; files that fail to parse are reported
--- to stderr and skipped.  Missing directory → @(0, [])@.
-loadFragments :: FilePath -> IO (Int, [Fragment])
+-- Returns @(filesTried, parsed, unparseable)@, the last as @(path, error)@
+-- for the caller to judge.  Missing directory → @(0, [], [])@; an unreadable
+-- one throws rather than reading as empty.
+loadFragments :: FilePath -> IO (Int, [Fragment], [(FilePath, String)])
 loadFragments dir = do
-  exists <- doesDirectoryExist dir
+  exists <- dirPresent dir
   if not exists
-    then pure (0, [])
+    then pure (0, [], [])
     else do
-      mEntries <- try (listDirectory dir) :: IO (Either IOException [FilePath])
-      case mEntries of
-        Left e -> do
-          hPutStrLn stderr $
-            "sql-schema-merge: cannot read fragments directory " <> dir
-            <> ": " <> show e
-          pure (0, [])
-        Right names -> do
-          let yamls = sort [dir </> n | n <- names, takeExtension n == ".yaml"]
-          parsed <- forM yamls $ \p -> do
-            bs <- BS.readFile p
-            case YAML.decodeEither' bs of
-              Right frag -> pure (Just frag)
-              Left e     -> do
-                hPutStrLn stderr $
-                  "sql-schema-merge: skipping unparseable fragment " <> p
-                  <> ": " <> YAML.prettyPrintParseException e
-                pure Nothing
-          pure (length yamls, catMaybes parsed)
+      names <- listDirectory dir
+      let yamls = sort [dir </> n | n <- names, takeExtension n == ".yaml"]
+      parsed <- forM yamls $ \p -> do
+        bs <- BS.readFile p
+        pure $ case YAML.decodeEither' bs of
+          Right frag -> Right frag
+          Left e     -> Left (p, YAML.prettyPrintParseException e)
+      pure (length yamls, [f | Right f <- parsed], [b | Left b <- parsed])
+
+
+-- | The error for @--source-dirs@ that prune every fragment.
+allPrunedMsg :: Int -> String
+allPrunedMsg n =
+  "sql-schema-merge: all " <> show n <> " fragments were pruned as stale: no "
+  <> "--source-dirs entry holds their modules. Check the --source-dirs paths, "
+  <> "or delete the fragments of modules that were removed."
+
+
+-- | Whether @d@ is a directory, throwing when that can't be checked (e.g. a
+-- parent without search permission): reading it as missing would drop every
+-- table under it.
+dirPresent :: FilePath -> IO Bool
+dirPresent d = tryIOError (getPermissions d) >>= \case
+  Left e | isDoesNotExistError e -> pure False
+         | otherwise             -> ioError e
+  Right _ -> doesDirectoryExist d
 
 
 -- | Walk every directory in the list; collect dotted module names from
--- every @.hs@ file found beneath.  A missing directory is logged to
--- stderr but otherwise ignored (treated as empty).  Returned set is the
--- ground truth for @pruneStaleByModule@.
+-- every module source file found beneath (see 'walkHs').  A missing
+-- directory is logged to stderr but otherwise ignored (treated as empty).
+-- Returned set is the ground truth for @pruneStaleByModule@.
 liveModulesFromDirs :: [FilePath] -> IO (Set String)
 liveModulesFromDirs dirs = Set.unions <$> mapM oneDir dirs
   where
     oneDir d = do
-      exists <- doesDirectoryExist d
+      exists <- dirPresent d
       if not exists
         then do
           hPutStrLn stderr $
@@ -174,48 +221,53 @@ liveModulesFromDirs dirs = Set.unions <$> mapM oneDir dirs
         else Set.fromList . map (pathToModule d) <$> walkHs d
     pathToModule root p =
       -- root="pkg/gen", p="pkg/gen/Lib/Foo.hs"
-      -- → "Lib.Foo"
-      let rel = drop (length root + 1) p  -- strip "root/"
+      -- → "Lib.Foo"; makeRelative also handles a root with a trailing slash.
+      let rel = makeRelative root p
           noExt = dropExtension rel
           dotted = map (\c -> if c == '/' then '.' else c) noExt
       in dotted
 
 
--- | Depth-first walk of a directory, returning every @.hs@ file path.
+-- | Depth-first walk of a directory, returning every module source file:
+-- @.hs@ and the files cabal preprocesses into modules.
 walkHs :: FilePath -> IO [FilePath]
 walkHs root = go root
   where
+    moduleExts = [".hs", ".lhs", ".hsc", ".chs", ".x", ".y", ".ly"]
+    -- An unreadable directory throws: reading it as empty would prune the
+    -- fragments of every module under it.  Without search permission its
+    -- entries can't be told apart from files, which would do the same.
     go d = do
-      mEntries <- try (listDirectory d) :: IO (Either IOException [FilePath])
-      case mEntries of
-        Left _ -> pure []
-        Right names -> do
-          let here = map (d </>) names
-          fmap concat $ forM here $ \p -> do
-            isDir <- doesDirectoryExist p
-            if isDir
-              then go p
-              else
-                if takeExtension p == ".hs" then pure [p] else pure []
+      perms <- getPermissions d
+      unless (searchable perms) $
+        ioError (userError ("cannot search source directory " <> d))
+      names <- listDirectory d
+      let here = map (d </>) names
+      fmap concat $ forM here $ \p -> do
+        isDir <- doesDirectoryExist p
+        if isDir
+          then go p
+          else
+            if takeExtension p `elem` moduleExts then pure [p] else pure []
 
 
 -- | If 'moSourceDirs' was empty (caller opted out of pruning), keep
 -- everything.  Otherwise drop any fragment whose @fragmentModule@ is not
--- in the live set.  Returns @(kept, prunedCount)@.
+-- in the live set.  Returns @(kept, prunedModules)@.
 pruneStaleByModule
-  :: [FilePath] -> Set String -> [Fragment] -> ([Fragment], Int)
+  :: [FilePath] -> Set String -> [Fragment] -> ([Fragment], [String])
 pruneStaleByModule sourceDirs live frags
-  | null sourceDirs = (frags, 0)
+  | null sourceDirs = (frags, [])
   | otherwise =
       let kept = [f | f <- frags, Set.member (fragmentModule f) live]
           dropped = [f | f <- frags, not (Set.member (fragmentModule f) live)]
-      in (kept, length dropped)
+      in (kept, map fragmentModule dropped)
 
 
 -- | Parse each @--include-merged@ file as a 'MergedSchema' and return
--- the concatenated tables + overrides.  Missing/malformed files produce
--- warnings (not fatal); call sites that need fatality should validate
--- presence before invoking the merger.  Counts the files actually parsed.
+-- the concatenated tables + overrides, plus one error per missing or
+-- malformed file (the caller fails the merge: skipping the file would drop
+-- every table it holds).  Counts the files actually parsed.
 loadIncludedMerged
   :: [FilePath]
   -> IO (Int, [TableSchema], [DbEntityOverride], [String])
@@ -235,8 +287,8 @@ loadIncludedMerged paths = do
   let okCount   = length [ () | Right _ <- results ]
       tables    = concat [ ts  | Right (ts, _) <- results ]
       overrides = concat [ os  | Right (_, os) <- results ]
-      warns     = ["sql-schema-merge: warning: " <> w | Left w <- results]
-  pure (okCount, tables, overrides, warns)
+      errs      = [e | Left e <- results]
+  pure (okCount, tables, overrides, errs)
 
 
 -- | Validate, dedup, and order.  Returns either a list of fatal errors,

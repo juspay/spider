@@ -10,15 +10,17 @@
 --   sql-schema-merge --fragments DIR --out FILE
 --                    [--source-dirs DIR] ...
 --                    [--include-merged FILE] ...
+--                    [--no-own-tables] [--allow-empty]
 --                    [--generator-rev REV]
 --
 -- Exit codes:
 --   0  success (even if some fragments were pruned as stale)
---   1  validation failed (duplicate-type mismatch, override mismatch, …)
+--   1  validation failed (duplicate-type mismatch, override mismatch, …), an
+--      input it would have to drop tables for, a contract it refuses to
+--      publish ('publishProblem'), or an I/O error
 --   2  argument error
 module Main (main) where
 
-import           Control.Monad      (when)
 import           System.Environment (getArgs)
 import           System.Exit        (ExitCode (..), exitWith)
 import           System.IO          (hPutStrLn, stderr)
@@ -33,7 +35,7 @@ main = do
       hPutStrLn stderr ("sql-schema-merge: " <> err)
       hPutStrLn stderr usage
       exitWith (ExitFailure 2)
-    Right (opts, allowEmpty) -> do
+    Right (opts, allowEmpty, noOwnTables) -> do
       result <- runMerge opts
       case result of
         Left errs -> do
@@ -48,71 +50,92 @@ main = do
             <> " duplicates collapsed, " <> show (mrTablesEmitted report)
             <> " tables emitted, " <> show (mrOverridesEmitted report)
             <> " overrides recorded -> " <> moOutFile opts
-          -- Safety gate: a contract with zero tables almost always means the
-          -- SqlSchema GHC plugin did not run during compilation (so no
-          -- per-module fragments were written), NOT that the package has no
-          -- Beam tables.  Publishing an empty contract that still exits 0 is a
-          -- downstream false-pass against the prod DB.  Fail loudly unless the
-          -- caller explicitly opted in via --allow-empty.
-          when (mrTablesEmitted report == 0 && not allowEmpty) $ do
-            mapM_ (hPutStrLn stderr)
-              [ "sql-schema-merge: ERROR: refusing to publish a contract with 0 tables."
-              , "  out:        " <> moOutFile opts
-              , "  fragments:  " <> moFragmentsDir opts
-              , "This almost always means the SqlSchema GHC plugin did not run during"
-              , "compilation, NOT that the package has no Beam tables.  An empty"
-              , "contract is a downstream false-pass against the prod DB schema."
-              , "Fixes:"
-              , "  * Ensure the package was built with the SqlSchema cabal flag enabled"
-              , "    (on by default in nix; local cabal builds opt out via -SqlSchema)."
-              , "  * If this package genuinely has no tables (only composes deps via"
-              , "    --include-merged), pass --allow-empty."
-              ]
-            exitWith (ExitFailure 1)
+          -- Safety gate: publishing a contract the plugin may not have
+          -- produced is a downstream false-pass against the prod DB.
+          case publishProblem allowEmpty noOwnTables report of
+            Nothing      -> pure ()
+            Just problem -> do
+              mapM_ (hPutStrLn stderr) (refusal opts problem)
+              exitWith (ExitFailure 1)
+
+refusal :: MergeOptions -> PublishProblem -> [String]
+refusal opts = \case
+  OwnTablesDeclaredNone n ->
+    [ "sql-schema-merge: ERROR: --no-own-tables was given, but this package's own"
+    , "fragments define " <> show n <> " table(s).  Remove --no-own-tables so the"
+    , "merge checks this package's own fragments again."
+    , "  fragments:  " <> moFragmentsDir opts
+    ]
+  NoTables       -> pluginDidNotRun "the contract has 0 tables"
+  NoOwnFragments -> pluginDidNotRun "no fragment of this package's own modules was read"
+  where
+    pluginDidNotRun why =
+      [ "sql-schema-merge: ERROR: refusing to publish: " <> why <> "."
+      , "  out:        " <> moOutFile opts
+      , "  fragments:  " <> moFragmentsDir opts
+      , "This almost always means the SqlSchema GHC plugin did not run during"
+      , "compilation, NOT that the package has no Beam tables.  Publishing it is"
+      , "a downstream false-pass against the prod DB schema."
+      , "Fixes:"
+      , "  * Ensure the package was built with the SqlSchema cabal flag enabled"
+      , "    (on by default in nix; local cabal builds opt out via -SqlSchema)."
+      , "  * If this package defines no tables of its own and only composes"
+      , "    dependencies via --include-merged, pass --no-own-tables."
+      , "  * If the contract is meant to have no tables at all, pass --allow-empty."
+      ]
 
 usage :: String
 usage = unlines
   [ "Usage: sql-schema-merge --fragments DIR --out FILE"
   , "                       [--source-dirs DIR ...]"
   , "                       [--include-merged FILE ...]"
-  , "                       [--allow-empty]"
+  , "                       [--no-own-tables] [--allow-empty]"
   , "                       [--generator-rev REV]"
   , ""
   , "  --fragments DIR        directory holding per-module *.yaml fragments"
   , "  --out FILE             path to write the merged YAML"
-  , "  --source-dirs DIR      (repeatable) directory containing .hs source files;"
-  , "                         fragments whose module isn't backed by any .hs file"
-  , "                         in any listed source dir are pruned.  If omitted,"
-  , "                         no pruning is done (every fragment is kept)."
+  , "  --source-dirs DIR      (repeatable) directory containing module sources"
+  , "                         (.hs, .lhs, .hsc, .chs, .x, .y, .ly); fragments whose"
+  , "                         module has no source file in any listed dir are"
+  , "                         pruned, and named on stderr.  If omitted, no pruning"
+  , "                         is done (every fragment is kept)."
   , "  --include-merged FILE  (repeatable) pre-merged contract YAML to union into"
   , "                         the output.  Typically '${dep}/share/sql-schema/"
   , "                         sql-schema.yaml' for a dep package whose tables"
   , "                         must compose into this service's contract."
-  , "  --allow-empty          permit a contract with zero tables.  Without this,"
-  , "                         emitting 0 tables is a fatal error (exit 1), since"
-  , "                         it usually means the SqlSchema plugin did not run."
+  , "  --no-own-tables        this package defines no tables of its own and only"
+  , "                         composes --include-merged contracts: a contract with"
+  , "                         none of its own fragments is then accepted, and own"
+  , "                         fragments that define a table are an error (exit 1)."
+  , "                         Without it, no own fragments is an error, since it"
+  , "                         usually means the SqlSchema plugin did not run."
+  , "  --allow-empty          permit a contract with zero tables.  Without it, zero"
+  , "                         tables is an error (exit 1), for the same reason."
   , "  --generator-rev REV    VCS revision of the plugin source, recorded in the"
   , "                         contract's generator stamp (omitted -> rev: null)."
   ]
 
-parseArgs :: [String] -> Either String (MergeOptions, Bool)
-parseArgs = go (MergeOptions "" "" [] [] Nothing) False False False
+-- | @(options, allowEmpty, noOwnTables)@.
+parseArgs :: [String] -> Either String (MergeOptions, Bool, Bool)
+parseArgs = go (MergeOptions "" "" [] [] Nothing) False False False False
   where
-    go opts allowEmpty haveFrag haveOut [] =
+    go opts allowEmpty noOwn haveFrag haveOut [] =
       if not haveFrag then Left "missing --fragments"
       else if not haveOut then Left "missing --out"
-      else Right (opts, allowEmpty)
-    go opts ae _ ho ("--fragments" : v : rest) =
-      go opts { moFragmentsDir = v } ae True ho rest
-    go opts ae hf _ ("--out" : v : rest) =
-      go opts { moOutFile = v } ae hf True rest
-    go opts ae hf ho ("--include-merged" : v : rest) =
-      go opts { moIncludeMerged = moIncludeMerged opts ++ [v] } ae hf ho rest
-    go opts ae hf ho ("--source-dirs" : v : rest) =
-      go opts { moSourceDirs = moSourceDirs opts ++ [v] } ae hf ho rest
-    go opts ae hf ho ("--generator-rev" : v : rest) =
-      go opts { moGeneratorRev = Just v } ae hf ho rest
-    go opts _ hf ho ("--allow-empty" : rest) =
-      go opts True hf ho rest
-    go _ _ _ _ (other : _) =
+      else Right (opts, allowEmpty, noOwn)
+    go opts ae no _ ho ("--fragments" : v : rest) =
+      go opts { moFragmentsDir = v } ae no True ho rest
+    go opts ae no hf _ ("--out" : v : rest) =
+      go opts { moOutFile = v } ae no hf True rest
+    go opts ae no hf ho ("--include-merged" : v : rest) =
+      go opts { moIncludeMerged = moIncludeMerged opts ++ [v] } ae no hf ho rest
+    go opts ae no hf ho ("--source-dirs" : v : rest) =
+      go opts { moSourceDirs = moSourceDirs opts ++ [v] } ae no hf ho rest
+    go opts ae no hf ho ("--generator-rev" : v : rest) =
+      go opts { moGeneratorRev = Just v } ae no hf ho rest
+    go opts _ no hf ho ("--allow-empty" : rest) =
+      go opts True no hf ho rest
+    go opts ae _ hf ho ("--no-own-tables" : rest) =
+      go opts ae True hf ho rest
+    go _ _ _ _ _ (other : _) =
       Left ("unrecognised argument: " <> other)

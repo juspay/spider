@@ -76,9 +76,19 @@ argument and exits 2.
 
 The merge CLI exits non-zero on duplicate-type **mismatch** (identical
 duplicates are silently deduped), on `setEntityName`/`modelTableName`
-disagreement, or on argument errors.  Two different Haskell types
-mapping to the same SQL `tableName` produces a stderr warning, not an
-error.
+disagreement, or on argument errors.  It also fails rather than drop
+tables: on a fragment that doesn't parse (unless `--source-dirs` shows its
+module is gone), a missing or malformed `--include-merged` file, a
+directory it can't read, or `--source-dirs` that prune every fragment.
+It refuses a contract with no tables unless `--allow-empty` is passed, and
+one with none of the package's own fragments unless the package declares
+`--no-own-tables` (it defines no tables itself and only composes
+`--include-merged` contracts); with that flag, own fragments that do define
+a table fail the merge, so the declaration can't go stale.  A `--source-dirs`
+entry that doesn't exist only warns, so a mistyped one prunes the
+fragments of its modules; each pruned module is named on stderr.  Two
+different Haskell types mapping to the same SQL `tableName` produces a
+stderr warning, not an error.
 
 ## Plugin options (JSON in `-fplugin-opt`)
 

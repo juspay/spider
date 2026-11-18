@@ -14,6 +14,28 @@
   so the contract still listed a table the module no longer defines or the
   options now exclude. A module's `.hs-boot` or `.hsig` file is skipped
   entirely: it is not checked and never touches the module's fragment.
+* **Fix:** a `--source-dirs` entry with a trailing slash (`src/`) shifted every
+  module name it produced, so all of its fragments were pruned as stale.
+* **Breaking:** `sql-schema-merge` fails instead of dropping tables. Each of
+  these used to be skipped with at most a warning, and the merge still exited
+  0:
+  - a fragment that doesn't parse, unless `--source-dirs` shows its module is
+    gone;
+  - a missing or malformed `--include-merged` file;
+  - a fragments or source directory it can't read or search;
+  - `--source-dirs` that prune every fragment.
+
+  A `--source-dirs` entry that doesn't exist still only warns; each pruned
+  module is now named on stderr.
+* **Breaking:** the CLI refuses a contract with none of the package's own
+  fragments, as it already refused one with no tables: included tables used
+  to hide that the package's plugin never ran. A package that defines no
+  tables of its own and only composes `--include-merged` contracts passes the
+  new `--no-own-tables` instead of `--allow-empty`; the merge then fails if
+  its own fragments do define a table. `--allow-empty` permits only a contract
+  with no tables.
+* **Fix:** modules in `.lhs`, `.hsc`, `.chs`, `.x`, `.y` and `.ly` files count as
+  live, so their fragments are no longer pruned as stale.
 * Drops unused dependencies: `references`, `uniplate`, `extra`,
   `ordered-containers` and `unordered-containers` from the library, and
   `directory` and `filepath` from `sql-schema-merge`.
